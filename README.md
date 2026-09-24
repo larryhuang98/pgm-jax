@@ -68,7 +68,7 @@ sensitive to this.
 
 ```bash
 python scripts/run_md.py -p water.prmtop -c water.rst7 -o md --ensemble npt --temp 298 --press 1 \
-    --nsteps 100000 --dt 1.0 --cut 9.0 --nfft 48 48 48 --order 8 --ew-coeff 0.4 --vdwmeth 1 \
+    --nsteps 100000 --dt 1.0 --cut 9.0 --nfft 48 48 48 --order 6 --ew-coeff 0.4 --vdwmeth 1 \
     --dipole-tol 1e-5 --gamma 2.0 --barostat-interval 100 --report 1000 --traj 1000 --restart 10000
 ```
 
@@ -81,22 +81,32 @@ How it works:
 
 - **Electrostatics** exactly as the rest of pGM-JAX, with smooth PME for the reciprocal part
   (Gaussian charges + total dipoles spread with B-spline derivatives; OpenMM's spline conventions).
-  Direct-space pairs run over the rows of a dense, full JAX-MD neighbour list, compacted every step to
-  the pairs inside the cutoff; per-atom sums, analytic pair forces (grad G_n = -G_{n+1} x), no
-  scatter-adds.
-- **Induced dipoles** as pmemd-pgm: permanent-field right-hand side, multi-order least-squares
-  extrapolation (`dipole_scf_init=3`, order 3, 2 steps), preconditioned CG with pmemd-pgm's
-  convergence test (max|alpha r| / mean|alpha E_perm| <= `dipole_scf_tol`), peek step (0.65).
-  The short-range inner-CG preconditioner (`scf_local_niter`) is implemented but off by default:
-  on the GPU a Jacobi-preconditioned iteration is cheaper than the saved iterations.
-  Forces are Hellmann-Feynman at the converged dipoles (the energy is variational in mu).
+  Direct-space pairs run over full rows (every pair in both rows): each atom's intramolecular
+  partners, then its intermolecular neighbours, compacted every step to the pairs inside the
+  cutoff and stored as a structure of arrays; per-atom sums, analytic pair forces
+  (grad G_n = -G_{n+1} x), no scatter-adds.
+- **Neighbour list** of molecular centres (JAX-MD cell list, float32): rotations never invalidate
+  it, so for water it is rebuilt every ~30 steps instead of ~10 for an atom list, at a tenth of
+  the cost. Each step every atom keeps the molecules whose centre can bring an atom inside its
+  cutoff. Small boxes fall back to an atom list. Overflows are detected, resized and the block
+  repeated, never silent.
+- **Induced dipoles** as pmemd-pgm's GPU code: cubic extrapolation of the last four converged
+  dipoles (`mu4`) with the fused initial residual (the permanent-field sweep is done for
+  d = p + guess), Jacobi-preconditioned CG with pmemd-pgm's convergence test
+  (max|alpha r| / mean|alpha E_perm| <= `dipole_scf_tol`), peek step (0.65). pmemd-pgm CPU's
+  least-squares extrapolation (`--predictor ls`, `dipole_scf_init=3`) and the short-range
+  inner-CG preconditioner (`scf_local_niter`) are available; on the GPU a Jacobi iteration is
+  cheaper than the iterations they save. Forces are Hellmann-Feynman at the converged dipoles
+  (the energy is variational in mu).
 - **Rigid molecules** (every molecule; the model has no bonded terms) as JAX-MD rigid bodies:
   NO_SQUISH quaternion integration from JAX-MD `simulate`. Equivalent to SHAKE-rigid water.
 - **Thermostat**: BAOAB Langevin with an exact Ornstein-Uhlenbeck step on centre-of-mass and
   body-frame angular momenta. **Barostat**: isotropic Monte Carlo, molecular scaling (Amber
   `barostat=2`), adaptive step.
 - **Precision**: `mixed` (default) evaluates pair kernels, PME and CG vectors in float32 and keeps
-  positions, energies and dot products in float64; `double` is float64 throughout.
+  positions, energies and dot products in float64; `double` is float64 throughout. float32 matrix
+  products are requested at full precision: by default NVIDIA GPUs use TF32 for them, which made
+  the dipole spread of the PME 1e-3 inaccurate (7x larger mixed-precision force error).
 - **Boxes**: any reduced triclinic box, including Amber's truncated octahedron (exact minimum image;
   cutoff + skin must be below half the smallest box height).
 
@@ -113,23 +123,29 @@ JAX 0.11.
 | Check | Result |
 |---|---|
 | Single point vs pmemd-pgm (PME 72^3, order 8, float64) | EELEC 4e-5 kcal/mol; forces 9e-7 kcal/mol/A RMS; induced dipoles 2e-11 e A RMS; VDW exact |
-| Same, mixed precision | EELEC 0.05-0.07 kcal/mol of 5e5; forces 3e-3 kcal/mol/A RMS (RMS force 36) |
+| Same, mixed precision | EELEC 0.05 kcal/mol of 5e5; forces 4e-4 kcal/mol/A RMS (RMS force 36); dipoles 8e-7 e A RMS |
 | Analytic row forces vs autodiff; forces and virial vs finite differences | 2e-10 (float64); pytest |
-| NVE, dt 1 fs, 10-20 ps | drift 0.001-0.007 kT/ns per degree of freedom (mixed and double, tol 1e-4 to 1e-6); 2 fs also stable |
+| NVE, mixed, dt 1 fs, 20 ps | drift 0.0001 kT/ns per degree of freedom at dipole_scf_tol 1e-5 (default), 0.02 at 1e-4; dt 2 fs, 1e-4: 0.06 |
 | NVT, gamma 2/ps | T 297-299 K; translational = rotational temperature |
 | NPT 298 K / 1 bar, settings of the GVDW paper (8 A, PME 48^3 order 8, no LJ tail, tol 1e-4), 2 x 100 ps | density 1.0058 +- 0.011 and 1.0107 +- 0.012 g/cm^3 (Amber: 1.0076 +- 0.012); g_OO first peak 2.79 A, 3.00 (Amber paper: 2.795 A, 2.99) |
 
-### Speed (one RTX PRO 6000 Blackwell; NVT, 9 A cutoff, PME order 6, dipole_scf_tol 1e-5, dt 1 fs)
+### Speed (one RTX PRO 6000 Blackwell; NVT, gamma 1/ps, 9 A cutoff, PME 48^3 per 512 waters, order 6, dt 1 fs)
 
 | System | pgm_jax mixed | pgm_jax double | pmemd.pgm.cuda_SPFP | pmemd-pgm CPU (1 core) |
 |---|---|---|---|---|
-| 512 waters (1,536 atoms) | 97.8 ns/day | 33.9 | 95.6 | 1.7 |
-| 4,096 waters (12,288 atoms) | 19.4 (21.9 with skin 2 A) | 6.8 | 68.7 | |
+| 512 waters (1,536 atoms), dipole_scf_tol 1e-5 | 130 ns/day | 47 | 95.6 | 1.7 |
+| 4,096 waters (12,288 atoms), dipole_scf_tol 1e-5 | 44 | 9.8 | 68.7 | |
+| 512 waters, tol 1e-4 | 148 | | | |
+| 4,096 waters, tol 1e-4 | 53 (1.63 ms/step) | | | |
 
-At 1.5k atoms JAX-MD runs as fast as pmemd's GPU code; at 12k atoms pmemd is ~3x faster (its
-kernels are hand-written CUDA; ours are XLA-compiled). Most of our step is the dipole CG (6-7
-iterations of a row product and a PME convolution) and JAX-MD's cell-list rebuild (float32; a
-larger skin helps on large systems).
+`python scripts/bench_md.py --replicate 2` reproduces a row (pmemd inputs: `scf_local_niter=3`,
+the same grid, cutoff and tolerance). What made the step fast (12k atoms, tol 1e-5: 4.5 -> 2.0
+ms): the molecular-centre neighbour list (list cost ~1 ms -> 0.03 ms per step); pair rows as a structure of
+arrays (the row kernels are memory bound: 5x faster than (N, C, 3) rows); a direct PME dipole
+gradient in the CG instead of autodiff; closed-form 3x3 box inverses (jnp.linalg.inv launches LU
+factorisations every step); int32 PME indices; mu4 + fused residual (one field sweep fewer). The
+remaining gap to pmemd at 12k atoms is hand-written CUDA vs XLA: per CG iteration pmemd runs one
+fused kernel per term, XLA several kernels with the loop condition checked on the host.
 
 ## Layout
 

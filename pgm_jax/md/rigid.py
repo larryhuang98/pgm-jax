@@ -18,6 +18,7 @@ import numpy as np
 
 from ..system import System
 from ._jaxmd import rigid_body
+from .box import inv3
 
 RigidBody = rigid_body.RigidBody
 Quaternion = rigid_body.Quaternion
@@ -121,7 +122,7 @@ class RigidMolecules:
         P = jax.ops.segment_sum(m[:, None] * vel, self.mol, self.nmol)
         rel = pos - body.center[self.mol]
         L = jax.ops.segment_sum(m[:, None] * jnp.cross(rel, vel), self.mol, self.nmol)
-        Lb = jnp.einsum("kij,kj->ki", rigid_body.space_to_body_rotation(body.orientation), L)
+        Lb = jnp.einsum("kij,kj->ki", rigid_body.space_to_body_rotation(body.orientation), L, precision=jax.lax.Precision.HIGHEST)
         return RigidBody(P, rigid_body.angular_momentum_to_conjugate_momentum(body.orientation, Lb))
 
     def atom_velocities(self, body, momentum):
@@ -137,5 +138,6 @@ class RigidMolecules:
     def wrap(self, body, H):
         """Centres of mass into the primary cell (molecules stay whole)."""
         H = jnp.asarray(H)
-        f = body.center @ jnp.linalg.inv(H)
-        return RigidBody((f - jnp.floor(f)) @ H, body.orientation)
+        hi = jax.lax.Precision.HIGHEST
+        f = jnp.matmul(body.center, inv3(H), precision=hi)
+        return RigidBody(jnp.matmul(f - jnp.floor(f), H, precision=hi), body.orientation)

@@ -11,24 +11,36 @@ Energy (kJ/mol) with induced dipoles mu (Wei et al. JCP 153, 114116 (2020) Sec. 
 
 The induced dipoles minimise E (a quadratic in mu); they are solved each step as in pmemd-pgm:
   * right-hand side: the permanent field b = -dU/dd at d = p (direct + PME + self);
-  * initial guess: pmemd-pgm's multi-order least-squares extrapolation (dipole_scf_init = 3):
-    coefficients c fitted so that sum_j c_j (alpha b)_{n-j} reproduces the current alpha b, then
-    applied to the last converged dipoles (order 1), to their prediction errors (order 2) and to
-    the errors of those (order 3);
-  * conjugate gradients preconditioned by a few inner CG iterations on the short-range
-    (< local_cut) dipole tensor plus 1/alpha (scf_local_cut, scf_local_niter; flexible PCG),
-    converged when max|alpha r| / mean|alpha b| <= tol (pmemd-pgm's criterion), then one peek
-    step mu += omega alpha r (scf_sor_coefficient).
-Forces are -dE/dR at fixed mu (E is variational in mu).  Pair terms run over the rows of a dense,
-full neighbour list (every pair appears in both rows): per-atom sums with no scatter-adds, and the
-pair forces are row sums of the analytic gradient of the pair energy with respect to the row
-displacement (F_i = -sum_k de_ik/dx_ik, using grad_x G_n = -G_{n+1} x).  The dipole derivatives dE/dd_i (row sums, PME, self term) are carried
-through the covalent-dipole frames by one vector-Jacobian product.  PME forces come from autodiff
-through the splines.  The molecular virial is the strain derivative at fixed mu (molecular
-centres of mass scaled with the box), by autodiff of the whole energy.
+  * initial guess (`predictor`): "mu4", cubic extrapolation of the converged dipoles
+    4 mu_1 - 6 mu_2 + 4 mu_3 - mu_4 (pmemd-pgm GPU PGM_GPU_PRED=mu4; 3-4 CG iterations at
+    tol 1e-4 in Langevin water at 1 fs); "mu3" quadratic; "ls", pmemd-pgm CPU's multi-order least-squares extrapolation
+    (dipole_scf_init = 3); "none", alpha b;
+  * fused initial residual (`fused`, with mu3/mu4): the guess depends only on history, so the
+    permanent-field sweep is done for d = p + x0 and gives r0 = field(q, p + x0) - x0/alpha
+    directly (pmemd-pgm PGM_FUSED); the normaliser mean|alpha b| of the convergence test is taken
+    from the last unfused step (refreshed every `norm_refresh` steps);
+  * conjugate gradients, Jacobi-preconditioned, or with a few inner CG iterations on the
+    short-range (< local_cut) tensor (scf_local_cut, scf_local_niter; flexible PCG), converged when
+    max|alpha r| / mean|alpha b| <= tol (pmemd-pgm's criterion), then one peek step
+    mu += omega alpha r (scf_sor_coefficient).
+Forces are -dE/dR at fixed mu (E is variational in mu).  Pair terms run over rows: for each atom,
+its intramolecular partners (a small fixed table) followed by its intermolecular candidates from
+the neighbour list, compacted every step to the pairs inside the cutoff (fixed capacity; the
+driver re-sizes and repeats on overflow).  Rows are stored as a structure of arrays (index, x, y,
+z, G0..G3): the row kernels are memory bound and read each component with unit stride.
+Intramolecular displacements come from offsets within the molecule (exact in float32).  Every pair
+appears in both rows: per-atom sums with no scatter-adds, and the pair forces are row sums of the
+analytic gradient of the pair energy with respect to the row displacement (F_i = -sum_k
+de_ik/dx_ik, grad_x G_n = -G_{n+1} x).  The dipole derivatives dE/dd_i (row sums, PME, self term)
+are carried through the covalent-dipole frames by one vector-Jacobian product.  The PME dipole
+gradient in each CG iteration is computed directly (one r2c/c2r FFT pair, spline derivatives);
+PME forces come from autodiff through the splines.  The molecular virial is the strain
+derivative at fixed mu (molecular centres of mass scaled with the box), by autodiff of the whole
+energy.
 
 Precision: 'mixed' evaluates pair kernels, PME and CG vectors in float32 and accumulates energies,
-dot products, positions and forces in float64; 'double' uses float64 throughout.
+dot products, positions and forces in float64; 'double' uses float64 throughout.  float32 matrix
+products are requested at full precision (NVIDIA GPUs otherwise use TF32, ~1e-3 relative error).
 """
 from __future__ import annotations
 
@@ -45,7 +57,7 @@ from ..system import System
 from ..units import KE
 from ._jaxmd import dataclasses
 from .box import min_image, volume
-from .kernels import erf_kernels
+from .kernels import erf_kernels, erf_kernels_closed
 from .pme import PME, grid_size
 
 _SQRT_PI = math.sqrt(math.pi)
@@ -58,16 +70,19 @@ class MDSettings:
     skin: float = 0.1                 # nm; skinnb
     ewald_beta: float = 4.0           # nm^-1; ew_coeff (0.4 A^-1)
     pme_grid: tuple | None = None     # nfft1..3; None: from pme_spacing
-    pme_spacing: float = 0.05         # nm
-    pme_order: int = 8                # order
+    pme_spacing: float = 0.08         # nm
+    pme_order: int = 6                # order
     lj_lrc: bool = True               # vdwmeth = 1
-    dipole_tol: float = 1e-5          # dipole_scf_tol (max|alpha r| / mean|alpha b|)
+    dipole_tol: float = 1e-5          # dipole_scf_tol (max|alpha r| / mean|alpha b|); 1e-4: ~20 % faster, NVE drift 0.02 kT/ns/dof
     max_iter: int = 50                # scf_cg_niter
+    predictor: str = "mu4"            # mu4 | mu3 | ls | none
+    fused: bool = True                # fused initial residual (mu3/mu4)
+    norm_refresh: int = 1000          # steps between unfused steps (convergence normaliser)
     local_cut: float = 0.3            # nm; scf_local_cut
-    local_niter: int = 0              # scf_local_niter; 0: Jacobi (fastest on GPU, see README)
+    local_niter: int = 0              # scf_local_niter; 0: Jacobi (fastest on GPU)
     peek: float = 0.65                # scf_sor_coefficient (0: no peek step)
-    extrap_order: int = 3             # dipole_scf_init_order (0: start from alpha b)
-    extrap_steps: int = 2             # dipole_scf_init_step
+    extrap_order: int = 3             # dipole_scf_init_order (predictor "ls")
+    extrap_steps: int = 2             # dipole_scf_init_step (predictor "ls")
     precision: str = "mixed"          # "mixed" | "double"
 
     @property
@@ -75,13 +90,19 @@ class MDSettings:
         return jnp.float32 if self.precision == "mixed" else jnp.float64
 
 
+_PRED = {"mu3": (3.0, -3.0, 1.0), "mu4": (4.0, -6.0, 4.0, -1.0)}
+
+
 @dataclasses.dataclass
 class InductionState:
-    """Converged dipoles and the extrapolation history (newest first)."""
+    """Converged dipoles, predictor history (newest first) and the convergence normaliser."""
     mu: jnp.ndarray          # (N, 3) e nm
-    rec: jnp.ndarray         # (4, S, N, 3): alpha b, mu, mu - pred1, mu - pred2
-    pred: jnp.ndarray        # (2, N, 3): order-1 and order-2 predictions of the last step
-    count: jnp.ndarray       # (4,) int32
+    hist: jnp.ndarray        # (4, N, 3) converged dipoles of the last steps
+    count: jnp.ndarray       # () int32: steps recorded
+    norm: jnp.ndarray        # () mean|alpha b| of the last unfused step
+    rec: jnp.ndarray         # (4, S, N, 3) "ls" records: alpha b, mu, mu - pred1, mu - pred2
+    pred: jnp.ndarray        # (2, N, 3) "ls" order-1 and order-2 predictions
+    lscount: jnp.ndarray     # (4,) int32
 
 
 class Result(NamedTuple):
@@ -105,18 +126,34 @@ class PGMForceField:
     def __init__(self, sys: System, H, settings: MDSettings = MDSettings(), short_capacity: int = 48,
                  row_capacity: int | None = None):
         self.sys, self.s = sys, settings
+        if settings.predictor not in ("mu4", "mu3", "ls", "none"):
+            raise ValueError(f"unknown predictor {settings.predictor!r}")
         self.cd = settings.dtype
         self.n = sys.n
         self.b0 = float(settings.ewald_beta)
         self.c_self = 4.0 * self.b0 ** 3 / (3.0 * _SQRT_PI)
         grid = settings.pme_grid or grid_size(H, settings.pme_spacing)
         self.pme = PME(grid, settings.pme_order, self.b0, self.cd)
-        self.mol = jnp.asarray(sys.mol)
+        mol = np.asarray(sys.mol)
+        self.mol = jnp.asarray(mol)
         self.cov_i, self.cov_j = jnp.asarray(sys.cov_i), jnp.asarray(sys.cov_j)
         self.masses = jnp.asarray(sys.masses)
         self.S = max(1, int(settings.extrap_steps))
         self.ms = int(short_capacity)
-        self.mc = row_capacity            # pairs kept per row after compaction to the cutoff (None: no compaction)
+        self.mc = row_capacity            # intermolecular pairs kept per row (None: no compaction)
+        # intramolecular partners of every atom (all pairs interact in pGM; fixed table)
+        counts = np.bincount(mol, minlength=sys.nmol)
+        ni = max(int(counts.max()) - 1, 1)
+        intra = np.full((self.n, ni), self.n, np.int32)
+        for k in range(sys.nmol):
+            atoms = np.nonzero(mol == k)[0]
+            for a in atoms:
+                others = atoms[atoms != a]
+                intra[a, :len(others)] = others
+        self.intra = jnp.asarray(intra)
+        first = np.searchsorted(mol, np.arange(sys.nmol)) if np.all(np.diff(mol) >= 0) else \
+            np.array([int(np.nonzero(mol == k)[0][0]) for k in range(sys.nmol)])
+        self.first = jnp.asarray(first)
 
     # ------------------------------------------------------------------ building blocks
     def _atoms(self, params):
@@ -130,19 +167,41 @@ class PGMForceField:
         u = v / jnp.linalg.norm(v, axis=-1, keepdims=True)
         return jnp.zeros((self.n, 3)).at[self.cov_i].add(cov_c[:, None] * u)
 
+    @staticmethod
+    def _displacements(p, k, H):
+        """Minimum-image p_i - p_k as three (N, C) arrays (structure of arrays: the row kernels are
+        memory bound and read components with unit stride); p (N, 3) in the compute dtype."""
+        pk = p[k]
+        x = [p[:, c][:, None] - pk[..., c] for c in range(3)]
+        for c in (2, 1, 0):                                   # sequential reduction, reduced box
+            n = jnp.round(x[c] / H[c, c])
+            x = [x[j] - n * H[c, j] if j <= c else x[j] for j in range(3)]
+        return x
+
+    def _intra_exact(self, pos, H, k, x, cd):
+        """Replace the intramolecular entries (first columns) by differences of offsets from each
+        molecule's first atom: exact in float32 whatever the absolute coordinates."""
+        ni = self.intra.shape[1]
+        off = (pos - pos[self.first][self.mol]).astype(cd)
+        xi = self._displacements(off, self.intra, H)
+        hit = (k[:, :ni] == self.intra) & (self.intra < self.n)
+        return tuple(xc.at[:, :ni].set(jnp.where(hit, xic, xc[:, :ni])) for xc, xic in zip(x, xi))
+
     def _rows(self, pos, H, idx):
-        """Row neighbours k (padding -> 0), displacements x_ik and masks.  Displacements are
-        computed in the compute dtype (float32 in mixed precision, as OpenMM's mixed mode).  With a
-        row capacity set, each row is compacted to its pairs inside the cutoff, so that everything
-        downstream (kernels, CG products, forces) touches only those.  Returns also the overflow
-        flag (a row with more pairs inside the cutoff than the capacity)."""
+        """Rows = [intramolecular partners | intermolecular candidates from the neighbour list],
+        masked to the cutoff and, with a row capacity set, compacted to the pairs inside it.
+        Returns k, x = (x, y, z) components (compute dtype), within, inter masks, overflow flag."""
         N, cd = self.n, self.cd
-        valid = idx < N
-        k = jnp.where(valid, idx, 0)
-        posc, Hc = pos.astype(cd), H.astype(cd)
-        x = min_image(posc[:, None, :] - posc[k], Hc)
-        r2 = jnp.sum(x * x, -1)
-        within = valid & (r2 < self.s.cutoff ** 2)
+        ni = self.intra.shape[1]
+        cand = jnp.concatenate([self.intra, idx.astype(self.intra.dtype)], axis=1)
+        valid = cand < N
+        k = jnp.where(valid, cand, 0)
+        from_list = jnp.arange(cand.shape[1])[None, :] >= ni
+        keep = valid & ~(from_list & (self.mol[:, None] == self.mol[k]))   # intramolecular pairs from the table only
+        p = pos.astype(cd)
+        Hc = H.astype(cd)
+        x = self._displacements(p, k, Hc)
+        within = keep & (x[0] * x[0] + x[1] * x[1] + x[2] * x[2] < self.s.cutoff ** 2)
         overflow = jnp.zeros((), bool)
         if self.mc is not None:
             mc = self.mc
@@ -151,45 +210,48 @@ class PGMForceField:
             tgt = jnp.where(within & (slot < mc), slot, mc)
             rows = jnp.broadcast_to(jnp.arange(N)[:, None], k.shape)
             k = jnp.zeros((N, mc + 1), k.dtype).at[rows, tgt].set(k)[:, :mc]
-            x = jnp.zeros((N, mc + 1, 3), x.dtype).at[rows, tgt].set(x)[:, :mc]
             within = jnp.arange(mc)[None, :] < jnp.minimum(count, mc)[:, None]
-            r2 = jnp.where(within, jnp.sum(x * x, -1), 1.0)
+            x = self._displacements(p, k, Hc)                  # recompute on the compacted rows
             overflow = jnp.max(count) > mc
+        x = self._intra_exact(pos, Hc, k, x, cd)
         inter = within & (self.mol[:, None] != self.mol[k])
-        return k, x, r2, within, inter, overflow
+        return k, x, within, inter, overflow
 
     def row_counts(self, pos, H, idx):
-        """Largest number of pairs inside the cutoff in any row (to size the row capacity)."""
-        N = self.n
-        valid = idx < N
-        k = jnp.where(valid, idx, 0)
-        x = min_image(pos[:, None, :] - pos[k], H)
-        return jnp.max(jnp.sum(valid & (jnp.sum(x * x, -1) < self.s.cutoff ** 2), axis=1))
+        """Largest number of pairs (intramolecular + intermolecular inside the cutoff) in any row."""
+        saved, self.mc = self.mc, None
+        try:
+            return jnp.max(jnp.sum(self._rows(pos, H, idx)[2], axis=1))
+        finally:
+            self.mc = saved
 
-    def _kernels(self, x, within, a, nmax: int = 3):
-        cd = self.cd
-        r = jnp.sqrt(jnp.where(within, jnp.sum(x * x, -1), 1.0))
-        A = erf_kernels(a, r, nmax)
-        B = erf_kernels(jnp.asarray(self.b0, cd), r, nmax)
-        w = within.astype(cd)
+    def _pair_a(self, R, k):
+        return 1.0 / jnp.sqrt(2.0 * (R[:, None] ** 2 + R[k] ** 2))
+
+    def _kernels(self, x, within, a, nmax: int = 3, series: bool = True):
+        dt = x[0].dtype
+        r = jnp.sqrt(jnp.where(within, x[0] * x[0] + x[1] * x[1] + x[2] * x[2], 1.0))
+        kern = erf_kernels if series else erf_kernels_closed
+        A = kern(a.astype(dt), r, nmax)
+        B = kern(jnp.asarray(self.b0, dt), r, nmax)
+        w = within.astype(dt)
         return (r,) + tuple((u - v) * w for u, v in zip(A, B))
 
     def geometry(self, pos, H, idx, P, forces: bool = False):
-        """Row geometry and direct-space kernels (masked beyond the cutoff), compute dtype; with
-        `forces`, also G3 and the LJ pair parameters for the analytic row forces."""
+        """Row displacements and kernels G0..G2 (G3 and LJ pair parameters with `forces`)."""
         cd = self.cd
-        k, x, r2, within, inter, overflow = self._rows(pos, H, idx)
-        R = P["radius"]
-        a = (1.0 / jnp.sqrt(2.0 * (R[:, None] ** 2 + R[k] ** 2))).astype(cd)
-        xc = x.astype(cd)
-        r, G0, G1, G2, *G3 = self._kernels(xc, within, a, 4 if forces else 3)
-        g = {"k": k, "x": xc, "G0": G0, "G1": G1, "G2": G2, "overflow": overflow}
+        nmax = 4 if forces else 3
+        k, x, within, inter, overflow = self._rows(pos, H, idx)
+        r, *G = self._kernels(x, within, self._pair_a(P["radius"].astype(cd), k), nmax)
+        g = {"k": k, "x": x, "overflow": overflow}
+        for n in range(nmax):
+            g[f"G{n}"] = G[n]
         if forces:
-            g.update(r=r, G3=G3[0], inter=inter,
-                     rmin=(P["lj_rmin_half"][:, None] + P["lj_rmin_half"][k]).astype(cd),
-                     eps=(P["lj_sqrt_eps"][:, None] * P["lj_sqrt_eps"][k]).astype(cd))
+            rh, se = P["lj_rmin_half"].astype(cd), P["lj_sqrt_eps"].astype(cd)
+            g.update(r=r, inter=inter, rmin=rh[:, None] + rh[k], eps=se[:, None] * se[k])
         if self.s.local_niter > 0:
-            g["short"] = self._short_rows(k, xc, G1, G2, within & (r2 < self.s.local_cut ** 2))
+            short = within & (r < self.s.local_cut)
+            g["short"] = self._short_rows(k, x, g["G1"], g["G2"], short)
         return g
 
     def _short_rows(self, k, x, G1, G2, short):
@@ -200,25 +262,39 @@ class PGMForceField:
         rows = jnp.broadcast_to(jnp.arange(N)[:, None], k.shape)
 
         def pack(v, fill):
-            shape = (N, ms + 1) + v.shape[2:]
-            return jnp.full(shape, fill, v.dtype).at[rows, tgt].set(v)[:, :ms]
+            return jnp.full((N, ms + 1), fill, v.dtype).at[rows, tgt].set(v)[:, :ms]
 
-        return {"k": pack(k, 0), "x": pack(x, 0.0), "G1": pack(G1, 0.0), "G2": pack(G2, 0.0)}
+        return {"k": pack(k, 0), "x": tuple(pack(c, 0.0) for c in x), "G1": pack(G1, 0.0), "G2": pack(G2, 0.0)}
 
     @staticmethod
     def _row_field(g, q, d):
         """sum_k de_ik/dd_i: minus the direct-space field at each atom (charges q may be None)."""
         k, x, G1, G2 = g["k"], g["x"], g["G1"], g["G2"]
         dk = d[k]
-        dkx = jnp.sum(dk * x, -1)
+        dk = (dk[..., 0], dk[..., 1], dk[..., 2])
+        dkx = dk[0] * x[0] + dk[1] * x[1] + dk[2] * x[2]
         c = -G2 * dkx if q is None else -q[k] * G1 - G2 * dkx
-        return jnp.sum(c[..., None] * x + G1[..., None] * dk, axis=1)
+        return jnp.stack([jnp.sum(c * x[j] + G1 * dk[j], axis=1) for j in range(3)], -1)
 
     def _rec_grad(self, S, Gk, q, d):
-        return jax.grad(lambda dd: self.pme.energy(S, Gk, q, dd))(d.astype(self.cd)).astype(self.cd)
+        return self.pme.grad_dipoles(S, Gk, q, d.astype(self.cd)).astype(self.cd)
+
+    def _field(self, g, S, Gk, q, d):
+        """Total field -dU/dd (direct + PME + self) of charges q and dipoles d, compute dtype."""
+        cd = self.cd
+        dc = d.astype(cd)
+        return -(self._row_field(g, q, dc) + self._rec_grad(S, Gk, q, dc) - jnp.asarray(self.c_self, cd) * dc)
 
     # ------------------------------------------------------------------ induction
-    def _extrapolate(self, st: InductionState, new):
+    def init_induction(self) -> InductionState:
+        dt = jnp.float64
+        z = jnp.zeros((self.n, 3), dt)
+        return InductionState(mu=z, hist=jnp.zeros((4, self.n, 3), dt), count=jnp.zeros((), jnp.int32),
+                              norm=jnp.ones((), dt), rec=jnp.zeros((4, self.S, self.n, 3), dt),
+                              pred=jnp.zeros((2, self.n, 3), dt), lscount=jnp.zeros(4, jnp.int32))
+
+    def _extrapolate_ls(self, st: InductionState, new):
+        """pmemd-pgm CPU multi-order least-squares extrapolation (dipole_scf_init = 3)."""
         S, order = self.S, self.s.extrap_order
         rec1 = st.rec[0].astype(jnp.float64)
         M = jnp.einsum("snd,tnd->st", rec1, rec1)
@@ -229,41 +305,38 @@ class PGMForceField:
         p1 = lin(st.rec[1])
         p2 = p1 + lin(st.rec[2])
         p3 = p2 + lin(st.rec[3])
-        have = st.count[0] >= S
-        use1 = have & (st.count[1] >= S) & (order >= 1)
-        use2 = use1 & (st.count[2] >= S) & (order >= 2)
-        use3 = use2 & (st.count[3] >= S) & (order >= 3)
+        cnt = st.lscount
+        use1 = (cnt[0] >= S) & (cnt[1] >= S) & (order >= 1)
+        use2 = use1 & (cnt[2] >= S) & (order >= 2)
+        use3 = use2 & (cnt[3] >= S) & (order >= 3)
         guess = jnp.where(use3, p3, jnp.where(use2, p2, jnp.where(use1, p1, new.astype(jnp.float64))))
         pred = jnp.stack([jnp.where(use1, p1, 0.0), jnp.where(use2, p2, 0.0)]).astype(st.pred.dtype)
-        st = st.set(rec=st.rec.at[0].set(_push(st.rec[0], new)), pred=pred, count=st.count.at[0].add(1))
-        return guess.astype(self.cd), st
+        st = st.set(rec=st.rec.at[0].set(_push(st.rec[0], new)), pred=pred, lscount=cnt.at[0].add(1))
+        return guess, st
 
-    def _record(self, st: InductionState, mu):
+    def _record_ls(self, st: InductionState, mu):
         S = self.S
         rec = st.rec.at[1].set(_push(st.rec[1], mu))
-        c1 = st.count[1] + 1
+        c1 = st.lscount[1] + 1
         up2 = c1 > S
         rec = rec.at[2].set(jnp.where(up2, _push(rec[2], mu - st.pred[0]), rec[2]))
-        c2 = st.count[2] + up2.astype(jnp.int32)
+        c2 = st.lscount[2] + up2.astype(jnp.int32)
         up3 = c2 > S
         rec = rec.at[3].set(jnp.where(up3, _push(rec[3], mu - st.pred[1]), rec[3]))
-        c3 = st.count[3] + up3.astype(jnp.int32)
-        return st.set(mu=mu.astype(st.mu.dtype), rec=rec, count=jnp.stack([st.count[0], c1, c2, c3]))
+        c3 = st.lscount[3] + up3.astype(jnp.int32)
+        return st.set(rec=rec, lscount=jnp.stack([st.lscount[0], c1, c2, c3]))
 
-    def init_induction(self) -> InductionState:
-        dt = jnp.float64
-        return InductionState(mu=jnp.zeros((self.n, 3), dt), rec=jnp.zeros((4, self.S, self.n, 3), dt),
-                              pred=jnp.zeros((2, self.n, 3), dt), count=jnp.zeros(4, jnp.int32))
+    def _operator(self, g, S, Gk, alpha):
+        cd = self.cd
+        inv_a = (1.0 / alpha).astype(cd)[:, None]
+        zq = jnp.zeros(self.n, cd)
+        return lambda v: v * inv_a - self._field(g, S, Gk, zq, v)
 
-    def _solve(self, g, S, Gk, alpha, b, x0):
+    def _cg(self, g, A, alpha, x, r, norm):
+        """Preconditioned CG from (x0, r0 = b - A x0); returns mu (float64), iterations, residual."""
         cd, s = self.cd, self.s
         inv_a = (1.0 / alpha).astype(cd)[:, None]
         a_c = alpha.astype(cd)[:, None]
-        c_self = jnp.asarray(self.c_self, cd)
-        zq = jnp.zeros(self.n, cd)
-
-        def A(v):
-            return v * inv_a + self._row_field(g, None, v) + self._rec_grad(S, Gk, zq, v) - c_self * v
 
         def precond(r):
             z = r * a_c
@@ -289,11 +362,8 @@ class PGMForceField:
             z, *_ = jax.lax.fori_loop(0, s.local_niter, inner, (z, rr, zz, rz))
             return z
 
-        b = b.astype(cd)
-        bnorm = jnp.mean(jnp.abs(b * a_c).astype(jnp.float64)) + 1e-300
-        err_of = lambda r: jnp.max(jnp.abs(r * a_c).astype(jnp.float64)) / bnorm
-        x = x0.astype(cd)
-        r = b - A(x)
+        err_of = lambda r: jnp.max(jnp.abs(r * a_c).astype(jnp.float64)) / norm
+        x, r = x.astype(cd), r.astype(cd)
         z = precond(r)
 
         def cond(c):
@@ -315,11 +385,51 @@ class PGMForceField:
             x = x + jnp.asarray(s.peek, cd) * r * a_c
         return x.astype(jnp.float64), it, err
 
-    def _field(self, g, S, Gk, P, p):
+    def _solve(self, g, S, Gk, P, p, ind: InductionState, fused_ok: bool = True):
+        """Initial guess + residual (fused when possible), CG; returns mu, iterations, residual,
+        updated InductionState."""
         cd = self.cd
+        alpha = P["alpha"]
+        a64 = alpha[:, None]
         qc = P["q"].astype(cd)
-        pc = p.astype(cd)
-        return -(self._row_field(g, qc, pc) + self._rec_grad(S, Gk, qc, pc) - jnp.asarray(self.c_self, cd) * pc)
+        A = self._operator(g, S, Gk, alpha)
+        pred = self.s.predictor
+
+        def plain(x0_hist, have):
+            b = self._field(g, S, Gk, qc, p)
+            ab = a64 * b.astype(jnp.float64)
+            x0 = jnp.where(have, x0_hist, ab)
+            r0 = b - A(x0.astype(cd))
+            return x0, r0, jnp.mean(jnp.abs(ab)) + 1e-300
+
+        if pred in _PRED:
+            c = _PRED[pred]
+            K = len(c)
+            have = ind.count >= K
+            x0h = sum(ci * ind.hist[j] for j, ci in enumerate(c))
+            if self.s.fused and fused_ok:
+                use_fused = have & (ind.count % self.s.norm_refresh != 0)
+
+                def fused(_):
+                    r0 = self._field(g, S, Gk, qc, p + x0h) - (x0h / a64).astype(cd)
+                    return x0h, r0, ind.norm
+
+                x0, r0, norm = jax.lax.cond(use_fused, fused, lambda _: plain(x0h, have), None)
+            else:
+                x0, r0, norm = plain(x0h, have)
+        elif pred == "ls":
+            b = self._field(g, S, Gk, qc, p)
+            ab = a64 * b.astype(jnp.float64)
+            x0, ind = self._extrapolate_ls(ind, ab)
+            r0 = b - A(x0.astype(cd))
+            norm = jnp.mean(jnp.abs(ab)) + 1e-300
+        else:
+            x0, r0, norm = plain(jnp.zeros((self.n, 3)), jnp.zeros((), bool))
+        mu, it, err = self._cg(g, A, alpha, x0, r0, norm)
+        if pred == "ls":
+            ind = self._record_ls(ind, mu)
+        ind = ind.set(mu=mu, hist=_push(ind.hist, mu), count=ind.count + 1, norm=norm)
+        return mu, it, err, ind
 
     # ------------------------------------------------------------------ energy terms
     def _nonpair(self, pos, H, d, mu, P):
@@ -332,26 +442,32 @@ class PGMForceField:
         return KE * (u_rec + u_self + u_bg + u_pol)
 
     def _pair_sum(self, x, di, dk, qi, qk, a, within, inter, rminp, epsp):
-        """sum over row entries of KE e_elec + e_LJ (each pair twice), float64."""
+        """sum over row entries of KE e_elec + e_LJ (each pair twice), float64 (autodiff path).
+        x, di, dk: component triples of (N, C) arrays."""
         r, G0, G1, G2 = self._kernels(x, within, a)
-        dix, dkx = jnp.sum(di * x, -1), jnp.sum(dk * x, -1)
-        e = qi * qk * G0 + (qi * dkx - qk * dix) * G1 - G2 * dix * dkx + G1 * jnp.sum(di * dk, -1)
+        dix = di[0] * x[0] + di[1] * x[1] + di[2] * x[2]
+        dkx = dk[0] * x[0] + dk[1] * x[1] + dk[2] * x[2]
+        didk = di[0] * dk[0] + di[1] * dk[1] + di[2] * dk[2]
+        e = qi * qk * G0 + (qi * dkx - qk * dix) * G1 - G2 * dix * dkx + G1 * didk
         s6 = (rminp / r) ** 6
         elj = jnp.where(inter, epsp * (s6 * s6 - 2.0 * s6), 0.0)
-        se, sl = jnp.sum(e.astype(jnp.float64)), jnp.sum(elj.astype(jnp.float64))
+        se = jnp.sum(jnp.sum(e, axis=1).astype(jnp.float64))
+        sl = jnp.sum(jnp.sum(elj, axis=1).astype(jnp.float64))
         return KE * se + sl, (KE * se, sl)
 
     def _row_inputs(self, pos, H, idx, P, d):
+        """Rows for the differentiable (autodiff) energy."""
         cd = self.cd
-        k, x, r2, within, inter, _ = self._rows(pos, H, idx)
+        k, x, within, inter, _ = self._rows(pos, H, idx)
         R, q = P["radius"], P["q"]
-        a = (1.0 / jnp.sqrt(2.0 * (R[:, None] ** 2 + R[k] ** 2))).astype(cd)
+        a = self._pair_a(R.astype(cd), k)
         dc = d.astype(cd)
-        di = jnp.broadcast_to(dc[:, None, :], x.shape)
-        rminp = (P["lj_rmin_half"][:, None] + P["lj_rmin_half"][k]).astype(cd)
-        epsp = (P["lj_sqrt_eps"][:, None] * P["lj_sqrt_eps"][k]).astype(cd)
-        consts = (dc[k], q.astype(cd)[:, None], q.astype(cd)[k], a, within, inter, rminp, epsp)
-        return x.astype(cd), di, consts
+        di = tuple(dc[:, j][:, None] for j in range(3))
+        dk = tuple(dc[:, j][k] for j in range(3))
+        rh, sq = P["lj_rmin_half"].astype(cd), P["lj_sqrt_eps"].astype(cd)
+        rminp, epsp = rh[:, None] + rh[k], sq[:, None] * sq[k]
+        consts = (dk, q.astype(cd)[:, None], q.astype(cd)[k], a, within, inter, rminp, epsp)
+        return x, di, consts
 
     def energy_fixed_mu(self, pos, H, mu, idx, P):
         """Total energy (kJ/mol, float64) and components with the induced dipoles held at mu;
@@ -371,19 +487,24 @@ class PGMForceField:
         k, x = g["k"], g["x"]
         G0, G1, G2, G3 = g["G0"], g["G1"], g["G2"], g["G3"]
         qi, qk = q[:, None], q[k]
-        di, dk = d[:, None, :], d[k]
-        dix, dkx = jnp.sum(di * x, -1), jnp.sum(dk * x, -1)
-        didk = jnp.sum(di * dk, -1)
+        dkk = d[k]
+        dk = (dkk[..., 0], dkk[..., 1], dkk[..., 2])
+        di = tuple(d[:, j][:, None] for j in range(3))
+        dix = di[0] * x[0] + di[1] * x[1] + di[2] * x[2]
+        dkx = dk[0] * x[0] + dk[1] * x[1] + dk[2] * x[2]
+        didk = di[0] * dk[0] + di[1] * dk[1] + di[2] * dk[2]
         t = qi * dkx - qk * dix
         e = qi * qk * G0 + t * G1 - G2 * dix * dkx + G1 * didk
         radial = -qi * qk * G1 - t * G2 + G3 * dix * dkx - G2 * didk
-        gx = (radial[..., None] * x + (qi * G1)[..., None] * dk - (qk * G1)[..., None] * di
-              - G2[..., None] * (di * dkx[..., None] + dk * dix[..., None]))
         s6 = (g["rmin"] / g["r"]) ** 6
         elj = jnp.where(g["inter"], g["eps"] * (s6 * s6 - 2.0 * s6), 0.0)
         glj = jnp.where(g["inter"], g["eps"] * 12.0 * (s6 - s6 * s6) / (g["r"] * g["r"]), 0.0)
-        return (jnp.sum(e.astype(jnp.float64)), jnp.sum(elj.astype(jnp.float64)),
-                jnp.sum(gx, axis=1).astype(jnp.float64), jnp.sum(glj[..., None] * x, axis=1).astype(jnp.float64))
+        qiG1, qkG1 = qi * G1, qk * G1
+        gx = jnp.stack([jnp.sum(radial * x[j] + qiG1 * dk[j] - qkG1 * di[j] - G2 * (di[j] * dkx + dk[j] * dix), axis=1)
+                        for j in range(3)], -1)
+        glx = jnp.stack([jnp.sum(glj * x[j], axis=1) for j in range(3)], -1)
+        rowsum = lambda v: jnp.sum(jnp.sum(v, axis=1).astype(jnp.float64))   # rows in compute dtype, total in float64
+        return rowsum(e), rowsum(elj), gx.astype(jnp.float64), glx.astype(jnp.float64)
 
     def _energy_forces(self, pos, H, mu, g, P):
         """Energy and forces at fixed mu: analytic row forces for the pair terms (no scatter-adds),
@@ -402,32 +523,33 @@ class PGMForceField:
 
     # ------------------------------------------------------------------ public
     def compute(self, pos, H, idx, ind: InductionState, params=None) -> Result:
-        """Solve the induced dipoles (extrapolated guess), then energy and forces."""
+        """Solve the induced dipoles (predicted guess), then energy and forces.  idx: candidate
+        rows (N, C) from a neighbour list (padding N)."""
         pos, H = jnp.asarray(pos, jnp.float64), jnp.asarray(H, jnp.float64)
         P = self._atoms(params)
         g = self.geometry(pos, H, idx, P, forces=True)
         p = self.perm_dipoles(pos, H, P["cov"])
         S = self.pme.setup(pos, H)
         Gk = self.pme.influence(H)
-        b = self._field(g, S, Gk, P, p)
-        alpha = P["alpha"]
-        guess, ind = self._extrapolate(ind, alpha[:, None] * b.astype(jnp.float64))
-        mu, it, err = self._solve(g, S, Gk, alpha, b, guess)
-        ind = self._record(ind, mu)
+        mu, it, err, ind = self._solve(g, S, Gk, P, p, ind)
         energy, forces = self._energy_forces(pos, H, mu, g, P)
         return Result(energy, forces, ind, it, err, g["overflow"])
 
     def energy(self, pos, H, idx, ind: InductionState, params=None):
-        """Energy only (Monte Carlo barostat trials), dipoles solved from ind.mu; returns
-        (total, InductionState with the new mu, iterations, row-capacity overflow flag)."""
+        """Energy only (Monte Carlo barostat trials): dipoles solved from the last converged ones
+        (no history update); returns (total, InductionState with mu, iterations, overflow)."""
         pos, H = jnp.asarray(pos, jnp.float64), jnp.asarray(H, jnp.float64)
         P = self._atoms(params)
         g = self.geometry(pos, H, idx, P)
         p = self.perm_dipoles(pos, H, P["cov"])
         S = self.pme.setup(pos, H)
         Gk = self.pme.influence(H)
-        b = self._field(g, S, Gk, P, p)
-        mu, it, err = self._solve(g, S, Gk, P["alpha"], b, ind.mu)
+        cd = self.cd
+        alpha = P["alpha"]
+        b = self._field(g, S, Gk, P["q"].astype(cd), p)
+        A = self._operator(g, S, Gk, alpha)
+        x0 = ind.mu
+        mu, it, err = self._cg(g, A, alpha, x0, b - A(x0.astype(cd)), jnp.mean(jnp.abs(alpha[:, None] * b)) + 1e-300)
         e, _ = self.energy_fixed_mu(pos, H, mu, idx, P)
         return e, ind.set(mu=mu), it, g["overflow"]
 

@@ -20,6 +20,18 @@ _SQRT_PI = math.sqrt(math.pi)
 _NSERIES = 15
 
 
+def erf_kernels_closed(a, r, nmax: int = 3):
+    """Closed-form recursion only: for pairs with a r >~ 0.7 (intermolecular pairs; a single
+    evaluation of erf and exp).  Loses about one digit per order at a r ~ 0.7 in float32."""
+    c = (2.0 * a / _SQRT_PI) * jnp.exp(-(a * r) ** 2)
+    ir2 = 1.0 / (r * r)
+    B = [erf(a * r) / r]
+    a2 = a * a
+    for n in range(1, nmax):
+        B.append(((2 * n - 1) * B[-1] - (2.0 * a2) ** (n - 1) * c) * ir2)
+    return tuple(B)
+
+
 def erf_kernels(a, r, nmax: int = 3):
     """(B0, ..., B_{nmax-1}) of erf(a r)/r, elementwise; r > 0.  nmax = 3 or 4."""
     x = a * r

@@ -7,6 +7,7 @@ therefore bounds the cutoff (OpenMM uses the same rule).  Amber's truncated octa
 form.  JAX-MD boxes are the transpose (columns are lattice vectors, upper triangular)."""
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -49,9 +50,30 @@ def volume(H):
     return jnp.abs(H[0, 0] * H[1, 1] * H[2, 2])
 
 
+def det3(H):
+    """Determinant of a general 3x3 matrix (closed form: fuses into the surrounding kernel, unlike
+    jnp.linalg.det, which launches LU factorisations on the GPU every call)."""
+    return (H[0, 0] * (H[1, 1] * H[2, 2] - H[1, 2] * H[2, 1])
+            - H[0, 1] * (H[1, 0] * H[2, 2] - H[1, 2] * H[2, 0])
+            + H[0, 2] * (H[1, 0] * H[2, 1] - H[1, 1] * H[2, 0]))
+
+
+def inv3(H):
+    """Inverse of a general 3x3 matrix by cofactors (differentiable; see det3)."""
+    H = jnp.asarray(H)
+    adj = jnp.stack([
+        jnp.stack([H[1, 1] * H[2, 2] - H[1, 2] * H[2, 1], H[0, 2] * H[2, 1] - H[0, 1] * H[2, 2],
+                   H[0, 1] * H[1, 2] - H[0, 2] * H[1, 1]]),
+        jnp.stack([H[1, 2] * H[2, 0] - H[1, 0] * H[2, 2], H[0, 0] * H[2, 2] - H[0, 2] * H[2, 0],
+                   H[0, 2] * H[1, 0] - H[0, 0] * H[1, 2]]),
+        jnp.stack([H[1, 0] * H[2, 1] - H[1, 1] * H[2, 0], H[0, 1] * H[2, 0] - H[0, 0] * H[2, 1],
+                   H[0, 0] * H[1, 1] - H[0, 1] * H[1, 0]])])
+    return adj / det3(H)
+
+
 def to_fractional(x, H):
     """x = u @ H  ->  u (not wrapped)."""
-    return x @ jnp.linalg.inv(H)
+    return jnp.matmul(x, inv3(H), precision=jax.lax.Precision.HIGHEST)
 
 
 def wrap_fractional(x, H):

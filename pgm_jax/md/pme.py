@@ -17,8 +17,15 @@ vectors as rows.
 """
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import numpy as np
+
+from .box import det3, inv3
+
+# float32 matrix products on NVIDIA GPUs default to TF32 (10-bit mantissa): about 1e-3 relative
+# error in the dipole spread, which dominated the mixed-precision force error.  Always full precision.
+_HI = jax.lax.Precision.HIGHEST
 
 
 def bspline(f, order: int):
@@ -95,19 +102,20 @@ class PME:
         if K3 % 2 == 0:
             w3[-1] = 1.0
         self._Bw = jnp.asarray(Binv * w3[None, None, :])                      # float64
+        self._w3inv = jnp.asarray(1.0 / w3, dtype)                             # undo the half-space weights
         self._m = [jnp.asarray(np.fft.fftfreq(K1, 1.0 / K1)), jnp.asarray(np.fft.fftfreq(K2, 1.0 / K2)),
                    jnp.asarray(np.arange(K3 // 2 + 1, dtype=float))]
         self._Kf = jnp.asarray(np.array(self.K, float))
-        self._ar = jnp.arange(self.order)
+        self._ar = jnp.arange(self.order, dtype=jnp.int32)
 
     def influence(self, H):
         """G(m) on the rfft grid, including the spline moduli and half-space weights (e^2/nm)."""
         H = jnp.asarray(H, jnp.float64)
-        R = jnp.linalg.inv(H).T                                                # rows: reciprocal vectors
+        R = inv3(H).T                                                # rows: reciprocal vectors
         m1, m2, m3 = self._m
         mv = (m1[:, None, None, None] * R[0] + m2[None, :, None, None] * R[1] + m3[None, None, :, None] * R[2])
         msq = jnp.sum(mv * mv, -1)
-        V = jnp.abs(jnp.linalg.det(H))
+        V = jnp.abs(det3(H))
         safe = jnp.where(msq > 0, msq, 1.0)
         G = jnp.where(msq > 0, jnp.exp(-(jnp.pi ** 2) * safe / self.beta ** 2) / (2 * jnp.pi * V * safe), 0.0)
         return (G * self._Bw).astype(self.dtype)
@@ -115,8 +123,8 @@ class PME:
     def setup(self, pos, H):
         """Spline indices and weights for one geometry."""
         H = jnp.asarray(H, jnp.float64)
-        Hinv = jnp.linalg.inv(H)
-        u = jnp.asarray(pos, jnp.float64) @ Hinv
+        Hinv = inv3(H)
+        u = jnp.matmul(jnp.asarray(pos, jnp.float64), Hinv, precision=_HI)
         w = (u - jnp.floor(u)) * self._Kf
         base = jnp.floor(w)
         f = (w - base).astype(self.dtype)
@@ -130,7 +138,7 @@ class PME:
     def spread(self, S, q, d):
         """Grid Q (K1, K2, K3) of charges q (N,) and dipoles d (N, 3) e nm."""
         th, dth = S["th"], S["dth"]
-        e = d.astype(self.dtype) @ S["e_scale"]                               # (N, 3) scaled fractional dipoles
+        e = jnp.matmul(d.astype(self.dtype), S["e_scale"], precision=_HI)                               # (N, 3) scaled fractional dipoles
         t1, t2, t3 = th[:, 0], th[:, 1], th[:, 2]
         d1, d2, d3 = dth[:, 0], dth[:, 1], dth[:, 2]
         a1 = q.astype(self.dtype)[:, None] * t1 + e[:, 0:1] * d1
@@ -141,6 +149,27 @@ class PME:
         K1, K2, K3 = self.K
         Q = jnp.zeros(K1 * K2 * K3, self.dtype).at[S["flat"].reshape(-1)].add(val.reshape(-1))
         return Q.reshape(K1, K2, K3)
+
+    def grad_dipoles(self, S, G, q, d):
+        """dU_rec/dd (N, 3), e^2/nm^2: potential derivative on the grid (one r2c + one c2r FFT),
+        interpolated back with the spline derivatives.  Same as jax.grad(energy) wrt d, without
+        the float64 accumulation and transposes of the autodiff path (it runs once per CG step)."""
+        K1, K2, K3 = self.K
+        p = self.order
+        Q = self.spread(S, q, d)
+        # U = sum_m G_m |FQ_m|^2 over the full spectrum; dU/dQ = 2 K1 K2 K3 irfft(G_m FQ_m)
+        phi = jnp.fft.irfftn(jnp.fft.rfftn(Q) * (G * self._w3inv), Q.shape) * jnp.asarray(2.0 * K1 * K2 * K3, self.dtype)
+        n = S["flat"].shape[0]
+        ph = phi.reshape(-1)[S["flat"]].reshape(n, p, p, p)
+        th, dth = S["th"], S["dth"]
+        t1, t2, t3 = th[:, 0], th[:, 1], th[:, 2]
+        d1, d2, d3 = dth[:, 0], dth[:, 1], dth[:, 2]
+        A = jnp.einsum("nabc,nc->nab", ph, t3, precision=_HI)
+        B = jnp.einsum("nabc,nc->nab", ph, d3, precision=_HI)
+        g1 = jnp.einsum("nab,na,nb->n", A, d1, t2, precision=_HI)
+        g2 = jnp.einsum("nab,na,nb->n", A, t1, d2, precision=_HI)
+        g3 = jnp.einsum("nab,na,nb->n", B, t1, t2, precision=_HI)
+        return jnp.matmul(jnp.stack([g1, g2, g3], -1), S["e_scale"].T, precision=_HI)
 
     def energy(self, S, G, q, d):
         """Reciprocal energy (e^2/nm), float64 accumulation."""

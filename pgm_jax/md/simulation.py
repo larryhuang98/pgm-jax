@@ -24,7 +24,7 @@ from .box import check_box, reduce_box, volume
 from .forcefield import MDSettings, PGMForceField
 from .integrate import KB, Integrator
 from .io import NetCDFTrajectory, box_from_cell, read_coordinates, write_restart
-from .neighbors import Neighbors
+from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .rigid import RigidMolecules
 
 AMU_NM3_TO_G_CM3 = 1.66053906660e-3
@@ -42,15 +42,22 @@ def _dedupe(mols: list[Molecule]) -> list[Molecule]:
 class Simulation:
     def __init__(self, sys: System, pos_nm, H_nm, settings: MDSettings = MDSettings(), dt: float = 0.001,
                  ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0, pressure: float = 1.0,
-                 barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None, params=None, log=sys.stdout):
+                 barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None, params=None, log=sys.stdout,
+                 neighbor_list: str = "auto"):
         H = reduce_box(H_nm)
         check_box(H, settings.cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
         self.rigid = RigidMolecules(sys, pos_nm, H)
         self.ff = PGMForceField(sys, H, settings)
-        self.nb = Neighbors(sys.n, H, settings.cutoff, settings.skin)
-        pos0 = self.rigid.positions(self.rigid.body0)
-        self._size_rows(pos0, H, self.nb.allocate(pos0, H).idx)
+        r_max = float(jnp.max(jnp.linalg.norm(self.rigid.local, axis=1)))
+        mode = neighbor_list
+        if mode == "auto":
+            mode = "molecule" if MoleculeNeighbors.fits(H, settings.cutoff, settings.skin, r_max) else "atom"
+        if mode == "molecule":
+            self.nb = MoleculeNeighbors(sys.mol, sys.nmol, r_max, H, settings.cutoff, settings.skin)
+        else:
+            self.nb = AtomNeighbors(sys.n, H, settings.cutoff, settings.skin)
+        self._size_lists(self.rigid.body0, H)
         self.integ = Integrator(self.ff, self.rigid, self.nb, dt, ensemble, temperature, gamma, pressure,
                                 barostat_interval, params)
         self.dt, self.ensemble, self.T0 = dt, ensemble, temperature
@@ -62,8 +69,9 @@ class Simulation:
         self.time_ps = 0.0
         self._print(f"# pgm_jax MD: {sys.nmol} rigid molecules, {sys.n} atoms, {ensemble.upper()}, dt {dt * 1000:g} fs, "
                     f"{settings.precision} precision, PME grid {self.ff.pme.K} order {settings.pme_order}, "
-                    f"cutoff {settings.cutoff} nm, template fit RMSD {self.rigid.fit_rmsd:.2e} nm, "
-                    f"device {jax.devices()[0]}")
+                    f"cutoff {settings.cutoff} nm, {self.nb.kind} neighbour list, predictor {settings.predictor}"
+                    f"{' (fused)' if settings.fused else ''}, dipole tol {settings.dipole_tol:g}, "
+                    f"template fit RMSD {self.rigid.fit_rmsd:.2e} nm, device {jax.devices()[0]}")
 
     @classmethod
     def from_amber(cls, prmtop: str, coords: str, use_velocities: bool = True, **kw) -> "Simulation":
@@ -94,7 +102,8 @@ class Simulation:
 
     def _pressure(self, st):
         pos = self.rigid.positions(st.dyn.position)
-        W = self.ff.strain_derivative(pos, st.box, st.nbr.idx, st.induction.mu, self.integ.params)
+        W = self.ff.strain_derivative(pos, st.box, self.nb.candidates(st.nbr, st.dyn.position.center, st.box, pos)[0],
+                                      st.induction.mu, self.integ.params)
         ke_t = self.integ.kinetic(st)[1]
         return (2.0 * ke_t - jnp.trace(W)) / (3.0 * volume(st.box)) * 16.605390671738466
 
@@ -113,10 +122,21 @@ class Simulation:
         return np.asarray(self.rigid.atom_velocities(st.dyn.position, st.dyn.momentum))
 
     # ----------------------------------------------------------------- running
-    def _size_rows(self, pos, H, idx, factor: float = 1.2):
-        """Row capacity: 20 % above the largest number of pairs inside the cutoff, multiple of 8."""
+    def _size_lists(self, body, H, factor: float = 1.2, nbr=None):
+        """Static sizes: molecules per atom row of the molecule list (molecule mode) and pairs per
+        compacted force-field row (intramolecular + intermolecular inside the cutoff), with
+        head-room above the current maxima."""
+        pos = self.rigid.positions(body)
+        nbr = self.nb.allocate(pos, body.center, H) if nbr is None else nbr
+        if self.nb.kind == "molecule":
+            self.nb.size(nbr, body.center, H, pos, factor)
+        idx = self.nb.candidates(nbr, body.center, H, pos)[0]
+        saved, self.ff.mc = self.ff.mc, None
         cmax = int(jax.jit(self.ff.row_counts)(jnp.asarray(pos), jnp.asarray(H), idx))
-        self.ff.mc = min(int(np.ceil((cmax * factor + 8) / 8.0) * 8), int(idx.shape[1]))
+        width = int(idx.shape[1]) + int(self.ff.intra.shape[1])
+        # pair counts inside a sphere fluctuate by a few per cent: half the list head-room
+        self.ff.mc = min(int(np.ceil((cmax * (1.0 + 0.5 * (factor - 1.0)) + 8) / 8.0) * 8), width)
+        return nbr
 
     def _print(self, s):
         if self.log is not None:
@@ -130,15 +150,17 @@ class Simulation:
             nb_bad, row_bad = self.nb.failed(new.nbr), bool(new.overflow)
             if not (nb_bad or row_bad):
                 break
-            pos = self.rigid.positions(start.dyn.position)
-            nbr = self.nb.allocate(pos, start.box) if nb_bad else start.nbr
-            if row_bad or nb_bad:
-                old = self.ff.mc
-                self._size_rows(pos, start.box, nbr.idx, 1.3)
-                self.ff.mc = max(self.ff.mc, old + 8 if row_bad else old)
-                self.integ.compile()
+            body = start.dyn.position
+            old = (self.ff.mc, getattr(self.nb, "cap", None))
+            nbr = self._size_lists(body, start.box, 1.3, None if nb_bad else start.nbr)
+            if row_bad:                                          # never shrink below what overflowed
+                if self.ff.mc is not None and old[0] is not None:
+                    self.ff.mc = max(self.ff.mc, old[0] + 8)
+                if getattr(self.nb, "cap", None) is not None and old[1] is not None:
+                    self.nb.cap = max(self.nb.cap, old[1] + 4)
+            self.integ.compile()
             self._print(f"# {'neighbour list' if nb_bad else 'row capacity'} overflow in steps {int(start.step)}-"
-                        f"{int(start.step) + n}: resized (rows {self.ff.mc}, list {nbr.idx.shape[1]}), repeating")
+                        f"{int(start.step) + n}: resized (rows {self.ff.mc or self.nb.cap}, list {nbr.idx.shape[1]}), repeating")
             start = self.integ.forces(start.set(nbr=nbr), False).set(induction=start.induction)
         else:
             raise RuntimeError("neighbour list keeps overflowing")
@@ -201,6 +223,6 @@ class Simulation:
         with open(path, "rb") as fh:
             d = pickle.load(fh)
         st = jax.tree_util.tree_map(jnp.asarray, d["state"])
-        nbr = self.nb.allocate(self.rigid.positions(st.dyn.position), st.box)
+        nbr = self.nb.allocate(self.rigid.positions(st.dyn.position), st.dyn.position.center, st.box)
         self.state = st.set(nbr=nbr)                   # forces, dipoles and history are part of the state
         self.time_ps = d["time_ps"]

@@ -23,7 +23,6 @@ import numpy as np
 from ._jaxmd import dataclasses, rigid_body, simulate, space
 from .box import volume
 from .forcefield import InductionState, PGMForceField
-from .neighbors import Neighbors
 from .rigid import RigidBody, RigidMolecules
 
 KB = 0.0083144626181532                  # kJ/mol/K
@@ -59,7 +58,7 @@ class MDState:
 
 
 class Integrator:
-    def __init__(self, ff: PGMForceField, rigid: RigidMolecules, neighbors: Neighbors, dt: float = 0.001,
+    def __init__(self, ff: PGMForceField, rigid: RigidMolecules, neighbors, dt: float = 0.001,
                  ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0,
                  pressure: float = 1.0, barostat_interval: int = 100, params=None):
         ensemble = ensemble.lower()
@@ -85,8 +84,10 @@ class Integrator:
     # --------------------------------------------------------------------- forces
     def _forces(self, body, box, induction, nbr, force_rebuild=False):
         pos = self.rigid.positions(body)
-        nbr = self.nb.update(nbr, pos, box, force_rebuild)
-        res = self.ff.compute(pos, box, nbr.idx, induction, self.params)
+        nbr = self.nb.update(nbr, pos, body.center, box, force_rebuild)
+        cand, ovf = self.nb.candidates(nbr, body.center, box, pos)
+        res = self.ff.compute(pos, box, cand, induction, self.params)
+        res = res._replace(overflow=res.overflow | ovf)
         return self.rigid.forces(body, res.forces), res, nbr
 
     def _with_result(self, st: MDState, F, res, nbr) -> MDState:
@@ -103,7 +104,7 @@ class Integrator:
     def init(self, body, box, key, momentum=None) -> MDState:
         """Host-side: allocate the neighbour list, compute forces, draw or set momenta."""
         box = jnp.asarray(box, jnp.float64)
-        nbr = self.nb.allocate(self.rigid.positions(body), box)
+        nbr = self.nb.allocate(self.rigid.positions(body), body.center, box)
         zero = jax.tree_util.tree_map(jnp.zeros_like, body)
         key, split = jax.random.split(key)
         dyn = simulate.canonicalize_mass(Dynamics(body, zero, zero, self.rigid.mass, key))
@@ -160,8 +161,10 @@ class Integrator:
         body_n = RigidBody(body.center * s, body.orientation)
         Hn = H * s
         pos_n = self.rigid.positions(body_n)
-        nbr_n = self.nb.update(st.nbr, pos_n, Hn, True)
-        e_n, ind_n, _, ovf = self.ff.energy(pos_n, Hn, nbr_n.idx, st.induction, self.params)
+        nbr_n = self.nb.update(st.nbr, pos_n, body_n.center, Hn, True)
+        cand, ovf0 = self.nb.candidates(nbr_n, body_n.center, Hn, pos_n)
+        e_n, ind_n, _, ovf = self.ff.energy(pos_n, Hn, cand, st.induction, self.params)
+        ovf = ovf | ovf0
         w = (e_n - st.epot) + self.pressure * dV - self.nmol * self.kT * jnp.log(jnp.maximum(Vn, 1e-12) / V)
         accept = (Vn > 0) & (jnp.log(jax.random.uniform(k2, dtype=jnp.float64)) < -w / self.kT)
         st = st.set(dyn=st.dyn.set(rng=key), overflow=st.overflow | ovf)

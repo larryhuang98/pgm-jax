@@ -60,7 +60,7 @@ def ff_and_list(sys, pos, H, **kw):
     s = settings(**kw)
     ff = PGMForceField(sys, H, s)
     nb = Neighbors(sys.n, H, s.cutoff, s.skin)
-    return ff, nb.allocate(pos, H).idx
+    return ff, nb.allocate(pos, None, H).idx
 
 
 def test_pme_matches_exact_ewald():
@@ -111,7 +111,7 @@ def test_neighbor_list_is_complete_in_skewed_box():
     H = reduce_box(np.array([[2.72, 0, 0], [-0.9067, 2.5645, 0], [-0.9067, -1.2823, 2.2210]]))   # truncated octahedron
     pos = rng.uniform(size=(600, 3)) @ H
     nb = Neighbors(600, H, 0.9, 0.1)
-    idx = np.asarray(nb.allocate(pos, H).idx)
+    idx = np.asarray(nb.allocate(pos, None, H).idx)
     got = {(i, int(j)) for i in range(600) for j in idx[i] if j < 600}
     d = np.asarray(min_image(jnp.asarray(pos[:, None] - pos[None]), jnp.asarray(H)))
     r = np.linalg.norm(d, axis=-1)

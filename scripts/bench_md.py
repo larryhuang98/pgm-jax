@@ -1,5 +1,6 @@
 """MD speed benchmark: pGM3P-25 water, optionally replicated n x n x n (the truncated-octahedron
-lattice tiles by lattice vectors), NPT with production-like settings.
+lattice tiles by lattice vectors).  Defaults are the settings of the pmemd.pgm.cuda comparison in
+the README (NVT, gamma 1/ps, 9 A cutoff, PME 48^3 per replica, order 6, dipole_scf_tol 1e-5).
 
     python scripts/bench_md.py --replicate 2 --steps 10000 --precision mixed
 """
@@ -31,13 +32,13 @@ def main():
     ap.add_argument("--replicate", type=int, default=1)
     ap.add_argument("--steps", type=int, default=5000)
     ap.add_argument("--precision", default="mixed")
-    ap.add_argument("--ensemble", default="npt")
-    ap.add_argument("--cut", type=float, default=0.8)
+    ap.add_argument("--ensemble", default="nvt")
+    ap.add_argument("--cut", type=float, default=0.9)
     ap.add_argument("--dt", type=float, default=0.001)
-    ap.add_argument("--order", type=int, default=8)
-    ap.add_argument("--tol", type=float, default=1e-4)
-    ap.add_argument("--lrc", type=int, default=0)
-    ap.add_argument("--gamma", type=float, default=2.0)
+    ap.add_argument("--order", type=int, default=6)
+    ap.add_argument("--tol", type=float, default=1e-5)
+    ap.add_argument("--lrc", type=int, default=1)
+    ap.add_argument("--gamma", type=float, default=1.0)
     ap.add_argument("--grid", type=int, default=48, help="PME points per replica along each lattice vector")
     ap.add_argument("--skin", type=float, default=0.1)
     a = ap.parse_args()

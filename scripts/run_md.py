@@ -4,7 +4,7 @@ Options use Amber's units and names where they exist (Angstrom, fs, ew_coeff in 
 
     python scripts/run_md.py -p water.prmtop -c water.rst7 -o md --ensemble npt --temp 298 \
         --nsteps 250000 --dt 1.0 --cut 8.0 --nfft 48 48 48 --order 8 --ew-coeff 0.4 --vdwmeth 0 \
-        --dipole-tol 1e-4 --gamma 2.0 --barostat-interval 100 --report 2000 --traj 1000
+        --dipole-tol 1e-5 --gamma 2.0 --barostat-interval 100 --report 2000 --traj 1000
 
 Outputs: <out>.log (energies, temperature, density, solver iterations, speed), <out>.nc (Amber
 NetCDF trajectory), <out>.rst7 (Amber NetCDF restart), <out>.chk (complete checkpoint; continue with
@@ -50,8 +50,11 @@ def main(argv=None):
     ap.add_argument("--local-niter", type=int, default=0, help="inner iterations of the short-range preconditioner")
     ap.add_argument("--local-cut", type=float, default=3.0, help="A")
     ap.add_argument("--peek", type=float, default=0.65, help="scf_sor_coefficient; 0 disables the peek step")
-    ap.add_argument("--extrap-order", type=int, default=3)
-    ap.add_argument("--extrap-steps", type=int, default=2)
+    ap.add_argument("--predictor", default="mu4", choices=["mu4", "mu3", "ls", "none"],
+                    help="initial dipole guess: mu4/mu3 polynomial extrapolation (fused residual), "
+                         "ls: pmemd-pgm CPU least squares (dipole_scf_init=3)")
+    ap.add_argument("--extrap-order", type=int, default=3, help="dipole_scf_init_order (--predictor ls)")
+    ap.add_argument("--extrap-steps", type=int, default=2, help="dipole_scf_init_step (--predictor ls)")
     ap.add_argument("--precision", default="mixed", choices=["mixed", "double"])
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-velocities", action="store_true", help="ignore velocities in the coordinates (irest=0)")
@@ -63,7 +66,8 @@ def main(argv=None):
     st = MDSettings(cutoff=a.cut / 10, skin=a.skin / 10, ewald_beta=a.ew_coeff * 10,
                     pme_grid=tuple(a.nfft) if a.nfft else None, pme_spacing=a.pme_spacing / 10, pme_order=a.order,
                     lj_lrc=bool(a.vdwmeth), dipole_tol=a.dipole_tol, max_iter=a.max_iter, local_cut=a.local_cut / 10,
-                    local_niter=a.local_niter, peek=a.peek, extrap_order=a.extrap_order, extrap_steps=a.extrap_steps,
+                    local_niter=a.local_niter, peek=a.peek, predictor=a.predictor,
+                    extrap_order=a.extrap_order, extrap_steps=a.extrap_steps,
                     precision=a.precision)
     sim = Simulation.from_amber(a.prmtop, a.coords, use_velocities=not a.no_velocities, settings=st,
                                 dt=a.dt / 1000, ensemble=a.ensemble, temperature=a.temp, gamma=a.gamma,
