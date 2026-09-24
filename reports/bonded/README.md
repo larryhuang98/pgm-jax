@@ -18,7 +18,9 @@ them simpler or more transferable? Baseline: the bonded-only 1-4 treatment of Ab
 - **Coupled conformational surfaces need pGM's all-pair electrostatics.** On the alanine dipeptide
   phi/psi surface pGM reaches 0.77 kcal/mol (0.50 with extended couplings and pair terms) on the
   held-out half of the grid; with the 1-2/1-3/1-4 pairs excluded the error is 2.5-3.0 kcal/mol and
-  with Amber-like scaling 1.9-2.5, for every bonded form tried (maximum errors 8-15 kcal/mol).
+  with Amber-like scaling 1.9-2.5, for every bonded form tried (maximum errors 8-15 kcal/mol). The
+  gain comes from the induction couplings between bonded neighbours, not from the permanent 1-2/1-3
+  energies; trained on MD only, pGM extrapolates to the surface far better (2.5 vs 4.6-8.9).
 - **A new bonded term: the twist of 3-coordinated centres (F9).** A Fourier term in the
   Winkler-Dunitz twist angle of amide, carbonyl and amine centres fixes the formamide amide
   rotation (relaxed-scan error 4.9 -> 1.3 kcal/mol; mean over 12 molecules 0.73 -> 0.43); a torsion
@@ -287,6 +289,42 @@ all pairs present); a fixed-charge force field with its own charges was not test
 
 kcal/mol (forces kcal/mol/A); surface errors after removing the energy of the global minimum.
 <!-- /TABLE_DIPEPTIDE -->
+
+Why: exclusions applied separately to the permanent pair energies and to the induction
+(`BondedSettings.ind_exclude`), class II bonded terms refitted each time:
+
+<!-- TABLE_X6ABL -->
+| Permanent pair energies | Induction (fields, dipole-dipole couplings) | phi/psi test half MAE | max |
+| --- | --- | --- | --- |
+| all (pGM) | all | 0.77 | 2.6 |
+| 1-2/1-3 excluded | all | 0.76 | 2.5 |
+| 1-2/1-3/1-4 excluded | all | 1.09 | 3.0 |
+| all | 1-2/1-3 excluded | 1.71 | 7.3 |
+| 1-2/1-3 excluded | 1-2/1-3 excluded | 1.73 | 7.4 |
+| 1-2/1-3/1-4 excluded (classical) | 1-2/1-3/1-4 excluded | 2.53 | 10.2 |
+| all | 1-2/1-3/1-4 excluded | 2.81 | 10.7 |
+
+Class II bonded terms fitted for each variant; kcal/mol.
+<!-- /TABLE_X6ABL -->
+
+The permanent 1-2/1-3 energies do not matter (the bonded terms absorb them). What matters is the
+polarisation between bonded neighbours: removing the 1-2/1-3 induction couplings costs as much as
+removing everything up to 1-3, and removing 1-4 induction too is as bad as full exclusion. The
+permanent 1-4 pairs add a smaller part (0.77 -> 1.09). This is the concrete sense in which pGM's
+missing exclusions pay off.
+
+Extrapolation: bonded terms trained on the 500 K MD frames only, no grid points (`--no_grid`):
+
+<!-- TABLE_X6NG -->
+| Bonded form | pGM, all pairs | classical, excluded | Amber-like |
+| --- | --- | --- | --- |
+| class I | 3.15 | 4.77 |  |
+| class II | 2.45 | 8.87 | 4.62 |
+
+phi/psi MAE over the whole grid (kcal/mol), bonded terms trained on the 500 K MD frames only.
+<!-- /TABLE_X6NG -->
+
+With exclusions the class II couplings extrapolate badly (8.9 kcal/mol); pGM stays at 2.5.
 
 ## Rigid molecules (A4: ethene, benzene, pyridine, cyclopentane)
 

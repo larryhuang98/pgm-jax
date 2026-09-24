@@ -319,8 +319,36 @@ def table_qfit():
                                "(800 points per molecule; the per-molecule py_resp fits range from 0.65 to 3.2 mhartree/e).")
 
 
+def table_x6_ablation():
+    rows = [("all (pGM)", "all", "x6_paper_pgm"), ("1-2/1-3 excluded", "all", "x6_paper_p13"),
+            ("1-2/1-3/1-4 excluded", "all", "x6_paper_p14"), ("all", "1-2/1-3 excluded", "x6_paper_i13"),
+            ("1-2/1-3 excluded", "1-2/1-3 excluded", "x6_paper_x13"),
+            ("1-2/1-3/1-4 excluded (classical)", "1-2/1-3/1-4 excluded", "x6_paper_cls"),
+            ("all", "1-2/1-3/1-4 excluded", "x6_paper_i14")]
+    lines = ["| Permanent pair energies | Induction (fields, dipole-dipole couplings) | phi/psi test half MAE | max |", "| --- | --- | --- | --- |"]
+    for a, b, n in rows:
+        p = os.path.join(RES, f"{n}.json")
+        if os.path.exists(p):
+            t = json.load(open(p))["test_half"]
+            lines.append(f"| {a} | {b} | {t['MAE']:.2f} | {t['max']:.1f} |")
+    return "\n".join(lines) + "\n\nClass II bonded terms fitted for each variant; kcal/mol."
+
+
+def table_x6_nogrid():
+    rows = [("class I", "diag"), ("class II", "paper")]
+    lines = ["| Bonded form | pGM, all pairs | classical, excluded | Amber-like |", "| --- | --- | --- | --- |"]
+    for lab, tag in rows:
+        cells = []
+        for el in ("pgm", "cls", "amber"):
+            p = os.path.join(RES, f"x6ng_{tag}_{el}.json")
+            cells.append(f"{json.load(open(p))['all']['MAE']:.2f}" if os.path.exists(p) else "")
+        lines.append(f"| {lab} | " + " | ".join(cells) + " |")
+    return "\n".join(lines) + "\n\nphi/psi MAE over the whole grid (kcal/mol), bonded terms trained on the 500 K MD frames only."
+
+
 BLOCKS = {"TABLE_MAIN": table_main, "TABLE_LOO": table_loo_groups, "TABLE_LOO_ELEC": table_loo_elec, "TABLE_MD": table_md,
-          "TABLE_DIPEPTIDE": table_dipeptide, "TABLE_RIGID": table_rigid, "TABLE_QFIT": table_qfit}
+          "TABLE_DIPEPTIDE": table_dipeptide, "TABLE_RIGID": table_rigid, "TABLE_QFIT": table_qfit,
+          "TABLE_X6ABL": table_x6_ablation, "TABLE_X6NG": table_x6_nogrid}
 
 
 def fill_readme():

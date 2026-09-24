@@ -25,6 +25,8 @@ ap.add_argument("--elec14", type=float, default=1.0)
 ap.add_argument("--lj14", type=float, default=0.0)
 ap.add_argument("--maxiter", type=int, default=20000)
 ap.add_argument("--no_md", action="store_true")
+ap.add_argument("--no_grid", action="store_true", help="train on the 500 K MD frames only (the grid is all test)")
+ap.add_argument("--ind", type=int, default=-1, help="induction exclusion (default: as --elec)")
 ap.add_argument("--l1", type=float, default=3e-3)
 a = ap.parse_args()
 name = "alanine_dipeptide"
@@ -36,8 +38,8 @@ train_mask = (k[:, 0] + k[:, 1]) % 2 == 0
 g_tr, g_te = grid.subset(np.nonzero(train_mask)[0]), grid.subset(np.nonzero(~train_mask)[0])
 md = frames(name, "train500")
 te_md = frames(name, "test298")
-train = concat([g_tr] + ([md] if (md is not None and not a.no_md) else []))
-st = BondedSettings(families=FAMILY_SETS.get(a.families, tuple(a.families.split("+"))), elec_exclude=a.elec,
+train = concat(([] if a.no_grid else [g_tr]) + ([md] if (md is not None and not a.no_md) else []))
+st = BondedSettings(families=FAMILY_SETS.get(a.families, tuple(a.families.split("+"))), elec_exclude=a.elec, ind_exclude=a.ind,
                     elec14_scale=a.elec14, lj14_scale=a.lj14)
 model = BondedModel([spec], st)
 data = {0: {"train": train, "test": g_te, "grid": grid}}

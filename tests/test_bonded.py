@@ -240,3 +240,18 @@ def test_bond_charge_increments():
     _, dip, st = model.nonbonded(0, R, P, state=True)
     q0 = model.nb[0]["sys"].expand()["q"]
     assert abs(float(jnp.sum(st["q"]) - jnp.sum(q0))) < 1e-12 and float(jnp.abs(st["q"] - q0).max()) > 0.04
+
+
+def test_separate_induction_exclusion():
+    """ind_exclude: excluding only the permanent 1-2/1-3 pairs keeps pGM's induced dipoles (same
+    molecular dipole); excluding only their induction keeps the permanent energy."""
+    m, x = methanol()
+    R = jnp.asarray(x)
+    mk = lambda **kw: BondedModel([MolSpec("MeOH", m.elements, m.bonds, [1] * 5, 0, x, pgm=m)],
+                                  BondedSettings(families=("angle_cos",), lj_min_sep=99, **kw))
+    e0, d0, s0 = mk().nonbonded(0, R, state=True)
+    e1, d1, s1 = mk(elec_exclude=2, ind_exclude=0).nonbonded(0, R, state=True)
+    e2, d2, s2 = mk(elec_exclude=0, ind_exclude=2).nonbonded(0, R, state=True)
+    e3, d3, s3 = mk(elec_exclude=2).nonbonded(0, R, state=True)
+    assert np.allclose(s1["mu"], s0["mu"]) and np.allclose(d1, d0) and abs(float(e1 - e0)) > 1e-3
+    assert np.allclose(s2["mu"], s3["mu"]) and not np.allclose(s2["mu"], s0["mu"])

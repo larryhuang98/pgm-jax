@@ -191,7 +191,8 @@ bonded-only 1-4 treatment with class II couplings it reproduces as one option.
   barriers). A new family is about 20 lines.
 - `model.py`: `BondedModel` = bonded families + gas-phase pGM (all pairs, induced dipoles) + LJ
   from `lj_min_sep` bonds; options for a classical control (`elec_exclude`), Amber-like 1-4
-  scaling (`elec14_scale`, `lj14_scale`), charge and covalent-dipole flux (`flux`), learned
+  scaling (`elec14_scale`, `lj14_scale`), separate exclusion of the induction (`ind_exclude`),
+  charge and covalent-dipole flux (`flux`), learned
   per-type scales of the 1-2/1-3/1-4 permanent pair energies (`escale`), pGM charges and covalent
   dipoles fitted with the bonded terms (`qfit`: typed values; `qbci`: typed bond-charge increments
   on the ESP charges), shared parameters across molecules (`typing="type"`); `esp()` gives the
@@ -239,7 +240,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `scripts/bonded/` | the bonded study: sampling, DFT labels, pGM parameters, experiments, report |
 | `scripts/run_md.py` | MD from an Amber prmtop + inpcrd/rst7 (Amber-style options) |
 | `scripts/bench_md.py`, `scripts/pgm_supercell.py` | MD speed benchmark; replicate a pGM prmtop for larger systems |
-| `tests/` | `pytest -q`: 45 tests, incl. finite-difference checks of every derivative and the MD engine |
+| `tests/` | `pytest -q`: 46 tests, incl. finite-difference checks of every derivative and the MD engine |
 | `scripts/validate_amber.py` | comparison with sander / pmemd-pgm / PyRESP (`compare`, `pyresp`, `virial`) |
 | `scripts/bench.py` | timings on the current device |
 | `validation/` | Amber reference runs (inputs + outputs) and `validate_amber.json` |

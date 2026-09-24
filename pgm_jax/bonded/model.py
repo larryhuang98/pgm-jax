@@ -41,6 +41,8 @@ class BondedSettings:
     lj_min_sep: int = 4
     lj14_scale: float = 0.0
     elec14_scale: float = 1.0           # scale of 1-4 electrostatics when not excluded (Amber 1/1.2, OPLS 0.5)
+    ind_exclude: int = -1               # exclusion for the induction (fields and dipole-dipole couplings);
+                                        # -1: the same as elec_exclude (permanent pairs)
     flux: bool = False
     qfit: int = -1                      # >= 0: pGM charges and covalent dipoles typed by atom environment
                                         # to this depth (shared across molecules) and fitted with the
@@ -223,12 +225,16 @@ class BondedModel:
             w_of = lambda d: (d > self.s.elec_exclude) * np.where(d == 3, self.s.elec14_scale, 1.0)
             w_pair = w_of(D[ii, jj]).astype(float)
             oi, oj = np.nonzero(~np.eye(sys.n, dtype=bool))
-            w_ord = w_of(D[oi, oj]).astype(float)
+            ie = self.s.elec_exclude if self.s.ind_exclude < 0 else self.s.ind_exclude
+            w_ind = lambda d: (d > ie) * np.where(d == 3, self.s.elec14_scale, 1.0)
+            w_ord = w_ind(D[oi, oj]).astype(float)
+            w_pind = w_ind(D[ii, jj]).astype(float)
             lj = (D[ii, jj] >= self.s.lj_min_sep).astype(float) + self.s.lj14_scale * (D[ii, jj] == 3)
             # covalent dipoles along bonds: their bond reference index (for dipole flux)
             bidx = {tuple(sorted(b)): k for k, b in enumerate(m.top.bonds)}
             cov_bond = np.array([bidx.get(tuple(sorted((i, j))), -1) for i, j in zip(sys.cov_i, sys.cov_j)], int)
-            rec = {"sys": sys, "w_pair": w_pair, "oi": oi, "oj": oj, "w_ord": w_ord, "lj": lj, "cov_bond": cov_bond}
+            rec = {"sys": sys, "w_pair": w_pair, "w_pind": w_pind, "oi": oi, "oj": oj, "w_ord": w_ord, "lj": lj,
+                   "cov_bond": cov_bond}
             if self.s.qbci >= 0:
                 cl = _classes(m.elements, [tuple(b) for b in m.top.bonds], self.s.qbci)
                 bi, bj = np.asarray(m.top.bonds).T
@@ -306,7 +312,7 @@ class BondedModel:
         b_ord = self._bij(R_[oi], R_[oj])
         F_ord = jax.vmap(lambda a, c, qc, pc, bb: _field_at_i(a, c, qc, pc, bb, phi))(R[oi], R[oj], q[oj], p[oj], b_ord)
         F = jnp.zeros((sys.n, 3)).at[oi].add(d["w_ord"][:, None] * F_ord)
-        Tp = jax.vmap(lambda a, c, bb: _dipole_tensor(a, c, bb, phi))(R[ii], R[jj], b_pair) * d["w_pair"][:, None, None]
+        Tp = jax.vmap(lambda a, c, bb: _dipole_tensor(a, c, bb, phi))(R[ii], R[jj], b_pair) * d["w_pind"][:, None, None]
         Tm = jnp.zeros((sys.n, sys.n, 3, 3)).at[ii, jj].set(Tp).at[jj, ii].set(jnp.swapaxes(Tp, 1, 2))
         mu = solve_linear_induction(Tm, Q["alpha"], F)
         e_ind = -0.5 * jnp.sum(mu * F)
