@@ -1,8 +1,11 @@
-"""A force-field model = a list of channels.  Gives total energies, interaction energies
-(supermolecular: E_AB - E_A - E_B), n-body decompositions, and forces, for one geometry or
-a batch.
+"""A gas-phase force-field model = a list of channels.  Gives total energies, interaction
+energies (supermolecular: E_AB - E_A - E_B), n-body decompositions, and forces, for one geometry
+or a batch.
 
-Parameters: a dict {channel name: array}; channels without parameters get None.
+Parameters: the pytree of the System's ParamTable (`sys.table.initial()`), shared by every
+channel and every subsystem; None means the initial values.  Energies are differentiable in
+coordinates and parameters; compiled functions are cached by topology, so changing parameter
+values never recompiles.  For periodic systems see periodic.PeriodicModel.
 """
 from __future__ import annotations
 
@@ -18,23 +21,23 @@ from .system import System
 
 @dataclass
 class Model:
-    channels: list      # channel *factories*: callables sys -> channel object (so subsystems can be built)
+    channels: list      # channel objects (with .energy(pos, sys, params)) or factories sys -> channel
 
     def __post_init__(self):
         self._jit_cache = {}                         # System signature -> jitted batched energy
 
     def build(self, sys: System):
-        return [f(sys) for f in self.channels]
+        return [c if hasattr(c, "energy") else c(sys) for c in self.channels]
 
     # ---------------------------------------------------------------- energies --
     def energy_fn(self, sys: System):
         """Returns f(pos (n,3), params) -> dict of energy components (kJ/mol)."""
         chans = self.build(sys)
 
-        def f(pos, params):
+        def f(pos, params=None):
             out = {}
             for ch in chans:
-                e, _ = ch.energy(pos, sys, None if params is None else params.get(ch.name))
+                e, _ = ch.energy(pos, sys, params)
                 out.update(e)
             out["total"] = sum(v for k, v in out.items())
             return out

@@ -1,0 +1,13 @@
+single point pGM3P-25 512 water, virial (ntp=1), vdwmeth=0
+ &cntrl
+  imin=0, nstlim=1, irest=0, ntx=1, tempi=0.0,
+  ntb=2, ntp=1, taup=1.0, pres0=1.0, ntt=0, ntc=1, ntf=1,
+  cut=10.0, ntpr=1, ntwr=1000, dt=0.00001, ipgm=1,
+ /
+ &ewald
+  skinnb=1.0, ew_coeff=0.38, nfft1=72, nfft2=72, nfft3=72, order=8, vdwmeth=0,
+ /
+ &pol_gauss
+  pol_gauss_verbose=0, ee_dsum_cut=10.0, dipole_scf_tol=1e-9, dipole_scf_init=1,
+  scf_solv_opt=1, scf_cg_niter=500,
+ /

@@ -9,6 +9,7 @@ import sys
 import time
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 jax.config.update("jax_enable_x64", True)
@@ -21,6 +22,7 @@ from pgm_jax.channels import ElecChannel  # noqa: E402
 from pgm_jax.ewald import PeriodicPGM, box_matrix  # noqa: E402
 from pgm_jax.model import Model  # noqa: E402
 from pgm_jax.param import read_prmtop_pgm  # noqa: E402
+from pgm_jax.periodic import PeriodicModel  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
 
 
@@ -60,6 +62,17 @@ def main():
     f_fn = jax.jit(per.forces)
     print("periodic 512 waters, energy:        first %.1fs, then %.3fs" % timed(lambda: e_fn(pos)))
     print("periodic 512 waters, forces:        first %.1fs, then %.3fs" % timed(lambda: f_fn(pos)))
+    pm = PeriodicModel(sys512, H, pos, rc=1.0, b0=3.8)
+    P = sys512.params0
+    fm = jax.jit(pm.forces)
+    gp = jax.jit(jax.grad(lambda p: pm.energy(pos, p)["total"]))
+    sd = jax.jit(pm.strain_derivative)
+    wts = np.random.default_rng(0).normal(size=pos.shape)
+    g2 = jax.jit(jax.grad(lambda p: jnp.sum(pm.forces(pos, p) * wts)))
+    print("  + LJ, forces:                      first %.1fs, then %.3fs" % timed(lambda: fm(pos, P)))
+    print("  dE/dparams:                        first %.1fs, then %.3fs" % timed(lambda: gp(P)))
+    print("  dE/dstrain (virial):               first %.1fs, then %.3fs" % timed(lambda: sd(pos, P)))
+    print("  d(forces.w)/dparams (2nd order):   first %.1fs, then %.3fs" % timed(lambda: g2(P)))
     model = Model([lambda s: ElecChannel()])
     mono = pos[:3]
     c2, c3 = random_clusters(mono, 2, 4000), random_clusters(mono, 3, 45316, seed=1)

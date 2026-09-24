@@ -6,6 +6,7 @@ The energy of a polarizable model is E = min_x F(x; R, theta).  At the minimum,
   * parameter gradients dE/dtheta = dF/dtheta at fixed x,
 so neither needs dx/dR.  JAX gets both automatically as long as the solve is either a
 differentiable linear solve (quadratic F) or wrapped in `lax.custom_root` (general F).
+`variational` makes the first derivatives cost one solve while keeping higher derivatives exact.
 """
 from __future__ import annotations
 
@@ -45,3 +46,26 @@ def minimize_newton(F, x0, *args, iters: int = 30, tol: float = 1e-10):
         return jnp.linalg.solve(J, y)
 
     return jax.lax.custom_root(lambda x: g(x, *args), x0, solve, tangent_solve)
+
+
+def variational(G, solve):
+    """E(theta) = G(x*(theta), theta), with x* = solve(theta) the stationary point of G(., theta).
+
+    First derivatives use stationarity, dE/dtheta = dG/dtheta at fixed x* (one solve, no
+    derivative of the solve: Hellmann-Feynman forces, virials and parameter gradients).  Higher
+    derivatives (force matching, Hessians, gradients of forces or virials with respect to
+    parameters) differentiate this rule itself, which includes dx*/dtheta through `solve`, so
+    `solve` must be differentiable (a dense solve, or lax.custom_linear_solve such as
+    jax.scipy.sparse.linalg.cg).  theta may be any pytree of float arrays."""
+
+    @jax.custom_jvp
+    def E(theta):
+        return G(solve(theta), theta)
+
+    @E.defjvp
+    def _E_jvp(primals, tangents):
+        (theta,), (dtheta,) = primals, tangents
+        x = solve(theta)
+        return jax.jvp(lambda t: G(x, t), (theta,), (dtheta,))
+
+    return E

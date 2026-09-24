@@ -21,6 +21,7 @@ def _methanol():
                  np.array([1.2e-3, 0.8e-3, 0.4e-3, 0.4e-3, 0.4e-3, 0.3e-3]),
                  cov=[(0, 1, 0.01), (1, 0, -0.01), (1, 5, -0.02), (5, 1, 0.005)]
                  + [c for h in (2, 3, 4) for c in ((0, h, 0.002), (h, 0, -0.002))])   # symmetric in the 3 methyl H
+    m.bonds = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)]
     return m, x
 
 
@@ -78,10 +79,16 @@ def test_newton_solver_matches_linear_induction_and_its_gradient():
 
 def test_molecule_json_roundtrip():
     m, _ = _methanol()
+    m.lj_rmin_half[:] = 0.15
+    m.keys = {"alpha": [f"a{k}" for k in range(m.n)]}
     m2 = molecule_from_dict(molecule_to_dict(m))
-    for k in ("q", "radius", "alpha"):
+    for k in ("q", "radius", "alpha", "lj_rmin_half", "lj_sqrt_eps", "masses"):
         assert np.array_equal(getattr(m, k), getattr(m2, k))
     assert m2.cov == m.cov and m2.elements == m.elements and m2.types == m.types
+    assert m2.bonds == m.bonds and m2.keys == m.keys and m2.tying_keys() == m.tying_keys()
+    old = {k: v for k, v in molecule_to_dict(m).items() if k in ("name", "elements", "types", "q", "radius_nm", "alpha_nm3", "cov")}
+    m3 = molecule_from_dict(old)                                       # evoff's format
+    assert np.array_equal(m3.q, m.q) and np.all(m3.lj_sqrt_eps == 0) and m3.bonds == []
 
 
 def test_atom_mapping_permutation_invariance():

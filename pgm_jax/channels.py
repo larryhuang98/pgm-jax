@@ -1,5 +1,9 @@
 """pGM electrostatics.  A channel maps (coordinates, System, parameters) -> energy components.
 
+Everything is a JAX function of the coordinates *and* of the parameter pytree `params`
+(see system.py; `None` means the table's initial values), so energies, forces, induced dipoles
+and polarizabilities can be differentiated with respect to both, to any order.
+
   ElecChannel          pGM permanent Gaussian multipoles (charges + covalent dipoles) and linear
                        induced Gaussian dipoles, all pairs, no masking.  Matches sander/pmemd-pgm
                        (tests/test_elec.py, scripts/validate_amber.py).
@@ -24,13 +28,14 @@ from .units import KE
 
 # ================================================================== electrostatics ==
 
-def perm_dipoles(pos, sys: System):
-    """Covalent dipoles -> atomic permanent dipoles (n, 3) for one geometry (n, 3)."""
+def perm_dipoles(pos, sys: System, cov_c):
+    """Covalent dipoles -> atomic permanent dipoles (n, 3) for one geometry (n, 3).
+    cov_c: per-covalent-dipole strengths (e nm), e.g. sys.expand(params)["cov"]."""
     if len(sys.cov_i) == 0:
         return jnp.zeros((sys.n, 3))
     v = pos[sys.cov_j] - pos[sys.cov_i]
     u = v / jnp.linalg.norm(v, axis=-1, keepdims=True)
-    return jnp.zeros((sys.n, 3)).at[sys.cov_i].add(sys.cov_c[:, None] * u)
+    return jnp.zeros((sys.n, 3)).at[sys.cov_i].add(cov_c[:, None] * u)
 
 
 def _pair_perm(ri, rj, qi, pi, qj, pj, b, phi):
@@ -59,14 +64,15 @@ def _dipole_matrix(pos, sys: System, phi, b_pair):
     return jnp.zeros((sys.n, sys.n, 3, 3)).at[ii, jj].set(T_pair).at[jj, ii].set(jnp.swapaxes(T_pair, 1, 2))
 
 
-def molecular_polarizability(pos, sys: System, density: str = "gaussian"):
+def molecular_polarizability(pos, sys: System, params=None, density: str = "gaussian"):
     """pGM polarizability tensor of the whole system (3, 3), nm^3: d(sum mu)/dF_ext = sum_ij [(1/a + T)^-1]_ij."""
     dens = DENSITIES[density]
-    R = jnp.asarray(sys.radius)
+    P = sys.expand(params)
+    R = P["radius"]
     b_pair = dens["pair_exponent"](R[sys.pair_i], R[sys.pair_j])
     T = _dipole_matrix(pos, sys, dens["coulomb"], b_pair)
     n = sys.n
-    A = T.transpose(0, 2, 1, 3).reshape(3 * n, 3 * n) + jnp.diag(jnp.repeat(1.0 / jnp.asarray(sys.alpha), 3))
+    A = T.transpose(0, 2, 1, 3).reshape(3 * n, 3 * n) + jnp.diag(jnp.repeat(1.0 / P["alpha"], 3))
     B = jnp.linalg.inv(A).reshape(n, 3, n, 3)
     return B.sum(axis=(0, 2))
 
@@ -79,12 +85,12 @@ class ElecChannel:
     name: str = "elec"
 
     def energy(self, pos, sys: System, params=None):
-        """pos (n, 3) -> dict(perm, ind) in kJ/mol and aux (mu, p)."""
+        """pos (n, 3), params (pytree or None) -> dict(perm, ind) in kJ/mol and aux (mu, p)."""
         dens = DENSITIES[self.density]
         phi = dens["coulomb"]
-        R = jnp.asarray(sys.radius)
-        q = jnp.asarray(sys.q)
-        p = perm_dipoles(pos, sys)
+        P = sys.expand(params)
+        R, q = P["radius"], P["q"]
+        p = perm_dipoles(pos, sys, P["cov"])
         ii, jj = sys.pair_i, sys.pair_j
         b_pair = dens["pair_exponent"](R[ii], R[jj])
         e_perm = jnp.sum(jax.vmap(lambda a, c, qa, pa, qc, pc, bb: _pair_perm(a, c, qa, pa, qc, pc, bb, phi))(
@@ -99,13 +105,13 @@ class ElecChannel:
             F_ord = jax.vmap(lambda a, c, qc, pc, bb: _field_at_i(a, c, qc, pc, bb, phi))(pos[oi], pos[oj], q[oj], p[oj], b_ord)
             F = jnp.zeros((n, 3)).at[oi].add(F_ord)
             T = _dipole_matrix(pos, sys, phi, b_pair)
-            mu = solve_linear_induction(T, jnp.asarray(sys.alpha), F)
+            mu = solve_linear_induction(T, P["alpha"], F)
             out["ind"] = KE * (-0.5 * jnp.sum(mu * F))
             aux["mu"] = mu
         return out, aux
 
 
-def elec_decomposition(pos, sys: System, density: str = "gaussian", inter_point: bool = False):
+def elec_decomposition(pos, sys: System, params=None, density: str = "gaussian", inter_point: bool = False):
     """SAPT-like split of the pGM intermolecular electrostatic energy (kJ/mol), in one pass.
 
     In pGM every atom pair interacts, so each isolated monomer already carries induced dipoles
@@ -122,8 +128,9 @@ def elec_decomposition(pos, sys: System, density: str = "gaussian", inter_point:
     diagnostic for how much the Gaussian overlap (charge penetration) contributes."""
     dens = DENSITIES[density]
     phi = dens["coulomb"]
-    R, q, al = jnp.asarray(sys.radius), jnp.asarray(sys.q), jnp.asarray(sys.alpha)
-    p = perm_dipoles(pos, sys)
+    P = sys.expand(params)
+    R, q, al = P["radius"], P["q"], P["alpha"]
+    p = perm_dipoles(pos, sys, P["cov"])
     n = sys.n
     ii, jj = sys.pair_i, sys.pair_j
     b_pair = dens["pair_exponent"](R[ii], R[jj])

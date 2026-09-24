@@ -8,6 +8,7 @@ import pytest
 jax.config.update("jax_enable_x64", True)
 
 from pgm_jax.channels import ElecChannel
+from pgm_jax.lj import LJChannel
 from pgm_jax.model import Model
 from pgm_jax.param import Molecule, read_prmtop_pgm
 from pgm_jax.system import System
@@ -29,13 +30,15 @@ def _restart_coords(path):
 
 @pytest.mark.skipif(not os.path.exists(AMBER_TEST), reason="Amber pgm_4wat test not available")
 def test_sander_parity_4wat():
-    """sander pGM (ipgm=1, gas phase, dipole_scf_tol=1e-7): EELEC = -2164.4829 kcal/mol."""
+    """sander pGM (ipgm=1, gas phase, dipole_scf_tol=1e-7): EELEC = -2164.4829, VDWAALS = 6.7727 kcal/mol."""
     w = _water_4wat()
     sys = System([w] * 4)
     pos = _restart_coords(os.path.join(AMBER_TEST, "restrt0"))
     e = Model([lambda s: ElecChannel()]).energy_fn(sys)(pos, None)
     kcal = float(e["total"]) / 4.184
     assert abs(kcal - (-2164.4829)) / 2164.4829 < 1e-4, kcal
+    vdw = float(Model([LJChannel()]).energy_fn(sys)(pos)["total"]) / 4.184      # same run: VDWAALS = 6.7727
+    assert abs(vdw - 6.7727) < 1e-4, vdw
 
 
 @pytest.mark.skipif(not os.path.exists(PGM3P25_TOP), reason="pGM3P-25 topology not available")
@@ -44,6 +47,12 @@ def test_prmtop_reader_pgm3p25():
     assert w.elements == ["O", "H", "H"]
     assert np.isclose(w.q[0], -2.0405622) and np.isclose(w.radius[0], 0.0605150752)
     assert len(w.cov) == 4 and np.isclose(w.cov[0][2], -0.0191201350)
+    # LJ from ACOEF/BCOEF: O only (A = 5.81935564e5 kcal/mol A^12, B = 5.94825035e2 kcal/mol A^6)
+    A, B = 5.81935564e5, 5.94825035e2
+    rmin_A, eps_kcal = (2 * A / B) ** (1 / 6), B * B / (4 * A)
+    assert np.isclose(w.lj_rmin_half[0], rmin_A / 20) and np.isclose(w.lj_sqrt_eps[0] ** 2, eps_kcal * 4.184)
+    assert w.lj_rmin_half[1] == 0 and w.lj_sqrt_eps[1] == 0
+    assert sorted(w.bonds) == [(0, 1), (0, 2), (1, 2)] and np.isclose(w.masses[0], 16.0)
 
 
 def _water_generic():
