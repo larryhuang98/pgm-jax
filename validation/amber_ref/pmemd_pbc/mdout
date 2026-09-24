@@ -1,0 +1,1185 @@
+
+          -------------------------------------------------------
+          Amber 22 PMEMD                              2022
+          -------------------------------------------------------
+
+| PMEMD implementation of SANDER, Release 22
+
+|  Compiled date/time: Fri Feb 20 23:40:20 2026
+| Run on 09/23/2026 at 16:22:05
+
+|   Executable path: /home8/larry/ambers/pgm-vdw/build/src/pmemd-pgm/src/pmemd-pgm
+| Working directory: /home8/larry/project/evoff/runs/validate/pmemd_pbc
+|          Hostname: Unknown
+  [-O]verwriting output
+
+File Assignments:
+|   MDIN: mdin                                                                  
+|  MDOUT: mdout                                                                 
+| INPCRD: /home8/larry/pgm-gvdw-data/inputs/lj/inpcrd.restrt                    
+|   PARM: /home8/larry/pgm-gvdw-data/topology/rayl_512_v2.prmtop                
+| RESTRT: restrt                                                                
+|   REFC: refc                                                                  
+|  MDVEL: mdvel                                                                 
+|   MDEN: mden                                                                  
+|  MDCRD: mdcrd                                                                 
+| MDINFO: mdinfo                                                                
+|  MDFRC: mdfrc                                                                 
+
+
+ Here is the input file:
+
+single point pGM3P-25 512 water, tight settings for validation                 
+ &cntrl                                                                        
+  imin=0, nstlim=1, irest=0, ntx=1, tempi=0.0,                                 
+  ntb=1, ntp=0, ntt=0, ntc=1, ntf=1,                                           
+  cut=10.0, ntpr=1, ntwx=1, ntwf=1, ioutfm=1, ntwr=1000, dt=0.00001, ipgm=1,   
+ /                                                                             
+ &ewald                                                                        
+  skinnb=1.0, ew_coeff=0.38, nfft1=72, nfft2=72, nfft3=72, order=8, vdwmeth=0, 
+ /                                                                             
+ &pol_gauss                                                                    
+  pol_gauss_verbose=0, ee_dsum_cut=10.0, dipole_scf_tol=1e-9, dipole_scf_init=1,
+  scf_solv_opt=1, scf_cg_niter=500, dipole_print=1,                            
+ /                                                                             
+
+
+| Note: ig = -1. Setting random seed to   124418 based on wallclock time in microseconds.
+| irandom = 1, using AMBER's internal random number generator (default).
+ 
+|
+| pGM-related parameters:
+|
+| ipgm =                      1
+| pol_gauss_verbose =         0
+| do_pol_gauss_nonbond =      1
+| use_average =               0
+| dipole_scf_init =           1
+| dipole_scf_init_step =      2
+| dipole_scf_init_order =     3
+| scf_solv_opt =              1
+| scf_sor_niter =           100
+| scf_cg_niter =            500
+| scf_local_niter =           3
+| dipole_scf_use_cg =         0
+| dipole_print =              1
+| saved_nprint =              0
+| ee_dsum_cut =             0.1000000E+02
+| ee_damped_cut =           0.4500000E+01
+| dipole_scf_tol =          0.1000000E-08
+| scf_sor_coefficient =     0.6500000E+00
+| scf_local_cut =           0.3000000E+01
+| erfc_tol =                0.1000000E-04
+| ee_gauss_cut =            0.3123420E+01
+| densitycontrol =         -0.1000000E+01
+| igvdw =                     0
+| gvdw_rep_form =             0
+| b_rep_scale =             0.1000000E+01
+| gvdw_arep =               0.0000000E+00
+| gvdw_c6 =                 0.0000000E+00
+ 
+| Conditional Compilation Defines Used:
+| PUBFFT
+| BINTRAJ
+| EMIL
+| PGM
+
+| Largest sphere to fit in unit cell has radius =    11.105
+
+| New format PARM file being parsed.
+| Version =    1.000 Date = 06/09/20 Time = 10:19:01
+
+| Note: 1-4 EEL scale factors are being read from the topology file.
+
+| Note: 1-4 VDW scale factors are being read from the topology file.
+| New format PARM file being parsed.
+| Version =    1.000 Date = 06/09/20 Time = 10:19:01
+| Duplicated    0 dihedrals
+
+| Duplicated    0 dihedrals
+
+--------------------------------------------------------------------------------
+   1.  RESOURCE   USE: 
+--------------------------------------------------------------------------------
+
+ getting box info from netcdf restart file
+ NATOM  =    1536 NTYPES =       2 NBONH =    1536 MBONA  =       0
+ NTHETH =       0 MTHETA =       0 NPHIH =       0 MPHIA  =       0
+ NHPARM =       0 NPARM  =       0 NNB   =    2048 NRES   =     512
+ NBONA  =       0 NTHETA =       0 NPHIA =       0 NUMBND =       2
+ NUMANG =       0 NPTRA  =       0 NATYP =       2 NPHB   =       0
+ IFBOX  =       2 NMXRS  =       3 IFCAP =       0 NEXTRA =       0
+ NCOPY  =       0
+
+| Coordinate Index Table dimensions:     3    3    3
+| Direct force subcell size =     9.0670    9.0670    9.0670
+
+     BOX TYPE: TRUNCATED OCTAHEDRON
+
+--------------------------------------------------------------------------------
+   2.  CONTROL  DATA  FOR  THE  RUN
+--------------------------------------------------------------------------------
+
+TP3                                                                             
+
+General flags:
+     imin    =       0, nmropt  =       0
+
+Nature and format of input:
+     ntx     =       1, irest   =       0, ntrx    =       1
+
+Nature and format of output:
+     ntxo    =       2, ntpr    =       1, ntrx    =       1, ntwr    =    1000
+     iwrap   =       0, ntwx    =       1, ntwv    =       0, ntwe    =       0
+     ioutfm  =       1, ntwprt  =       0, idecomp =       0, rbornstat=      0
+     ntwf    =       1
+
+Potential function:
+     ntf     =       1, ntb     =       1, igb     =       0, nsnb    =      25
+     ipol    =       0, gbsa    =       0, iesp    =       0
+     dielc   =   1.00000, cut     =  10.00000, intdiel =   1.00000
+
+Frozen or restrained atoms:
+     ibelly  =       0, ntr     =       0
+
+Molecular dynamics:
+     nstlim  =         1, nscm    =      1000, nrespa  =         1
+     t       =   0.00000, dt      =   0.00001, vlimit  =  20.00000
+
+| Intermolecular bonds treatment:
+|     no_intermolecular_bonds =       1
+
+| Energy averages sample interval:
+|     ene_avg_sampling =       1
+
+Ewald parameters:
+     verbose =       0, ew_type =       0, nbflag  =       1, use_pme =       1
+     vdwmeth =       0, eedmeth =       1, netfrc  =       1
+     Box X =   27.201   Box Y =   27.201   Box Z =   27.201
+     Alpha =  109.471   Beta  =  109.471   Gamma =  109.471
+     NFFT1 =   72       NFFT2 =   72       NFFT3 =   72
+     Cutoff=   10.000   Tol   =0.770E-08
+     Ewald Coefficient =  0.38000
+     Interpolation order =    8
+
+--------------------------------------------------------------------------------
+   3.  ATOMIC COORDINATES AND VELOCITIES
+--------------------------------------------------------------------------------
+
+TP3                                                                             
+ begin time read from input coords = 18714.000 ps
+
+ 
+ Number of triangulated 3-point waters found:      512
+
+     Sum of charges from parm topology file =   0.00000000
+     Forcing neutrality...
+
+| Dynamic Memory, Types Used:
+| Reals             6717585
+| Integers            50183
+
+| Nonbonded Pairs Initial Allocation:      464601
+
+--------------------------------------------------------------------------------
+   4.  RESULTS
+--------------------------------------------------------------------------------
+
+ ---------------------------------------------------
+ APPROXIMATING switch and d/dx switch using CUBIC SPLINE INTERPOLATION
+ using   5000.0 points per unit in tabled values
+ TESTING RELATIVE ERROR over r ranging from 0.0 to cutoff
+| CHECK switch(x): max rel err =   0.2738E-14   at   2.422500
+| CHECK d/dx switch(x): max rel err =   0.8987E-11   at   2.875760
+ ---------------------------------------------------
+|---------------------------------------------------
+| APPROXIMATING direct energy using CUBIC SPLINE INTERPOLATION
+|  with 5000.0 points per unit in tabled values
+| Relative Error Limit not exceeded for r .gt.   0.20
+| APPROXIMATING direct force using CUBIC SPLINE INTERPOLATION
+|  with 5000.0 points per unit in tabled values
+| Relative Error Limit not exceeded for r .gt.   0.26
+|---------------------------------------------------
+|  NDFMIN =    4605.     NUM_NOSHAKE =      0     CORRECTED RNDFP =    4605.
+|  TOTAL # of degrees of freedom (RNDF) =    4605.
+|  TOTAL # of degrees of freedom (RNDF) after extra-points correction =    4605.
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        1
+
+
+=== [CPU_DIRECT] PGM CPU Direct Pair Counts ===
+  [CPU_DIRECT] num_tensor (pairs in ee_cut):         318139
+  [CPU_DIRECT] num_tensor_short (pairs in scf_cut):    7015
+  [CPU_DIRECT] img_i range:        1 to     1536
+  [CPU_DIRECT] total atoms (atm_cnt):                  1536
+
+
+============================================================
+=== [CPU] Per-Atom Field Breakdown (first 5 original atoms) ===
+============================================================
+  Atom 3 (orig) at Img[856]:
+    Self   field:   -2.3665345062E-03   -2.8435026532E-04    9.3661381256E-03
+    Direct field:    2.7133742897E-04   -2.7664396719E-02    2.7796845264E-01
+    Recip  field:    6.7947024524E-03    8.7649478307E-03    5.0860230587E-03
+    Total  field:    4.6995053752E-03   -1.9183799154E-02    2.9242061382E-01
+  Atom 4 (orig) at Img[857]:
+    Self   field:    4.9262144595E-04    2.5231073464E-03    2.4406666444E-03
+    Direct field:    4.9662954154E-02    1.2304393876E-01    1.8515336820E-01
+    Recip  field:    5.8543631164E-03    5.3393133407E-03    1.2452355068E-03
+    Total  field:    5.6009938716E-02    1.3090635944E-01    1.8883927035E-01
+  Atom 0 (orig) at Img[1237]:
+    Self   field:   -2.3380102291E-03   -1.1396122244E-03   -9.3081080879E-03
+    Direct field:   -6.0876676748E-02   -2.0088919928E-02   -2.7475937519E-01
+    Recip  field:    3.1504322903E-03    2.3943913203E-02    1.5008299692E-02
+    Total  field:   -6.0064254687E-02    2.7153810507E-03   -2.6905918358E-01
+  Atom 1 (orig) at Img[1238]:
+    Self   field:    1.1877138647E-03    1.8529644891E-03   -2.7787512693E-03
+    Direct field:    7.2772963126E-02    1.4433937619E-01   -2.8706029629E-01
+    Recip  field:    9.7376377932E-04    2.9063956858E-02    1.3823587305E-02
+    Total  field:    7.4934440770E-02    1.7525629753E-01   -2.7601546025E-01
+  Atom 2 (orig) at Img[1239]:
+    Self   field:   -2.2378182738E-03   -2.3648150391E-03   -1.4019341794E-03
+    Direct field:   -1.6566740973E-01   -1.3103214142E-01   -1.2173622716E-01
+    Recip  field:   -6.4652105911E-03    2.0587682255E-02    1.2812887930E-02
+    Total  field:   -1.7437043859E-01   -1.1280927421E-01   -1.1032527341E-01
+
+  CPU field written to cpu_perm_field.dat (1536 atoms)
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+  Wrote cpu_cg_iter_000.dat
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        3
+
+
+ NSTEP =        0   TIME(PS) =       0.000  TEMP(K) =     0.00  PRESS =     0.0
+ Etot   =   -505474.9327  EKtot   =         0.0000  EPtot      =   -505474.9327
+ BOND   =         0.0000  ANGLE   =         0.0000  DIHED      =         0.0000
+ 1-4 NB =         0.0000  1-4 EEL =         0.0000  VDWAALS    =       690.1238
+ EELEC  =   -506165.0565  EHBOND  =         0.0000  RESTRAINT  =         0.0000
+ Ewald error estimate:   0.0000E+00
+ ------------------------------------------------------------------------------
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        1
+
+
+=== [CPU_DIRECT] PGM CPU Direct Pair Counts ===
+  [CPU_DIRECT] num_tensor (pairs in ee_cut):         318139
+  [CPU_DIRECT] num_tensor_short (pairs in scf_cut):    7015
+  [CPU_DIRECT] img_i range:        1 to     1536
+  [CPU_DIRECT] total atoms (atm_cnt):                  1536
+
+
+============================================================
+=== [CPU] Per-Atom Field Breakdown (first 5 original atoms) ===
+============================================================
+  Atom 3 (orig) at Img[856]:
+    Self   field:   -2.3665345062E-03   -2.8435026532E-04    9.3661381256E-03
+    Direct field:    2.7133742897E-04   -2.7664396719E-02    2.7796845264E-01
+    Recip  field:    6.7947024524E-03    8.7649478307E-03    5.0860230587E-03
+    Total  field:    4.6995053752E-03   -1.9183799154E-02    2.9242061382E-01
+  Atom 4 (orig) at Img[857]:
+    Self   field:    4.9262144595E-04    2.5231073464E-03    2.4406666444E-03
+    Direct field:    4.9662954154E-02    1.2304393876E-01    1.8515336820E-01
+    Recip  field:    5.8543631164E-03    5.3393133407E-03    1.2452355068E-03
+    Total  field:    5.6009938716E-02    1.3090635944E-01    1.8883927035E-01
+  Atom 0 (orig) at Img[1237]:
+    Self   field:   -2.3380102291E-03   -1.1396122244E-03   -9.3081080879E-03
+    Direct field:   -6.0876676748E-02   -2.0088919928E-02   -2.7475937519E-01
+    Recip  field:    3.1504322903E-03    2.3943913203E-02    1.5008299692E-02
+    Total  field:   -6.0064254687E-02    2.7153810507E-03   -2.6905918358E-01
+  Atom 1 (orig) at Img[1238]:
+    Self   field:    1.1877138647E-03    1.8529644891E-03   -2.7787512693E-03
+    Direct field:    7.2772963126E-02    1.4433937619E-01   -2.8706029629E-01
+    Recip  field:    9.7376377932E-04    2.9063956858E-02    1.3823587305E-02
+    Total  field:    7.4934440770E-02    1.7525629753E-01   -2.7601546025E-01
+  Atom 2 (orig) at Img[1239]:
+    Self   field:   -2.2378182738E-03   -2.3648150391E-03   -1.4019341794E-03
+    Direct field:   -1.6566740973E-01   -1.3103214142E-01   -1.2173622716E-01
+    Recip  field:   -6.4652105911E-03    2.0587682255E-02    1.2812887930E-02
+    Total  field:   -1.7437043859E-01   -1.1280927421E-01   -1.1032527341E-01
+
+  CPU field written to cpu_perm_field.dat (1536 atoms)
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+  Wrote cpu_cg_iter_000.dat
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        2
+
+
+=== [CPU_RECIP] PGM CPU Reciprocal Grid Info ===
+  [CPU_RECIP] nfft = (    72,    72,    72)
+  [CPU_RECIP] bspl_order =        8
+  [CPU_RECIP] natom =     1536
+  [CPU_RECIP] total real grid points =     373248
+  [CPU_RECIP] complex grid points    =     191808
+  [CPU_RECIP] dip_select =        3
+
+
+ NSTEP =        1   TIME(PS) =       0.000  TEMP(K) =     0.00  PRESS =     0.0
+ Etot   =   -505474.9327  EKtot   =         0.0000  EPtot      =   -505474.9327
+ BOND   =         0.0000  ANGLE   =         0.0000  DIHED      =         0.0000
+ 1-4 NB =         0.0000  1-4 EEL =         0.0000  VDWAALS    =       690.1238
+ EELEC  =   -506165.0565  EHBOND  =         0.0000  RESTRAINT  =         0.0000
+ Ewald error estimate:   0.0000E+00
+ ------------------------------------------------------------------------------
+
+
+      A V E R A G E S   O V E R       1 S T E P S
+
+
+ NSTEP =        1   TIME(PS) =       0.000  TEMP(K) =     0.00  PRESS =     0.0
+ Etot   =   -505474.9327  EKtot   =         0.0000  EPtot      =   -505474.9327
+ BOND   =         0.0000  ANGLE   =         0.0000  DIHED      =         0.0000
+ 1-4 NB =         0.0000  1-4 EEL =         0.0000  VDWAALS    =       690.1238
+ EELEC  =   -506165.0565  EHBOND  =         0.0000  RESTRAINT  =         0.0000
+ Ewald error estimate:   0.0000E+00
+ ------------------------------------------------------------------------------
+
+
+      R M S  F L U C T U A T I O N S
+
+
+ NSTEP =        1   TIME(PS) =       0.000  TEMP(K) =     0.00  PRESS =     0.0
+ Etot   =         0.0000  EKtot   =         0.0000  EPtot      =         0.0000
+ BOND   =         0.0000  ANGLE   =         0.0000  DIHED      =         0.0000
+ 1-4 NB =         0.0000  1-4 EEL =         0.0000  VDWAALS    =         0.0000
+ EELEC  =         0.0000  EHBOND  =         0.0000  RESTRAINT  =         0.0000
+|E(PBS) =         0.0000
+ Ewald error estimate:   0.0000E+00
+ ------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+   5.  TIMINGS
+--------------------------------------------------------------------------------
+
+|  NonSetup CPU Time in Major Routines:
+|
+|     Routine           Sec        %
+|     ------------------------------
+|     Nonbond           0.69   99.94
+|     Bond              0.00    0.00
+|     Angle             0.00    0.00
+|     Dihedral          0.00    0.00
+|     Shake             0.00    0.00
+|     RunMD             0.00    0.05
+|     Other             0.00    0.01
+|     ------------------------------
+|     Total             0.69
+
+|  PME Nonbond Pairlist CPU Time:
+|
+|     Routine              Sec        %
+|     ---------------------------------
+|     Set Up Cit           0.00    0.01
+|     Build List           0.01    0.80
+|     ---------------------------------
+|     Total                0.01    0.80
+
+|  PME Direct Force CPU Time:
+|
+|     Routine              Sec        %
+|     ---------------------------------
+|     NonBonded Calc       0.12   17.81
+|     Exclude Masked       0.00    0.00
+|     Other                0.00    0.41
+|     ---------------------------------
+|     Total                0.13   18.23
+
+|  PME Reciprocal Force CPU Time:
+|
+|     Routine              Sec        %
+|     ---------------------------------
+|     1D bspline           0.14   19.63
+|     Grid Charges         0.06    9.13
+|     Scalar Sum           0.02    2.94
+|     Gradient Sum         0.04    5.63
+|     FFT                  0.30   43.58
+|     ---------------------------------
+|     Total                0.56   80.91
+
+|  Final Performance Info:
+|     -----------------------------------------------------
+|     Average timings for last       1 steps:
+|     Elapsed(s) =       0.89 Per Step(ms) =     893.38
+|         ns/day =       0.00   seconds/ns = **********
+|
+|     Average timings for all steps:
+|     Elapsed(s) =       0.89 Per Step(ms) =     893.38
+|         ns/day =       0.00   seconds/ns = **********
+|     -----------------------------------------------------
+
+|  Setup CPU time:            0.14 seconds
+|  NonSetup CPU time:         0.69 seconds
+|  Total CPU time:            0.83 seconds     0.00 hours
+
+|  Setup wall time:           0    seconds
+|  NonSetup wall time:        1    seconds
+|  Total wall time:           1    seconds     0.00 hours

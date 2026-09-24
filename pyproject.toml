@@ -1,0 +1,21 @@
+[project]
+name = "pgm-jax"
+version = "0.1.0"
+description = "The polarizable Gaussian multipole (pGM) model in JAX, validated against Amber"
+requires-python = ">=3.10"
+dependencies = ["jax", "numpy", "scipy"]
+
+[project.optional-dependencies]
+graph = ["networkx"]          # param.map_atoms / bond_graph
+test = ["pytest", "networkx"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["pgm_jax"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
