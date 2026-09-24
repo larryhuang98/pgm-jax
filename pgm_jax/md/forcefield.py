@@ -38,6 +38,11 @@ PME forces come from autodiff through the splines.  The molecular virial is the 
 derivative at fixed mu (molecular centres of mass scaled with the box), by autodiff of the whole
 energy.
 
+Differentiability: E(pos, H, theta) at fixed mu is differentiable throughout (forces, virial,
+dE/dtheta by Hellmann-Feynman).  With `differentiable=True`, compute() also returns forces and
+dipoles with exact derivatives: the dipole solve is a jax.custom_vjp whose backward pass solves
+A lam = mu_bar by CG (A symmetric) and pulls lam back through b - A mu at the solution.
+
 Precision: 'mixed' evaluates pair kernels, PME and CG vectors in float32 and accumulates energies,
 dot products, positions and forces in float64; 'double' uses float64 throughout.  float32 matrix
 products are requested at full precision (NVIDIA GPUs otherwise use TF32, ~1e-3 relative error).
@@ -84,6 +89,10 @@ class MDSettings:
     extrap_order: int = 3             # dipole_scf_init_order (predictor "ls")
     extrap_steps: int = 2             # dipole_scf_init_step (predictor "ls")
     precision: str = "mixed"          # "mixed" | "double"
+    differentiable: bool = False      # forces and induced dipoles differentiable (reverse mode) in
+                                      # parameters, positions and box: implicit differentiation of
+                                      # the dipole solve, one adjoint CG per gradient
+    adjoint_tol: float = 1e-6         # adjoint CG: max|alpha r| / mean|alpha rhs|
 
     @property
     def dtype(self):
@@ -112,6 +121,13 @@ class Result(NamedTuple):
     iterations: jnp.ndarray
     residual: jnp.ndarray    # final max|alpha r| / mean|alpha b| (before the peek step)
     overflow: jnp.ndarray    # row capacity exceeded (results invalid; driver re-sizes and repeats)
+
+
+def _zero_cotangent(x):
+    x = jnp.asarray(x)
+    if jnp.issubdtype(x.dtype, jnp.inexact):
+        return jnp.zeros_like(x)
+    return np.zeros(x.shape, dtype=jax.dtypes.float0)
 
 
 def _dot(a, b):
@@ -332,9 +348,11 @@ class PGMForceField:
         zq = jnp.zeros(self.n, cd)
         return lambda v: v * inv_a - self._field(g, S, Gk, zq, v)
 
-    def _cg(self, g, A, alpha, x, r, norm):
+    def _cg(self, g, A, alpha, x, r, norm, tol=None, peek=None):
         """Preconditioned CG from (x0, r0 = b - A x0); returns mu (float64), iterations, residual."""
         cd, s = self.cd, self.s
+        tol = s.dipole_tol if tol is None else tol
+        peek = s.peek if peek is None else peek
         inv_a = (1.0 / alpha).astype(cd)[:, None]
         a_c = alpha.astype(cd)[:, None]
 
@@ -367,7 +385,7 @@ class PGMForceField:
         z = precond(r)
 
         def cond(c):
-            return (c[6] > s.dipole_tol) & (c[5] < s.max_iter)
+            return (c[6] > tol) & (c[5] < s.max_iter)
 
         def body(c):
             x, r, z, p, rz, it, _ = c
@@ -381,17 +399,53 @@ class PGMForceField:
             return x, r_new, z_new, p, _dot(r_new, z_new), it + 1, err_of(r_new)
 
         x, r, _, _, _, it, err = jax.lax.while_loop(cond, body, (x, r, z, z, _dot(r, z), jnp.zeros((), jnp.int32), err_of(r)))
-        if s.peek:
-            x = x + jnp.asarray(s.peek, cd) * r * a_c
+        if peek:
+            x = x + jnp.asarray(peek, cd) * r * a_c
         return x.astype(jnp.float64), it, err
 
+    def _residual(self, g, S, Gk, alpha, q, p, mu):
+        """b - A mu = field(q, p + mu) - mu / alpha (compute dtype): zero at the induced dipoles."""
+        cd = self.cd
+        return self._field(g, S, Gk, q.astype(cd), p + mu) - (mu / alpha[:, None]).astype(cd)
+
     def _solve(self, g, S, Gk, P, p, ind: InductionState, fused_ok: bool = True):
+        """Induced dipoles; returns mu, iterations, residual, updated InductionState.  With
+        settings.differentiable, mu carries exact derivatives (implicit function theorem):
+        A mu = b(theta)  =>  mu_bar . dmu = lam . d(b - A mu)|_mu  with  A lam = mu_bar  (A is
+        symmetric, so the adjoint is one more CG with the same operator)."""
+        if not self.s.differentiable:
+            return self._solve_core(g, S, Gk, P["alpha"], P["q"], p, ind, fused_ok)
+        cd = self.cd
+
+        @jax.custom_vjp
+        def run(g, S, Gk, alpha, q, p, ind):
+            return self._solve_core(g, S, Gk, alpha, q, p, ind, fused_ok)
+
+        def fwd(g, S, Gk, alpha, q, p, ind):
+            out = self._solve_core(g, S, Gk, alpha, q, p, ind, fused_ok)
+            return out, (g, S, Gk, alpha, q, p, out[0], ind)
+
+        def bwd(res, cot):
+            g, S, Gk, alpha, q, p, mu, ind = res
+            mu_bar = cot[0]
+            A = self._operator(g, S, Gk, alpha)
+            rhs = mu_bar.astype(cd)
+            norm = jnp.mean(jnp.abs(alpha[:, None] * mu_bar)) + 1e-300
+            lam, _, _ = self._cg(g, A, alpha, jnp.zeros_like(mu_bar), rhs, norm, tol=self.s.adjoint_tol, peek=0.0)
+            _, vjp = jax.vjp(lambda g, S, Gk, alpha, q, p: self._residual(g, S, Gk, alpha, q, p, mu), g, S, Gk, alpha, q, p)
+            return (*vjp(lam.astype(cd)), jax.tree_util.tree_map(_zero_cotangent, ind))
+
+        run.defvjp(fwd, bwd)
+        mu, it, err, ind_new = run(g, S, Gk, P["alpha"], P["q"], p, jax.lax.stop_gradient(ind))
+        # derivatives flow through mu only; the predictor history is data for the next step
+        return mu, it, err, jax.lax.stop_gradient(ind_new).set(mu=mu)
+
+    def _solve_core(self, g, S, Gk, alpha, q, p, ind: InductionState, fused_ok: bool = True):
         """Initial guess + residual (fused when possible), CG; returns mu, iterations, residual,
         updated InductionState."""
         cd = self.cd
-        alpha = P["alpha"]
         a64 = alpha[:, None]
-        qc = P["q"].astype(cd)
+        qc = q.astype(cd)
         A = self._operator(g, S, Gk, alpha)
         pred = self.s.predictor
 
@@ -522,9 +576,17 @@ class PGMForceField:
         return {"elec": e_elec, "vdw": e_lj, "total": e_elec + e_lj}, forces
 
     # ------------------------------------------------------------------ public
+    def rows_for(self, pos, H):
+        """Candidate rows (every atom within the cutoff) for a fixed frame, built on the host: for
+        single points and parameter fitting outside MD (which keeps its own neighbour list)."""
+        from .neighbors import AtomNeighbors
+        H = jnp.asarray(H, jnp.float64)
+        return AtomNeighbors(self.n, H, self.s.cutoff, 0.0).allocate(jnp.asarray(pos, jnp.float64), None, H).idx
+
     def compute(self, pos, H, idx, ind: InductionState, params=None) -> Result:
         """Solve the induced dipoles (predicted guess), then energy and forces.  idx: candidate
-        rows (N, C) from a neighbour list (padding N)."""
+        rows (N, C) from a neighbour list (padding N).  With settings.differentiable, energy,
+        forces and Result.induction.mu can be differentiated (jax.grad / vjp) in params, pos, H."""
         pos, H = jnp.asarray(pos, jnp.float64), jnp.asarray(H, jnp.float64)
         P = self._atoms(params)
         g = self.geometry(pos, H, idx, P, forces=True)

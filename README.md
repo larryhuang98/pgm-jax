@@ -77,6 +77,20 @@ ns/day), `md.nc` (Amber NetCDF trajectory; cpptraj/VMD/MDTraj read it), `md.rst7
 restart) and `md.chk` (complete state; continue with `--checkpoint md.chk`). From Python:
 `Simulation.from_amber(prmtop, coords, settings=MDSettings(...), ensemble=..., ...).run(...)`.
 
+Force or dipole matching on fixed frames (any number of frames; each gets its own rows):
+
+```python
+from pgm_jax.md.forcefield import MDSettings, PGMForceField
+ff = PGMForceField(system, H, MDSettings(precision="double", dipole_tol=1e-8, differentiable=True))
+rows = ff.rows_for(pos, H)                                   # host side, once per frame
+
+def loss(theta):
+    res = ff.compute(pos, H, rows, ff.init_induction(), theta)   # nm, kJ/mol/nm, e nm
+    return jnp.sum((res.forces - F_ref) ** 2) + w * jnp.sum((res.induction.mu - mu_ref) ** 2)
+
+g = jax.jit(jax.grad(loss))(system.params0)                  # same pytree as the parameters
+```
+
 How it works:
 
 - **Electrostatics** exactly as the rest of pGM-JAX, with smooth PME for the reciprocal part
@@ -103,6 +117,17 @@ How it works:
 - **Thermostat**: BAOAB Langevin with an exact Ornstein-Uhlenbeck step on centre-of-mass and
   body-frame angular momenta. **Barostat**: isotropic Monte Carlo, molecular scaling (Amber
   `barostat=2`), adaptive step.
+- **Differentiable forces and dipoles** (`MDSettings(differentiable=True)`): `compute()` returns
+  energy, forces and induced dipoles that `jax.grad` / `jax.vjp` can differentiate with respect to
+  the parameters, positions and box, e.g. for force or dipole matching. The dipole solve is
+  differentiated implicitly: A mu = b(theta) gives mu_bar . dmu = lam . d(b - A mu) with
+  A lam = mu_bar, one extra CG with the same (symmetric) operator (`adjoint_tol`, default 1e-6).
+  The forward pass is unchanged, so MD runs at the same speed with the option on. Checked
+  against finite differences with the dipoles re-solved (1e-7 to 1e-10 relative, float64); mixed
+  precision gradients agree with float64 to 1e-6 to 5e-5. A gradient of forces + dipoles costs
+  ~15 forward evaluations (30 ms at 12k atoms). Trajectories themselves are not differentiated
+  (neighbour-list rebuilds, Monte Carlo moves and Langevin noise); for ensemble averages use
+  reweighting, which needs only dU/dtheta per frame.
 - **Precision**: `mixed` (default) evaluates pair kernels, PME and CG vectors in float32 and keeps
   positions, energies and dot products in float64; `double` is float64 throughout. float32 matrix
   products are requested at full precision: by default NVIDIA GPUs use TF32 for them, which made
@@ -164,7 +189,7 @@ fused kernel per term, XLA several kernels with the loop condition checked on th
 | `pgm_jax/md/` | MD engine: `forcefield.py` (PME + direct rows + induction solver), `pme.py`, `kernels.py`, `neighbors.py` (JAX-MD lists), `rigid.py` (JAX-MD rigid bodies), `integrate.py`, `simulation.py`, `io.py` (Amber NetCDF), `box.py` |
 | `scripts/run_md.py` | MD from an Amber prmtop + inpcrd/rst7 (Amber-style options) |
 | `scripts/bench_md.py`, `scripts/pgm_supercell.py` | MD speed benchmark; replicate a pGM prmtop for larger systems |
-| `tests/` | `pytest -q`: 34 tests, incl. finite-difference checks of every derivative and the MD engine |
+| `tests/` | `pytest -q`: 35 tests, incl. finite-difference checks of every derivative and the MD engine |
 | `scripts/validate_amber.py` | comparison with sander / pmemd-pgm / PyRESP (`compare`, `pyresp`, `virial`) |
 | `scripts/bench.py` | timings on the current device |
 | `validation/` | Amber reference runs (inputs + outputs) and `validate_amber.json` |

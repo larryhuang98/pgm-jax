@@ -90,6 +90,48 @@ def test_row_gradient_forces_equal_autodiff_and_finite_differences():
         assert abs(fd - float(res.forces[a, k])) < 1e-5 * max(1.0, abs(fd)), (a, k, fd, float(res.forces[a, k]))
 
 
+def test_differentiable_forces_and_dipoles():
+    """settings.differentiable: gradients of forces and induced dipoles (implicit differentiation of
+    the dipole solve) against central differences with the dipoles re-solved at every point."""
+    sys, pos, H = small_box(6)
+    s = settings(differentiable=True, adjoint_tol=1e-12)
+    ff = PGMForceField(sys, H, s)
+    idx = ff.rows_for(pos, H)
+    rng = np.random.default_rng(7)
+    wF, wmu = rng.normal(size=pos.shape), rng.normal(size=pos.shape)
+
+    def loss(theta, x):
+        res = ff.compute(x, H, idx, ff.init_induction(), theta)
+        return jnp.sum(wF * res.forces) + 1e3 * jnp.sum(wmu * res.induction.mu)
+
+    theta0 = sys.params0
+    x0 = jnp.asarray(pos)
+    L = jax.jit(loss)
+    g_th, g_x = jax.jit(jax.grad(loss, argnums=(0, 1)))(theta0, x0)
+    # forward values do not depend on the option
+    plain = PGMForceField(sys, H, settings())
+    r0, r1 = jax.jit(plain.compute)(x0, H, idx, plain.init_induction()), jax.jit(ff.compute)(x0, H, idx, ff.init_induction())
+    assert np.allclose(r0.forces, r1.forces, rtol=0, atol=1e-10) and np.allclose(r0.induction.mu, r1.induction.mu, rtol=0, atol=1e-14)
+    # parameters: random directions scaled by each leaf
+    leaves, tree = jax.tree_util.tree_flatten(theta0)
+    for trial in range(3):
+        v = [rng.normal(size=np.shape(l)) * np.maximum(np.abs(np.asarray(l)), 1e-3) for l in leaves]
+        vt = jax.tree_util.tree_unflatten(tree, [jnp.asarray(a) for a in v])
+        h = 1e-6
+        plus = jax.tree_util.tree_map(lambda a, b: a + h * b, theta0, vt)
+        minus = jax.tree_util.tree_map(lambda a, b: a - h * b, theta0, vt)
+        fd = (float(L(plus, x0)) - float(L(minus, x0))) / (2 * h)
+        ad = sum(float(jnp.sum(a * b)) for a, b in zip(jax.tree_util.tree_leaves(g_th), jax.tree_util.tree_leaves(vt)))
+        assert abs(fd - ad) < 1e-6 * max(1.0, abs(fd)), (trial, fd, ad)
+    # positions
+    for trial in range(2):
+        d = rng.normal(size=pos.shape) * 1e-3
+        h = 1e-4
+        fd = (float(L(theta0, x0 + h * d)) - float(L(theta0, x0 - h * d))) / (2 * h)
+        ad = float(jnp.sum(g_x * d))
+        assert abs(fd - ad) < 1e-6 * max(1.0, abs(fd)), (trial, fd, ad)
+
+
 def test_molecular_strain_derivative():
     sys, pos, H = small_box(2)
     ff, idx = ff_and_list(sys, pos, H, lj_lrc=True)
