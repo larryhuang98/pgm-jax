@@ -14,7 +14,8 @@ for f in glob.glob(os.path.join(RES, "loo0_*.json")):
     r = json.load(open(f))["molecules"][head]
     rows.setdefault(fam, {}).setdefault(el, {})[head] = (r["test"]["E_MAE"], r["test"]["F_MAE"])
 out = {}
-for fam in ("diag", "diag+b1", "diag+b1e10", "diag+q1", "diag+q1e", "diag+q1e10", "diag+es", "diag+es14", "diag+ub", "diag+p14", "paper"):
+for fam in ("diag", "diag+b1", "diag+b1e10", "diag+q1", "diag+q1e", "diag+q1e10", "diag+es", "diag+es14", "diag+ub", "diag+p14", "paper",
+            "diag+conj", "diag+hc", "diag+new", "hyb", "hybsc", "chem", "chem+hyb", "dist", "dist+chem", "diag+ovl"):
     if fam not in rows:
         continue
     print(f"== {fam}")

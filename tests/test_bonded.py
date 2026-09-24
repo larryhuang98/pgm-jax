@@ -55,10 +55,10 @@ def test_every_family_gradient_and_invariance():
         assert abs(fd - float(g[a, k])) < 1e-5 * max(1.0, abs(fd)), (a, k, fd, float(g[a, k]))
     Q = np.linalg.qr(rng.normal(size=(3, 3)))[0]
     assert abs(float(E(X @ Q.T + 0.3)) - float(E(X))) < 1e-8 * max(1.0, abs(float(E(X))))
-    # every family contributes
+    # every family with instances in ethanal contributes (conj / hc_lone: see test_electronic_families)
     for f in model.fams:
         P0 = jax.tree_util.tree_map(jnp.zeros_like, P); P0["ref"] = P["ref"]; P0[f] = P[f]
-        if f == "bond_morse":
+        if f in ("bond_morse", "conj", "hc_lone"):
             continue
         assert abs(float(model.bonded_energy(0, X, P0))) > 0, f
 
@@ -255,3 +255,67 @@ def test_separate_induction_exclusion():
     e3, d3, s3 = mk(elec_exclude=2).nonbonded(0, R, state=True)
     assert np.allclose(s1["mu"], s0["mu"]) and np.allclose(d1, d0) and abs(float(e1 - e0)) > 1e-3
     assert np.allclose(s2["mu"], s3["mu"]) and not np.allclose(s2["mu"], s0["mu"])
+
+
+
+def methyl_formate():
+    """HC(=O)OCH3, nm: a conjugated C-O bond and an sp3 neighbour of the ester O."""
+    x = np.array([[0.0, 0.0, 0.0], [-0.060, 0.104, 0.0], [-0.055, -0.095, 0.0], [0.134, 0.0, 0.0],
+                  [0.195, 0.124, 0.0], [0.300, 0.110, 0.0], [0.160, 0.180, 0.089], [0.160, 0.180, -0.089]])
+    el = ["C", "O", "H", "O", "C", "H", "H", "H"]
+    bonds = [(0, 1), (0, 2), (0, 3), (3, 4), (4, 5), (4, 6), (4, 7)]
+    return el, bonds, [2, 1, 1, 1, 1, 1, 1], x
+
+
+def test_electronic_families():
+    """F12 families: finite-difference gradients, rigid-motion invariance, and their physics:
+    pi-axis p fraction 1 planar / 3/4 tetrahedral, conj = cos^2 of the rotation, volume double well,
+    self-consistent hybrids = fixed hybrids at the reference geometry."""
+    el, bonds, orders, x = methyl_formate()
+    fams = ("conj", "volume", "hc_sigma", "hc_lone", "angle_hyb", "angle_hybsc", "pair13_tanh", "pair14_tanh",
+            "pair13_ovl", "pair14_ovl")
+    model = BondedModel([MolSpec("mf", el, bonds, orders, 0, x)], BondedSettings(families=fams))
+    for f in fams:
+        assert len(model.I[0][f]["k"]) > 0, f
+    P = model.init_params()
+    rng = np.random.default_rng(5)
+    lin = model.linear_mask(P)
+    P = jax.tree_util.tree_map(lambda v, l: v + (0.5 * rng.normal(size=np.shape(v)) if l else 0.01 * v * rng.normal(size=np.shape(v))), P, lin)
+    X = jnp.asarray(x + 0.004 * rng.normal(size=x.shape))
+    E = jax.jit(lambda X: model.bonded_energy(0, X, P))
+    g = jax.grad(lambda X: model.bonded_energy(0, X, P))(X)
+    for a, k in [(0, 0), (1, 1), (3, 2), (4, 0), (6, 2)]:
+        d = np.zeros(x.shape); d[a, k] = 1e-6
+        fd = (float(E(X + d)) - float(E(X - d))) / 2e-6
+        assert abs(fd - float(g[a, k])) < 1e-5 * max(1.0, abs(fd)), (a, k, fd, float(g[a, k]))
+    Q = np.linalg.qr(rng.normal(size=(3, 3)))[0]
+    Q = Q * np.sign(np.linalg.det(Q))
+    assert abs(float(E(X @ Q.T + 0.3)) - float(E(X))) < 1e-8 * max(1.0, abs(float(E(X))))
+    # pi axes: planar p = 1, tetrahedral p = 3/4
+    tet = jnp.asarray([[0.0, 0.0, 0.0], [1, 1, 1], [1, -1, -1], [-1, 1, -1]], float)
+    tri = jnp.asarray([[0.0, 0.0, 0.0], [1, 0, 0], [-0.5, 0.866, 0], [-0.5, -0.866, 0]], float)
+    for R_, pexp in ((tet, 0.75), (tri, 1.0)):
+        _, pp = T.pi_axes(R_, np.array([0]), np.array([[1, 2, 3]]), np.array([3]))
+        assert abs(float(pp[0]) - pexp) < 1e-6
+    # conj: rotating the ester O substituent by 90 deg about C-O removes the conjugation
+    Pc = jax.tree_util.tree_map(jnp.zeros_like, P); Pc["ref"] = P["ref"]; Pc["conj"] = {"K": jnp.ones_like(P["conj"]["K"])}
+    ax = (x[3] - x[0]) / np.linalg.norm(x[3] - x[0])
+    def rot(v, a):
+        return v * np.cos(a) + np.cross(ax, v) * np.sin(a) + ax * np.dot(ax, v) * (1 - np.cos(a))
+    for ang, e_exp in ((0.0, 0.0), (90.0, 1.0), (45.0, 0.5)):
+        y = x.copy()
+        for k in (4, 5, 6, 7):
+            y[k] = x[3] + rot(x[k] - x[3], np.radians(ang))
+        e = float(model.bonded_energy(0, jnp.asarray(y), Pc))
+        assert abs(e - e_exp) < 0.02, (ang, e)
+    # hybrids: nearly zero energy at the reference geometry (the least-squares m cannot make every
+    # angle of this rough geometry exact), self-consistent ones softer than fixed ones
+    Ph = model.init_params()
+    for f in fams:
+        if f not in ("angle_hyb", "angle_hybsc"):
+            Ph[f] = jax.tree_util.tree_map(jnp.zeros_like, Ph[f])
+    e_ref = float(model.bonded_energy(0, jnp.asarray(x), Ph))
+    Y = jnp.asarray(x + 0.01 * rng.normal(size=x.shape))
+    only = lambda f: {**{k: jax.tree_util.tree_map(jnp.zeros_like, v) for k, v in Ph.items() if k != "ref"}, "ref": Ph["ref"], f: Ph[f]}
+    e_fix, e_sc = float(model.bonded_energy(0, Y, only("angle_hyb"))), float(model.bonded_energy(0, Y, only("angle_hybsc")))
+    assert e_ref < 0.05 * e_fix and 0.0 < e_sc < e_fix, (e_ref, e_sc, e_fix)

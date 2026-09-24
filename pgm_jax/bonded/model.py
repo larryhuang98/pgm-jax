@@ -43,7 +43,7 @@ class BondedSettings:
     elec14_scale: float = 1.0           # scale of 1-4 electrostatics when not excluded (Amber 1/1.2, OPLS 0.5)
     ind_exclude: int = -1               # exclusion for the induction (fields and dipole-dipole couplings);
                                         # -1: the same as elec_exclude (permanent pairs)
-    flux: bool = False
+    flux: int = 0                       # 1: charge + covalent-dipole flux (linear); 2: + quadratic dipole flux
     qfit: int = -1                      # >= 0: pGM charges and covalent dipoles typed by atom environment
                                         # to this depth (shared across molecules) and fitted with the
                                         # bonded terms; total charge kept by a uniform shift per molecule
@@ -128,6 +128,15 @@ class BondedModel:
         return self.ref_keys[which].index(key)
 
     def _static_extras(self):
+        # pGM Gaussian pair exponents for the overlap families
+        for f in self.fams:
+            fam = T.REGISTRY[f]
+            if getattr(fam, "needs_radius", False):
+                from ..kernels import gauss_bij
+                for m, Im in zip(self.mols, self.I):
+                    rad = np.asarray(System([m.pgm]).expand()["radius"]) if m.pgm is not None else np.full(len(m.elements), 0.08)
+                    pr = np.asarray(getattr(m.top, "pairs" + fam.which)).reshape(-1, 2)
+                    Im[f]["bij"] = np.asarray(gauss_bij(rad[pr[:, 0]], rad[pr[:, 1]])) if len(pr) else np.zeros(0)
         # Morse depths per bond key (mean over instances of the table value)
         if "bond_morse" in self.fams:
             acc = {}
@@ -152,9 +161,14 @@ class BondedModel:
             np.add.at(b0, Im["bond"], G["b"]); np.add.at(nb, Im["bond"], 1)
             np.add.at(th0, Im["angle"], G["th"]); np.add.at(na, Im["angle"], 1)
             for f in self.fams:
-                if f.startswith("pair"):
-                    r = G["r" + T.REGISTRY[f].which]
-                    acc = pr.setdefault(f, [np.zeros(len(self.keys[f])), np.zeros(len(self.keys[f]))])
+                fam = T.REGISTRY[f]
+                if hasattr(fam, "init_from_geometry"):          # per-instance values -> key means
+                    for pname, v in fam.init_from_geometry(G, Im[f], m.top).items():
+                        acc = pr.setdefault((f, pname), [np.zeros(len(self.keys[f])), np.zeros(len(self.keys[f]))])
+                        np.add.at(acc[0], Im[f]["k"], v); np.add.at(acc[1], Im[f]["k"], 1)
+                elif f.startswith("pair") and "r0" in fam.params:
+                    r = G["r" + fam.which]
+                    acc = pr.setdefault((f, "r0"), [np.zeros(len(self.keys[f])), np.zeros(len(self.keys[f]))])
                     np.add.at(acc[0], Im[f]["k"], r); np.add.at(acc[1], Im[f]["k"], 1)
         P = {"ref": {"b0": jnp.asarray(b0 / np.maximum(nb, 1)), "th0": jnp.asarray(th0 / np.maximum(na, 1))}}
         for f in self.fams:
@@ -162,13 +176,15 @@ class BondedModel:
             nk = len(self.keys[f])
             P[f] = {}
             for pname, (shape, init) in fam.params.items():
-                if init is None:                                  # reference distance of a pair family
-                    acc = pr[f]
+                if init is None:                                  # from the reference geometries
+                    acc = pr[(f, pname)]
                     P[f][pname] = jnp.asarray(acc[0] / np.maximum(acc[1], 1))
                 else:
                     P[f][pname] = jnp.full((nk,) + shape, float(init))
         if self.s.flux:
             P["flux"] = {"jb": jnp.zeros(len(self.ref_keys["b0"])), "jc": jnp.zeros(len(self.ref_keys["b0"]))}
+            if int(self.s.flux) >= 2:                   # quadratic covalent-dipole flux (field-responsive bonds)
+                P["flux"]["jc2"] = jnp.zeros(len(self.ref_keys["b0"]))
         if self.s.escale:
             P["escale"] = {"kappa": jnp.zeros(len(self.es_pos))}
         if self.s.qbci >= 0:
@@ -351,7 +367,12 @@ class BondedModel:
         q = q.at[mol.top.bonds[:, 0]].add(-t).at[mol.top.bonds[:, 1]].add(t)
         cb = d["cov_bond"]
         if len(cb):
-            dcov = jnp.where(cb >= 0, P["flux"]["jc"][Im["bond"][np.maximum(cb, 0)]] * db[np.maximum(cb, 0)], 0.0)
+            d_ = db[np.maximum(cb, 0)]
+            kb = Im["bond"][np.maximum(cb, 0)]
+            dc_ = P["flux"]["jc"][kb] * d_
+            if "jc2" in P["flux"]:
+                dc_ = dc_ + P["flux"]["jc2"][kb] * d_ * d_
+            dcov = jnp.where(cb >= 0, dc_, 0.0)
             cov = cov + dcov
         return q, cov
 

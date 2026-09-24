@@ -34,6 +34,11 @@ them simpler or more transferable? Baseline: the bonded-only 1-4 treatment of Ab
   collapse in transfer (8.1 kcal/mol). Charges fitted with the bonded terms (F11) halve the in-sample
   errors (1.41 -> 0.77 kcal/mol) at the cost of the ESP (1.5 -> 2.5-7 mhartree/e), and in transfer
   trade gains on amines and phosphate for losses on carbonyls (2.33-2.99 vs 2.20 kcal/mol overall).
+- **Electronic-structure-inspired terms (F12).** Hybrid-orbital angles (Bent's rule, one sp^m
+  index per centre-substituent type) are the most transferable angle term found (held-out 2.20 ->
+  1.97 kcal/mol with pGM, 2.32 -> 1.65 with the classical control); torsions can be replaced by pi
+  conjugation + hyperconjugation + signed volume at equal per-molecule accuracy, but without better
+  transfer.
 - **Robustness.** The fitted force fields, class II included, run stably in gas-phase MD (240
   replicas x 20 ps at 298 and 500 K). pGM does not need fewer coupling terms (identical L1 paths),
   and many class II parameters with generic typing overfit the electrostatic compensation (pGM
@@ -325,6 +330,94 @@ phi/psi MAE over the whole grid (kcal/mol), bonded terms trained on the 500 K MD
 <!-- /TABLE_X6NG -->
 
 With exclusions the class II couplings extrapolate badly (8.9 kcal/mol); pGM stays at 2.5.
+
+## Electronic-structure-inspired bonded terms (F12)
+
+A second round of forms, built from a few physical quantities instead of springs plus couplings
+(`pgm_jax/bonded/terms.py`, all tested against finite differences in `test_electronic_families`):
+
+| Family | Physical picture | Energy |
+| --- | --- | --- |
+| `conj` | pi conjugation across a bond between 2- or 3-coordinated centres | K (1 - (a_i . a_j)^2 p_i p_j); a = pi axis (normal of the plane through the three bond tips), p = its p fraction (1 - 3x^2)/(1 - x^2), x = a . u (Coulson orthogonality + s conservation; 1 planar, 3/4 tetrahedral) |
+| `volume` | planarity, pyramidal inversion | A V^2 + B V^4, V = u1 . (u2 x u3) of the bond unit vectors (double well for A < 0 < B) |
+| `hc_sigma` | sigma -> sigma* hyperconjugation | -(D_ij A_kl + D_kl A_ij) ((1 - cos phi)/2)^2: a donor and an acceptor strength per bond type, not Fourier coefficients per torsion type |
+| `hc_lone` | n -> sigma* (anomeric) | K (a_j . u_perp)^2 for the p-type lone pair of N/O/S and a bond of its sp3 neighbour |
+| `angle_hyb` | hybrid orbitals (Bent's rule) | (k_a + k_b)/2 Delta_ab^2, Delta = (1 + sqrt(m_a m_b) cos theta)/sqrt((1+m_a)(1+m_b)); one sp^m index per centre-substituent type, cos theta0 = -1/sqrt(m_a m_b) |
+| `angle_hybsc` | rehybridisation | the same, with the m of each centre relaxed at every geometry: E = min_z sum k Delta^2 + kappa sum (z - z0)^2, z = ln m (Gauss-Newton, envelope-theorem gradients, like the induced dipoles) |
+| `pair13_ovl`, `pair14_ovl` | exchange repulsion | A exp(-(b_ij r)^2) with the pGM Gaussian widths b_ij |
+| `pair13_tanh`, `pair14_tanh` | distance-only geometry | sum_n C_n tanh((r - r0)/w)^n, n = 1..4 |
+| `--flux 2` | field-responsive bonds | covalent-bond dipole c0 + c1 db + c2 db^2 (the electrostatic energy then shifts bond lengths and stiffnesses with the local field) |
+
+<!-- TABLE_NEW -->
+| Bonded form | Parameters per molecule | Energy MAE | Force MAE | Relaxed-scan max | Transfer (leave one out), all 12 | Transfer, N/P group | Dipeptide phi/psi, grid-trained | Dipeptide phi/psi, MD-only |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| class I (reference) | 23 | 0.67 | 7.9 | 1.53 | 2.20 | 4.27 | 0.77 | 3.16 |
+| class I + Urey-Bradley + 1-4 exp (reference) | 36 | 0.60 | 7.4 | 1.20 | 2.48 | 4.25 | 0.62 | 8.92 |
+| class I + pi-axis conjugation | 23 | 0.67 | 7.9 | 1.29 | 2.16 | 4.24 |  |  |
+| class I + hyperconjugation (sigma->sigma*, n->sigma*) | 30 | 0.67 | 7.9 | 1.50 | 2.27 | 4.27 | 0.80 | 3.27 |
+| class I, signed-volume instead of improper | 23 | 0.67 | 7.9 | 1.54 |  |  |  |  |
+| class I + conjugation + hyperconjugation + volume | 31 | 0.67 | 7.9 | 1.27 | 2.24 | 3.87 | 0.80 | 3.31 |
+| hybrid-orbital angles, fixed (Bent) | 32 | 0.67 | 7.9 | 1.53 | 2.07 | 3.56 | 0.77 | 4.10 |
+| hybrid-orbital angles, self-consistent | 39 | 0.87 | 9.1 | 1.55 | 1.97 | 3.49 | 0.88 | 7.60 |
+| class I + Gaussian-overlap 1-3/1-4 repulsion | 29 | 0.60 | 7.0 | 1.30 | 2.59 | 4.56 |  |  |
+| no torsions: conjugation + hyperconjugation + volume + 1-4 exp | 29 | 0.68 | 7.9 | 1.38 | 2.34 | 3.92 | 0.75 | 4.16 |
+| no torsions, self-consistent hybrid angles | 46 | 0.78 | 8.7 | 1.81 | 2.17 | 3.36 | 1.30 | 6.90 |
+| distance only: 1-2 Morse, 1-3/1-4 tanh series, volume | 42 | 0.98 | 10.1 | 3.79 | 2.98 | 3.86 |  |  |
+| distance only + conjugation + hyperconjugation | 50 | 0.82 | 9.7 | 1.51 | 3.04 | 3.34 | 0.66 | 5.68 |
+
+pGM electrostatics throughout; kcal/mol and kcal/mol/A. Per-molecule columns: 12 molecules, 298 K frames. Transfer: element-typed parameters fitted on 11 molecules, held-out energy MAE. Dipeptide: held-out half of the phi/psi grid, trained with half the grid + MD, or on MD only.
+<!-- /TABLE_NEW -->
+
+Angle term and electrostatics in transfer:
+
+<!-- TABLE_HYB -->
+| Angle term (element-typed) | Electrostatics | carbonyl/carboxyl | amine/ammonium/phosphate | other (alkane, alcohol, halides) | all 12 |
+| --- | --- | --- | --- | --- | --- |
+| cosine angles (class I) | pGM, all pairs | 1.57 | 4.27 | 1.43 | 2.20 |
+| cosine angles (class I) | classical, excluded | 2.70 | 3.03 | 1.30 | 2.32 |
+| hybrid orbitals, fixed | pGM, all pairs | 1.87 | 3.56 | 1.21 | 2.07 |
+| hybrid orbitals, fixed | classical, excluded | 1.72 | 2.38 | 1.23 | 1.72 |
+| hybrid orbitals, self-consistent | pGM, all pairs | 1.76 | 3.49 | 1.07 | 1.97 |
+| hybrid orbitals, self-consistent | classical, excluded | 1.61 | 2.41 | 1.13 | 1.65 |
+
+Held-out energy MAE (kcal/mol), leave one molecule out.
+<!-- /TABLE_HYB -->
+
+What held up and what did not:
+
+- **Hybrid-orbital angles are the transferable win.** One sp^m index per centre-substituent type
+  predicts the reference angles of a new molecule (Bent's rule) and lowers the held-out energy
+  error from 2.20 to 2.07 (fixed) and 1.97 kcal/mol (self-consistent) with pGM. The gain is not
+  pGM-specific: with the classical control it is larger (2.32 -> 1.72 / 1.65), because there the
+  N/P molecules also improve; with pGM they stay limited by the charges. Per molecule the fixed
+  version matches cosine angles (0.67); the self-consistent one stalls in the fit on the charged
+  molecules (0.87) and extrapolates poorly on the dipeptide (7.6 from MD only), so its inner
+  solve needs work.
+- **Torsions can be replaced by chemistry, at equal accuracy.** Without any Fourier torsion or
+  improper, pi conjugation + hyperconjugation + volume + 1-4 repulsion (`chem`) fits the 12
+  molecules as well as class I (0.68 vs 0.67 kcal/mol) and the dipeptide surface slightly better
+  (0.75 vs 0.77), with interpretable parameters. It does not transfer (2.34) or extrapolate (4.2
+  vs 3.2) better, and it misses threefold barriers without the torsion term (ethane scan 2.1).
+- **pi-axis conjugation reproduces the amide fix** of the twist term with class I terms (formamide
+  6.35 -> 3.50, twist 3.78) but less well with class II (2.97, twist 1.33), and it helps
+  transfer a little (2.16).
+- **Gaussian-overlap repulsion** (same widths as the pGM electrostatics, one amplitude per pair
+  type) gives the best forces among class-I-sized models (6.95 vs 7.9 kcal/mol/A; Urey-Bradley +
+  1-4 exponential 7.4) but transfers worse (2.59).
+- **Distance-only models** (no angles, no dihedrals) are worse everywhere except the dipeptide grid
+  fit (0.66 with conjugation and hyperconjugation).
+- **Hyperconjugation** as donor x acceptor bond strengths does not beat per-type Fourier torsions
+  here (2.27 in transfer); the gauche molecules are already fitted by the torsions.
+- **Extrapolation from MD alone** (dipeptide) is best for plain class II with pGM (2.45); every
+  more flexible form, old or new, extrapolates worse (extended couplings 7.2, Urey-Bradley + 1-4
+  exponential 8.9).
+- **Quadratic dipole flux** changes little in the gas phase (dipole RMSE 0.233 -> 0.224 D, forces
+  3.43 -> 3.38 kcal/mol/A, mostly the ions); its point, bonds that respond to the local field,
+  needs condensed-phase data.
+- On the dipeptide, pGM beats the classical control whatever the angle term (hybrid orbitals:
+  0.77 vs 2.80).
+- Not tried: a Hueckel pi energy over whole conjugated systems (the data set has only isolated
+  amides and acids) and an explicit s-conservation constraint on the hybrid indices.
 
 ## Rigid molecules (A4: ethene, benzene, pyridine, cyclopentane)
 

@@ -346,9 +346,57 @@ def table_x6_nogrid():
     return "\n".join(lines) + "\n\nphi/psi MAE over the whole grid (kcal/mol), bonded terms trained on the 500 K MD frames only."
 
 
+NEW_FORMS = [("class I (reference)", "diag", "b2_diag_pgm"),
+             ("class I + Urey-Bradley + 1-4 exp (reference)", "diag+ub", "b2_diagub_pgm"),
+             ("class I + pi-axis conjugation", "diag+conj", "b4_diag+conj_pgm"),
+             ("class I + hyperconjugation (sigma->sigma*, n->sigma*)", "diag+hc", "b4_diag+hc_pgm"),
+             ("class I, signed-volume instead of improper", "diag+vol", "b4_diag+vol_pgm"),
+             ("class I + conjugation + hyperconjugation + volume", "diag+new", "b4_diag+new_pgm"),
+             ("hybrid-orbital angles, fixed (Bent)", "hyb", "b4_hyb_pgm"),
+             ("hybrid-orbital angles, self-consistent", "hybsc", "b4_hybsc_pgm"),
+             ("class I + Gaussian-overlap 1-3/1-4 repulsion", "diag+ovl", "b4_diag+ovl_pgm"),
+             ("no torsions: conjugation + hyperconjugation + volume + 1-4 exp", "chem", "b4_chem_pgm"),
+             ("no torsions, self-consistent hybrid angles", "chem+hyb", "b4_chem+hyb_pgm"),
+             ("distance only: 1-2 Morse, 1-3/1-4 tanh series, volume", "dist", "b4_dist_pgm"),
+             ("distance only + conjugation + hyperconjugation", "dist+chem", "b4_dist+chem_pgm")]
+
+
+def table_new_forms():
+    d = _loo_json()
+    lines = ["| Bonded form | Parameters per molecule | Energy MAE | Force MAE | Relaxed-scan max | Transfer (leave one out), all 12 | Transfer, N/P group | Dipeptide phi/psi, grid-trained | Dipeptide phi/psi, MD-only |",
+             "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+    x6 = lambda n: (lambda p: f"{json.load(open(p))['test_half']['MAE']:.2f}" if os.path.exists(p) else "")(os.path.join(RES, f"{n}.json"))
+    for lab, tag, run in NEW_FORMS:
+        m = means(run)
+        if m is None:
+            continue
+        v = d.get(tag, {})
+        t_all = f"{v['all 12']['pgm'][0]:.2f}" if "all 12" in v and "pgm" in v["all 12"] else ""
+        t_np = f"{v['amine/ammonium/phosphate']['pgm'][0]:.2f}" if "amine/ammonium/phosphate" in v and "pgm" in v["amine/ammonium/phosphate"] else ""
+        xt = {"diag+ub": "diagub"}.get(tag, tag)
+        lines.append(f"| {lab} | {m['P']:.0f} | {m['E']:.2f} | {m['F']:.1f} | {m['S']:.2f} | {t_all} | {t_np} | {x6('x6_' + xt + '_pgm')} | {x6('x6ng_' + xt + '_pgm')} |")
+    return "\n".join(lines) + ("\n\npGM electrostatics throughout; kcal/mol and kcal/mol/A. Per-molecule columns: 12 molecules, 298 K "
+                               "frames. Transfer: element-typed parameters fitted on 11 molecules, held-out energy MAE. Dipeptide: "
+                               "held-out half of the phi/psi grid, trained with half the grid + MD, or on MD only.")
+
+
+def table_hyb_elec():
+    d = _loo_json()
+    groups = ["carbonyl/carboxyl", "amine/ammonium/phosphate", "other (alkane, alcohol, halides)", "all 12"]
+    lines = ["| Angle term (element-typed) | Electrostatics | " + " | ".join(groups) + " |", "| --- | --- | " + " | ".join("---" for _ in groups) + " |"]
+    for tag, lab in (("diag", "cosine angles (class I)"), ("hyb", "hybrid orbitals, fixed"), ("hybsc", "hybrid orbitals, self-consistent")):
+        for el, eln in (("pgm", "pGM, all pairs"), ("cls", "classical, excluded")):
+            v = d.get(tag, {})
+            if not all(g in v and el in v[g] for g in groups):
+                continue
+            lines.append(f"| {lab} | {eln} | " + " | ".join(f"{v[g][el][0]:.2f}" for g in groups) + " |")
+    return "\n".join(lines) + "\n\nHeld-out energy MAE (kcal/mol), leave one molecule out."
+
+
 BLOCKS = {"TABLE_MAIN": table_main, "TABLE_LOO": table_loo_groups, "TABLE_LOO_ELEC": table_loo_elec, "TABLE_MD": table_md,
           "TABLE_DIPEPTIDE": table_dipeptide, "TABLE_RIGID": table_rigid, "TABLE_QFIT": table_qfit,
-          "TABLE_X6ABL": table_x6_ablation, "TABLE_X6NG": table_x6_nogrid}
+          "TABLE_X6ABL": table_x6_ablation, "TABLE_X6NG": table_x6_nogrid,
+          "TABLE_NEW": table_new_forms, "TABLE_HYB": table_hyb_elec}
 
 
 def fill_readme():

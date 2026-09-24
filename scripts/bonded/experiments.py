@@ -41,6 +41,19 @@ FAMILY_SETS = {
     "all": T.PAPER + ("bond_angle_x", "angle_angle_x", "angle_cubic", "pair13_harm", "pair14_exp"),
     "all+tw": T.PAPER + ("bond_angle_x", "angle_angle_x", "angle_cubic", "pair13_harm", "pair14_exp", "twist"),
     "diag+ub+tw": ("bond_morse", "angle_cos", "torsion", "improper", "pair13_harm", "pair14_exp", "twist"),
+    # F12: electronic-structure-inspired families
+    "diag+conj": ("bond_morse", "angle_cos", "torsion", "improper", "conj"),
+    "paper+conj": T.PAPER + ("conj",),
+    "diag+hc": ("bond_morse", "angle_cos", "torsion", "improper", "hc_sigma", "hc_lone"),
+    "diag+vol": ("bond_morse", "angle_cos", "torsion", "volume"),
+    "diag+new": ("bond_morse", "angle_cos", "torsion", "volume", "conj", "hc_sigma", "hc_lone"),
+    "hyb": ("bond_morse", "angle_hyb", "torsion", "improper"),
+    "hybsc": ("bond_morse", "angle_hybsc", "torsion", "improper"),
+    "diag+ovl": ("bond_morse", "angle_cos", "torsion", "improper", "pair13_ovl", "pair14_ovl"),
+    "chem": ("bond_morse", "angle_cos", "volume", "conj", "hc_sigma", "hc_lone", "pair14_exp"),
+    "chem+hyb": ("bond_morse", "angle_hybsc", "volume", "conj", "hc_sigma", "hc_lone", "pair14_exp"),
+    "dist": ("bond_morse", "pair13_tanh", "pair14_tanh", "volume"),
+    "dist+chem": ("bond_morse", "pair13_tanh", "pair14_tanh", "volume", "conj", "hc_sigma", "hc_lone"),
 }
 
 
@@ -204,7 +217,7 @@ if __name__ == "__main__":
     ap.add_argument("--lj_sep", type=int, default=4)
     ap.add_argument("--lj14", type=float, default=0.0)
     ap.add_argument("--elec14", type=float, default=1.0)
-    ap.add_argument("--flux", action="store_true")
+    ap.add_argument("--flux", type=int, nargs="?", const=1, default=0)
     ap.add_argument("--escale", default="", help="learned permanent-pair scales for these separations, e.g. 1,2,3")
     ap.add_argument("--wE", type=float, default=1.0)
     ap.add_argument("--wF", type=float, default=1.0)
