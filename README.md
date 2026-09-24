@@ -172,6 +172,54 @@ factorisations every step); int32 PME indices; mu4 + fused residual (one field s
 remaining gap to pmemd at 12k atoms is hand-written CUDA vs XLA: per CG iteration pmemd runs one
 fused kernel per term, XLA several kernels with the loop condition checked on the host.
 
+## Bonded terms for flexible molecules (`pgm_jax.bonded`)
+
+pGM has no 1-2/1-3/1-4 exclusions, so the valence (bonded) terms of a flexible pGM molecule only
+carry what the all-pair electrostatics and LJ beyond 1-4 do not. `pgm_jax.bonded` fits and compares
+bonded functional forms for that setting, after Abdullah et al. (arXiv 2504.14398), whose
+bonded-only 1-4 treatment with class II couplings it reproduces as one option.
+
+- `topology.py`: internal coordinates and coupling index sets from the bond graph; tying keys
+  (per-molecule symmetry classes, or atom environments to a depth for transferable types).
+- `terms.py`: a registry of term families, each a JAX function of internal coordinates with its
+  own index set, parameters and keys: the paper's class II set (Morse bonds, cosine angles,
+  Fourier torsions, bond-bond, bond-angle, angle-angle, torsion-bond, torsion-angle,
+  angle-angle-torsion, impropers), topological pair potentials (Urey-Bradley, 1-3 and 1-4
+  exponential), a factorised torsion coupling (`torsion_mod`), extended quadratic couplings, a
+  pyramidalisation out-of-plane term, a torsion x out-of-plane coupling (`torsion_oop`) and the
+  twist of 3-coordinated centres (`twist`, the Winkler-Dunitz angle; fixes amide rotation
+  barriers). A new family is about 20 lines.
+- `model.py`: `BondedModel` = bonded families + gas-phase pGM (all pairs, induced dipoles) + LJ
+  from `lj_min_sep` bonds; options for a classical control (`elec_exclude`), Amber-like 1-4
+  scaling (`elec14_scale`, `lj14_scale`), charge and covalent-dipole flux (`flux`), learned
+  per-type scales of the 1-2/1-3/1-4 permanent pair energies (`escale`), pGM charges and covalent
+  dipoles fitted with the bonded terms (`qfit`: typed values; `qbci`: typed bond-charge increments
+  on the ESP charges), shared parameters across molecules (`typing="type"`); `esp()` gives the
+  molecule's electrostatic potential on a grid.
+- `fit.py`: energy + force (+ dipole, + QM ESP restraint) loss with per-molecule offsets, L-BFGS
+  on everything (reference values, force constants, exponents, flux, charges) with JAX gradients,
+  optional L1.
+- `bench.py`: the paper's metrics, force-field-relaxed torsion scans.
+- `scripts/bonded/`: molecule set (RDKit), MACE-OFF sampling (MD at 500/298 K, relaxed scans),
+  DFT labels (psi4, wB97M-D3(BJ)/def2-TZVPPD, Slurm arrays), pGM parameters (ESP + py_resp), the
+  experiments, the alanine dipeptide phi/psi surface (`x6_dipeptide.py`), gas-phase MD with the
+  fitted force fields (`md_check.py`) and the report (`reports/bonded/`).
+
+```python
+from pgm_jax.bonded.data import frames, mol_spec
+from pgm_jax.bonded.fit import Fitter
+from pgm_jax.bonded.model import BondedModel, BondedSettings
+from pgm_jax.bonded import terms as T
+
+spec = mol_spec("formic_acid")                                    # topology + pGM parameters + minimum
+model = BondedModel([spec], BondedSettings(families=T.PAPER))     # pGM all pairs, LJ 1-5+
+fit = Fitter(model, {0: {"train": frames("formic_acid", "train500"), "test": frames("formic_acid", "test298")}})
+P = fit.fit(model.init_params())
+print(fit.metrics(P, "test"))                                     # energy / force MAE (kcal/mol, /A), dipole RMSE (D)
+```
+
+Findings of the first study are in `reports/bonded/README.md`.
+
 ## Layout
 
 | Path | What is in it |
@@ -187,9 +235,11 @@ fused kernel per term, XLA several kernels with the loop condition checked on th
 | `pgm_jax/model.py` | gas-phase `Model`: energies, forces, batching, n-body energies (compiled once per topology) |
 | `pgm_jax/param.py` | Amber pGM prmtop reader (incl. LJ, bonds, masses), JSON save/load, py_resp `.chg` + pGM-pol table, atom mapping |
 | `pgm_jax/md/` | MD engine: `forcefield.py` (PME + direct rows + induction solver), `pme.py`, `kernels.py`, `neighbors.py` (JAX-MD lists), `rigid.py` (JAX-MD rigid bodies), `integrate.py`, `simulation.py`, `io.py` (Amber NetCDF), `box.py` |
+| `pgm_jax/bonded/` | bonded terms for flexible pGM molecules: `topology.py`, `terms.py` (term registry), `model.py`, `fit.py`, `bench.py`, `data.py`, `molecules.py` |
+| `scripts/bonded/` | the bonded study: sampling, DFT labels, pGM parameters, experiments, report |
 | `scripts/run_md.py` | MD from an Amber prmtop + inpcrd/rst7 (Amber-style options) |
 | `scripts/bench_md.py`, `scripts/pgm_supercell.py` | MD speed benchmark; replicate a pGM prmtop for larger systems |
-| `tests/` | `pytest -q`: 35 tests, incl. finite-difference checks of every derivative and the MD engine |
+| `tests/` | `pytest -q`: 45 tests, incl. finite-difference checks of every derivative and the MD engine |
 | `scripts/validate_amber.py` | comparison with sander / pmemd-pgm / PyRESP (`compare`, `pyresp`, `virial`) |
 | `scripts/bench.py` | timings on the current device |
 | `validation/` | Amber reference runs (inputs + outputs) and `validate_amber.json` |

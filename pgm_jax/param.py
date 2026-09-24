@@ -183,11 +183,15 @@ def read_pyresp_chg(path: str) -> dict:
 
 
 def molecule_from_pyresp(name: str, elements: list[str], types: list[str], chg_path: str,
-                         table: dict | None = None) -> Molecule:
+                         table: dict | None = None, n_atoms: int | None = None) -> Molecule:
     """pGM molecule from a py_resp fit.  The covalent dipole convention is the same as ours:
-    p_i = sum_k c_k unit(r_ref(k) - r_i).  Bonds from the fit geometry; no LJ (zeros)."""
+    p_i = sum_k c_k unit(r_ref(k) - r_i).  Bonds from the fit geometry; no LJ (zeros).
+    Multi-conformer fits list every conformer; `n_atoms` keeps the first (they are equivalenced)."""
     table = table or read_pol_table()
     c = read_pyresp_chg(chg_path)
+    if n_atoms is not None and len(c["q"]) > n_atoms:
+        c = {"crd": c["crd"][:n_atoms], "q": c["q"][:n_atoms], "Z": c["Z"][:n_atoms],
+             "cov": [x for x in c["cov"] if x[0] < n_atoms and x[1] < n_atoms]}
     al = np.array([table[t.lower()][0] for t in types]) * BOHR_NM ** 3
     rad = np.array([table[t.lower()][1] for t in types]) * BOHR_NM
     cov = [(i, j, p * BOHR_NM) for i, j, p in c["cov"]]
