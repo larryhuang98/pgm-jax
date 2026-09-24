@@ -296,11 +296,13 @@ Conventions worth knowing:
 
 ## Limits
 
-- LJ is intermolecular only (every intramolecular pair excluded, as for rigid molecules in
-  Amber); intramolecular LJ and bonded terms are not implemented.
+- LJ is intermolecular only in `Model`, `PeriodicModel` and the MD engine (every intramolecular
+  pair excluded, as for rigid molecules in Amber). Bonded terms and intramolecular LJ from 1-5 on
+  exist in `pgm_jax.bonded` (gas phase, for fitting), not yet in the MD engine, which runs rigid
+  molecules only.
 - The gas-phase induction solve is dense (3n × 3n): fine up to a few thousand atoms.
-- Periodic: plain Ewald (no PME); the neighbour list and k-vectors are built once, so no MD
-  engine yet (no list updates, integrator or thermostat).
+- `PeriodicModel` uses plain Ewald with a neighbour list and k-vectors built once (for
+  single points and gradients); MD uses `pgm_jax.md` (smooth PME, list updates, integrators).
 - Outside `pgm_jax.md` everything is float64; single precision is used (and validated) only in MD's mixed mode.
 - `kernels.gd6_jax` jumps by ~4 % at x = 0.15 where it switches to its small-x series (inherited;
   not used by the model yet).
