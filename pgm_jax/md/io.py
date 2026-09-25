@@ -41,6 +41,20 @@ def read_coordinates(path: str):
     return xyz, vel, box
 
 
+def read_trajectory(path: str, atoms=None, stride: int = 1):
+    """Frames of an Amber NetCDF trajectory: (coordinates A (F, N, 3) float64, box lengths A (F, 3)
+    or None, time ps (F,)); `atoms` selects atoms (e.g. the protein), `stride` frames."""
+    f = netcdf_file(path, "r", mmap=False)
+    v = f.variables
+    X = np.array(v["coordinates"][::stride], float)
+    if atoms is not None:
+        X = X[:, np.asarray(atoms)]
+    box = np.array(v["cell_lengths"][::stride], float) if "cell_lengths" in v else None
+    t = np.array(v["time"][::stride], float) if "time" in v else np.arange(len(X), dtype=float)
+    f.close()
+    return X, box, t
+
+
 def cell_parameters(H):
     """Box matrix (rows, A or nm) -> lengths, angles (deg)."""
     H = np.asarray(H, float)

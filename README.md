@@ -24,7 +24,9 @@ any order. Validated against Amber (sander, pmemd-pgm) and PyRESP.
 **Getting started with parameterization:** `docs/howto_bonded.md` (bond, angle, torsion terms
 for flexible molecules) and `docs/howto_vdw.md` (Lennard-Jones from liquid properties and gas-phase
 data). The model options (electrostatics levels, quadrupoles, GVDW, the three bonded
-sets) are described, with their checks, in `docs/model_options.md`. The software paper (LaTeX + PDF) is in `paper/`.
+sets) are described, with their checks, in `docs/model_options.md`. The protein force-field pipeline
+(pGM + Amber-form / neural bonded terms with CMAP, protein MD, export to Amber, reweighting) is in
+`docs/protein_ff.md`. The software paper (LaTeX + PDF) is in `paper/`.
 
 Started on 2026-09-23 from the pGM core of `~/project/evoff` (commit `73d961c`); this repository
 is where the two projects diverge (evoff searches over functional forms, pGM-JAX keeps pGM's).
@@ -319,17 +321,18 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/md/flexible.py` | flexible molecules in MD: `FlexibleTemplate` (bonded fit -> MD), `RigidTemplate` (water, ions by constraints), `FlexibleSimulation` (atoms, g-BAOAB with SHAKE / RATTLE, `constraints="h-bonds"`, `hmr`), `liquid_box` |
 | `pgm_jax/protein/` | proteins: `residues` (bond orders, terminal keys), `library` (`ResidueLibrary`: pGM parameters by residue and atom name, JSON), `amber` (`load_amber`: tleap system -> pgm_jax molecules; `amber_template`: ff19SB-form bonded terms + CMAP) |
 | `scripts/protein/` | `build_amber.py` (PDB -> solvated tleap topology), `bench_protein.py` (speed of a solvated protein) |
+| `pgm_jax/ensemble.py` | `Reweighting`: ensemble averages, n_eff and parameter gradients from saved frames; Karplus J couplings, phi/psi regions |
 | `pgm_jax/md/topology.py` | `MDTopology`: neighbour-list groups (heavy-atom groups for large molecules), special pairs with van der Waals weights, constraints |
 | `pgm_jax/md/constraints.py` | SHAKE / RATTLE solved exactly per cluster (water, CH3, ...), vectorised; hydrogen mass repartitioning |
 | `scripts/fit_liquid.py` | LJ from liquid density + heat of vaporization (ensemble gradients, Gauss-Newton) |
-| `examples/`, `docs/` | fit-and-run examples; how-tos for bonded and van der Waals parameterization |
+| `examples/`, `docs/` | fit-and-run examples; how-tos for bonded and van der Waals parameterization; `protein_ff.md` |
 | `paper/` | the pGM-JAX paper (LaTeX, PDF, figure data and scripts) |
 | `pgm_jax/bonded/` | bonded terms for flexible pGM molecules: `topology.py` (incl. peptide backbone and residues from the graph), `terms/` (registry and `SETS`: `core`, `classical`, `class2`, `explore`, `cmap`), `model.py` (`BondedTerms`, `BondedModel`), `fit.py`, `bench.py`, `data.py`, `molecules.py`, `amber.py` (GAFF / ff19SB import, prmtop export), `nn/` (neural bonded terms: `features`, `layers`, `instances`, `model`) |
 | `pgm_jax/prmtop.py` | Amber prmtop as raw sections: read, edit, write (unknown sections such as pGM's kept verbatim) |
 | `scripts/bonded/` | the bonded study: sampling, DFT labels, pGM parameters, experiments, report |
 | `scripts/run_md.py` | MD from an Amber prmtop + inpcrd/rst7 (Amber-style options) |
 | `scripts/bench_md.py`, `scripts/pgm_supercell.py` | MD speed benchmark; replicate a pGM prmtop for larger systems |
-| `tests/` | `pytest -q`: 81 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
+| `tests/` | `pytest -q`: 87 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
 | `scripts/validate_amber.py` | comparison with sander / pmemd-pgm / PyRESP (`compare`, `pyresp`, `virial`) |
 | `scripts/bench.py` | timings on the current device |
 | `validation/` | Amber reference runs (inputs + outputs) and `validate_amber.json` |
