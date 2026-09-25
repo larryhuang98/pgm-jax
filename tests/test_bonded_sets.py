@@ -86,3 +86,35 @@ def test_nnb_template_md_consistency():
     F = np.asarray(sim.state.dyn.force)
     g = np.asarray(jax.grad(lambda R: model.energy(0, R, P)[0])(jnp.asarray(y)))
     assert np.abs(F + g).max() < 1e-3 * np.sqrt(np.mean(g ** 2))
+
+
+def test_nnb_typed_table_and_residual_penalty():
+    spec, x = _methanol_spec()
+    model = BondedModel([spec], BondedSettings(families=T.SETS["nn"], nn_table_depth=0, nn_resid_l2=1.0))
+    nn = model.nnb
+    P = model.init_params()
+    assert set(nn.tvoc) == set(T.PAPER) | {"b0", "th0"}
+    # element-typed keys: one bond key per element pair
+    pairs = {tuple(sorted((spec.elements[i], spec.elements[j]))) for i, j in spec.top.bonds}
+    assert len(nn.tvoc["bond_morse"]) == len(pairs) == len(nn.tvoc["b0"])
+    rng = np.random.default_rng(5)
+    Q = dict(P["nnb"])
+    for k in Q:
+        if k.startswith("tab_"):
+            Q[k] = jnp.asarray(rng.normal(size=Q[k].shape))
+    # network residual zero (output layers start at zero): the typed table alone, no penalty
+    C = nn.coefficients(Q, 0)
+    el = spec.elements
+    Kb = np.asarray(C["bond_morse"]["Kb"])
+    key = [tuple(sorted((el[i], el[j]))) for i, j in spec.top.bonds]
+    for a in range(len(key)):
+        for b in range(len(key)):
+            if key[a] == key[b]:
+                assert Kb[a] == Kb[b]
+    assert float(nn.penalty(Q, [0])) == 0.0
+    # random network: a positive penalty with a gradient on the heads only through the residual
+    Q = jax.tree_util.tree_map(lambda v: v + 0.1 * jnp.asarray(rng.normal(size=v.shape)), Q)
+    pen = float(nn.penalty(Q, [0]))
+    g = jax.grad(lambda q: nn.penalty(q, [0]))(Q)
+    assert pen > 0 and float(jnp.abs(g["head_bond_morse"]["w2"]).max()) > 0
+    assert float(jnp.abs(g["tab_bond_morse"]).max()) == 0.0

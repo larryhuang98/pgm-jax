@@ -74,6 +74,8 @@ class BondedSettings:
     nn_b_span: float = 0.01
     nn_out_scale: float = 2.0           # head output -> parameter change, in units of fit.SCALES
     nn_pgm_features: bool = True        # atom features include the pGM q, alpha, radius, |covalent dipoles|
+    nn_table_depth: int | None = None   # typed table (atom environments to this depth; 0 = elements) + residual
+    nn_resid_l2: float = 0.0            # shrinkage of the network residual towards the typed table
 
 
 @dataclass
@@ -116,7 +118,8 @@ class BondedModel:
             from .nn import NNBonded
             self.nnb = NNBonded(mols, settings.nn_width, settings.nn_layers, settings.nn_ref, settings.nn_basis,
                                 b_span=settings.nn_b_span, th_span=settings.nn_th_span,
-                                out_scale=settings.nn_out_scale, pgm_features=settings.nn_pgm_features)
+                                out_scale=settings.nn_out_scale, pgm_features=settings.nn_pgm_features,
+                                table_depth=settings.nn_table_depth, resid_l2=settings.nn_resid_l2)
         # tying keys
         self.keyf = []
         for m in mols:

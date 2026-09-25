@@ -26,6 +26,13 @@ time the parameters are fixed tables, so the speed is that of the classical fami
   Stage 2, coordinates -> energy: the families' own energy functions with per-instance
   parameters.  `freeze` evaluates stage 1 once (FlexibleTemplate does it for MD).
 
+Typed table + network residual (`table_depth`, `resid_l2`): with table_depth = d every head's
+output is  table[typed key of the instance] + network residual,  the typed key being the one of
+the classical terms with atom environments to depth d (0 = element-typed).  A penalty
+resid_l2 * mean(residual^2) (training molecules) shrinks the residual, so the model is the typed
+force field where the data do not ask for more, and an environment-aware one where they do.
+The typed table is readable (bond C-H, angle H-C-O, ...) like a classical parameter file.
+
 Reference values: `ref="geometry"` starts r0 and th0 from the molecule's minimum geometry (from
 MACE-OFF or DFT, available for any new molecule); `ref="predicted"` from covalent radii and
 hybridization angles.  Trained with pGM nonbonded in the loop (bonded/fit.py, Adam then L-BFGS).
@@ -74,7 +81,8 @@ class NNBonded:
     """Stage 1 + stage 2 for a list of MolSpecs (their topologies must be built)."""
 
     def __init__(self, mols, width: int = 32, layers: int = 3, ref: str = "geometry", basis=T.PAPER,
-                 b_span: float = 0.01, th_span: float = 0.35, out_scale: float = 2.0, pgm_features: bool = True):
+                 b_span: float = 0.01, th_span: float = 0.35, out_scale: float = 2.0, pgm_features: bool = True,
+                 table_depth: int | None = None, resid_l2: float = 0.0):
         if ref not in ("geometry", "predicted"):
             raise ValueError("ref: geometry | predicted")
         for f in basis:
@@ -84,6 +92,7 @@ class NNBonded:
         self.W, self.L, self.ref, self.basis = width, layers, ref, tuple(basis)
         self.b_span, self.th_span, self.out_scale = b_span, th_span, out_scale
         self.pgm_features = pgm_features
+        self.table_depth, self.resid_l2 = table_depth, resid_l2
         self.mols = mols
         self.data = [self._prepare(m) for m in mols]
         self.n_feat = self.data[0]["X"].shape[1]
@@ -96,6 +105,16 @@ class NNBonded:
                     if sk not in voc:
                         voc.append(sk)
                 self.slots[f] = max(self.slots.get(f, 1), rec["n_slots"])
+        # typed table vocabularies (families, bond and angle references)
+        self.tvoc = {}
+        if table_depth is not None:
+            for d in self.data:
+                for f, keys in d["tkeys"].items():
+                    voc = self.tvoc.setdefault(f, {})
+                    for k in keys:
+                        voc.setdefault(k, len(voc))
+            for d in self.data:
+                d["tid"] = {f: np.array([self.tvoc[f][k] for k in keys], int) for f, keys in d["tkeys"].items()}
         for d in self.data:
             for f, rec in d["fam"].items():
                 rec["skel_onehot"] = np.eye(len(self.skel[f]))[[self.skel[f].index(k) for k in rec["skel_of"]]] \
@@ -169,8 +188,16 @@ class NNBonded:
             fams[f] = {"I": {k: np.asarray(v) for k, v in idx.items()}, "n": len(keys), "n_slots": n_slots,
                        "skel_of": skel_of, "skeletons": sorted(set(skel_of)),
                        "groups": {k: (np.asarray(v[0], int), np.asarray(v[1], int)) for k, v in groups.items()}}
+        tkeys = {}
+        if self.table_depth is not None:
+            from .model import _classes
+            cl = _classes(spec.elements, [tuple(b) for b in top.bonds], self.table_depth)
+            kt = lambda atoms, kind: top.key(atoms, kind, cl) if kind != "atom" else cl[atoms[0]]
+            tkeys = {f: list(T.REGISTRY[f].index(top, kt)[1]) for f in self.basis}
+            tkeys["b0"] = [kt(b, "bond") for b in top.bonds]
+            tkeys["th0"] = [kt(a, "angle") for a in top.angles]
         return {"X": np.asarray(X, float), "src": src, "dst": dst, "ef": ef, "n": n, "top": top,
-                "bonds": np.asarray(top.bonds), "angles": np.asarray(top.angles).reshape(-1, 3),
+                "bonds": np.asarray(top.bonds), "angles": np.asarray(top.angles).reshape(-1, 3), "tkeys": tkeys,
                 "b_ref": b_ref, "th_ref": th_ref, "fam": fams}
 
     # ------------------------------------------------------------------ parameters
@@ -189,6 +216,8 @@ class NNBonded:
         for f in self.basis:
             n_in = self.slots.get(f, 1) * 5 * W + len(self.skel.get(f, []))
             P["head_" + f] = _init_mlp(ks.pop(), n_in, W, self._n_out(f), zero_out=True)
+        for f, voc in self.tvoc.items():
+            P["tab_" + f] = jnp.zeros((len(voc), 1 if f in ("b0", "th0") else self._n_out(f)))
         return P
 
     def embeddings(self, P, m):
@@ -220,8 +249,26 @@ class NNBonded:
         S = sum(H)
         return jnp.concatenate([H[0], S, sum(x * y for p, x in enumerate(H) for y in H[p + 1:])], -1)
 
+    def _tab(self, P, d, f, out):
+        """Typed-table part + network residual `out` (instances, n_out); records mean(out^2)."""
+        self._res.append(jnp.mean(out ** 2) if out.size else 0.0)
+        if "tab_" + f in P:
+            return P["tab_" + f][d["tid"][f]] + out
+        return out
+
+    def penalty(self, P, mols) -> float:
+        """resid_l2 * mean over the molecules `mols` and heads of mean(residual^2)."""
+        if not self.resid_l2 or not len(mols):
+            return 0.0
+        tot = 0.0
+        for m in mols:
+            self.coefficients(P, m)
+            tot = tot + sum(self._res) / len(self._res)
+        return self.resid_l2 * tot / len(mols)
+
     def coefficients(self, P, m) -> dict:
         """Stage 1: reference values and per-instance family parameters of molecule m."""
+        self._res = []
         d = self.data[m]
         h = self.embeddings(P, m)
         W = self.W
@@ -230,10 +277,10 @@ class NNBonded:
         # graph-equivalent bonds/angles that the minimum geometry does not treat alike)
         br, tr = jnp.asarray(d["b_ref"]), jnp.asarray(d["th_ref"])
         fb = jnp.concatenate([self.readout("bond", h, b), ((br - 0.12) / 0.03)[:, None]], -1)
-        C = {"b0": br + self.b_span * jnp.tanh(_mlp(P["ref_bond"], fb)[:, 0])}
+        C = {"b0": br + self.b_span * jnp.tanh(self._tab(P, d, "b0", _mlp(P["ref_bond"], fb))[:, 0])}
         if len(a):
             fa = jnp.concatenate([self.readout("angle", h, a), ((tr - 1.91) / 0.2)[:, None]], -1)
-            C["th0"] = tr + self.th_span * jnp.tanh(_mlp(P["ref_angle"], fa)[:, 0])
+            C["th0"] = tr + self.th_span * jnp.tanh(self._tab(P, d, "th0", _mlp(P["ref_angle"], fa))[:, 0])
         else:
             C["th0"] = jnp.zeros(0)
         for f in self.basis:
@@ -246,7 +293,7 @@ class NNBonded:
                 r = self.readout(kind, h, atoms)
                 feat = feat.at[inst, slot * 5 * W: slot * 5 * W + r.shape[1]].set(r)
             feat = jnp.concatenate([feat, jnp.asarray(rec["skel_onehot"])], -1)
-            o = _mlp(P["head_" + f], feat)
+            o = self._tab(P, d, f, _mlp(P["head_" + f], feat))
             p, c0 = {}, 0
             for pname, (shape, init) in T.REGISTRY[f].params.items():
                 size = int(np.prod(shape)) if shape else 1

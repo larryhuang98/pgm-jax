@@ -33,6 +33,8 @@ ap.add_argument("--tag", default="")
 ap.add_argument("--basis", default="paper", help="families the network parameterises: a FAMILY_SETS name or f1+f2+...")
 ap.add_argument("--l2", type=float, default=1e-4)
 ap.add_argument("--no-pgm-features", action="store_true")
+ap.add_argument("--table-depth", type=int, default=None, help="typed table + network residual (0 = element-typed)")
+ap.add_argument("--resid-l2", type=float, default=0.0)
 ap.add_argument("--holds", default="", help="loo: comma-separated indices of the held-out molecules to run")
 a = ap.parse_args()
 names = a.mols.split(",")
@@ -42,7 +44,8 @@ os.makedirs(os.path.dirname(out_path), exist_ok=True)
 res = {"args": vars(a), "molecules": {}}
 nn = BondedSettings(families=("nnb",), nn_width=a.width, nn_layers=a.layers, nn_ref=a.ref,
                     nn_th_span=a.th_span, nn_out_scale=a.out_scale, nn_pgm_features=not a.no_pgm_features,
-                    nn_basis=FAMILY_SETS.get(a.basis, tuple(a.basis.split("+"))))
+                    nn_basis=FAMILY_SETS.get(a.basis, tuple(a.basis.split("+"))),
+                    nn_table_depth=a.table_depth, nn_resid_l2=a.resid_l2)
 
 
 def run(model, train_idx, test_idx):

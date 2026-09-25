@@ -32,24 +32,23 @@ def baseline(mol, form):
 
 
 summary = {"loo": {}, "permol": {}}
-loo = {ref: merged(f"loo_{ref}_[ab].json") for ref in ("geometry", "predicted")}
-mols = [m for m in loo["geometry"] if m in loo["predicted"]] or list(loo["geometry"]) or list(loo["predicted"])
+RUNS = {"nnb_table10": "loo_geometry_vT3*.json",        # typed table + residual, resid_l2 10, geometry ref
+        "nnb_table1": "loo_geometry_vT1*.json",          # typed table + residual, resid_l2 1
+        "nnb_predicted": "loo_predicted_[ab].json"}       # network only, predicted ref
+LABELS = ["NNB, table + residual (shrinkage 10)", "NNB, table + residual (shrinkage 1)",
+          "NNB, network only (predicted ref)", "class II, element-typed", "class I, element-typed"]
+loo = {k: merged(p) for k, p in RUNS.items()}
+mols = list(dict.fromkeys(sum((list(v) for v in loo.values()), [])))
+cols = {k: [] for k in list(RUNS) + ["class_ii", "class_i"]}
 if mols:
     print("Leave one molecule out (held-out molecule, 298 K frames): energy MAE kcal/mol / force MAE kcal/mol/A\n")
-    print("| held out | NNB, geometry ref | NNB, predicted ref | class II, element-typed | class I, element-typed |")
-    print("|---|---|---|---|---|")
-    cols = {"nnb_geometry": [], "nnb_predicted": [], "class_ii": [], "class_i": []}
+    print("| held out | " + " | ".join(LABELS) + " |")
+    print("|---" * (len(LABELS) + 1) + "|")
     for m in mols:
-        row = {}
-        for ref in ("geometry", "predicted"):
-            r = loo[ref].get(m)
-            row[f"nnb_{ref}"] = (r["test"]["E_MAE"], r["test"]["F_MAE"]) if r else None
+        row = {k: ((loo[k][m]["test"]["E_MAE"], loo[k][m]["test"]["F_MAE"]) if m in loo[k] else None) for k in RUNS}
         row["class_ii"] = baseline(m, "paper")
         row["class_i"] = baseline(m, "diag")
         summary["loo"][m] = row
-        for k, v in row.items():
-            if v is not None:
-                cols[k].append(v)
         f = lambda v: "" if v is None else f"{v[0]:.2f} / {v[1]:.1f}"
         print(f"| {m} | " + " | ".join(f(row[k]) for k in cols) + " |")
     complete = [m for m in mols if all(summary["loo"][m][k] is not None for k in cols)]

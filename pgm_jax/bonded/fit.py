@@ -129,6 +129,9 @@ class Fitter:
             ms = [m for m in t if m in self.esp]
             if ms:          # (ESP RMSE / 2 mhartree/e)^2; the py_resp pGM fits reach 0.4-2 mhartree/e
                 L = L + self.w_esp * sum(self.esp_rmse(m, P)[0] ** 2 for m in ms) / S_ESP ** 2 / len(ms)
+        nnb = getattr(self.model, "nnb", None)
+        if nnb is not None and split == "train" and "coef" not in P["nnb"]:
+            L = L + nnb.penalty(P["nnb"], list(t))        # shrinks the network residual to the typed table
         return L
 
     # ------------------------------------------------------------------ optimisation
