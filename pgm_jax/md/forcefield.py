@@ -24,9 +24,10 @@ The induced dipoles minimise E (a quadratic in mu); they are solved each step as
     max|alpha r| / mean|alpha b| <= tol (pmemd-pgm's criterion), then one peek step
     mu += omega alpha r (scf_sor_coefficient).
 Forces are -dE/dR at fixed mu (E is variational in mu).  Pair terms run over rows: for each atom,
-its intramolecular partners (a small fixed table) followed by its intermolecular candidates from
-the neighbour list, compacted every step to the pairs inside the cutoff (fixed capacity; the
-driver re-sizes and repeats on overflow).  Rows are stored as a structure of arrays (index, x, y,
+its special partners (a fixed table from md/topology.py: the rest of a small molecule, the nearby
+heavy-atom groups of a large one, each with a van der Waals weight) followed by its candidates
+from the neighbour list (van der Waals weight 1), compacted every step to the pairs inside the
+cutoff (fixed capacity; the driver re-sizes and repeats on overflow).  Rows are stored as a structure of arrays (index, x, y,
 z, G0..G3): the row kernels are memory bound and read each component with unit stride.
 Intramolecular displacements come from offsets within the molecule (exact in float32).  Every pair
 appears in both rows: per-atom sums with no scatter-adds, and the pair forces are row sums of the
@@ -58,6 +59,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..lj import lj_long_range
+from .topology import MDTopology
 from ..options import check_vdw, elec_flags
 from ..system import System
 from ..vdw import gvdw_long_range, gvdw_pair
@@ -154,7 +156,7 @@ def _push(stack, x):
 
 class PGMForceField:
     def __init__(self, sys: System, H, settings: MDSettings = MDSettings(), short_capacity: int = 48,
-                 row_capacity: int | None = None):
+                 row_capacity: int | None = None, topology: MDTopology | None = None):
         self.sys, self.s = sys, settings
         if settings.predictor not in ("mu4", "mu3", "ls", "none"):
             raise ValueError(f"unknown predictor {settings.predictor!r}")
@@ -176,16 +178,12 @@ class PGMForceField:
         self.S = max(1, int(settings.extrap_steps))
         self.ms = int(short_capacity)
         self.mc = row_capacity            # intermolecular pairs kept per row (None: no compaction)
-        # intramolecular partners of every atom (all pairs interact in pGM; fixed table)
-        counts = np.bincount(mol, minlength=sys.nmol)
-        ni = max(int(counts.max()) - 1, 1)
-        intra = np.full((self.n, ni), self.n, np.int32)
-        for k in range(sys.nmol):
-            atoms = np.nonzero(mol == k)[0]
-            for a in atoms:
-                others = atoms[atoms != a]
-                intra[a, :len(others)] = others
-        self.intra = jnp.asarray(intra)
+        # special partners of every atom (fixed table with van der Waals weights; md/topology.py)
+        self.topology = MDTopology.rigid(sys) if topology is None else topology
+        self.special = jnp.asarray(self.topology.special)
+        self.special_w = jnp.asarray(self.topology.special_w, jnp.float64)
+        self.gid = jnp.asarray(self.topology.group, jnp.int32)
+        self.sg = jnp.asarray(self.topology.special_groups)
         first = np.searchsorted(mol, np.arange(sys.nmol)) if np.all(np.diff(mol) >= 0) else \
             np.array([int(np.nonzero(mol == k)[0][0]) for k in range(sys.nmol)])
         self.first = jnp.asarray(first)
@@ -213,26 +211,35 @@ class PGMForceField:
             x = [x[j] - n * H[c, j] if j <= c else x[j] for j in range(3)]
         return x
 
+    @property
+    def intra(self):
+        """The special-partner table (the name of the rigid engine's intramolecular table)."""
+        return self.special
+
     def _intra_exact(self, pos, H, k, x, cd):
-        """Replace the intramolecular entries (first columns) by differences of offsets from each
-        molecule's first atom: exact in float32 whatever the absolute coordinates."""
-        ni = self.intra.shape[1]
+        """Replace the special entries (first columns; same molecule) by differences of offsets
+        from each molecule's first atom: exact in float32 whatever the absolute coordinates."""
+        ni = self.special.shape[1]
         off = (pos - pos[self.first][self.mol]).astype(cd)
-        xi = self._displacements(off, self.intra, H)
-        hit = (k[:, :ni] == self.intra) & (self.intra < self.n)
+        xi = self._displacements(off, self.special, H)
+        hit = (k[:, :ni] == self.special) & (self.special < self.n)
         return tuple(xc.at[:, :ni].set(jnp.where(hit, xic, xc[:, :ni])) for xc, xic in zip(x, xi))
 
     def _rows(self, pos, H, idx):
-        """Rows = [intramolecular partners | intermolecular candidates from the neighbour list],
-        masked to the cutoff and, with a row capacity set, compacted to the pairs inside it.
-        Returns k, x = (x, y, z) components (compute dtype), within, inter masks, overflow flag."""
+        """Rows = [special partners | candidates from the neighbour list], masked to the cutoff and,
+        with a row capacity set, compacted to the pairs inside it.  List candidates in the atom's
+        special groups are dropped (those pairs come from the table).  Returns k, x = (x, y, z)
+        components (compute dtype), the within mask, van der Waals weights (0 off `within`) and
+        the overflow flag."""
         N, cd = self.n, self.cd
-        ni = self.intra.shape[1]
-        cand = jnp.concatenate([self.intra, idx.astype(self.intra.dtype)], axis=1)
+        ni = self.special.shape[1]
+        cand = jnp.concatenate([self.special, idx.astype(self.special.dtype)], axis=1)
         valid = cand < N
         k = jnp.where(valid, cand, 0)
         from_list = jnp.arange(cand.shape[1])[None, :] >= ni
-        keep = valid & ~(from_list & (self.mol[:, None] == self.mol[k]))   # intramolecular pairs from the table only
+        in_special = jnp.any(self.gid[k][:, :, None] == self.sg[:, None, :], axis=-1)
+        keep = valid & ~(from_list & in_special)
+        wv = jnp.concatenate([self.special_w.astype(cd), jnp.ones(idx.shape, cd)], axis=1)
         p = pos.astype(cd)
         Hc = H.astype(cd)
         x = self._displacements(p, k, Hc)
@@ -245,15 +252,15 @@ class PGMForceField:
             tgt = jnp.where(within & (slot < mc), slot, mc)
             rows = jnp.broadcast_to(jnp.arange(N)[:, None], k.shape)
             k = jnp.zeros((N, mc + 1), k.dtype).at[rows, tgt].set(k)[:, :mc]
+            wv = jnp.zeros((N, mc + 1), wv.dtype).at[rows, tgt].set(wv)[:, :mc]
             within = jnp.arange(mc)[None, :] < jnp.minimum(count, mc)[:, None]
             x = self._displacements(p, k, Hc)                  # recompute on the compacted rows
             overflow = jnp.max(count) > mc
         x = self._intra_exact(pos, Hc, k, x, cd)
-        inter = within & (self.mol[:, None] != self.mol[k])
-        return k, x, within, inter, overflow
+        return k, x, within, jnp.where(within, wv, 0.0), overflow
 
     def row_counts(self, pos, H, idx):
-        """Largest number of pairs (intramolecular + intermolecular inside the cutoff) in any row."""
+        """Largest number of pairs (special + list pairs inside the cutoff) in any row."""
         saved, self.mc = self.mc, None
         try:
             return jnp.max(jnp.sum(self._rows(pos, H, idx)[2], axis=1))
@@ -276,13 +283,13 @@ class PGMForceField:
         """Row displacements and kernels G0..G2 (G3 and LJ pair parameters with `forces`)."""
         cd = self.cd
         nmax = 4 if forces else 3
-        k, x, within, inter, overflow = self._rows(pos, H, idx)
+        k, x, within, wv, overflow = self._rows(pos, H, idx)
         r, *G = self._kernels(x, within, self._pair_a(P["radius"].astype(cd), k), nmax)
         g = {"k": k, "x": x, "overflow": overflow}
         for n in range(nmax):
             g[f"G{n}"] = G[n]
         if forces:
-            g.update(r=r, inter=inter, vp=self._vdw_params(P, k))
+            g.update(r=r, wv=wv, vp=self._vdw_params(P, k))
         if self.s.local_niter > 0:
             short = within & (r < self.s.local_cut)
             g["short"] = self._short_rows(k, x, g["G1"], g["G2"], short)
@@ -526,8 +533,9 @@ class PGMForceField:
                     self._pair_a(P["radius"].astype(cd), k))
         return ()
 
-    def _vdw_rows(self, r, vp, inter, grad: bool = False):
-        """Row pair energies (and (1/r) dU/dr) of the van der Waals form, zero off `inter`."""
+    def _vdw_rows(self, r, vp, wv, grad: bool = False):
+        """Row pair energies (and (1/r) dU/dr) of the van der Waals form times the pair weights wv
+        (0 for excluded pairs and outside the cutoff)."""
         if self.s.vdw == "lj":
             rminp, epsp = vp
             s6 = (rminp / r) ** 6
@@ -538,7 +546,8 @@ class PGMForceField:
             e, d = gvdw_pair(r, a, A, C6, B, self.s.gvdw_rep, grad=True)
         else:
             e = d = jnp.zeros_like(r)
-        e, d = jnp.where(inter, e, 0.0), jnp.where(inter, d, 0.0)
+        on = wv != 0
+        e, d = jnp.where(on, e * wv, 0.0), jnp.where(on, d * wv, 0.0)
         return (e, d) if grad else e
 
     def _vdw_tail(self, P, H):
@@ -547,7 +556,7 @@ class PGMForceField:
         f = lj_long_range if self.s.vdw == "lj" else gvdw_long_range
         return f(P, volume(H), self.s.cutoff)
 
-    def _pair_sum(self, x, di, dk, qi, qk, a, within, inter, vp):
+    def _pair_sum(self, x, di, dk, qi, qk, a, within, wv, vp):
         """sum over row entries of KE e_elec + e_vdW (each pair twice), float64 (autodiff path).
         x, di, dk: component triples of (N, C) arrays."""
         r, G0, G1, G2 = self._kernels(x, within, a)
@@ -555,7 +564,7 @@ class PGMForceField:
         dkx = dk[0] * x[0] + dk[1] * x[1] + dk[2] * x[2]
         didk = di[0] * dk[0] + di[1] * dk[1] + di[2] * dk[2]
         e = qi * qk * G0 + (qi * dkx - qk * dix) * G1 - G2 * dix * dkx + G1 * didk
-        elj = self._vdw_rows(r, vp, inter)
+        elj = self._vdw_rows(r, vp, wv)
         se = jnp.sum(jnp.sum(e, axis=1).astype(jnp.float64))
         sl = jnp.sum(jnp.sum(elj, axis=1).astype(jnp.float64))
         return KE * se + sl, (KE * se, sl)
@@ -563,13 +572,13 @@ class PGMForceField:
     def _row_inputs(self, pos, H, idx, P, d):
         """Rows for the differentiable (autodiff) energy."""
         cd = self.cd
-        k, x, within, inter, _ = self._rows(pos, H, idx)
+        k, x, within, wv, _ = self._rows(pos, H, idx)
         R, q = P["radius"], P["q"]
         a = self._pair_a(R.astype(cd), k)
         dc = d.astype(cd)
         di = tuple(dc[:, j][:, None] for j in range(3))
         dk = tuple(dc[:, j][k] for j in range(3))
-        consts = (dk, q.astype(cd)[:, None], q.astype(cd)[k], a, within, inter, self._vdw_params(P, k))
+        consts = (dk, q.astype(cd)[:, None], q.astype(cd)[k], a, within, wv, self._vdw_params(P, k))
         return x, di, consts
 
     def energy_fixed_mu(self, pos, H, mu, idx, P):
@@ -577,8 +586,8 @@ class PGMForceField:
         differentiable in positions and box (used for virials and Monte Carlo trials)."""
         p = self.perm_dipoles(pos, H, P["cov"])
         d = p + mu
-        x, di, (dk, qi, qk, a, within, inter, vp) = self._row_inputs(pos, H, idx, P, d)
-        spair, (se, sl) = self._pair_sum(x, di, dk, qi, qk, a, within, inter, vp)
+        x, di, (dk, qi, qk, a, within, wv, vp) = self._row_inputs(pos, H, idx, P, d)
+        spair, (se, sl) = self._pair_sum(x, di, dk, qi, qk, a, within, wv, vp)
         e_elec = 0.5 * se + self._nonpair(pos, H, d, mu, P)
         e_lj = 0.5 * sl + self._vdw_tail(P, H)
         return e_elec + e_lj, {"elec": e_elec, "vdw": e_lj}
@@ -598,7 +607,7 @@ class PGMForceField:
         t = qi * dkx - qk * dix
         e = qi * qk * G0 + t * G1 - G2 * dix * dkx + G1 * didk
         radial = -qi * qk * G1 - t * G2 + G3 * dix * dkx - G2 * didk
-        elj, glj = self._vdw_rows(g["r"], g["vp"], g["inter"], grad=True)
+        elj, glj = self._vdw_rows(g["r"], g["vp"], g["wv"], grad=True)
         qiG1, qkG1 = qi * G1, qk * G1
         gx = jnp.stack([jnp.sum(radial * x[j] + qiG1 * dk[j] - qkG1 * di[j] - G2 * (di[j] * dkx + dk[j] * dix), axis=1)
                         for j in range(3)], -1)

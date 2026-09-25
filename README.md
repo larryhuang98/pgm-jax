@@ -316,7 +316,9 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/model.py` | gas-phase `Model`: energies, forces, batching, n-body energies (compiled once per topology) |
 | `pgm_jax/param.py` | Amber pGM prmtop reader (incl. LJ, bonds, masses), JSON save/load, py_resp `.chg` + pGM-pol table, atom mapping |
 | `pgm_jax/md/` | MD engine: `forcefield.py` (PME + direct rows + induction solver), `pme.py`, `kernels.py`, `neighbors.py` (JAX-MD lists), `rigid.py` (JAX-MD rigid bodies), `integrate.py`, `simulation.py`, `io.py` (Amber NetCDF), `box.py` |
-| `pgm_jax/md/flexible.py` | flexible molecules in MD: `FlexibleTemplate` (bonded fit -> MD), `FlexibleSimulation`, `liquid_box` |
+| `pgm_jax/md/flexible.py` | flexible molecules in MD: `FlexibleTemplate` (bonded fit -> MD), `RigidTemplate` (water, ions by constraints), `FlexibleSimulation` (atoms, g-BAOAB with SHAKE / RATTLE, `constraints="h-bonds"`, `hmr`), `liquid_box` |
+| `pgm_jax/md/topology.py` | `MDTopology`: neighbour-list groups (heavy-atom groups for large molecules), special pairs with van der Waals weights, constraints |
+| `pgm_jax/md/constraints.py` | SHAKE / RATTLE solved exactly per cluster (water, CH3, ...), vectorised; hydrogen mass repartitioning |
 | `scripts/fit_liquid.py` | LJ from liquid density + heat of vaporization (ensemble gradients, Gauss-Newton) |
 | `examples/`, `docs/` | fit-and-run examples; how-tos for bonded and van der Waals parameterization |
 | `paper/` | the pGM-JAX paper (LaTeX, PDF, figure data and scripts) |
@@ -325,7 +327,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `scripts/bonded/` | the bonded study: sampling, DFT labels, pGM parameters, experiments, report |
 | `scripts/run_md.py` | MD from an Amber prmtop + inpcrd/rst7 (Amber-style options) |
 | `scripts/bench_md.py`, `scripts/pgm_supercell.py` | MD speed benchmark; replicate a pGM prmtop for larger systems |
-| `tests/` | `pytest -q`: 76 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
+| `tests/` | `pytest -q`: 81 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
 | `scripts/validate_amber.py` | comparison with sander / pmemd-pgm / PyRESP (`compare`, `pyresp`, `virial`) |
 | `scripts/bench.py` | timings on the current device |
 | `validation/` | Amber reference runs (inputs + outputs) and `validate_amber.json` |

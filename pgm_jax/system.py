@@ -249,13 +249,30 @@ class System:
         self.cov_j = np.array(cj, dtype=np.int32)
         qt = [(offs[k] + i, offs[k] + j, offs[k] + l) for k, m in enumerate(molecules) for i, j, l, _ in m.quad]
         self.quad_ijk = np.array(qt, dtype=np.int32).reshape(-1, 3)
-        ii, jj = np.triu_indices(self.n, k=1)
-        self.pair_i, self.pair_j = ii, jj
-        self.pair_inter = (self.mol[ii] != self.mol[jj])
+        self._pairs = None                                    # all pairs: built on first use (gas phase)
         extra_keys = set().union(*[m.extra.keys() for m in molecules]) if molecules else set()
         self.extra = {k: np.concatenate([np.asarray(m.extra[k], float) for m in molecules]) for k in extra_keys
                       if all(k in m.extra for m in molecules)}
         self.params0 = self.table.initial()
+
+    # ------------------------------------------------------------------ all pairs (gas-phase models)
+    def _all_pairs(self):
+        if getattr(self, "_pairs", None) is None:
+            ii, jj = np.triu_indices(self.n, k=1)
+            self._pairs = (ii, jj, self.mol[ii] != self.mol[jj])
+        return self._pairs
+
+    @property
+    def pair_i(self) -> np.ndarray:
+        return self._all_pairs()[0]
+
+    @property
+    def pair_j(self) -> np.ndarray:
+        return self._all_pairs()[1]
+
+    @property
+    def pair_inter(self) -> np.ndarray:
+        return self._all_pairs()[2]
 
     def expand(self, params=None) -> dict[str, jnp.ndarray]:
         """Per-atom (and per-covalent-dipole) parameter arrays from the tied tables; `None` gives
