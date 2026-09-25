@@ -6,7 +6,12 @@ Options (BondedSettings):
   families       bonded families from terms.REGISTRY (and "flux": geometry-dependent charges and
                  covalent-dipole strengths, F6)
   typing         "molecule": parameters tied by symmetry within each molecule (the paper);
-                 "type": tied across molecules by the atom environment to `depth` bonds (transfer)
+                 "type": tied across molecules by the atom environment to `depth` bonds (transfer);
+                 "amber": tied by Amber / GAFF atom types (the molecules' pGM types), as Amber
+  Bonded term sets (terms.SETS): "amber" (Amber forms, with lj14_scale 0.5 and typing "amber";
+  initial values from GAFF with bonded/amber.py), "explore" (the class II set of the bonded study
+  and the families of terms.REGISTRY), "nn" (bonded/nn.py: fast neural bonded terms)
+  elec, quadrupoles, vdw, gvdw_rep   nonbonded model options (options.py), as in the MD engine
   elec_exclude   0 = pGM (every pair); 3 = classical control (1-2, 1-3, 1-4 pairs removed from
                  permanent and induced electrostatics)
   lj_min_sep     LJ between atoms at least this many bonds apart (4 = 1-5 and beyond, the paper)
@@ -23,7 +28,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..channels import _dipole_tensor, _field_at_i, _pair_perm, perm_dipoles
+from ..channels import _dipole_tensor, _field_at_i, _pair_perm, perm_dipoles, quadrupole_field
+from ..md.kernels import erf_kernels
+from ..multipole import quadrupole_pair_terms, quadrupoles as build_quadrupoles
+from ..options import check_vdw, elec_flags
+from ..vdw import gvdw_pair
 from ..kernels import DENSITIES
 from ..solver import solve_linear_induction
 from ..system import System
@@ -53,6 +62,18 @@ class BondedSettings:
     escale: tuple = ()                  # separations (1 = 1-2, 2 = 1-3, 3 = 1-4) whose permanent pGM
                                         # pair energies get a learned scale kappa per pair type (added to
                                         # the fixed weight): learned partial exclusion
+    elec: str = "qpi"                   # electrostatics level (options.py): "q" | "qp" | "qi" | "qpi"
+    quadrupoles: bool = False           # permanent Gaussian quadrupoles (the molecules' quad terms)
+    vdw: str = "lj"                     # "lj" | "gvdw" | "none" (vdw.py)
+    gvdw_rep: str = "gauss"             # GVDW repulsion "gauss" | "slater"
+    nn_width: int = 32                  # "nnb" (bonded/nn.py): embedding width, message-passing layers,
+    nn_layers: int = 3                  # reference values ("geometry": minimum geometry + learned
+    nn_ref: str = "geometry"            # corrections; "predicted": covalent radii / hybridization)
+    nn_basis: tuple = T.PAPER           # term families whose per-instance parameters the network predicts
+    nn_th_span: float = 0.35            # max learned shift of reference angles (rad) / of bond lengths (nm)
+    nn_b_span: float = 0.01
+    nn_out_scale: float = 2.0           # head output -> parameter change, in units of fit.SCALES
+    nn_pgm_features: bool = True        # atom features include the pGM q, alpha, radius, |covalent dipoles|
 
 
 @dataclass
@@ -83,16 +104,28 @@ def _classes(elements, bonds, depth):
 class BondedModel:
     def __init__(self, mols: list[MolSpec], settings: BondedSettings = BondedSettings()):
         self.s = settings
+        self.pd, self.ind = elec_flags(settings.elec)
+        check_vdw(settings.vdw, settings.gvdw_rep)
         self.mols = mols
-        self.fams = [f for f in settings.families if f != "flux"]
+        self.fams = [f for f in settings.families if f not in ("flux", "nnb")]
         for m in mols:
             if m.top is None:
                 m.top = build_topology(m.elements, m.bonds, (m.bonds, m.bond_orders), m.ref_xyz * 10.0)
+        self.nnb = None
+        if "nnb" in settings.families:
+            from .nn import NNBonded
+            self.nnb = NNBonded(mols, settings.nn_width, settings.nn_layers, settings.nn_ref, settings.nn_basis,
+                                b_span=settings.nn_b_span, th_span=settings.nn_th_span,
+                                out_scale=settings.nn_out_scale, pgm_features=settings.nn_pgm_features)
         # tying keys
         self.keyf = []
         for m in mols:
             if settings.typing == "molecule":
                 cl = [m.name + "/" + c for c in _classes(m.elements, [tuple(b) for b in m.top.bonds], 8)]
+            elif settings.typing == "amber":                 # Amber / GAFF atom types (shared across molecules)
+                if m.pgm is None:
+                    raise ValueError(f"{m.name}: typing='amber' needs the pGM molecule (its atom types)")
+                cl = list(m.pgm.types)
             else:
                 cl = _classes(m.elements, [tuple(b) for b in m.top.bonds], settings.depth)
             self.keyf.append(lambda atoms, kind, cl=cl, top=m.top: top.key(atoms, kind, cl) if kind != "atom"
@@ -187,6 +220,8 @@ class BondedModel:
                 P["flux"]["jc2"] = jnp.zeros(len(self.ref_keys["b0"]))
         if self.s.escale:
             P["escale"] = {"kappa": jnp.zeros(len(self.es_pos))}
+        if self.nnb is not None:
+            P["nnb"] = self.nnb.init_params()
         if self.s.qbci >= 0:
             P["bci"] = {"t": jnp.zeros(len(self.t_pos)), "dc": jnp.zeros(len(self.dc_pos))}
         if self.s.qfit >= 0:                      # start from the ESP-fitted values, averaged per type
@@ -222,6 +257,8 @@ class BondedModel:
                 continue
             p = {k: v[I["k"]] for k, v in P[f].items()}
             e = e + fam.energy(G, dev, I, p)
+        if self.nnb is not None:
+            e = e + self.nnb.energy(P["nnb"], m, R)
         return e
 
     def _nonbonded_setup(self):
@@ -318,27 +355,49 @@ class BondedModel:
         if self.s.flux and P is not None and "flux" in P:
             q, cov = self._flux(m, R, P, q, cov)
         R_ = Q["radius"]
-        p = perm_dipoles(R, sys, cov)
+        p = perm_dipoles(R, sys, cov) if self.pd else jnp.zeros((sys.n, 3))
         ii, jj = sys.pair_i, sys.pair_j
         phi = self._phi
         b_pair = self._bij(R_[ii], R_[jj])
         e_perm = jnp.sum(d["w_pair"] * jax.vmap(lambda a, c, qa, pa, qc, pc, bb: _pair_perm(a, c, qa, pa, qc, pc, bb, phi))(
             R[ii], R[jj], q[ii], p[ii], q[jj], p[jj], b_pair))
-        oi, oj = d["oi"], d["oj"]
-        b_ord = self._bij(R_[oi], R_[oj])
-        F_ord = jax.vmap(lambda a, c, qc, pc, bb: _field_at_i(a, c, qc, pc, bb, phi))(R[oi], R[oj], q[oj], p[oj], b_ord)
-        F = jnp.zeros((sys.n, 3)).at[oi].add(d["w_ord"][:, None] * F_ord)
-        Tp = jax.vmap(lambda a, c, bb: _dipole_tensor(a, c, bb, phi))(R[ii], R[jj], b_pair) * d["w_pind"][:, None, None]
-        Tm = jnp.zeros((sys.n, sys.n, 3, 3)).at[ii, jj].set(Tp).at[jj, ii].set(jnp.swapaxes(Tp, 1, 2))
-        mu = solve_linear_induction(Tm, Q["alpha"], F)
-        e_ind = -0.5 * jnp.sum(mu * F)
-        r = jnp.linalg.norm(R[ii] - R[jj], axis=-1)
-        s6 = ((Q["lj_rmin_half"][ii] + Q["lj_rmin_half"][jj]) / r) ** 6
-        e_lj = jnp.sum(d["lj"] * Q["lj_sqrt_eps"][ii] * Q["lj_sqrt_eps"][jj] * (s6 * s6 - 2.0 * s6))
+        Th = None
+        if self.s.quadrupoles:
+            Th = build_quadrupoles(R, sys, Q["quad"])
+            x = R[ii] - R[jj]
+            B = erf_kernels(b_pair, jnp.linalg.norm(x, axis=-1), 5)
+            e_perm = e_perm + jnp.sum(d["w_pair"] * quadrupole_pair_terms(x, B, q[ii], p[ii], Th[ii], q[jj], p[jj], Th[jj]))
+        if self.ind:
+            oi, oj = d["oi"], d["oj"]
+            b_ord = self._bij(R_[oi], R_[oj])
+            F_ord = jax.vmap(lambda a, c, qc, pc, bb: _field_at_i(a, c, qc, pc, bb, phi))(R[oi], R[oj], q[oj], p[oj], b_ord)
+            if Th is not None:
+                F_ord = F_ord + quadrupole_field(R[oi] - R[oj], b_ord, Th[oj])
+            F = jnp.zeros((sys.n, 3)).at[oi].add(d["w_ord"][:, None] * F_ord)
+            Tp = jax.vmap(lambda a, c, bb: _dipole_tensor(a, c, bb, phi))(R[ii], R[jj], b_pair) * d["w_pind"][:, None, None]
+            Tm = jnp.zeros((sys.n, sys.n, 3, 3)).at[ii, jj].set(Tp).at[jj, ii].set(jnp.swapaxes(Tp, 1, 2))
+            mu = solve_linear_induction(Tm, Q["alpha"], F)
+            e_ind = -0.5 * jnp.sum(mu * F)
+        else:
+            mu, e_ind = jnp.zeros((sys.n, 3)), 0.0
+        e_lj = self._vdw(R, Q, d["lj"], ii, jj, b_pair)
         dip = jnp.sum(q[:, None] * R, 0) + jnp.sum(p, 0) + jnp.sum(mu, 0)
         if state:
-            return KE * (e_perm + e_ind) + e_lj, dip, {"q": q, "p": p, "mu": mu, "radius": R_}
+            return KE * (e_perm + e_ind) + e_lj, dip, {"q": q, "p": p, "mu": mu, "radius": R_, "Theta": Th}
         return KE * (e_perm + e_ind) + e_lj, dip
+
+    def _vdw(self, R, Q, w, ii, jj, b_pair):
+        """Intramolecular van der Waals with pair weights w (lj_min_sep, lj14_scale), kJ/mol."""
+        if self.s.vdw == "none":
+            return 0.0
+        r = jnp.linalg.norm(R[ii] - R[jj], axis=-1)
+        if self.s.vdw == "lj":
+            s6 = ((Q["lj_rmin_half"][ii] + Q["lj_rmin_half"][jj]) / r) ** 6
+            return jnp.sum(w * Q["lj_sqrt_eps"][ii] * Q["lj_sqrt_eps"][jj] * (s6 * s6 - 2.0 * s6))
+        A = Q["gvdw_sqrt_a"][ii] * Q["gvdw_sqrt_a"][jj]
+        C6 = Q["gvdw_sqrt_c6"][ii] * Q["gvdw_sqrt_c6"][jj]
+        B = 0.5 * (Q["gvdw_b"][ii] + Q["gvdw_b"][jj])
+        return jnp.sum(w * gvdw_pair(r, b_pair, A, C6, B, self.s.gvdw_rep))
 
     def esp(self, m: int, R, grid, P=None, eparams=None):
         """Electrostatic potential (hartree/e) of the polarised pGM molecule at grid points (k, 3) nm:
@@ -351,7 +410,12 @@ class BondedModel:
 
         def at(g):
             one = lambda rj, qj, pj, bb: qj * f(g, rj, bb) + pj @ jax.grad(f, 1)(g, rj, bb)
-            return jnp.sum(jax.vmap(one)(R, st["q"], pt, b))
+            v = jnp.sum(jax.vmap(one)(R, st["q"], pt, b))
+            if st["Theta"] is not None:                        # (1/3)(x Th x) B2, x = g - r_j
+                x = g[None] - R
+                B2 = erf_kernels(b, jnp.linalg.norm(x, axis=-1), 3)[2]
+                v = v + jnp.sum(jnp.einsum("pa,pab,pb->p", x, st["Theta"], x) * B2) / 3.0
+            return v
         return KE * jax.vmap(at)(grid) / 2625.4996394799
 
     def _flux(self, m, R, P, q, cov):

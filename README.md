@@ -6,8 +6,14 @@ are JAX functions of the coordinates, of the parameters and, for periodic system
 any order. Validated against Amber (sander, pmemd-pgm) and PyRESP.
 
 - **Electrostatics:** Gaussian charges, covalent permanent dipoles and induced Gaussian dipoles,
-  with every atom pair interacting (no 1-2/1-3 masking).
-- **Van der Waals:** Lennard-Jones between molecules (Amber form, Lorentz-Berthelot).
+  with every atom pair interacting (no 1-2/1-3 masking). Levels `elec = "q" | "qp" | "qi" | "qpi"`
+  (charges only, + permanent dipoles, charges + induction, full pGM); covalent Gaussian
+  quadrupoles (derived and tested; gas phase and fitting only for now).
+- **Van der Waals:** Lennard-Jones (Amber form, Lorentz-Berthelot) or GVDW, the Gaussian-density
+  van der Waals of pmemd-pgm (`vdw = "lj" | "gvdw"`, Gaussian or Slater repulsion).
+- **Bonded term sets** for flexible molecules: Amber/GAFF forms (GAFF import), the explored
+  class II and new families, and fast neural bonded terms (a graph network writes the
+  parameters of analytic terms once; MD cost = classical terms).
 - **Systems:** gas phase (`Model`), periodic (`PeriodicModel`, Ewald, triclinic boxes), and
   **molecular dynamics with JAX-MD** (`pgm_jax.md`: smooth PME, neighbour lists, pmemd-pgm's induction
   solver, rigid or flexible molecules, NVE / Langevin NVT / Monte Carlo NPT, Amber inputs and outputs).
@@ -17,7 +23,8 @@ any order. Validated against Amber (sander, pmemd-pgm) and PyRESP.
 
 **Getting started with parameterization:** `docs/howto_bonded.md` (bond, angle, torsion terms
 for flexible molecules) and `docs/howto_vdw.md` (Lennard-Jones from liquid properties and gas-phase
-data). The software paper (LaTeX + PDF) is in `paper/`.
+data). The model options (electrostatics levels, quadrupoles, GVDW, the three bonded
+sets) are described, with their checks, in `docs/model_options.md`. The software paper (LaTeX + PDF) is in `paper/`.
 
 Started on 2026-09-23 from the pGM core of `~/project/evoff` (commit `73d961c`); this repository
 is where the two projects diverge (evoff searches over functional forms, pGM-JAX keeps pGM's).
@@ -258,8 +265,13 @@ bonded-only 1-4 treatment with class II couplings it reproduces as one option.
   dipoles fitted with the bonded terms (`qfit`: typed values; `qbci`: typed bond-charge increments
   on the ESP charges), shared parameters across molecules (`typing="type"`); `esp()` gives the
   molecule's electrostatic potential on a grid.
+- Three term sets, `terms.SETS`: `"amber"` (harmonic bonds and angles, Amber torsions and
+  impropers; `typing="amber"` with GAFF types, `amber.init_from_prmtop` starts from GAFF and matches
+  cpptraj), `"explore"` (the class II set; add any registry family) and `"nn"` (`nn.py`: a graph
+  network predicts per-instance class II parameters from the bond graph and pGM parameters;
+  frozen for MD, so an MD step costs the same as the classical terms).
 - `fit.py`: energy + force (+ dipole, + QM ESP restraint) loss with per-molecule offsets, L-BFGS
-  on everything (reference values, force constants, exponents, flux, charges) with JAX gradients,
+  (after Adam for the neural set) on everything (reference values, force constants, exponents, flux, charges) with JAX gradients,
   optional L1.
 - `bench.py`: the paper's metrics, force-field-relaxed torsion scans.
 - `scripts/bonded/`: molecule set (RDKit), MACE-OFF sampling (MD at 500/298 K, relaxed scans),
@@ -291,6 +303,9 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/kernels.py` | Gaussian pair kernels: Coulomb erf(b r)/r, overlap, C6 dampings (gd6, tt6) |
 | `pgm_jax/channels.py` | `ElecChannel`, `elec_decomposition` (SAPT-like elst/ind), `molecular_polarizability` |
 | `pgm_jax/lj.py` | `LJChannel` (gas phase), `PeriodicLJ` (cutoff, optional long-range correction) |
+| `pgm_jax/vdw.py` | GVDW: `gvdw_pair`, `GVDWChannel`, `PeriodicGVDW`, `set_gvdw`, pmemd conversions, pGM3P-GVDW water |
+| `pgm_jax/multipole.py` | Gaussian quadrupoles: derivation, covalent quadrupole basis (`with_quadrupoles`), pair and field kernels |
+| `pgm_jax/options.py` | electrostatics levels and vdW forms shared by all models |
 | `pgm_jax/ewald.py` | `PeriodicPGM`: Ewald with integer image and k-vector lists, so the box is a JAX input; neutralising background |
 | `pgm_jax/periodic.py` | `PeriodicModel` (elec + LJ, shared neighbour list): energy, forces, `strain_derivative`, `pressure` |
 | `pgm_jax/solver.py` | dense induction solve; `variational`; Newton solver with implicit differentiation |
@@ -301,11 +316,11 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `scripts/fit_liquid.py` | LJ from liquid density + heat of vaporization (ensemble gradients, Gauss-Newton) |
 | `examples/`, `docs/` | fit-and-run examples; how-tos for bonded and van der Waals parameterization |
 | `paper/` | the pGM-JAX paper (LaTeX, PDF, figure data and scripts) |
-| `pgm_jax/bonded/` | bonded terms for flexible pGM molecules: `topology.py`, `terms.py` (term registry), `model.py`, `fit.py`, `bench.py`, `data.py`, `molecules.py` |
+| `pgm_jax/bonded/` | bonded terms for flexible pGM molecules: `topology.py`, `terms.py` (term registry, `SETS`), `model.py`, `fit.py`, `bench.py`, `data.py`, `molecules.py`, `amber.py` (GAFF prmtop import), `nn.py` (neural bonded terms) |
 | `scripts/bonded/` | the bonded study: sampling, DFT labels, pGM parameters, experiments, report |
 | `scripts/run_md.py` | MD from an Amber prmtop + inpcrd/rst7 (Amber-style options) |
 | `scripts/bench_md.py`, `scripts/pgm_supercell.py` | MD speed benchmark; replicate a pGM prmtop for larger systems |
-| `tests/` | `pytest -q`: 51 tests, incl. finite-difference checks of every derivative and the MD engine |
+| `tests/` | `pytest -q`: 67 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
 | `scripts/validate_amber.py` | comparison with sander / pmemd-pgm / PyRESP (`compare`, `pyresp`, `virial`) |
 | `scripts/bench.py` | timings on the current device |
 | `validation/` | Amber reference runs (inputs + outputs) and `validate_amber.json` |
@@ -363,6 +378,10 @@ Conventions worth knowing:
   (`pgm_jax.md.flexible`) add bonded terms and intramolecular LJ from 1-5 on; they have no bond
   constraints yet (dt 0.5 fs).
 - `fit_liquid.py` does not yet differentiate <U_gas> for molecules with intramolecular LJ pairs.
+- Quadrupoles are in the gas phase and in bonded fitting, not yet in Ewald/PME or MD (templates
+  with quadrupoles are refused there); no fitted quadrupole values yet.
+- GVDW per atom type (geometric A and C6, arithmetic b) generalises pmemd-pgm's single global
+  set for LJ-bearing pairs; identical for pGM3P water.
 - The gas-phase induction solve is dense (3n × 3n): fine up to a few thousand atoms.
 - `PeriodicModel` uses plain Ewald with a neighbour list and k-vectors built once (for
   single points and gradients); MD uses `pgm_jax.md` (smooth PME, list updates, integrators).

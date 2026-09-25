@@ -87,7 +87,7 @@ def test_default_tying_keys():
 
 def test_tied_gradient_is_sum_of_atom_gradients():
     sys, pos = cluster(np.random.default_rng(1))
-    untied = [Molecule(**{**m.__dict__, "keys": {qn: [f"{id(m)}:{qn}{k}" for k in range(len(m.cov) if qn == "cov" else m.n)]
+    untied = [Molecule(**{**m.__dict__, "keys": {qn: [f"{id(m)}:{qn}{k}" for k in range(m.n_terms(qn))]
                                                   for qn in QUANTITIES}}) for m in sys.molecules]
     sys_u = System(untied)
     f = lambda s: (lambda P: Model([ElecChannel(), LJChannel()]).energy_fn(s)(jnp.asarray(pos), P)["total"])

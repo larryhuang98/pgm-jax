@@ -105,7 +105,9 @@ class PeriodicPGM:
     are masked, so a list built with a skin (rc + skin) stays valid for small displacements."""
 
     def __init__(self, sys: System, H: np.ndarray, pos_ref: np.ndarray, b0: float = 3.8, rc: float = 1.0,
-                 skin: float = 0.0, k_tol: float = 1e-12, cg_tol: float = 1e-12, nlist=None):
+                 skin: float = 0.0, k_tol: float = 1e-12, cg_tol: float = 1e-12, nlist=None, elec: str = "qpi"):
+        from .options import elec_flags
+        self.pd, self.ind = elec_flags(elec)
         self.sys, self.H = sys, np.asarray(H, float)
         self.b0, self.rc, self.cg_tol = b0, rc, cg_tol
         self.pi, self.pj, self.img = nlist if nlist is not None else neighbor_list(pos_ref, self.H, rc + skin)
@@ -156,9 +158,12 @@ class PeriodicPGM:
         return KE * (self._U_dir(tens, q, d) + self._U_rec(pos, q, d, H) + self._U_self(q, d) + self._U_bg(q, H))
 
     # ----------------------------------------------------------------- induction --
+    def _p(self, pos, P):
+        return perm_dipoles(pos, self.sys, P["cov"]) if self.pd else jnp.zeros((self.sys.n, 3))
+
     def _G(self, mu, theta):
         pos, P, H = theta
-        p = perm_dipoles(pos, self.sys, P["cov"])
+        p = self._p(pos, P)
         return self.U(pos, P["q"], p + mu, P["radius"], H) + KE * jnp.sum(mu * mu / (2 * P["alpha"][:, None]))
 
     def _solve(self, theta):
@@ -179,9 +184,9 @@ class PeriodicPGM:
         """-> ({perm, ind, total} kJ/mol, {p}).  'perm' is U of the permanent multipoles alone."""
         theta = self._theta(pos, params, H)
         pos, P, H = theta
-        e_tot = self._E(theta)
-        p = perm_dipoles(pos, self.sys, P["cov"])
+        p = self._p(pos, P)
         e_perm = self.U(pos, P["q"], p, P["radius"], H)
+        e_tot = self._E(theta) if self.ind else e_perm
         return {"perm": e_perm, "ind": e_tot - e_perm, "total": e_tot}, {"p": p}
 
     def forces(self, pos, params=None, H=None):

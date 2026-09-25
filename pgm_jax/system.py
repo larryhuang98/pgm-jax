@@ -20,8 +20,16 @@ Quantities (units nm, e, kJ/mol):
   cov           covalent dipole strength c (e nm): p_i += c unit(r_j - r_i)    per covalent dipole
   lj_rmin_half  Lennard-Jones R* = r_min / 2 (nm)                               per atom
   lj_sqrt_eps   square root of the LJ well depth (sqrt(kJ/mol))               per atom
+  gvdw_sqrt_a   GVDW: square root of the repulsion amplitude A (sqrt(kJ/mol))  per atom
+  gvdw_sqrt_c6  GVDW: square root of the dispersion C6 (sqrt(kJ/mol nm^6))    per atom
+  gvdw_b        GVDW: repulsion exponent scale b (dimensionless)              per atom
+  quad          Gaussian quadrupole strength t (e nm^2) of one term of the     per quadrupole term
+                covalent quadrupole basis: Theta_i += t S(u_ij, u_ik)
+                (multipole.py; j == k: uniaxial along the covalent vector)
 LJ pairs combine as r_min = R*_i + R*_j and eps = sqrt(eps_i) sqrt(eps_j) (Lorentz-Berthelot,
 Amber's rule).  The square root is the parameter so that gradients stay finite at eps = 0.
+GVDW pairs combine as A_ij = a_i a_j, C6_ij = c_i c_j (a, c the square roots) and b_ij =
+(b_i + b_j) / 2, with the Gaussian pair exponent of the electrostatics (vdw.py).
 
 Default tying (pGM practice): radius, alpha and LJ by atom type (as the pGM-pol table and Amber
 LJ types); q and covalent dipoles per molecule, with symmetry-equivalent atoms tied (as py_resp
@@ -43,9 +51,10 @@ from dataclasses import dataclass, field
 import jax.numpy as jnp
 import numpy as np
 
-ATOM_QUANTITIES = ("q", "radius", "alpha", "lj_rmin_half", "lj_sqrt_eps")
-QUANTITIES = ATOM_QUANTITIES + ("cov",)
-BY_TYPE = ("radius", "alpha", "lj_rmin_half", "lj_sqrt_eps")          # default: tied by atom type
+ATOM_QUANTITIES = ("q", "radius", "alpha", "lj_rmin_half", "lj_sqrt_eps", "gvdw_sqrt_a", "gvdw_sqrt_c6", "gvdw_b")
+TERM_QUANTITIES = ("cov", "quad")                                   # one value per covalent dipole / quadrupole term
+QUANTITIES = ATOM_QUANTITIES + TERM_QUANTITIES
+BY_TYPE = ("radius", "alpha", "lj_rmin_half", "lj_sqrt_eps", "gvdw_sqrt_a", "gvdw_sqrt_c6", "gvdw_b")   # default: tied by atom type
 BY_MOLECULE = ("q",)                                                 # default: per molecule, symmetry-tied
 
 MASSES = {"H": 1.008, "Li": 6.94, "C": 12.011, "N": 14.007, "O": 15.999, "F": 18.998, "Na": 22.990,
@@ -65,6 +74,10 @@ class Molecule:
     lj_rmin_half: np.ndarray | None = None    # (m,) nm              None -> 0 (no LJ)
     lj_sqrt_eps: np.ndarray | None = None     # (m,) sqrt(kJ/mol)    None -> 0
     bonds: list[tuple[int, int]] = field(default_factory=list)
+    gvdw_sqrt_a: np.ndarray | None = None     # (m,) sqrt(kJ/mol)          None -> 0 (no GVDW)
+    gvdw_sqrt_c6: np.ndarray | None = None    # (m,) sqrt(kJ/mol nm^6)     None -> 0
+    gvdw_b: np.ndarray | None = None          # (m,) dimensionless          None -> 1
+    quad: list[tuple[int, int, int, float]] = field(default_factory=list)   # (i, j, k, t), t in e nm^2
     masses: np.ndarray | None = None          # (m,) amu             None -> element masses
     keys: dict[str, list[str]] = field(default_factory=dict)          # tying-key overrides per quantity
     extra: dict = field(default_factory=dict)  # per-atom arrays for later channels
@@ -77,11 +90,25 @@ class Molecule:
         self.alpha = np.asarray(self.alpha, float).reshape(m)
         self.lj_rmin_half = np.zeros(m) if self.lj_rmin_half is None else np.asarray(self.lj_rmin_half, float).reshape(m)
         self.lj_sqrt_eps = np.zeros(m) if self.lj_sqrt_eps is None else np.asarray(self.lj_sqrt_eps, float).reshape(m)
+        self.gvdw_sqrt_a = np.zeros(m) if self.gvdw_sqrt_a is None else np.asarray(self.gvdw_sqrt_a, float).reshape(m)
+        self.gvdw_sqrt_c6 = np.zeros(m) if self.gvdw_sqrt_c6 is None else np.asarray(self.gvdw_sqrt_c6, float).reshape(m)
+        self.gvdw_b = np.ones(m) if self.gvdw_b is None else np.asarray(self.gvdw_b, float).reshape(m)
+        self.quad = [(int(i), int(j), int(k), float(t)) for i, j, k, t in self.quad]
         self.masses = (np.array([MASSES[e] for e in self.elements]) if self.masses is None
                        else np.asarray(self.masses, float).reshape(m))
         self.cov = [(int(i), int(j), float(c)) for i, j, c in self.cov]
         self.bonds = [(int(i), int(j)) for i, j in self.bonds]
         assert len(self.types) == m
+
+    def __setstate__(self, state):
+        # molecules pickled before the GVDW and quadrupole quantities existed
+        self.__dict__.update(state)
+        m = len(self.elements)
+        for name, fill in (("gvdw_sqrt_a", 0.0), ("gvdw_sqrt_c6", 0.0), ("gvdw_b", 1.0)):
+            if getattr(self, name, None) is None:
+                setattr(self, name, np.full(m, fill))
+        if getattr(self, "quad", None) is None:
+            self.quad = []
 
     @property
     def n(self) -> int:
@@ -95,7 +122,12 @@ class Molecule:
         """Initial values of one quantity: per atom, or per covalent dipole for 'cov'."""
         if quantity == "cov":
             return np.array([c for _, _, c in self.cov], float)
+        if quantity == "quad":
+            return np.array([t for *_, t in self.quad], float)
         return getattr(self, quantity)
+
+    def n_terms(self, quantity: str) -> int:
+        return {"cov": len(self.cov), "quad": len(self.quad)}.get(quantity, self.n)
 
     def symmetry_classes(self) -> np.ndarray:
         """Canonical class id per atom (colour refinement; independent of the atom order)."""
@@ -128,10 +160,12 @@ class Molecule:
         keys = {qn: list(self.types) for qn in BY_TYPE}
         keys.update({qn: [f"{self.name}:{a}" for a in atom] for qn in BY_MOLECULE})
         keys["cov"] = [f"{self.name}:{atom[i]}>{atom[j]}" for i, j, _ in self.cov]
+        keys["quad"] = [f"{self.name}:Q:{atom[i]}>{atom[j]}" if j == k else
+                        f"{self.name}:Q:{atom[i]}>" + "|".join(sorted((atom[j], atom[k]))) for i, j, k, _ in self.quad]
         for qn, ks in self.keys.items():
             if qn not in QUANTITIES:
                 raise KeyError(f"unknown quantity {qn!r}")
-            if len(ks) != (len(self.cov) if qn == "cov" else self.n):
+            if len(ks) != self.n_terms(qn):
                 raise ValueError(f"{self.name}: {len(ks)} keys for {qn}")
             keys[qn] = list(ks)
         return keys
@@ -213,6 +247,8 @@ class System:
                 cj.append(offs[k] + j)
         self.cov_i = np.array(ci, dtype=np.int32)
         self.cov_j = np.array(cj, dtype=np.int32)
+        qt = [(offs[k] + i, offs[k] + j, offs[k] + l) for k, m in enumerate(molecules) for i, j, l, _ in m.quad]
+        self.quad_ijk = np.array(qt, dtype=np.int32).reshape(-1, 3)
         ii, jj = np.triu_indices(self.n, k=1)
         self.pair_i, self.pair_j = ii, jj
         self.pair_inter = (self.mol[ii] != self.mol[jj])
@@ -239,7 +275,7 @@ class System:
         """Hash of topology, parameter indices and the table (cache key for compiled functions;
         parameter *values* passed at call time are not part of it)."""
         h = hashlib.sha1()
-        for a in (self.mol, self.cov_i, self.cov_j, *[self.idx[qn] for qn in QUANTITIES]):
+        for a in (self.mol, self.cov_i, self.cov_j, self.quad_ijk, *[self.idx[qn] for qn in QUANTITIES]):
             h.update(np.ascontiguousarray(a).tobytes())
         h.update("|".join(self.elements).encode())
         h.update(self.table.fingerprint().encode())

@@ -19,8 +19,9 @@ from .model import Model
 from .param import load_molecule, read_prmtop_pgm, save_molecule
 from .periodic import PeriodicModel, pressure_bar, strain_derivative
 from .system import Molecule, ParamTable, System
+from .vdw import GVDWChannel, PeriodicGVDW, set_gvdw
 
 __all__ = ["ElecChannel", "elec_decomposition", "molecular_polarizability", "perm_dipoles",
            "PeriodicPGM", "box_matrix", "neighbor_list", "LJChannel", "PeriodicLJ", "Model",
            "load_molecule", "read_prmtop_pgm", "save_molecule", "PeriodicModel", "pressure_bar",
-           "strain_derivative", "Molecule", "ParamTable", "System"]
+           "strain_derivative", "Molecule", "ParamTable", "System", "GVDWChannel", "PeriodicGVDW", "set_gvdw"]

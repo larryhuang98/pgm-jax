@@ -132,9 +132,13 @@ class Fitter:
         return L
 
     # ------------------------------------------------------------------ optimisation
-    def fit(self, P0, maxiter=2000, frozen=(), l1=0.0, mask=None, verbose=True, tol=1e-10):
+    def fit(self, P0, maxiter=2000, frozen=(), l1=0.0, mask=None, verbose=True, tol=1e-10,
+            adam_steps: int = 0, lr: float = 3e-3):
         """L-BFGS on all parameters except the families/names in `frozen` ("ref", "Kb", ...).
-        `mask`: pytree of 0/1 (1 = free), e.g. to switch off terms for a Lasso path."""
+        `mask`: pytree of 0/1 (1 = free), e.g. to switch off terms for a Lasso path.
+        adam_steps > 0: first that many Adam steps (learning rate lr, cosine decay) in the same
+        scaled variables, then L-BFGS (neural bonded terms: the network is not well conditioned
+        for L-BFGS from its initial point)."""
         from scipy.optimize import minimize
         self.prepare("train")
         scale = jax.tree_util.tree_map_with_path(
@@ -164,8 +168,28 @@ class Fitter:
 
         vg = jax.jit(jax.value_and_grad(obj))
         t0 = time.time()
+        z_start = jnp.zeros_like(z0)
+        if adam_steps > 0:
+            @jax.jit
+            def step(carry, k):
+                z, m, v = carry
+                L, g = jax.value_and_grad(obj)(z)
+                m = 0.9 * m + 0.1 * g
+                v = 0.999 * v + 0.001 * g * g
+                kk = k + 1.0
+                eta = lr * 0.5 * (1.0 + jnp.cos(jnp.pi * k / adam_steps))
+                z = z - eta * (m / (1 - 0.9 ** kk)) / (jnp.sqrt(v / (1 - 0.999 ** kk)) + 1e-8)
+                return (z, m, v), L
+            carry = (z_start, jnp.zeros_like(z0), jnp.zeros_like(z0))
+            chunk = 100
+            for c0 in range(0, adam_steps, chunk):
+                ks = jnp.arange(c0, min(c0 + chunk, adam_steps), dtype=float)
+                carry, Ls = jax.lax.scan(step, carry, ks)
+            z_start = carry[0]
+            if verbose:
+                print(f"    adam: {adam_steps} steps, loss {float(Ls[-1]):.4g} ({time.time() - t0:.1f} s)", flush=True)
         f = lambda z: tuple(np.asarray(v, float) for v in vg(jnp.asarray(z)))
-        res = minimize(f, np.zeros_like(np.asarray(z0)), jac=True, method="L-BFGS-B",
+        res = minimize(f, np.asarray(z_start), jac=True, method="L-BFGS-B",
                        options={"maxiter": maxiter, "maxfun": maxiter * 2, "ftol": tol, "gtol": 1e-8})
         if verbose:
             print(f"    fit: loss {float(obj(jnp.zeros_like(z0))):.4g} -> {res.fun:.4g} in {res.nit} it, {time.time() - t0:.1f} s ({res.message})", flush=True)

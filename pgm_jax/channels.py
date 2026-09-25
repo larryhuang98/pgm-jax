@@ -52,6 +52,16 @@ def _field_at_i(ri, rj, qj, pj, b, phi):
     return -jax.grad(V)(ri)
 
 
+def quadrupole_field(x, a, Tj):
+    """Field (P, 3) at i of the quadrupoles Tj (P, 3, 3) of j, x = r_i - r_j (multipole.py)."""
+    from .md.kernels import erf_kernels
+    r = jnp.linalg.norm(x, axis=-1)
+    _, _, B2, B3 = erf_kernels(a, r, 4)
+    Tjx = jnp.einsum("pab,pb->pa", Tj, x)
+    xTx = jnp.sum(x * Tjx, -1)
+    return -(2.0 / 3.0) * Tjx * B2[:, None] + (xTx * B3 / 3.0)[:, None] * x
+
+
 def _dipole_tensor(ri, rj, b, phi):
     f = lambda a, c: phi(jnp.linalg.norm(a - c), b)
     return jax.jacfwd(jax.grad(f, 0), 1)(ri, rj)
@@ -79,30 +89,51 @@ def molecular_polarizability(pos, sys: System, params=None, density: str = "gaus
 
 @dataclass
 class ElecChannel:
-    """pGM electrostatics + induction.  `polarizable=False` gives permanent multipoles only."""
+    """Gaussian electrostatics, every pair interacting.  Options (options.py): `perm_dipoles`
+    (covalent dipoles), `polarizable` (induced dipoles), `quadrupoles` (covalent quadrupole basis,
+    multipole.py).  Defaults: pGM (charges, permanent and induced dipoles).  Use
+    ElecChannel.level("q" | "qp" | "qi" | "qpi", quadrupoles=...) for the named levels."""
     density: str = "gaussian"
     polarizable: bool = True
+    perm_dipoles: bool = True
+    quadrupoles: bool = False
     name: str = "elec"
 
+    @classmethod
+    def level(cls, elec: str = "qpi", quadrupoles: bool = False, **kw):
+        from .options import elec_flags
+        pd, ind = elec_flags(elec)
+        return cls(polarizable=ind, perm_dipoles=pd, quadrupoles=quadrupoles, **kw)
+
     def energy(self, pos, sys: System, params=None):
-        """pos (n, 3), params (pytree or None) -> dict(perm, ind) in kJ/mol and aux (mu, p)."""
+        """pos (n, 3), params (pytree or None) -> dict(perm, ind) in kJ/mol and aux (mu, p, Theta)."""
         dens = DENSITIES[self.density]
         phi = dens["coulomb"]
         P = sys.expand(params)
         R, q = P["radius"], P["q"]
-        p = perm_dipoles(pos, sys, P["cov"])
+        p = perm_dipoles(pos, sys, P["cov"]) if self.perm_dipoles else jnp.zeros((sys.n, 3))
         ii, jj = sys.pair_i, sys.pair_j
         b_pair = dens["pair_exponent"](R[ii], R[jj])
         e_perm = jnp.sum(jax.vmap(lambda a, c, qa, pa, qc, pc, bb: _pair_perm(a, c, qa, pa, qc, pc, bb, phi))(
             pos[ii], pos[jj], q[ii], p[ii], q[jj], p[jj], b_pair))
-        out = {"perm": KE * e_perm}
         aux = {"p": p}
+        if self.quadrupoles:
+            from .md.kernels import erf_kernels
+            from .multipole import quadrupole_pair_terms, quadrupoles
+            Th = quadrupoles(pos, sys, P["quad"])
+            x = pos[ii] - pos[jj]
+            B = erf_kernels(b_pair, jnp.linalg.norm(x, axis=-1), 5)
+            e_perm = e_perm + jnp.sum(quadrupole_pair_terms(x, B, q[ii], p[ii], Th[ii], q[jj], p[jj], Th[jj]))
+            aux["Theta"] = Th
+        out = {"perm": KE * e_perm}
         if self.polarizable:
             n = sys.n
             # ordered pairs i != j only (no self terms: they would put NaNs into the gradients)
             oi, oj = np.nonzero(~np.eye(n, dtype=bool))
             b_ord = dens["pair_exponent"](R[oi], R[oj])
             F_ord = jax.vmap(lambda a, c, qc, pc, bb: _field_at_i(a, c, qc, pc, bb, phi))(pos[oi], pos[oj], q[oj], p[oj], b_ord)
+            if self.quadrupoles:
+                F_ord = F_ord + quadrupole_field(pos[oi] - pos[oj], b_ord, Th[oj])
             F = jnp.zeros((n, 3)).at[oi].add(F_ord)
             T = _dipole_matrix(pos, sys, phi, b_pair)
             mu = solve_linear_induction(T, P["alpha"], F)

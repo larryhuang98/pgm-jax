@@ -58,7 +58,9 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..lj import lj_long_range
+from ..options import check_vdw, elec_flags
 from ..system import System
+from ..vdw import gvdw_long_range, gvdw_pair
 from ..units import KE
 from ._jaxmd import dataclasses
 from .box import min_image, volume
@@ -77,7 +79,7 @@ class MDSettings:
     pme_grid: tuple | None = None     # nfft1..3; None: from pme_spacing
     pme_spacing: float = 0.08         # nm
     pme_order: int = 6                # order
-    lj_lrc: bool = True               # vdwmeth = 1
+    lj_lrc: bool = True               # vdwmeth = 1 (the r^-6 tail of LJ, or of the GVDW dispersion)
     dipole_tol: float = 1e-5          # dipole_scf_tol (max|alpha r| / mean|alpha b|); 1e-4: ~20 % faster, NVE drift 0.02 kT/ns/dof
     max_iter: int = 50                # scf_cg_niter
     predictor: str = "mu4"            # mu4 | mu3 | ls | none
@@ -93,6 +95,18 @@ class MDSettings:
                                       # parameters, positions and box: implicit differentiation of
                                       # the dipole solve, one adjoint CG per gradient
     adjoint_tol: float = 1e-6         # adjoint CG: max|alpha r| / mean|alpha rhs|
+    elec: str = "qpi"                 # "q" charges | "qp" + permanent dipoles | "qi" charges + induction |
+                                      # "qpi" pGM (options.py); quadrupoles are not in the MD engine yet
+    vdw: str = "lj"                   # "lj" | "gvdw" (vdw.py; pmemd-pgm igvdw=1) | "none"
+    gvdw_rep: str = "gauss"           # GVDW repulsion: "gauss" (gvdw_rep_form=0) | "slater" (=1)
+
+    @property
+    def perm_dipoles(self) -> bool:
+        return elec_flags(self.elec)[0]
+
+    @property
+    def induction(self) -> bool:
+        return elec_flags(self.elec)[1]
 
     @property
     def dtype(self):
@@ -144,6 +158,11 @@ class PGMForceField:
         self.sys, self.s = sys, settings
         if settings.predictor not in ("mu4", "mu3", "ls", "none"):
             raise ValueError(f"unknown predictor {settings.predictor!r}")
+        check_vdw(settings.vdw, settings.gvdw_rep)
+        self.pd, self.ind = elec_flags(settings.elec)
+        if any(len(m.quad) for m in sys.molecules):
+            import warnings
+            warnings.warn("quadrupole terms are ignored by the MD engine (gas phase only for now)")
         self.cd = settings.dtype
         self.n = sys.n
         self.b0 = float(settings.ewald_beta)
@@ -177,7 +196,7 @@ class PGMForceField:
         return {k: jnp.asarray(v, jnp.float64) for k, v in P.items()}
 
     def perm_dipoles(self, pos, H, cov_c):
-        if len(self.sys.cov_i) == 0:
+        if len(self.sys.cov_i) == 0 or not self.pd:
             return jnp.zeros((self.n, 3))
         v = min_image(pos[self.cov_j] - pos[self.cov_i], H)
         u = v / jnp.linalg.norm(v, axis=-1, keepdims=True)
@@ -263,8 +282,7 @@ class PGMForceField:
         for n in range(nmax):
             g[f"G{n}"] = G[n]
         if forces:
-            rh, se = P["lj_rmin_half"].astype(cd), P["lj_sqrt_eps"].astype(cd)
-            g.update(r=r, inter=inter, rmin=rh[:, None] + rh[k], eps=se[:, None] * se[k])
+            g.update(r=r, inter=inter, vp=self._vdw_params(P, k))
         if self.s.local_niter > 0:
             short = within & (r < self.s.local_cut)
             g["short"] = self._short_rows(k, x, g["G1"], g["G2"], short)
@@ -492,19 +510,52 @@ class PGMForceField:
         u_rec = self.pme.energy(self.pme.setup(pos, H), self.pme.influence(H), q, d)
         u_self = -(self.b0 / _SQRT_PI) * jnp.sum(q * q) - 0.5 * self.c_self * jnp.sum(d * d)
         u_bg = -jnp.pi * jnp.sum(q) ** 2 / (2.0 * volume(H) * self.b0 ** 2)
-        u_pol = jnp.sum(mu * mu / (2.0 * P["alpha"][:, None]))
+        u_pol = jnp.sum(mu * mu / (2.0 * P["alpha"][:, None])) if self.ind else 0.0
         return KE * (u_rec + u_self + u_bg + u_pol)
 
-    def _pair_sum(self, x, di, dk, qi, qk, a, within, inter, rminp, epsp):
-        """sum over row entries of KE e_elec + e_LJ (each pair twice), float64 (autodiff path).
+    # ------------------------------------------------------------------ van der Waals rows
+    def _vdw_params(self, P, k):
+        """Row pair parameters of the van der Waals form (tuple of (N, C) arrays)."""
+        cd = self.cd
+        if self.s.vdw == "lj":
+            rh, se = P["lj_rmin_half"].astype(cd), P["lj_sqrt_eps"].astype(cd)
+            return (rh[:, None] + rh[k], se[:, None] * se[k])
+        if self.s.vdw == "gvdw":
+            sa, sc, b = (P[n].astype(cd) for n in ("gvdw_sqrt_a", "gvdw_sqrt_c6", "gvdw_b"))
+            return (sa[:, None] * sa[k], sc[:, None] * sc[k], 0.5 * (b[:, None] + b[k]),
+                    self._pair_a(P["radius"].astype(cd), k))
+        return ()
+
+    def _vdw_rows(self, r, vp, inter, grad: bool = False):
+        """Row pair energies (and (1/r) dU/dr) of the van der Waals form, zero off `inter`."""
+        if self.s.vdw == "lj":
+            rminp, epsp = vp
+            s6 = (rminp / r) ** 6
+            e = epsp * (s6 * s6 - 2.0 * s6)
+            d = epsp * 12.0 * (s6 - s6 * s6) / (r * r)
+        elif self.s.vdw == "gvdw":
+            A, C6, B, a = vp
+            e, d = gvdw_pair(r, a, A, C6, B, self.s.gvdw_rep, grad=True)
+        else:
+            e = d = jnp.zeros_like(r)
+        e, d = jnp.where(inter, e, 0.0), jnp.where(inter, d, 0.0)
+        return (e, d) if grad else e
+
+    def _vdw_tail(self, P, H):
+        if not self.s.lj_lrc or self.s.vdw == "none":
+            return 0.0
+        f = lj_long_range if self.s.vdw == "lj" else gvdw_long_range
+        return f(P, volume(H), self.s.cutoff)
+
+    def _pair_sum(self, x, di, dk, qi, qk, a, within, inter, vp):
+        """sum over row entries of KE e_elec + e_vdW (each pair twice), float64 (autodiff path).
         x, di, dk: component triples of (N, C) arrays."""
         r, G0, G1, G2 = self._kernels(x, within, a)
         dix = di[0] * x[0] + di[1] * x[1] + di[2] * x[2]
         dkx = dk[0] * x[0] + dk[1] * x[1] + dk[2] * x[2]
         didk = di[0] * dk[0] + di[1] * dk[1] + di[2] * dk[2]
         e = qi * qk * G0 + (qi * dkx - qk * dix) * G1 - G2 * dix * dkx + G1 * didk
-        s6 = (rminp / r) ** 6
-        elj = jnp.where(inter, epsp * (s6 * s6 - 2.0 * s6), 0.0)
+        elj = self._vdw_rows(r, vp, inter)
         se = jnp.sum(jnp.sum(e, axis=1).astype(jnp.float64))
         sl = jnp.sum(jnp.sum(elj, axis=1).astype(jnp.float64))
         return KE * se + sl, (KE * se, sl)
@@ -518,9 +569,7 @@ class PGMForceField:
         dc = d.astype(cd)
         di = tuple(dc[:, j][:, None] for j in range(3))
         dk = tuple(dc[:, j][k] for j in range(3))
-        rh, sq = P["lj_rmin_half"].astype(cd), P["lj_sqrt_eps"].astype(cd)
-        rminp, epsp = rh[:, None] + rh[k], sq[:, None] * sq[k]
-        consts = (dk, q.astype(cd)[:, None], q.astype(cd)[k], a, within, inter, rminp, epsp)
+        consts = (dk, q.astype(cd)[:, None], q.astype(cd)[k], a, within, inter, self._vdw_params(P, k))
         return x, di, consts
 
     def energy_fixed_mu(self, pos, H, mu, idx, P):
@@ -528,14 +577,13 @@ class PGMForceField:
         differentiable in positions and box (used for virials and Monte Carlo trials)."""
         p = self.perm_dipoles(pos, H, P["cov"])
         d = p + mu
-        x, di, (dk, qi, qk, a, within, inter, rminp, epsp) = self._row_inputs(pos, H, idx, P, d)
-        spair, (se, sl) = self._pair_sum(x, di, dk, qi, qk, a, within, inter, rminp, epsp)
+        x, di, (dk, qi, qk, a, within, inter, vp) = self._row_inputs(pos, H, idx, P, d)
+        spair, (se, sl) = self._pair_sum(x, di, dk, qi, qk, a, within, inter, vp)
         e_elec = 0.5 * se + self._nonpair(pos, H, d, mu, P)
-        e_lj = 0.5 * sl + (lj_long_range(P, volume(H), self.s.cutoff) if self.s.lj_lrc else 0.0)
+        e_lj = 0.5 * sl + self._vdw_tail(P, H)
         return e_elec + e_lj, {"elec": e_elec, "vdw": e_lj}
 
-    @staticmethod
-    def _row_terms(g, q, d):
+    def _row_terms(self, g, q, d):
         """Pair energies (each pair counted in both rows) and the row sums of de_ik/dx_ik, from
         the kernels G0..G3 (grad_x G_n = -G_{n+1} x); charges q and total dipoles d, compute dtype."""
         k, x = g["k"], g["x"]
@@ -550,9 +598,7 @@ class PGMForceField:
         t = qi * dkx - qk * dix
         e = qi * qk * G0 + t * G1 - G2 * dix * dkx + G1 * didk
         radial = -qi * qk * G1 - t * G2 + G3 * dix * dkx - G2 * didk
-        s6 = (g["rmin"] / g["r"]) ** 6
-        elj = jnp.where(g["inter"], g["eps"] * (s6 * s6 - 2.0 * s6), 0.0)
-        glj = jnp.where(g["inter"], g["eps"] * 12.0 * (s6 - s6 * s6) / (g["r"] * g["r"]), 0.0)
+        elj, glj = self._vdw_rows(g["r"], g["vp"], g["inter"], grad=True)
         qiG1, qkG1 = qi * G1, qk * G1
         gx = jnp.stack([jnp.sum(radial * x[j] + qiG1 * dk[j] - qkG1 * di[j] - G2 * (di[j] * dkx + dk[j] * dix), axis=1)
                         for j in range(3)], -1)
@@ -572,7 +618,7 @@ class PGMForceField:
         e_np, (gpos_np, gd_np) = jax.value_and_grad(self._nonpair, argnums=(0, 2))(pos, H, d, mu, P)
         forces = -(KE * gx_el + gx_lj + gpos_np + vjp_p(dEdd + gd_np)[0])
         e_elec = 0.5 * KE * se + e_np
-        e_lj = 0.5 * sl + (lj_long_range(P, volume(H), self.s.cutoff) if self.s.lj_lrc else 0.0)
+        e_lj = 0.5 * sl + self._vdw_tail(P, H)
         return {"elec": e_elec, "vdw": e_lj, "total": e_elec + e_lj}, forces
 
     # ------------------------------------------------------------------ public
@@ -593,7 +639,10 @@ class PGMForceField:
         p = self.perm_dipoles(pos, H, P["cov"])
         S = self.pme.setup(pos, H)
         Gk = self.pme.influence(H)
-        mu, it, err, ind = self._solve(g, S, Gk, P, p, ind)
+        if self.ind:
+            mu, it, err, ind = self._solve(g, S, Gk, P, p, ind)
+        else:                                                  # no induced dipoles ("q", "qp")
+            mu, it, err = jnp.zeros((self.n, 3)), jnp.zeros((), jnp.int32), jnp.zeros(())
         energy, forces = self._energy_forces(pos, H, mu, g, P)
         return Result(energy, forces, ind, it, err, g["overflow"])
 
@@ -608,10 +657,13 @@ class PGMForceField:
         Gk = self.pme.influence(H)
         cd = self.cd
         alpha = P["alpha"]
-        b = self._field(g, S, Gk, P["q"].astype(cd), p)
-        A = self._operator(g, S, Gk, alpha)
-        x0 = ind.mu
-        mu, it, err = self._cg(g, A, alpha, x0, b - A(x0.astype(cd)), jnp.mean(jnp.abs(alpha[:, None] * b)) + 1e-300)
+        if self.ind:
+            b = self._field(g, S, Gk, P["q"].astype(cd), p)
+            A = self._operator(g, S, Gk, alpha)
+            x0 = ind.mu
+            mu, it, err = self._cg(g, A, alpha, x0, b - A(x0.astype(cd)), jnp.mean(jnp.abs(alpha[:, None] * b)) + 1e-300)
+        else:
+            mu, it = jnp.zeros((self.n, 3)), jnp.zeros((), jnp.int32)
         e, _ = self.energy_fixed_mu(pos, H, mu, idx, P)
         return e, ind.set(mu=mu), it, g["overflow"]
 
@@ -629,6 +681,4 @@ class PGMForceField:
             return self.energy_fixed_mu(x, H @ F.T, mu, idx, P)[0]
 
         W = jax.grad(e)(jnp.zeros((3, 3)))
-        if self.s.lj_lrc:
-            W = W - lj_long_range(P, volume(H), self.s.cutoff) * jnp.eye(3)
-        return W
+        return W - self._vdw_tail(P, H) * jnp.eye(3)

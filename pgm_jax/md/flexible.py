@@ -30,6 +30,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..system import System
+from ..vdw import gvdw_pair
 from ._jaxmd import simulate
 from .box import check_box, inv3, reduce_box, volume
 from .forcefield import MDSettings, PGMForceField
@@ -63,13 +64,19 @@ class FlexibleTemplate:
             bad.append("learned pair scales")
         if st.ind_exclude not in (-1, 0):
             bad.append("induction exclusions")
+        if st.quadrupoles:
+            bad.append("quadrupoles (not in the MD engine yet)")
         if bad:
             raise ValueError("the MD engine uses pGM with all pairs; this fit used " + ", ".join(bad))
         self._model = None
 
     @classmethod
     def from_fit(cls, model, P, index: int = 0) -> "FlexibleTemplate":
-        """From a fitted BondedModel and its parameters (molecule `index` of the model)."""
+        """From a fitted BondedModel and its parameters (molecule `index` of the model).  Neural
+        bonded terms ("nnb") are frozen: their stage-1 coefficients are evaluated once here."""
+        if getattr(model, "nnb", None) is not None and "coef" not in P["nnb"]:
+            P = dict(P)
+            P["nnb"] = model.nnb.freeze(P["nnb"])
         return cls(model.mols, asdict(model.s), P, index)
 
     @property
@@ -105,6 +112,14 @@ class FlexibleTemplate:
         keep = w > 0
         return i[keep], j[keep], w[keep]
 
+    def check_settings(self, settings):
+        """The MD model must be the model the bonded terms were fitted with."""
+        st = self.model.s
+        for name in ("elec", "vdw", "gvdw_rep"):
+            if getattr(st, name) != getattr(settings, name) and not (name == "gvdw_rep" and st.vdw != "gvdw"):
+                raise ValueError(f"template {self.name} was fitted with {name}={getattr(st, name)!r}, "
+                                 f"the MD settings have {getattr(settings, name)!r}")
+
     def bonded_energy(self, R, P=None):
         return self.model.bonded_energy(self.index, R, jax.tree_util.tree_map(jnp.asarray, self.P if P is None else P))
 
@@ -124,7 +139,8 @@ class FlexibleMolecules:
     """Per-atom dynamics for every molecule, grouped by template for the intramolecular energy.
     `templates[k]` belongs to `sys.molecules[k]` (same atom order)."""
 
-    def __init__(self, sys: System, pos, H, templates):
+    def __init__(self, sys: System, pos, H, templates, vdw: str = "lj", gvdw_rep: str = "gauss"):
+        self.vdw, self.gvdw_rep = vdw, gvdw_rep
         if len(templates) != sys.nmol:
             raise ValueError("one template per molecule")
         pos, H = np.asarray(pos, float), np.asarray(H, float)
@@ -158,14 +174,22 @@ class FlexibleMolecules:
         """Intramolecular energy (kJ/mol): bonded terms + intramolecular LJ with the force field's
         per-atom LJ parameters (so LJ parameter gradients include the intramolecular pairs)."""
         e = 0.0
-        rh, se = P_atoms["lj_rmin_half"], P_atoms["lj_sqrt_eps"]
         for tpl, rows, (i, j, w) in self.groups:
             X = pos[rows]                                              # (nmol_t, nat, 3)
             e = e + jnp.sum(jax.vmap(tpl.bonded_energy)(X))
-            if len(i):
+            if len(i) and self.vdw != "none":
                 r = jnp.linalg.norm(X[:, i] - X[:, j], axis=-1)
-                s6 = ((rh[rows][:, i] + rh[rows][:, j]) / r) ** 6
-                e = e + jnp.sum(w * se[rows][:, i] * se[rows][:, j] * (s6 * s6 - 2.0 * s6))
+                A_ = lambda name: P_atoms[name][rows]
+                if self.vdw == "lj":
+                    rh, se = A_("lj_rmin_half"), A_("lj_sqrt_eps")
+                    s6 = ((rh[:, i] + rh[:, j]) / r) ** 6
+                    e = e + jnp.sum(w * se[:, i] * se[:, j] * (s6 * s6 - 2.0 * s6))
+                else:
+                    R_ = A_("radius")
+                    beta = 1.0 / jnp.sqrt(2.0 * (R_[:, i] ** 2 + R_[:, j] ** 2))
+                    sa, sc, b = A_("gvdw_sqrt_a"), A_("gvdw_sqrt_c6"), A_("gvdw_b")
+                    e = e + jnp.sum(w * gvdw_pair(r, beta, sa[:, i] * sa[:, j], sc[:, i] * sc[:, j],
+                                                  0.5 * (b[:, i] + b[:, j]), self.gvdw_rep))
         return e
 
     def positions(self, pos):
@@ -290,7 +314,9 @@ class FlexibleSimulation(Simulation):
         H = reduce_box(H_nm)
         check_box(H, settings.cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
-        self.flex = FlexibleMolecules(sys, pos_nm, H, templates)
+        for tpl in {id(t): t for t in templates}.values():
+            tpl.check_settings(settings)
+        self.flex = FlexibleMolecules(sys, pos_nm, H, templates, settings.vdw, settings.gvdw_rep)
         self.rigid = self.flex                                   # wrap() / positions() used by the base driver
         self.ff = PGMForceField(sys, H, settings)
         self.r_list = self._r_list = self.flex.r_max + r_margin

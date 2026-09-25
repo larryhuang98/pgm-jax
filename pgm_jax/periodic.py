@@ -50,12 +50,23 @@ class PeriodicModel:
 
     def __init__(self, sys: System, H, pos_ref, rc: float = 1.0, b0: float = 3.8, skin: float = 0.0,
                  lj: bool = True, lj_rc: float | None = None, lj_lrc: bool = False,
-                 k_tol: float = 1e-12, cg_tol: float = 1e-12):
+                 k_tol: float = 1e-12, cg_tol: float = 1e-12, elec: str = "qpi", vdw: str = "lj",
+                 gvdw_rep: str = "gauss"):
+        """elec: "q" | "qp" | "qi" | "qpi" (options.py); vdw: "lj" | "gvdw" | "none" (lj=False: none);
+        lj_rc / lj_lrc apply to either van der Waals form."""
+        from .options import check_vdw
+        from .vdw import PeriodicGVDW
+        check_vdw(vdw, gvdw_rep)
         self.sys, self.H = sys, np.asarray(H, float)
         lj_rc = rc if lj_rc is None else lj_rc
         nl = neighbor_list(pos_ref, self.H, max(rc, lj_rc) + skin)
-        self.elec = PeriodicPGM(sys, self.H, pos_ref, b0=b0, rc=rc, k_tol=k_tol, cg_tol=cg_tol, nlist=nl)
-        self.vdw = PeriodicLJ(sys, self.H, pos_ref, rc=lj_rc, lrc=lj_lrc, nlist=nl) if lj else None
+        self.elec = PeriodicPGM(sys, self.H, pos_ref, b0=b0, rc=rc, k_tol=k_tol, cg_tol=cg_tol, nlist=nl, elec=elec)
+        if not lj or vdw == "none":
+            self.vdw = None
+        elif vdw == "lj":
+            self.vdw = PeriodicLJ(sys, self.H, pos_ref, rc=lj_rc, lrc=lj_lrc, nlist=nl)
+        else:
+            self.vdw = PeriodicGVDW(sys, self.H, pos_ref, rc=lj_rc, lrc=lj_lrc, nlist=nl, rep=gvdw_rep)
 
     def energy(self, pos, params=None, H=None):
         """-> {perm, ind, elec, vdw, total} kJ/mol."""

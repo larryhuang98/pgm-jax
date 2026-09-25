@@ -1,0 +1,26 @@
+{
+ "LJ": {
+  "VDWAALS_amber": 690.1238,
+  "VDWAALS_ours": 690.1237822027755
+ },
+ "slater": {
+  "VDWAALS_amber": 784.7282,
+  "VDWAALS_ours": 784.7281845397166,
+  "dE": -1.5460283407264797e-05,
+  "EELEC_amber": -506165.0565,
+  "EELEC_amber_LJ_run": -506165.0565,
+  "dF_rms_amber": 1.1205910107315986,
+  "dF_rmsd": 6.858573937409288e-07,
+  "dF_maxdev": 5.900948982784371e-06
+ },
+ "gauss": {
+  "VDWAALS_amber": 868.3699,
+  "VDWAALS_ours": 868.3698644200736,
+  "dE": -3.557992647529318e-05,
+  "EELEC_amber": -506165.0565,
+  "EELEC_amber_LJ_run": -506165.0565,
+  "dF_rms_amber": 1.4545316734846832,
+  "dF_rmsd": 6.868047842275967e-07,
+  "dF_maxdev": 6.297499663077133e-06
+ }
+}

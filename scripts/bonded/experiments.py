@@ -24,6 +24,9 @@ from pgm_jax.bonded.molecules import MOLECULES  # noqa: E402
 RES = os.path.join(ROOT, "runs/bonded/results")
 FAMILY_SETS = {
     "paper": T.PAPER,
+    "explore": T.PAPER,
+    "amber": T.AMBER,
+    "nn": ("nnb",),
     "diag": ("bond_morse", "angle_cos", "torsion", "improper"),
     "diag+p14": ("bond_morse", "angle_cos", "torsion", "improper", "pair14_exp"),
     "diag+ub": ("bond_morse", "angle_cos", "torsion", "improper", "pair13_harm", "pair14_exp"),

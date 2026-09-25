@@ -119,6 +119,8 @@ def molecule_to_dict(m: Molecule) -> dict:
             "alpha_nm3": m.alpha.tolist(), "cov": [[int(i), int(j), float(c)] for i, j, c in m.cov],
             "lj_rmin_half_nm": m.lj_rmin_half.tolist(), "lj_sqrt_eps": m.lj_sqrt_eps.tolist(),
             "bonds": [[int(i), int(j)] for i, j in m.bonds], "masses": m.masses.tolist(), "keys": m.keys,
+            "gvdw_sqrt_a": m.gvdw_sqrt_a.tolist(), "gvdw_sqrt_c6": m.gvdw_sqrt_c6.tolist(), "gvdw_b": m.gvdw_b.tolist(),
+            "quad": [[int(i), int(j), int(k), float(t)] for i, j, k, t in m.quad],
             "extra": {k: np.asarray(v).tolist() for k, v in m.extra.items()}}
 
 
@@ -129,7 +131,9 @@ def molecule_from_dict(d: dict) -> Molecule:
                     cov=[(int(i), int(j), float(c)) for i, j, c in d["cov"]],
                     lj_rmin_half=d.get("lj_rmin_half_nm"), lj_sqrt_eps=d.get("lj_sqrt_eps"),
                     bonds=[(int(i), int(j)) for i, j in d.get("bonds", [])], masses=d.get("masses"),
-                    keys=d.get("keys", {}), extra={k: np.array(v) for k, v in d.get("extra", {}).items()})
+                    keys=d.get("keys", {}), extra={k: np.array(v) for k, v in d.get("extra", {}).items()},
+                    gvdw_sqrt_a=d.get("gvdw_sqrt_a"), gvdw_sqrt_c6=d.get("gvdw_sqrt_c6"), gvdw_b=d.get("gvdw_b"),
+                    quad=[(int(i), int(j), int(k), float(t)) for i, j, k, t in d.get("quad", [])])
 
 
 def save_molecule(m: Molecule, path: str) -> None:

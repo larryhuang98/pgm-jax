@@ -90,6 +90,7 @@ class Topology:
     pairs13: np.ndarray = field(default=None)
     pairs14: np.ndarray = field(default=None)
     pairs15: np.ndarray = field(default=None)
+    amber_impropers: np.ndarray = field(default=None)   # (k, 4) Amber-ordered impropers (centre third), from a prmtop
 
     # ------------------------------------------------------------------ keys
     def key(self, atoms, kind: str, classes=None) -> str:
