@@ -89,6 +89,8 @@ class MolSpec:
     ref_xyz: np.ndarray                 # (n, 3) nm, a minimum
     pgm: object = None                  # pgm_jax.system.Molecule (same atom order) or None
     top: Topology = field(default=None)
+    atom_names: list = None             # optional labels (Amber atom / residue names of proteins)
+    residue_names: list = None
 
 
 def _classes(elements, bonds, depth):

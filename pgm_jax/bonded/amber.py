@@ -81,13 +81,28 @@ def fit_cmap_fourier(grid_kcal, order: int = T.cmap.ORDER):
     return np.linalg.lstsq(B, y - y.mean(), rcond=None)[0]
 
 
-def with_amber_impropers(spec, path: str):
+def _local(amb: dict, offset: int, n: int) -> dict:
+    """The terms of atoms offset .. offset + n of a prmtop, renumbered from 0 (a molecule of a
+    larger system; terms of other molecules dropped)."""
+    if offset == 0 and n is None:
+        return amb
+    ok = lambda atoms: all(offset <= a < offset + n for a in atoms)
+    sh = lambda atoms: tuple(a - offset for a in atoms)
+    return {"bonds": [sh(e[:2]) + tuple(e[2:]) for e in amb["bonds"] if ok(e[:2])],
+            "angles": [sh(e[:3]) + tuple(e[3:]) for e in amb["angles"] if ok(e[:3])],
+            "dihedrals": [sh(e[:4]) + tuple(e[4:]) for e in amb["dihedrals"] if ok(e[:4])],
+            "cmap": [sh(e[:5]) + (e[5],) for e in amb["cmap"] if ok(e[:5])], "cmap_grids": amb["cmap_grids"]}
+
+
+def with_amber_impropers(spec, path: str, offset: int = 0):
     """Give a MolSpec Amber's impropers (atom order of the prmtop, centre third), so that
-    improper_amber evaluates exactly Amber's dihedrals.  Call before building the BondedModel."""
+    improper_amber evaluates exactly Amber's dihedrals.  Call before building the BondedModel.
+    offset: index of the molecule's first atom in the prmtop (a molecule of a solvated system)."""
     from .topology import build_topology
     if spec.top is None:
         spec.top = build_topology(spec.elements, spec.bonds, (spec.bonds, spec.bond_orders), spec.ref_xyz * 10.0)
-    imp = sorted({(a, b, c, d) for a, b, c, d, PK, n, ph, im in read_bonded(path)["dihedrals"] if im})
+    amb = _local(read_bonded(path), offset, len(spec.elements))
+    imp = sorted({(a, b, c, d) for a, b, c, d, PK, n, ph, im in amb["dihedrals"] if im})
     spec.top.amber_impropers = np.array(imp, int).reshape(-1, 4)
     return spec
 
@@ -98,13 +113,15 @@ def _assign(acc, key, value):
 
 def init_from_prmtop(model, P: dict, prmtops: dict) -> dict:
     """Initial values of the amber families, the backbone maps (Fourier fit of the prmtop's CMAP
-    grids) and the reference values from prmtops {molecule index: path} (atom order = the
-    molecule's).  Families of the model outside terms.PROTEIN keep their values."""
+    grids) and the reference values from prmtops {molecule index: path or (path, offset)} (atom
+    order = the molecule's, starting at offset in the prmtop).  Families of the model outside
+    terms.PROTEIN keep their values."""
     P = {k: (dict(v) if isinstance(v, dict) else v) for k, v in P.items()}
     acc = {}
     for m, path in prmtops.items():
         top, Im = model.mols[m].top, model.I[m]
-        amb = read_bonded(path)
+        path, offset = (path, 0) if isinstance(path, str) else path
+        amb = _local(read_bonded(path), offset, top.n)
         bond_of = {tuple(sorted((int(a), int(b)))): kk for kk, (a, b) in enumerate(top.bonds)}
         for a, b, K, r0 in amb["bonds"]:
             k = bond_of.get(tuple(sorted((a, b))))

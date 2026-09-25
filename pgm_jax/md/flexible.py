@@ -88,6 +88,22 @@ class FlexibleTemplate:
             P["nnb"] = model.nnb.freeze(P["nnb"])
         return cls(model.mols, asdict(model.s), P, index)
 
+    @classmethod
+    def from_network(cls, net, P, spec, **settings) -> "FlexibleTemplate":
+        """Template of any molecule from a trained neural bonded model (bonded.nn.NNBonded and its
+        parameters, e.g. NNBonded.load): stage 1 is evaluated for this molecule and frozen.
+        settings: the BondedSettings the network was trained with (lj14_scale, lj_min_sep, elec, ...)."""
+        from ..bonded.model import BondedSettings
+        from ..bonded.topology import build_topology
+        if spec.top is None:
+            spec.top = build_topology(spec.elements, spec.bonds, (spec.bonds, spec.bond_orders), spec.ref_xyz * 10.0)
+        C = net.coefficients(P, net.prepare(spec))
+        c = net.config
+        st = BondedSettings(families=("nnb",), nn_width=c.width, nn_layers=c.layers, nn_ref=c.ref, nn_basis=c.basis,
+                            nn_b_span=c.b_span, nn_th_span=c.th_span, nn_out_scale=c.out_scale,
+                            nn_pgm_features=c.pgm_features, nn_table_depth=c.table_depth, nn_context=c.context, **settings)
+        return cls([spec], asdict(st), {"nnb": {"coef": [C]}}, 0)
+
     @property
     def spec(self):
         return self.specs[self.index]
@@ -497,6 +513,47 @@ class FlexibleSimulation(Simulation):
                     f"dt {dt * 1000:g} fs, {settings.precision} precision, PME grid {self.ff.pme.K} order "
                     f"{settings.pme_order}, cutoff {settings.cutoff} nm, {self.nb.kind} neighbour list (group radius "
                     f"{self.r_list:.3f} nm), dipole tol {settings.dipole_tol:g}, device {jax.devices()[0]}")
+
+    def minimize(self, steps: int = 500, max_step: float = 0.01, ftol: float = 50.0, seed: int = 1) -> dict:
+        """Steepest descent (adaptive step, at most max_step nm per atom, constraints kept by SHAKE)
+        until the largest force is below ftol (kJ/mol/nm) or `steps` evaluations; then new
+        velocities are drawn at the target temperature.  Relaxes clashes of built structures
+        (hydrogens added by tleap, solvent boxes) before dynamics."""
+        integ, st = self.integ, self.state
+        cons = integ.cons
+
+        @jax.jit
+        def trial(pos, box, induction, nbr, h, F):
+            fmax = jnp.max(jnp.linalg.norm(F, axis=1))
+            new = pos + h * F / jnp.maximum(fmax, 1e-12)
+            if cons is not None:
+                new = cons.positions(new, pos)
+            F1, res, nbr1 = integ._forces(new, box, induction, nbr)
+            return new, F1, res, nbr1
+
+        pos, F, box = st.dyn.position, st.dyn.force, st.box
+        induction, nbr, E = st.induction, st.nbr, float(st.epot)
+        h, n_acc = float(max_step), 0
+        for it in range(int(steps)):
+            fmax = float(jnp.max(jnp.linalg.norm(F, axis=1)))
+            if fmax < ftol:
+                break
+            new, F1, res, nbr1 = trial(pos, box, induction, nbr, h, F)
+            E1 = float(res.energy["total"])
+            if np.isfinite(E1) and E1 < E and not bool(res.overflow):
+                pos, F, induction, nbr, E = new, F1, res.induction, nbr1, E1
+                h = min(h * 1.2, max_step)
+                n_acc += 1
+            else:
+                h *= 0.5
+                if h < 1e-7:
+                    break
+        self._size_lists(pos, box)
+        self.integ.compile()
+        self.state = self.integ.init(pos, box, jax.random.PRNGKey(seed))
+        out = {"steps": it + 1, "accepted": n_acc, "energy": E, "fmax": float(jnp.max(jnp.linalg.norm(F, axis=1)))}
+        self._print(f"# minimised: {out}")
+        return out
 
     def _make_neighbors(self, H):
         s = self.settings
