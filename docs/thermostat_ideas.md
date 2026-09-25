@@ -76,6 +76,44 @@ friction and noise only on the auxiliaries.
   integrator's discretization, not the thermostat. Still to check with the configurational
   temperature and longer runs.
 
+## 3b. Energy conservation under thermostats (effective energy drift)
+
+With a thermostat, E_tot is not conserved. The right measure is the effective energy
+H~ = U + K (+ K_aux) - Q, where Q is the heat exchanged in the thermostat steps (their kinetic
+energy change, constraint projections included). Exact dynamics conserve H~; its drift is
+integration error plus the non-conservative work of incompletely converged dipoles.
+`runs/langevin/drift.py`, 4096 waters, 100 ps (tol 1e-5, mixed) or 50 ps (tol 1e-8, double);
+slopes in kT/ns/dof, linear fit (mean of 5 segment slopes +- s.e.). "rms at lag" = rms change of
+detrended H~ over 1 and 20 ps: it stays flat for a bounded fluctuation and grows for a random walk.
+
+| thermostat | 1 fs, tol 1e-5 | 2 fs, tol 1e-5 | 2 fs, exact SCF (double, 1e-8) | 2 fs rms at lag 1 / 20 ps (kJ/mol) |
+|---|---|---|---|---|
+| NVE | +0.0010 | +0.0035 (+0.0034 +- 0.0002) | -0.0001 | 2.2 / 2.3 (bounded) |
+| Bussi, tau 1 ps | +0.0009 | +0.0033 (+0.0028 +- 0.0004) | -0.0004 | 2.7 / 2.5 (bounded) |
+| Langevin 1/ps | +0.0004 | +0.0068 (+0.0054 +- 0.0016) | -0.0001 (+0.003 +- 0.007) | 2.8 / 4.0 (grows) |
+| Langevin 5/ps | +0.0006 | +0.0116 (+0.0089 +- 0.0041) | +0.0059 (+0.017 +- 0.003) | 3.8 / 10.0 (grows) |
+| band-pass GLE | +0.0015 | +0.0072 (+0.0035 +- 0.0012) | +0.0072 | 3.3 / 5.2 |
+| sparse Langevin 5/ps every 50 steps | +0.0005 | +0.0177 (+0.0187 +- 0.0016) | | 3.1 / 7.0 (grows) |
+
+- NVE and Bussi drift only through the dipole solve: the drift vanishes with an exact solve.
+- Per-atom stochastic thermostats add two things at 2 fs:
+  - a systematic drift that grows with the friction and persists with an exact solve. This is
+    shadow work of the discretized Langevin dynamics (Sivak, Chodera & Crooks 2013, PRX 3,
+    011007), not specific to pGM.
+  - a random walk of H~.
+- At 1 fs all thermostats are within noise of each other.
+- The band-pass GLE does not reduce the drift. It couples at 30-100 rad/ps (librations), where
+  the O(h^2 w^2) shadow-energy error lives. A thermostat design objective should therefore also
+  penalize coupling to fast modes, roughly integral K(w) w^2 g(w) dw, which competes with fast
+  thermalization.
+- pmemd-pgm (250 ps runs, `runs/langevin/drift/`) does not report the thermostat heat, so its
+  NVT E_tot cannot show integration drift. E_tot fluctuates canonically, about 75-105 kcal/mol
+  rms for ntt=3, ntt=11 and the middle scheme. Berendsen suppresses it to 12-16 kcal/mol, which
+  makes Langevin traces look "driftier" than Berendsen.
+  - <T> and <EPtot> agree across thermostats within about 2 s.e.
+  - NVE drift at tol 1e-4 is -0.005 to +0.0015 kT/ns/dof.
+  - Measuring H~ in pmemd needs a patch that accumulates the heat of the Langevin update.
+
 ## 4. Prior art (literature search 2026-09-25; "not found" means not found, not proven new)
 
 | idea | status |
@@ -88,6 +126,7 @@ friction and noise only on the auxiliaries.
 | Local (grouped) Bussi | Done: suggested by Bussi & Parrinello 2008; GROMACS tc-grps; CP2K CSVR regions. |
 | Sparse Andersen / Langevin | Done: Andersen 1980; E & Li 2008; GROMACS nsttcouple. A kick-aware predictor was not found. |
 | Field-anchored predictors | Done in AIMD: Arias, Payne & Joannopoulos 1992; Alfe 1999. LS dipole predictor: Wang & Skeel 2005. Robustness to thermostat noise not found. |
+| Shadow work / effective-energy bookkeeping for discrete Langevin | Done: Sivak, Chodera & Crooks 2013 (PRX); Bussi et al. 2007 use the effective energy to monitor integration error. |
 | Cold thermostats on auxiliary dipoles | Done: Lamoureux & Roux 2003 (Drude); Albaugh et al. 2015 (iEL); An et al. 2021 and Tan et al. 2020 (stochastic XLMD). |
 | Noise projected away from dipole-sensitive directions; long-wavelength-only Langevin | Not found (quick search). A band-subspace Langevin in normal-mode coordinates exists (FIMD, 2026). |
 
