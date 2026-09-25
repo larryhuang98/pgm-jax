@@ -1,0 +1,473 @@
+% references.bib for pGM-JAX
+% Each entry was checked against a source actually read (publisher page, Crossref
+% metadata, eScholarship, arXiv, NeurIPS proceedings, GitHub, CiNii, etc.).
+
+% ---------------------------------------------------------------------------
+% Differentiable simulation / software
+% ---------------------------------------------------------------------------
+
+@misc{jax2018,
+  author       = {Bradbury, James and Frostig, Roy and Hawkins, Peter and Johnson, Matthew James and Katariya, Yash and Leary, Chris and Maclaurin, Dougal and Necula, George and Paszke, Adam and Vander{P}las, Jake and Wanderman-{M}ilne, Skye and Zhang, Qiao},
+  title        = {{JAX}: composable transformations of {P}ython+{N}um{P}y programs},
+  howpublished = {\url{http://github.com/jax-ml/jax}},
+  version      = {0.3.13},
+  year         = {2018}
+}
+
+@inproceedings{schoenholz2020jaxmd,
+  author    = {Schoenholz, Samuel and Cubuk, Ekin Dogus},
+  title     = {{JAX MD}: A Framework for Differentiable Physics},
+  booktitle = {Advances in Neural Information Processing Systems},
+  volume    = {33},
+  pages     = {11428--11441},
+  year      = {2020},
+  url       = {https://proceedings.neurips.cc/paper/2020/hash/83d3d4b6c9579515e1679aca8cbc8033-Abstract.html}
+}
+
+@article{wang2014forcebalance,
+  author  = {Wang, Lee-Ping and Mart{\'\i}nez, Todd J. and Pande, Vijay S.},
+  title   = {Building Force Fields: An Automatic, Systematic, and Reproducible Approach},
+  journal = {J. Phys. Chem. Lett.},
+  volume  = {5},
+  pages   = {1885--1891},
+  year    = {2014},
+  doi     = {10.1021/jz500737m}
+}
+
+@article{thaler2021difftre,
+  author  = {Thaler, Stephan and Zavadlav, Julija},
+  title   = {Learning neural network potentials from experimental data via Differentiable Trajectory Reweighting},
+  journal = {Nat. Commun.},
+  volume  = {12},
+  pages   = {6884},
+  year    = {2021},
+  doi     = {10.1038/s41467-021-27241-4}
+}
+
+@article{wang2023dmff,
+  author  = {Wang, Xinyan and Li, Jichen and Yang, Lan and Chen, Feiyang and Wang, Yingze and Chang, Junhan and Chen, Junmin and Feng, Wei and Zhang, Linfeng and Yu, Kuang},
+  title   = {{DMFF}: An Open-Source Automatic Differentiable Platform for Molecular Force Field Development and Molecular Dynamics Simulation},
+  journal = {J. Chem. Theory Comput.},
+  volume  = {19},
+  number  = {17},
+  pages   = {5897--5909},
+  year    = {2023},
+  doi     = {10.1021/acs.jctc.2c01297}
+}
+
+@article{doerr2021torchmd,
+  author  = {Doerr, Stefan and Majewski, Maciej and P{\'e}rez, Adri{\`a} and Kr{\"a}mer, Andreas and Clementi, Cecilia and No{\'e}, Frank and Giorgino, Toni and De Fabritiis, Gianni},
+  title   = {{TorchMD}: A Deep Learning Framework for Molecular Simulations},
+  journal = {J. Chem. Theory Comput.},
+  volume  = {17},
+  number  = {4},
+  pages   = {2355--2363},
+  year    = {2021},
+  doi     = {10.1021/acs.jctc.0c01343}
+}
+
+@article{eastman2024openmm8,
+  author  = {Eastman, Peter and Galvelis, Raimondas and Pel{\'a}ez, Ra{\'u}l P. and Abreu, Charlles R. A. and Farr, Stephen E. and Gallicchio, Emilio and Gorenko, Anton and Henry, Michael M. and Hu, Frank and Huang, Jing and Kr{\"a}mer, Andreas and Michel, Julien and Mitchell, Joshua A. and Pande, Vijay S. and Rodrigues, Jo{\~a}o P. G. L. M. and Rodriguez-Guerra, Jaime and Simmonett, Andrew C. and Singh, Sukrit and Swails, Jason and Turner, Philip and Wang, Yuanqing and Zhang, Ivy and Chodera, John D. and De Fabritiis, Gianni and Markland, Thomas E.},
+  title   = {{OpenMM} 8: Molecular Dynamics Simulation with Machine Learning Potentials},
+  journal = {J. Phys. Chem. B},
+  volume  = {128},
+  number  = {1},
+  pages   = {109--116},
+  year    = {2024},
+  doi     = {10.1021/acs.jpcb.3c06662}
+}
+
+@inproceedings{blondel2022implicit,
+  author  = {Blondel, Mathieu and Berthet, Quentin and Cuturi, Marco and Frostig, Roy and Hoyer, Stephan and Llinares-L{\'o}pez, Felipe and Pedregosa, Fabian and Vert, Jean-Philippe},
+  title   = {Efficient and Modular Implicit Differentiation},
+  booktitle = {Advances in Neural Information Processing Systems},
+  volume  = {35},
+  pages   = {5230--5242},
+  year    = {2022},
+  url     = {https://proceedings.neurips.cc/paper_files/paper/2022/hash/228b9279ecf9bbafe582406850c57115-Abstract-Conference.html}
+}
+
+% ---------------------------------------------------------------------------
+% Polarizable force fields and electrostatics
+% ---------------------------------------------------------------------------
+
+@article{ponder2010amoeba,
+  author  = {Ponder, Jay W. and Wu, Chuanjie and Ren, Pengyu and Pande, Vijay S. and Chodera, John D. and Schnieders, Michael J. and Haque, Imran and Mobley, David L. and Lambrecht, Daniel S. and DiStasio, Jr., Robert A. and Head-Gordon, Martin and Clark, Gary N. I. and Johnson, Margaret E. and Head-Gordon, Teresa},
+  title   = {Current Status of the {AMOEBA} Polarizable Force Field},
+  journal = {J. Phys. Chem. B},
+  volume  = {114},
+  number  = {8},
+  pages   = {2549--2564},
+  year    = {2010},
+  doi     = {10.1021/jp910674d}
+}
+
+@article{essmann1995spme,
+  author  = {Essmann, Ulrich and Perera, Lalith and Berkowitz, Max L. and Darden, Tom and Lee, Hsing and Pedersen, Lee G.},
+  title   = {A smooth particle mesh {Ewald} method},
+  journal = {J. Chem. Phys.},
+  volume  = {103},
+  number  = {19},
+  pages   = {8577--8593},
+  year    = {1995},
+  doi     = {10.1063/1.470117}
+}
+
+@article{thole1981,
+  author  = {Thole, B. T.},
+  title   = {Molecular polarizabilities calculated with a modified dipole interaction},
+  journal = {Chem. Phys.},
+  volume  = {59},
+  number  = {3},
+  pages   = {341--350},
+  year    = {1981},
+  doi     = {10.1016/0301-0104(81)85176-2}
+}
+
+@article{elking2007gaussian,
+  author  = {Elking, Dennis and Darden, Tom and Woods, Robert J.},
+  title   = {{Gaussian} induced dipole polarization model},
+  journal = {J. Comput. Chem.},
+  volume  = {28},
+  number  = {7},
+  pages   = {1261--1274},
+  year    = {2007},
+  doi     = {10.1002/jcc.20574}
+}
+
+@article{ren2003amoebawater,
+  author  = {Ren, Pengyu and Ponder, Jay W.},
+  title   = {Polarizable Atomic Multipole Water Model for Molecular Mechanics Simulation},
+  journal = {J. Phys. Chem. B},
+  volume  = {107},
+  number  = {24},
+  pages   = {5933--5947},
+  year    = {2003},
+  doi     = {10.1021/jp027815+}
+}
+
+@article{wang2013iamoeba,
+  author  = {Wang, Lee-Ping and Head-Gordon, Teresa and Ponder, Jay W. and Ren, Pengyu and Chodera, John D. and Eastman, Peter K. and Martinez, Todd J. and Pande, Vijay S.},
+  title   = {Systematic Improvement of a Classical Molecular Model of Water},
+  journal = {J. Phys. Chem. B},
+  volume  = {117},
+  number  = {34},
+  pages   = {9956--9972},
+  year    = {2013},
+  doi     = {10.1021/jp403802c}
+}
+
+@article{horn2004tip4pew,
+  author  = {Horn, Hans W. and Swope, William C. and Pitera, Jed W. and Madura, Jeffry D. and Dick, Thomas J. and Hura, Greg L. and Head-Gordon, Teresa},
+  title   = {Development of an improved four-site water model for biomolecular simulations: {TIP4P-Ew}},
+  journal = {J. Chem. Phys.},
+  volume  = {120},
+  number  = {20},
+  pages   = {9665--9678},
+  year    = {2004},
+  doi     = {10.1063/1.1683075}
+}
+
+% ---------------------------------------------------------------------------
+% pGM model papers (Luo / Duan / Cieplak / Wang groups)
+% ---------------------------------------------------------------------------
+
+@article{wang2019pgm1,
+  author  = {Wang, Junmei and Cieplak, Piotr and Luo, Ray and Duan, Yong},
+  title   = {Development of Polarizable {Gaussian} Model for Molecular Mechanical Calculations {I}: Atomic Polarizability Parameterization To Reproduce ab Initio Anisotropy},
+  journal = {J. Chem. Theory Comput.},
+  volume  = {15},
+  number  = {2},
+  pages   = {1146--1158},
+  year    = {2019},
+  doi     = {10.1021/acs.jctc.8b00603}
+}
+
+@article{wei2020pgm,
+  author  = {Wei, Haixin and Qi, Ruxi and Wang, Junmei and Cieplak, Piotr and Duan, Yong and Luo, Ray},
+  title   = {Efficient formulation of polarizable {Gaussian} multipole electrostatics for biomolecular simulations},
+  journal = {J. Chem. Phys.},
+  volume  = {153},
+  number  = {11},
+  pages   = {114116},
+  year    = {2020},
+  doi     = {10.1063/5.0019560}
+}
+
+@article{wei2022pgmstress,
+  author  = {Wei, Haixin and Cieplak, Piotr and Duan, Yong and Luo, Ray},
+  title   = {Stress tensor and constant pressure simulation for polarizable {Gaussian} multipole model},
+  journal = {J. Chem. Phys.},
+  volume  = {156},
+  number  = {11},
+  pages   = {114114},
+  year    = {2022},
+  doi     = {10.1063/5.0082548}
+}
+
+@article{zhao2022pyresp,
+  author  = {Zhao, Shiji and Wei, Haixin and Cieplak, Piotr and Duan, Yong and Luo, Ray},
+  title   = {{PyRESP}: A Program for Electrostatic Parameterizations of Additive and Induced Dipole Polarizable Force Fields},
+  journal = {J. Chem. Theory Comput.},
+  volume  = {18},
+  number  = {6},
+  pages   = {3654--3670},
+  year    = {2022},
+  doi     = {10.1021/acs.jctc.2c00230}
+}
+
+@article{zhao2023pgmtransfer,
+  author  = {Zhao, Shiji and Cieplak, Piotr and Duan, Yong and Luo, Ray},
+  title   = {Transferability of the Electrostatic Parameters of the Polarizable {Gaussian} Multipole Model},
+  journal = {J. Chem. Theory Comput.},
+  volume  = {19},
+  number  = {3},
+  pages   = {924--941},
+  year    = {2023},
+  doi     = {10.1021/acs.jctc.2c01048}
+}
+
+@article{duan2024pcmresp,
+  author  = {Duan, Yong and Niu, Taoyu and Wang, Junmei and Cieplak, Piotr and Luo, Ray},
+  title   = {{PCMRESP}: A Method for Polarizable Force Field Parameter Development and Transferability of the Polarizable {Gaussian} Multipole Models Across Multiple Solvents},
+  journal = {J. Chem. Theory Comput.},
+  volume  = {20},
+  number  = {7},
+  pages   = {2820--2829},
+  year    = {2024},
+  doi     = {10.1021/acs.jctc.4c00064}
+}
+
+@article{huang2025pgmtuning,
+  author  = {Huang, Zhen and Wu, Yongxian and Duan, Yong and Luo, Ray},
+  title   = {Performance Tuning of Polarizable {Gaussian} Multipole Model in Molecular Dynamics Simulations},
+  journal = {J. Chem. Theory Comput.},
+  volume  = {21},
+  number  = {2},
+  pages   = {847--858},
+  year    = {2025},
+  doi     = {10.1021/acs.jctc.4c01368}
+}
+
+@article{wu2025pgmwater,
+  author  = {Wu, Yongxian and Zhu, Qiang and Huang, Zhen and Cieplak, Piotr and Duan, Yong and Luo, Ray},
+  title   = {Automated Refinement of Property-Specific Polarizable {Gaussian} Multipole Water Models Using {Bayesian} Black-Box Optimization},
+  journal = {J. Chem. Theory Comput.},
+  volume  = {21},
+  number  = {7},
+  pages   = {3563--3575},
+  year    = {2025},
+  doi     = {10.1021/acs.jctc.5c00039}
+}
+
+% ---------------------------------------------------------------------------
+% MD algorithms: integrators, thermostats, barostats
+% ---------------------------------------------------------------------------
+
+@article{leimkuhler2013baoab,
+  author  = {Leimkuhler, Benedict and Matthews, Charles},
+  title   = {Rational Construction of Stochastic Numerical Methods for Molecular Sampling},
+  journal = {Appl. Math. Res. Express},
+  volume  = {2013},
+  number  = {1},
+  pages   = {34--56},
+  year    = {2013},
+  doi     = {10.1093/amrx/abs010}
+}
+
+@article{miller2002nosquish,
+  author  = {Miller, III, Thomas F. and Eleftheriou, M. and Pattnaik, P. and Ndirango, A. and Newns, D. and Martyna, G. J.},
+  title   = {Symplectic quaternion scheme for biophysical molecular dynamics},
+  journal = {J. Chem. Phys.},
+  volume  = {116},
+  number  = {20},
+  pages   = {8649--8659},
+  year    = {2002},
+  doi     = {10.1063/1.1473654}
+}
+
+@article{chow1995mcbarostat,
+  author  = {Chow, Kim-Hung and Ferguson, David M.},
+  title   = {Isothermal-isobaric molecular dynamics simulations with {Monte Carlo} volume sampling},
+  journal = {Comput. Phys. Commun.},
+  volume  = {91},
+  number  = {1--3},
+  pages   = {283--289},
+  year    = {1995},
+  doi     = {10.1016/0010-4655(95)00059-O}
+}
+
+@article{aqvist2004mcbarostat,
+  author  = {{\AA}qvist, Johan and Wennerstr{\"o}m, Petra and Nervall, Martin and Bjelic, Sinisa and Brandsdal, Bj{\o}rn O.},
+  title   = {Molecular dynamics simulations of water and biomolecules with a {Monte Carlo} constant pressure algorithm},
+  journal = {Chem. Phys. Lett.},
+  volume  = {384},
+  number  = {4--6},
+  pages   = {288--294},
+  year    = {2004},
+  doi     = {10.1016/j.cplett.2003.12.039}
+}
+
+% ---------------------------------------------------------------------------
+% Amber
+% ---------------------------------------------------------------------------
+
+@article{case2023ambertools,
+  author  = {Case, David A. and Aktulga, Hasan Metin and Belfon, Kellon and Cerutti, David S. and Cisneros, G. Andr{\'e}s and Cruzeiro, Vin{\'\i}cius Wilian D. and Forouzesh, Negin and Giese, Timothy J. and G{\"o}tz, Andreas W. and Gohlke, Holger and Izadi, Saeed and Kasavajhala, Koushik and Kaymak, Mehmet C. and King, Edward and Kurtzman, Tom and Lee, Tai-Sung and Li, Pengfei and Liu, Jian and Luchko, Tyler and Luo, Ray and Manathunga, Madushanka and Machado, Matias R. and Nguyen, Hai Minh and O'Hearn, Kurt A. and Onufriev, Alexey V. and Pan, Feng and Pantano, Sergio and Qi, Ruxi and Rahnamoun, Ali and Risheh, Ali and Schott-Verdugo, Stephan and Shajan, Akhil and Swails, Jason and Wang, Junmei and Wei, Haixin and Wu, Xiongwu and Wu, Yongxian and Zhang, Shi and Zhao, Shiji and Zhu, Qiang and Cheatham, III, Thomas E. and Roe, Daniel R. and Roitberg, Adrian and Simmerling, Carlos and York, Darrin M. and Nagan, Maria C. and Merz, Jr., Kenneth M.},
+  title   = {{AmberTools}},
+  journal = {J. Chem. Inf. Model.},
+  volume  = {63},
+  number  = {20},
+  pages   = {6183--6191},
+  year    = {2023},
+  doi     = {10.1021/acs.jcim.3c01153}
+}
+
+@article{salomonferrer2013pmemd,
+  author  = {Salomon-Ferrer, Romelia and G{\"o}tz, Andreas W. and Poole, Duncan and Le Grand, Scott and Walker, Ross C.},
+  title   = {Routine Microsecond Molecular Dynamics Simulations with {AMBER} on {GPUs}. 2. Explicit Solvent Particle Mesh {Ewald}},
+  journal = {J. Chem. Theory Comput.},
+  volume  = {9},
+  pages   = {3878--3888},
+  year    = {2013},
+  doi     = {10.1021/ct400314y}
+}
+
+@article{wang2004gaff,
+  author  = {Wang, Junmei and Wolf, Romain M. and Caldwell, James W. and Kollman, Peter A. and Case, David A.},
+  title   = {Development and testing of a general amber force field},
+  journal = {J. Comput. Chem.},
+  volume  = {25},
+  number  = {9},
+  pages   = {1157--1174},
+  year    = {2004},
+  doi     = {10.1002/jcc.20035}
+}
+
+% ---------------------------------------------------------------------------
+% Reference data: QM, ML potentials, experiment
+% ---------------------------------------------------------------------------
+
+@article{kovacs2025maceoff,
+  author  = {Kov{\'a}cs, D{\'a}vid P{\'e}ter and Moore, J. Harry and Browning, Nicholas J. and Batatia, Ilyes and Horton, Joshua T. and Pu, Yixuan and Kapil, Venkat and Witt, William C. and Magd{\u{a}}u, Ioan-Bogdan and Cole, Daniel J. and Cs{\'a}nyi, G{\'a}bor},
+  title   = {{MACE-OFF}: Short-Range Transferable Machine Learning Force Fields for Organic Molecules},
+  journal = {J. Am. Chem. Soc.},
+  volume  = {147},
+  number  = {21},
+  pages   = {17598--17611},
+  year    = {2025},
+  doi     = {10.1021/jacs.4c07099},
+  eprint  = {2312.15211},
+  archivePrefix = {arXiv}
+}
+
+@article{smith2020psi4,
+  author  = {Smith, Daniel G. A. and Burns, Lori A. and Simmonett, Andrew C. and Parrish, Robert M. and Schieber, Matthew C. and Galvelis, Raimondas and Kraus, Peter and Kruse, Holger and Di Remigio, Roberto and Alenaizan, Asem and James, Andrew M. and Lehtola, Susi and Misiewicz, Jonathon P. and Scheurer, Maximilian and Shaw, Robert A. and Schriber, Jeffrey B. and Xie, Yi and Glick, Zachary L. and Sirianni, Dominic A. and O'Brien, Joseph Senan and Waldrop, Jonathan M. and Kumar, Ashutosh and Hohenstein, Edward G. and Pritchard, Benjamin P. and Brooks, Bernard R. and Schaefer, III, Henry F. and Sokolov, Alexander Yu. and Patkowski, Konrad and DePrince, III, A. Eugene and Bozkaya, U{\u{g}}ur and King, Rollin A. and Evangelista, Francesco A. and Turney, Justin M. and Crawford, T. Daniel and Sherrill, C. David},
+  title   = {{Psi4} 1.4: Open-source software for high-throughput quantum chemistry},
+  journal = {J. Chem. Phys.},
+  volume  = {152},
+  number  = {18},
+  pages   = {184108},
+  year    = {2020},
+  doi     = {10.1063/5.0006002}
+}
+
+@article{mardirossian2016wb97mv,
+  author  = {Mardirossian, Narbe and Head-Gordon, Martin},
+  title   = {{$\omega$B97M-V}: A combinatorially optimized, range-separated hybrid, meta-{GGA} density functional with {VV10} nonlocal correlation},
+  journal = {J. Chem. Phys.},
+  volume  = {144},
+  number  = {21},
+  pages   = {214110},
+  year    = {2016},
+  doi     = {10.1063/1.4952647}
+}
+
+@article{najibi2018wb97md3bj,
+  author  = {Najibi, Asim and Goerigk, Lars},
+  title   = {The Nonlocal Kernel in van der {Waals} Density Functionals as an Additive Correction: An Extensive Analysis with Special Emphasis on the {B97M-V} and {$\omega$B97M-V} Approaches},
+  journal = {J. Chem. Theory Comput.},
+  volume  = {14},
+  number  = {11},
+  pages   = {5725--5738},
+  year    = {2018},
+  doi     = {10.1021/acs.jctc.8b00842}
+}
+
+@article{grimme2011d3bj,
+  author  = {Grimme, Stefan and Ehrlich, Stephan and Goerigk, Lars},
+  title   = {Effect of the damping function in dispersion corrected density functional theory},
+  journal = {J. Comput. Chem.},
+  volume  = {32},
+  number  = {7},
+  pages   = {1456--1465},
+  year    = {2011},
+  doi     = {10.1002/jcc.21759}
+}
+
+@article{rappoport2010def2,
+  author  = {Rappoport, Dmitrij and Furche, Filipp},
+  title   = {Property-optimized {Gaussian} basis sets for molecular response calculations},
+  journal = {J. Chem. Phys.},
+  volume  = {133},
+  number  = {13},
+  pages   = {134105},
+  year    = {2010},
+  doi     = {10.1063/1.3484283}
+}
+
+@article{abdullah2025bonded,
+  author  = {Abdullah, Aalim S. and Wang, Yingze and Menger, Maximilian F. S. J. and Sami, Selim and Head-Gordon, Teresa},
+  title   = {Improved Treatment of 1--4 Interactions in Force Fields for Molecular Dynamics Simulations},
+  journal = {J. Chem. Theory Comput.},
+  volume  = {21},
+  number  = {22},
+  pages   = {11669--11678},
+  year    = {2025},
+  doi     = {10.1021/acs.jctc.5c01458},
+  eprint  = {2504.14398},
+  archivePrefix = {arXiv}
+}
+
+@book{majer1985enthalpies,
+  author    = {Majer, Vladim{\'\i}r and Svoboda, V{\'a}clav},
+  title     = {Enthalpies of Vaporization of Organic Compounds: A Critical Review and Data Compilation},
+  series    = {IUPAC Chemical Data Series},
+  number    = {32},
+  publisher = {Blackwell Scientific Publications},
+  address   = {Oxford},
+  year      = {1985},
+  isbn      = {0-632-01529-2}
+}
+
+@article{dauberosguthorpe2019,
+  author  = {Dauber-Osguthorpe, Pnina and Hagler, A. T.},
+  title   = {Biomolecular force fields: where have we been, where are we now, where do we need to go and how do we get there?},
+  journal = {J. Comput.-Aided Mol. Des.},
+  volume  = {33},
+  number  = {2},
+  pages   = {133--203},
+  year    = {2019},
+  doi     = {10.1007/s10822-018-0111-4}
+}
+
+@article{polak1971hvap,
+  author  = {Pol{\'a}k, Ji{\v{r}}{\'\i} and Benson, G. C.},
+  title   = {Enthalpies of vaporization of some aliphatic alcohols},
+  journal = {J. Chem. Thermodyn.},
+  volume  = {3},
+  number  = {2},
+  pages   = {235--242},
+  year    = {1971},
+  doi     = {10.1016/S0021-9614(71)80108-8}
+}
+
+@article{srivastava1987methanol,
+  author  = {Srivastava, R. and Smith, B. D.},
+  title   = {Evaluation of Binary Excess Volume Data for the Methanol+Hydrocarbon Systems},
+  journal = {J. Phys. Chem. Ref. Data},
+  volume  = {16},
+  pages   = {209--218},
+  year    = {1987},
+  doi     = {10.1063/1.555780}
+}

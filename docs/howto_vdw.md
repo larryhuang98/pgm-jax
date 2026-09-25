@@ -26,11 +26,13 @@ gradients are right and the step is within the linear range. Results go to
 
 What to change for your own system:
 
-- **Parameters.** `to_params(theta, p0)` maps theta to the parameter table. The demo uses two
-  global scales (all R* times s_R, all epsilon times s_eps). For per-type parameters, make theta
-  a vector with one entry per key (`sys.table.keys["lj_rmin_half"]` gives the key names) and
-  scale or replace the corresponding entries; nothing else changes, since dU/dtheta is taken by
-  `jax.value_and_grad` through `to_params`.
+- **Parameters.** `ParamMap` maps theta to the parameter table. `--params global` (default)
+  uses two global scales (all R* times s_R, all epsilon times s_eps); `--params type` uses one
+  pair of scales per Lennard-Jones atom type with epsilon > 0 (the log lists their names, e.g.
+  `ln s_R[MeOH:c3]`). With two targets and more parameters the Gauss-Newton step is the
+  minimum-norm step, so for per-type fits add targets (other liquids, temperatures, gas-phase
+  dimers) or a prior. Any other map works the same way: dU/dtheta is taken by
+  `jax.value_and_grad` through it, so no derivative code changes.
 - **System.** `build()` returns the System, coordinates, box and time step; rigid molecules come
   from an Amber pGM prmtop (`Simulation`), flexible ones from a `FlexibleTemplate` (see
   `howto_bonded.md`).

@@ -12,7 +12,8 @@ the Jacobian of the targets; each iteration runs one NPT simulation, takes a dam
 step, and the next simulation checks the predicted change.
 
 The parameters are two scale factors on every atom's LJ parameters, theta = (ln s_R, ln s_eps):
-R*_i -> s_R R*_i, eps_i -> s_eps eps_i (per-type parameters work the same way; see `to_params`).
+R*_i -> s_R R*_i, eps_i -> s_eps eps_i; or (--params type) one pair of scales per atom type
+(`ParamMap`).
 
     python scripts/fit_liquid.py water    --start 0.0296,-0.357 --iters 6    # perturbed start
     python scripts/fit_liquid.py methanol --iters 6                         # from GAFF LJ
@@ -41,12 +42,42 @@ EXP = {"water": {"rho": 0.997, "dhvap": 10.518},      # 298 K, 1 bar: g/cm^3, kc
        "methanol": {"rho": 0.7866, "dhvap": 37.43 / KCAL}}
 
 
-def to_params(theta, p0):
-    """theta = (ln s_R, ln s_eps) -> the parameter table (R* scaled by s_R, eps by s_eps)."""
-    p = dict(p0)
-    p["lj_rmin_half"] = p0["lj_rmin_half"] * jnp.exp(theta[0])
-    p["lj_sqrt_eps"] = p0["lj_sqrt_eps"] * jnp.exp(0.5 * theta[1])
-    return p
+class ParamMap:
+    """theta -> parameter table.  "global": theta = (ln s_R, ln s_eps), every atom's R* times s_R
+    and epsilon times s_eps.  "type": one ln-scale of R* and one of epsilon per Lennard-Jones key
+    (atom type) with epsilon > 0; the Gauss-Newton step is then the minimum-norm step (two targets,
+    more parameters), so add targets or a prior before trusting individual values."""
+
+    def __init__(self, table, p0, mode="global"):
+        self.mode = mode
+        if mode == "global":
+            self.names, self.kind = ["ln s_R", "ln s_eps"], np.array([0, 1])
+        else:
+            eps, rh = np.asarray(p0["lj_sqrt_eps"]), np.asarray(p0["lj_rmin_half"])
+            self.iR, self.iE = np.flatnonzero((rh > 0) & (eps > 0)), np.flatnonzero(eps > 0)
+            kR, kE = table.keys["lj_rmin_half"], table.keys["lj_sqrt_eps"]
+            self.names = [f"ln s_R[{kR[i]}]" for i in self.iR] + [f"ln s_eps[{kE[i]}]" for i in self.iE]
+            self.kind = np.array([0] * len(self.iR) + [1] * len(self.iE))
+        self.n = len(self.names)
+
+    def start(self, text):
+        v = np.array([float(x) for x in text.split(",")])
+        if len(v) == self.n:
+            return v
+        if len(v) == 2:                                  # (ln s_R, ln s_eps) for every type
+            return v[self.kind]
+        raise SystemExit(f"--start needs 2 or {self.n} values ({', '.join(self.names)})")
+
+    def __call__(self, theta, p0):
+        p = dict(p0)
+        if self.mode == "global":
+            p["lj_rmin_half"] = p0["lj_rmin_half"] * jnp.exp(theta[0])
+            p["lj_sqrt_eps"] = p0["lj_sqrt_eps"] * jnp.exp(0.5 * theta[1])
+        else:
+            nR = len(self.iR)
+            p["lj_rmin_half"] = p0["lj_rmin_half"].at[self.iR].multiply(jnp.exp(theta[:nR]))
+            p["lj_sqrt_eps"] = p0["lj_sqrt_eps"].at[self.iE].multiply(jnp.exp(0.5 * theta[nR:]))
+        return p
 
 
 # ----------------------------------------------------------------------------- systems
@@ -112,7 +143,7 @@ def advance(sim, nsteps, chunk=2000):
 
 
 # ----------------------------------------------------------------------------- one iteration
-def sample(sim, sysd, theta, p0, T, n_prod, every):
+def sample(sim, sysd, theta, p0, T, n_prod, every, to_params):
     """Production run; per frame: U (kJ/mol), rho (g/cm^3), dU/dtheta."""
     ff, flexible = sim.ff, sysd["tpl"] is not None
     M = float(np.sum(sysd["sys"].masses))
@@ -157,7 +188,9 @@ def estimates(fr, T, N, u_gas):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("system", choices=["water", "methanol"])
-    ap.add_argument("--start", default="0,0", help="initial ln s_R, ln s_eps")
+    ap.add_argument("--params", choices=["global", "type"], default="global",
+                    help="global: two scales for all atoms; type: R* and eps scale per LJ atom type")
+    ap.add_argument("--start", default="0,0", help="initial ln scales: 2 values, or one per parameter (--params type)")
     ap.add_argument("--iters", type=int, default=6)
     ap.add_argument("--T", type=float, default=298.0)
     ap.add_argument("--equil0", type=float, default=100.0, help="ps before the first iteration")
@@ -179,7 +212,9 @@ def main():
     t0 = time.time()
     u_gas, u_gas_se = gas_energy(sysd, p0, a.T, settings)
     print(f"# {a.system}: {N} molecules, <U_gas> = {u_gas:.3f} +- {u_gas_se:.3f} kJ/mol ({time.time() - t0:.0f} s)", flush=True)
-    theta = np.array([float(v) for v in a.start.split(",")])
+    to_params = ParamMap(sysd["sys"].table, p0, a.params)
+    theta = to_params.start(a.start)
+    clip = np.where(to_params.kind == 0, 0.02, 0.25)
     exp_ = dict(EXP[a.system])
     if a.targets:
         exp_["rho"], exp_["dhvap"] = (float(v) for v in a.targets.split(","))
@@ -194,19 +229,22 @@ def main():
         params = to_params(jnp.asarray(theta), p0)
         sim = make_sim(sysd, params, a.T, settings, pos, H, vel, seed=100 + it)
         advance(sim, int(round((a.equil0 if it == 0 else a.equil) / dt)))
-        fr = sample(sim, sysd, theta, p0, a.T, int(round(a.prod / dt)), int(round(a.every / dt)))
+        fr = sample(sim, sysd, theta, p0, a.T, int(round(a.prod / dt)), int(round(a.every / dt)), to_params)
         est = estimates(fr, a.T, N, u_gas)
         y = np.array([est["rho"], est["dhvap"]])
         r = (y - y_exp) / sig
         Js = est["J"] / sig[:, None]
-        step = -np.linalg.solve(Js.T @ Js + 1e-3 * np.eye(2), Js.T @ r)
-        step = np.clip(step, [-0.02, -0.25], [0.02, 0.25])
-        rec = {"iter": it, "theta": theta.tolist(), "s_R": float(np.exp(theta[0])), "s_eps": float(np.exp(theta[1])),
+        step = -np.linalg.solve(Js.T @ Js + 1e-3 * np.eye(to_params.n), Js.T @ r)
+        step = np.clip(step, -clip, clip)
+        rec = {"iter": it, "theta": theta.tolist(), "names": to_params.names,
+               "s_R": float(np.exp(theta[0])), "s_eps": float(np.exp(theta[-1])),
                "rho": est["rho"], "rho_se": est["rho_se"], "dhvap": est["dhvap"], "dhvap_se": est["dhvap_se"],
                "J": est["J"].tolist(), "predicted_from_previous": pred, "step": step.tolist(),
                "U_consistency_kJ": est["U_consistency_kJ"], "frames": len(fr["U"]), "wall_s": time.time() - t1}
         log["iters"].append(rec)
-        print(f"iter {it}: s_R {rec['s_R']:.4f} s_eps {rec['s_eps']:.4f}  rho {est['rho']:.4f} +- {est['rho_se']:.4f}  "
+        par = (f"s_R {rec['s_R']:.4f} s_eps {rec['s_eps']:.4f}" if a.params == "global"
+               else "scales " + " ".join(f"{v:.4f}" for v in np.exp(theta)))
+        print(f"iter {it}: {par}  rho {est['rho']:.4f} +- {est['rho_se']:.4f}  "
               f"dHvap {est['dhvap']:.3f} +- {est['dhvap_se']:.3f} kcal/mol  (target {y_exp[0]:.4f}, {y_exp[1]:.3f}); "
               f"predicted {pred}; J {np.round(est['J'], 4).tolist()}; {time.time() - t1:.0f} s", flush=True)
         json.dump(log, open(out, "w"), indent=1)

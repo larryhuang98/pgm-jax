@@ -203,8 +203,9 @@ sim.run(200000, report=2000, prefix="meoh")        # log columns include temp_co
 `examples/fit_bonded_template.py` (fit + export), `examples/run_flexible_liquid.py` (box, NVT,
 NPT) and `examples/flex_methanol_check.py` (forces vs the gas-phase model, NVE, NPT). Only fits
 with the engine's model can be exported (pGM with all pairs, no flux, no refitted charges).
-216 methanols (1,296 atoms), mixed precision, dt 0.5 fs: 50 ps NPT in 163 s on one GPU, density
-0.78 g/cm^3 with GAFF LJ and pGM electrostatics (experiment 0.7866).
+216 methanols (1,296 atoms), mixed precision, dt 0.5 fs: 52 ns/day on one GPU (NPT), density
+0.789 +- 0.002 g/cm^3 with GAFF LJ and pGM electrostatics (experiment 0.7866); NVE drift below
+0.005 kT/ns per degree of freedom (`paper/scripts/flex_methanol.py`).
 
 NPT from a loose start changes the box a lot: the driver rebuilds the neighbour lists when the
 volume has drifted by more than 10 % or when a block keeps overflowing (then the block is split).
@@ -223,7 +224,11 @@ python scripts/fit_liquid.py methanol --iters 6                              # f
 python scripts/fit_liquid.py water --start 0.0296,-0.357 --targets 1.0177,8.638   # recovery test
 ```
 
-See `docs/howto_vdw.md` for per-type parameters and other targets.
+Results (paper, section 6.2): water recovers s_R = 1.0005 +- 0.0005, s_eps = 0.985 +- 0.009 from a
+start at (1.03, 0.70) in two iterations of 200 s; flexible methanol from GAFF LJ (dHvap 6.97
+kcal/mol, 2 kcal/mol too low) to experiment (0.7866 g/cm^3, 8.946 kcal/mol) in four iterations,
+at s_R = 1.047, s_eps = 1.510. `--params type` fits one R* and one eps scale per atom type. See
+`docs/howto_vdw.md` for per-type parameters and other targets.
 
 ## Bonded terms for flexible molecules (`pgm_jax.bonded`)
 

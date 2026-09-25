@@ -7,3 +7,10 @@ __pycache__/
 data/
 psi.*.clean
 timer.dat
+paper/*.aux
+paper/*.log
+paper/*.bbl
+paper/*.blg
+paper/*.fls
+paper/*.fdb_latexmk
+paper/*.out
