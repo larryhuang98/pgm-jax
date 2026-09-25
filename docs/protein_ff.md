@@ -136,6 +136,34 @@ constraints --grid 36`): 12k atoms 2.14 ms/step, 41k 11.9, 98k 35.0, with 6-7 CG
   parameters or the predictor is still open.
 
 
+### What limits the speed (measured, ubiquitin unless noted)
+
+- **The direct-space dipole matvec is memory bound.** It stores 24 bytes per pair (index,
+  displacement, two kernels) for about 390 pairs per atom. This fits the 128 MB L2 cache of the
+  card up to about 14k atoms. In pure water, 12k atoms take 0.04 ms per matvec and 98k atoms
+  2.2 ms. The ubiquitin box needs 150 MB, and one matvec takes 0.45 ms against 0.065 ms for the
+  PME part. For comparison, pmemd-pgm's direct field sweep at 98k atoms takes 0.23 ms.
+- **Why the CG needs 12-15 iterations.** Each iteration only halves the residual (about 4x in
+  pure water). The slowest components sit on aromatic ring carbons and on the arginine CZ. The
+  operator depends only on alpha, R and the geometry, not on the charges, so this is a property
+  of the pGM-pol parameters, not of the placeholder charges. At 2 fs the starting residual is
+  largest on charged side chains (Arg NH, Lys NZ): 0.13 against 0.036 on water.
+  `scripts/protein/cg_diag.py` prints this analysis.
+- **Shorter real-space cutoff with a larger Ewald coefficient.** Cutoff 0.7 nm, beta
+  5.14 nm^-1, grid 0.062 nm. This halves the pair rows, so the matvec fits in cache again.
+  Ubiquitin: 34 -> 55 ns/day. DHFR (26k atoms): 22.5 -> 28. Trp-cage: unchanged (already in
+  cache). Force error against a tight reference, electrostatics only: 6.5e-5 relative rms
+  (2.8e-5 at the current 0.9 nm / 4.0 / 0.08 nm). In this test LJ was cut at 0.7 nm as well;
+  production needs a separate electrostatics cutoff.
+- **dipole tol 1e-4 on top:** 64 ns/day, 1.9x the baseline.
+- **Local preconditioner** (`local_niter` 2, 0.3 nm): 13 -> 7 iterations, but only 7 % faster.
+  The inner sweeps cost about what they save, as in pmemd-pgm.
+- **Truncated octahedron** (`build_amber.py --box oct`): ubiquitin 15,955 -> 15,238 atoms,
+  34 -> 38 ns/day. DHFR 25,780 -> 22,492 atoms, 22.5 -> 25.7 ns/day.
+- **Rejected:** fp16 / bf16 storage of the rows (1.7x faster matvec at 98k, but 5e-4 / 3e-3
+  relative matvec error), recomputing the kernels on the fly in XLA (no gain), spatial sorting
+  of the molecules (no gain).
+
 ## Open items
 
 - **pGM residue library.** The pGM parameters of the amino acids are still needed:

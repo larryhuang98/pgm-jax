@@ -27,13 +27,19 @@ ap.add_argument("--cut", type=float, default=0.9)
 ap.add_argument("--tol", type=float, default=1e-5)
 ap.add_argument("--precision", default="mixed")
 ap.add_argument("--hmr", type=float, default=3.024)
+ap.add_argument("--local-niter", type=int, default=0, help="inner CG steps of the short-range preconditioner (0: Jacobi)")
+ap.add_argument("--local-cut", type=float, default=0.3, help="preconditioner range (nm)")
+ap.add_argument("--predictor", default="mu4")
+ap.add_argument("--beta", type=float, default=4.0, help="Ewald coefficient (nm^-1)")
+ap.add_argument("--spacing", type=float, default=0.08, help="PME grid spacing (nm)")
 a = ap.parse_args()
 lib = ResidueLibrary.load(a.library) if a.library else "placeholder"
 t0 = time.time()
 asys = load_amber(a.prmtop, a.inpcrd, electrostatics=lib)
 prot = [k for k, m in enumerate(asys.molecules) if m.kind == "protein"]
 tpl = {k: amber_template(asys.molecules[k], a.prmtop) for k in prot}
-st = MDSettings(cutoff=a.cut, skin=0.1, dipole_tol=a.tol, precision=a.precision)
+st = MDSettings(cutoff=a.cut, skin=0.1, dipole_tol=a.tol, precision=a.precision, local_niter=a.local_niter,
+                local_cut=a.local_cut, predictor=a.predictor, ewald_beta=a.beta, pme_spacing=a.spacing)
 sim = FlexibleSimulation(asys.system(), asys.templates(tpl), asys.system_positions(), asys.box, st, dt=a.dt,
                          ensemble="nvt", constraints="h-bonds", hmr=a.hmr, log=sys.stdout)
 print(f"setup {time.time() - t0:.1f} s: {sim.sys.n} atoms, {len(prot)} protein chain(s) "

@@ -5,9 +5,10 @@ that pgm_jax.protein.load_amber reads).
 
 The structure is cleaned here (first model, ATOM records only: no waters or ligands, first
 alternate location, hydrogens removed so that tleap adds them with Amber's names); tleap adds
-hydrogens and termini (HIS as HIE unless renamed), neutralises with Na+ / Cl- (before solvating, so no ion lands on a
-water) and solvates in a rectangular TIP3P box (the water is replaced by the pGM water model when
-the system is loaded).  Needs AmberTools (AMBERHOME)."""
+hydrogens and termini (HIS as HIE unless renamed), neutralises with Na+ / Cl- (before solvating,
+so no ion lands on a water) and solvates in a rectangular TIP3P box (--box oct: truncated
+octahedron; the water is replaced by the pGM water model when the system is loaded).
+Needs AmberTools (AMBERHOME)."""
 import argparse
 import os
 import subprocess
@@ -19,6 +20,7 @@ ap.add_argument("--buffer", type=float, default=10.0, help="solvent buffer (A)")
 ap.add_argument("--ff", default="ff19SB")
 ap.add_argument("--water", default="tip3p")
 ap.add_argument("--model", type=int, default=1)
+ap.add_argument("--box", default="rect", choices=("rect", "oct"), help="rectangular box or truncated octahedron")
 a = ap.parse_args()
 os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
 clean = a.out + "_clean.pdb"
@@ -51,7 +53,7 @@ source leaprc.water.{a.water}
 m = loadpdb {clean}
 addions m Na+ 0
 addions m Cl- 0
-solvatebox m {box} {a.buffer}
+{'solvateoct' if a.box == 'oct' else 'solvatebox'} m {box} {a.buffer}
 saveamberparm m {a.out}.prmtop {a.out}.inpcrd
 savepdb m {a.out}.pdb
 quit
