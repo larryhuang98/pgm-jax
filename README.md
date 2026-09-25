@@ -10,7 +10,14 @@ any order. Validated against Amber (sander, pmemd-pgm) and PyRESP.
 - **Van der Waals:** Lennard-Jones between molecules (Amber form, Lorentz-Berthelot).
 - **Systems:** gas phase (`Model`), periodic (`PeriodicModel`, Ewald, triclinic boxes), and
   **molecular dynamics with JAX-MD** (`pgm_jax.md`: smooth PME, neighbour lists, pmemd-pgm's induction
-  solver, rigid molecules, NVE / Langevin NVT / Monte Carlo NPT, Amber inputs and outputs).
+  solver, rigid or flexible molecules, NVE / Langevin NVT / Monte Carlo NPT, Amber inputs and outputs).
+- **Parameterization:** gradients of QM losses (energies, forces, dipoles, ESP) by autodiff;
+  gradients of liquid properties (density, heat of vaporization) by fluctuation formulas over MD
+  frames; bonded terms for flexible pGM molecules (`pgm_jax.bonded`).
+
+**Getting started with parameterization:** `docs/howto_bonded.md` (bond, angle, torsion terms
+for flexible molecules) and `docs/howto_vdw.md` (Lennard-Jones from liquid properties and gas-phase
+data). The software paper (LaTeX + PDF) is in `paper/`.
 
 Started on 2026-09-23 from the pGM core of `~/project/evoff` (commit `73d961c`); this repository
 is where the two projects diverge (evoff searches over functional forms, pGM-JAX keeps pGM's).
@@ -172,6 +179,52 @@ factorisations every step); int32 PME indices; mu4 + fused residual (one field s
 remaining gap to pmemd at 12k atoms is hand-written CUDA vs XLA: per CG iteration pmemd runs one
 fused kernel per term, XLA several kernels with the loop condition checked on the host.
 
+## Flexible molecules in MD
+
+`pgm_jax.md.flexible` runs molecules with bonded terms fitted by `pgm_jax.bonded`. pGM
+electrostatics already includes every intramolecular pair, so a flexible molecule adds
+
+    E_intra = E_bonded(R) + LJ over pairs >= lj_min_sep bonds apart (+ lj14_scale x 1-4 LJ),
+
+exactly the gas-phase model the bonded terms were fitted with. Atoms are integrated individually
+(velocity Verlet / BAOAB Langevin; the MC barostat scales molecular centres), molecules are kept
+whole across the boundaries, and the neighbour list is still built between molecular centres
+(with the molecule's radius plus a margin, checked every block).
+
+```python
+from pgm_jax.md.flexible import FlexibleTemplate, FlexibleSimulation, liquid_box
+tpl = FlexibleTemplate.from_fit(model, P)          # after fitting pgm_jax.bonded; .save() / .load()
+pos, H = liquid_box(tpl, 216, density=0.55)        # dilute start; NPT compresses it
+sim = FlexibleSimulation(System([tpl.pgm] * 216), [tpl] * 216, pos, H, MDSettings(),
+                         dt=0.0005, ensemble="npt", temperature=298.0)
+sim.run(200000, report=2000, prefix="meoh")        # log columns include temp_com and temp_internal
+```
+
+`examples/fit_bonded_template.py` (fit + export), `examples/run_flexible_liquid.py` (box, NVT,
+NPT) and `examples/flex_methanol_check.py` (forces vs the gas-phase model, NVE, NPT). Only fits
+with the engine's model can be exported (pGM with all pairs, no flux, no refitted charges).
+216 methanols (1,296 atoms), mixed precision, dt 0.5 fs: 50 ps NPT in 163 s on one GPU, density
+0.78 g/cm^3 with GAFF LJ and pGM electrostatics (experiment 0.7866).
+
+NPT from a loose start changes the box a lot: the driver rebuilds the neighbour lists when the
+volume has drifted by more than 10 % or when a block keeps overflowing (then the block is split).
+
+## Fitting to liquid properties
+
+`scripts/fit_liquid.py` fits Lennard-Jones parameters to the liquid density and heat of
+vaporization: each iteration is one NPT simulation; per frame, dU/dtheta is taken by JAX at the
+converged induced dipoles (the energy is variational in them, so no derivative of the solve is
+needed); the fluctuation formula d<A>/dtheta = <dA/dtheta> - beta cov(A, dU/dtheta) gives the
+Jacobian of rho and dHvap; a damped Gauss-Newton step gives the next parameters, and the next
+simulation checks the step's prediction.
+
+```bash
+python scripts/fit_liquid.py methanol --iters 6                              # flexible, to experiment
+python scripts/fit_liquid.py water --start 0.0296,-0.357 --targets 1.0177,8.638   # recovery test
+```
+
+See `docs/howto_vdw.md` for per-type parameters and other targets.
+
 ## Bonded terms for flexible molecules (`pgm_jax.bonded`)
 
 pGM has no 1-2/1-3/1-4 exclusions, so the valence (bonded) terms of a flexible pGM molecule only
@@ -239,11 +292,15 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/model.py` | gas-phase `Model`: energies, forces, batching, n-body energies (compiled once per topology) |
 | `pgm_jax/param.py` | Amber pGM prmtop reader (incl. LJ, bonds, masses), JSON save/load, py_resp `.chg` + pGM-pol table, atom mapping |
 | `pgm_jax/md/` | MD engine: `forcefield.py` (PME + direct rows + induction solver), `pme.py`, `kernels.py`, `neighbors.py` (JAX-MD lists), `rigid.py` (JAX-MD rigid bodies), `integrate.py`, `simulation.py`, `io.py` (Amber NetCDF), `box.py` |
+| `pgm_jax/md/flexible.py` | flexible molecules in MD: `FlexibleTemplate` (bonded fit -> MD), `FlexibleSimulation`, `liquid_box` |
+| `scripts/fit_liquid.py` | LJ from liquid density + heat of vaporization (ensemble gradients, Gauss-Newton) |
+| `examples/`, `docs/` | fit-and-run examples; how-tos for bonded and van der Waals parameterization |
+| `paper/` | the pGM-JAX paper (LaTeX, PDF, figure data and scripts) |
 | `pgm_jax/bonded/` | bonded terms for flexible pGM molecules: `topology.py`, `terms.py` (term registry), `model.py`, `fit.py`, `bench.py`, `data.py`, `molecules.py` |
 | `scripts/bonded/` | the bonded study: sampling, DFT labels, pGM parameters, experiments, report |
 | `scripts/run_md.py` | MD from an Amber prmtop + inpcrd/rst7 (Amber-style options) |
 | `scripts/bench_md.py`, `scripts/pgm_supercell.py` | MD speed benchmark; replicate a pGM prmtop for larger systems |
-| `tests/` | `pytest -q`: 47 tests, incl. finite-difference checks of every derivative and the MD engine |
+| `tests/` | `pytest -q`: 51 tests, incl. finite-difference checks of every derivative and the MD engine |
 | `scripts/validate_amber.py` | comparison with sander / pmemd-pgm / PyRESP (`compare`, `pyresp`, `virial`) |
 | `scripts/bench.py` | timings on the current device |
 | `validation/` | Amber reference runs (inputs + outputs) and `validate_amber.json` |
@@ -296,10 +353,11 @@ Conventions worth knowing:
 
 ## Limits
 
-- LJ is intermolecular only in `Model`, `PeriodicModel` and the MD engine (every intramolecular
-  pair excluded, as for rigid molecules in Amber). Bonded terms and intramolecular LJ from 1-5 on
-  exist in `pgm_jax.bonded` (gas phase, for fitting), not yet in the MD engine, which runs rigid
-  molecules only.
+- LJ is intermolecular only in `Model`, `PeriodicModel` and the rigid-molecule MD engine (every
+  intramolecular pair excluded, as for rigid molecules in Amber). Flexible molecules
+  (`pgm_jax.md.flexible`) add bonded terms and intramolecular LJ from 1-5 on; they have no bond
+  constraints yet (dt 0.5 fs).
+- `fit_liquid.py` does not yet differentiate <U_gas> for molecules with intramolecular LJ pairs.
 - The gas-phase induction solve is dense (3n × 3n): fine up to a few thousand atoms.
 - `PeriodicModel` uses plain Ewald with a neighbour list and k-vectors built once (for
   single points and gradients); MD uses `pgm_jax.md` (smooth PME, list updates, integrators).

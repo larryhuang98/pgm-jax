@@ -49,14 +49,9 @@ class Simulation:
         self.sys, self.settings, self.log = sys, settings, log
         self.rigid = RigidMolecules(sys, pos_nm, H)
         self.ff = PGMForceField(sys, H, settings)
-        r_max = float(jnp.max(jnp.linalg.norm(self.rigid.local, axis=1)))
-        mode = neighbor_list
-        if mode == "auto":
-            mode = "molecule" if MoleculeNeighbors.fits(H, settings.cutoff, settings.skin, r_max) else "atom"
-        if mode == "molecule":
-            self.nb = MoleculeNeighbors(sys.mol, sys.nmol, r_max, H, settings.cutoff, settings.skin)
-        else:
-            self.nb = AtomNeighbors(sys.n, H, settings.cutoff, settings.skin)
+        self._r_list = float(jnp.max(jnp.linalg.norm(self.rigid.local, axis=1)))
+        self._nb_mode = neighbor_list
+        self._make_neighbors(H)
         self._size_lists(self.rigid.body0, H)
         self.integ = Integrator(self.ff, self.rigid, self.nb, dt, ensemble, temperature, gamma, pressure,
                                 barostat_interval, params)
@@ -138,11 +133,50 @@ class Simulation:
         self.ff.mc = min(int(np.ceil((cmax * (1.0 + 0.5 * (factor - 1.0)) + 8) / 8.0) * 8), width)
         return nbr
 
+    def _make_neighbors(self, H):
+        """Neighbour-list object for box H.  JAX-MD's cell list is laid out for one box shape, so
+        it is rebuilt when the volume has drifted by more than 10 % (e.g. NPT from a loose start) or
+        when a block keeps overflowing (a shrinking box makes the cells smaller than the cutoff)."""
+        s = self.settings
+        mode = self._nb_mode
+        if mode == "auto":
+            mode = "molecule" if MoleculeNeighbors.fits(H, s.cutoff, s.skin, self._r_list) else "atom"
+        if mode == "molecule":
+            self.nb = MoleculeNeighbors(self.sys.mol, self.sys.nmol, self._r_list, H, s.cutoff, s.skin)
+        else:
+            self.nb = AtomNeighbors(self.sys.n, H, s.cutoff, s.skin)
+        self._nb_volume = float(volume(jnp.asarray(H)))
+
+    def _rebuild_neighbors(self):
+        self.n_rebuilds = getattr(self, "n_rebuilds", 0) + 1
+        st = self.state
+        self._print(f"# step {int(st.step)}: neighbour lists rebuilt for volume {float(volume(st.box)):.3f} nm^3")
+        H = np.asarray(st.box)
+        self._make_neighbors(H)
+        nbr = self._size_lists(st.dyn.position, H)
+        self.integ.nb = self.nb
+        self.integ.compile()
+        self.state = self.integ.forces(st.set(nbr=nbr), False).set(induction=st.induction)
+
     def _print(self, s):
         if self.log is not None:
             print(s, file=self.log, flush=True)
 
     def _advance(self, n: int):
+        if abs(float(volume(self.state.box)) / self._nb_volume - 1.0) > 0.10:
+            self._rebuild_neighbors()
+        try:
+            self._advance_block(n)
+        except RuntimeError as err:
+            # the box changed too much within the block (NPT far from equilibrium): rebuild the
+            # lists and advance in halves, rebuilding between them as the volume drifts
+            if "overflowing" not in str(err) or n < 2:
+                raise
+            self._rebuild_neighbors()
+            self._advance(n // 2)
+            self._advance(n - n // 2)
+
+    def _advance_block(self, n: int):
         start = self.state
         for attempt in range(6):
             new = self.integ.run(start, n)
