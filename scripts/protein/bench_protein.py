@@ -39,8 +39,10 @@ sim = FlexibleSimulation(asys.system(), asys.templates(tpl), asys.system_positio
 print(f"setup {time.time() - t0:.1f} s: {sim.sys.n} atoms, {len(prot)} protein chain(s) "
       f"({sum(asys.molecules[k].n for k in prot)} atoms), {sim.topology.n_group} groups, "
       f"special width {sim.topology.special.shape[1]}, rows {sim.ff.mc}", flush=True)
+t1 = time.time()
 print("minimise:", sim.minimize(300), flush=True)
 sim._advance(500)
+print(f"minimise + compile + 500 steps {time.time() - t1:.1f} s", flush=True)
 t0 = time.time()
 done = 0
 while done < a.steps:
@@ -51,3 +53,6 @@ o = sim.observables()
 print(f"{sim.sys.n} atoms, dt {a.dt * 1000:g} fs, {a.precision}: {el / done * 1e3:.3f} ms/step, "
       f"{done * a.dt / 1000 / el * 86400:.1f} ns/day; T {o['temp_K']:.1f} K, CG iters {o['cg_iter']} (max {o['cg_iter_max']}), "
       f"shake {o['shake_err']:.1e}", flush=True)
+mem = jax.devices()[0].memory_stats() or {}
+if "peak_bytes_in_use" in mem:
+    print(f"GPU memory peak {mem['peak_bytes_in_use'] / 2**30:.2f} GiB", flush=True)

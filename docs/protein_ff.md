@@ -106,10 +106,35 @@ print(rw.n_eff(th))                                                      # resam
 | Rigid water by constraints vs rigid bodies | same energy (1e-8 relative); the rigid-body engine is unchanged (2.05 ms/step, 12k atoms) |
 | SHAKE / RATTLE | exact to 1e-12; 4096 waters: 0.042 ms per SHAKE |
 | Peptide + water, X-H constraints + HMR, 2 fs; solvated ACE-ALA-SER-NME | stable (tests) |
-| Solvated Trp-cage, placeholder electrostatics, X-H constraints + HMR, 2 fs | 96 ns/day |
-| Solvated ubiquitin (16k atoms), same settings | 35 ns/day (dipole tol 1e-5), 41 ns/day (1e-4) |
 
 Benchmark: `python scripts/protein/bench_protein.py sys.prmtop sys.inpcrd [--library lib.json] [--tol 1e-4]`.
+
+## Speed and size
+
+One RTX PRO 6000 Blackwell (96 GB), mixed precision, NVT, dt 2 fs, X-H constraints + HMR, rigid
+water, 9 A cutoff, PME spacing 0.8 A order 6, dipole tol 1e-5, placeholder electrostatics,
+rectangular TIP3P box (10 A buffer unless noted). `scripts/protein/bench_protein.py`.
+
+| System | Atoms (protein) | ms/step | ns/day | CG iterations | GPU memory peak | Setup + minimise/compile |
+|---|---|---|---|---|---|---|
+| Trp-cage 1L2Y | 6,215 (304) | 1.72 | 100 | 12 | 0.3 GiB | 12 s + 12 s |
+| Ubiquitin 1UBQ | 15,955 (1,231) | 5.06 | 34 (41 at tol 1e-4) | 12 (9) | 1.0 GiB | 16 s + 16 s |
+| DHFR 1RX2 | 25,780 (2,489) | 7.68 | 22.5 | 14 | 2.5 GiB | 25 s + 20 s |
+| MBP 1OMP | 46,329 (5,737) | 22.0 | 7.9 | 14 | 4.3 GiB | 49 s + 30 s |
+| MBP, 20 A buffer | 93,180 | 51.8 | 3.3 | 14 | 9.6 GiB | 83 s + 57 s |
+| MBP, 32 A buffer | 180,213 | 105.5 | 1.6 | 15 | 11.3 GiB | 217 s + 100 s |
+
+Pure pGM water with the same engine (constraints, dt 2 fs, `scripts/bench_md.py --engine
+constraints --grid 36`): 12k atoms 2.14 ms/step, 41k 11.9, 98k 35.0, with 6-7 CG iterations.
+
+- Memory is not the limit: 180k atoms use about 11 GiB. The limit is time per step.
+- The cost per atom grows from about 0.3 ms per 1000 atoms (up to 26k atoms) to 0.5-0.6
+  (46k and above). Pure water shows the same growth (0.17 -> 0.36), so it is the engine, not the
+  protein terms (probably the pair rows no longer staying in cache; not yet profiled).
+- Protein boxes need twice the CG iterations of pure water at the same time step (12-15 against
+  6-7). That accounts for most of the extra cost per atom. Whether the cause is the placeholder
+  parameters or the predictor is still open.
+
 
 ## Open items
 
@@ -117,9 +142,10 @@ Benchmark: `python scripts/protein/bench_protein.py sys.prmtop sys.inpcrd [--lib
   multi-conformation ESP of capped fragments, fitted with covalent dipoles (and
   `ResidueLibrary.from_fits`). Until then, `placeholder` uses Amber charges and pGM
   polarizabilities and is only for testing the pipeline.
-- **CG iterations at 2 fs.** Dipole extrapolation (mu4) is less accurate at 2 fs; ubiquitin
-  needs 9-13 CG iterations against 4-6 for water at 1 fs. Tuning the predictor and
-  preconditioner is the next speed item.
+- **CG iterations in protein boxes.** 12-15 per step against 6-7 for pure pGM water at the same
+  2 fs, so dt is not the cause. Candidates: the placeholder parameters (Amber charges + pGM
+  polarizabilities, water included), the mu4 predictor, the preconditioner. Bringing it to the
+  water level would make protein MD about 1.5x faster.
 - **Water model.** Protein systems currently use tleap's TIP3P geometry. `load_amber(water=...)`
   swaps in the pGM water model.
 - **Fragment training data.** SPICE dipeptides are at the same DFT level as our labels; φ/ψ
