@@ -160,6 +160,25 @@ constraints --grid 36`): 12k atoms 2.14 ms/step, 41k 11.9, 98k 35.0, with 6-7 CG
   The inner sweeps cost about what they save, as in pmemd-pgm.
 - **Truncated octahedron** (`build_amber.py --box oct`): ubiquitin 15,955 -> 15,238 atoms,
   34 -> 38 ns/day. DHFR 25,780 -> 22,492 atoms, 22.5 -> 25.7 ns/day.
+- **Langevin thermostat and the dipole predictor.** Langevin (BAOAB here, ntt=3 in pmemd) gives
+  every atom an independent random velocity kick each step, so the trajectory is no longer
+  smooth. The cubic extrapolation of the dipoles (error = 4th difference along the trajectory)
+  then has a noise part ~ sqrt(gamma) dt^1.5 instead of ~ dt^4, and higher orders amplify it.
+  4096 waters, 1 fs, tol 1e-5, relative predictor error / mean CG iterations:
+
+  | thermostat | pgm_jax cubic predictor | pgm_jax CG | pmemd-pgm mu4 CG | pmemd delta4 CG |
+  |---|---|---|---|---|
+  | none (NVE) | 8.3e-5 | 4.0 | 4.0 | 3.0 |
+  | Langevin 0.1/ps | 4.0e-4 | 5.0 | 5.6 | 5.0 |
+  | Langevin 1/ps | 1.3e-3 | 6.0 | 6.1 | 6.0 |
+  | Langevin 5/ps | 2.8e-3 | 6.0 | 7.0 | 7.0 |
+  | Bussi, tau 0.1-1 ps | 8.4e-5 | 4.0 | 4.0 (ntt=11) | 3.0 (ntt=11) |
+
+  In this setting, pmemd-pgm with ntt=11 (Bussi) instead of ntt=3 runs at 0.73 ms/step instead
+  of 0.96 (mu4) and 0.71 instead of 1.04 (delta4), with correct temperatures. At 2 fs the
+  time-step error already dominates, so the gain is smaller (pmemd mu4: 7.0 -> 5.4 iterations).
+  Solvated proteins with HMR at 2 fs gain little (ubiquitin 13 -> 12 iterations, 1 %); at 1 fs
+  ubiquitin goes 10 -> 8 (8 % faster) and Trp-cage 9 -> 7 (6 %).
 - **Rejected:** fp16 / bf16 storage of the rows (1.7x faster matvec at 98k, but 5e-4 / 3e-3
   relative matvec error), recomputing the kernels on the fly in XLA (no gain), spatial sorting
   of the molecules (no gain).
