@@ -23,6 +23,7 @@ from pgm_jax.bonded.molecules import MOLECULES  # noqa: E402
 
 RES = os.path.join(ROOT, "runs/bonded/results")
 FAMILY_SETS = {
+    "protein": T.PROTEIN,
     "paper": T.PAPER,
     "explore": T.PAPER,
     "amber": T.AMBER,
@@ -60,6 +61,16 @@ FAMILY_SETS = {
 }
 
 
+def families_of(spec: str) -> tuple:
+    """A FAMILY_SETS name, or families and set names joined by '+' ("amber+cmap", "paper+twist")."""
+    if spec in FAMILY_SETS:
+        return tuple(FAMILY_SETS[spec])
+    out = []
+    for tok in spec.split("+"):
+        out += list(FAMILY_SETS[tok]) if tok in FAMILY_SETS else [tok]
+    return tuple(dict.fromkeys(out))
+
+
 def concat(sets):
     sets = [s for s in sets if s is not None and len(s)]
     return FrameSet(np.concatenate([s.X for s in sets]), np.concatenate([s.E for s in sets]),
@@ -91,7 +102,7 @@ def load(names, with_scans=True):
 def run(a):
     names = mol_list(a.mols)
     specs, data = load(names)
-    st = BondedSettings(families=FAMILY_SETS.get(a.families, tuple(a.families.split("+"))), typing=a.typing,
+    st = BondedSettings(families=families_of(a.families), typing=a.typing,
                         depth=a.depth, elec_exclude=a.elec, lj_min_sep=a.lj_sep, lj14_scale=a.lj14, flux=a.flux,
                         elec14_scale=a.elec14, escale=tuple(int(x) for x in a.escale.split(",")) if a.escale else (), qfit=a.qfit, qbci=a.qbci)
     out = {"name": a.name, "args": vars(a), "settings": st.__dict__, "molecules": {}}
@@ -162,7 +173,7 @@ def l1path(a):
     """Error vs number of active linear parameters along an L1 path (per-molecule fits)."""
     names = mol_list(a.mols)
     specs, data = load(names, with_scans=True)
-    st = BondedSettings(families=FAMILY_SETS.get(a.families, tuple(a.families.split("+"))), typing=a.typing,
+    st = BondedSettings(families=families_of(a.families), typing=a.typing,
                         depth=a.depth, elec_exclude=a.elec, lj_min_sep=a.lj_sep, lj14_scale=a.lj14, flux=a.flux,
                         elec14_scale=a.elec14)
     lams = [float(x) for x in a.lams.split(",")]

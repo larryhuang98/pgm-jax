@@ -68,7 +68,7 @@ class FlexibleTemplate:
             bad.append("quadrupoles (not in the MD engine yet)")
         if bad:
             raise ValueError("the MD engine uses pGM with all pairs; this fit used " + ", ".join(bad))
-        self._model = None
+        self._model = self._terms = None
 
     @classmethod
     def from_fit(cls, model, P, index: int = 0) -> "FlexibleTemplate":
@@ -92,7 +92,17 @@ class FlexibleTemplate:
         return self.spec.name
 
     @property
+    def terms(self):
+        """The bonded terms (BondedTerms: no gas-phase nonbonded setup, any molecule size)."""
+        if self._terms is None:
+            from ..bonded.model import BondedSettings, BondedTerms
+            self._terms = BondedTerms([replace(s) for s in self.specs], BondedSettings(**self.settings))
+        return self._terms
+
+    @property
     def model(self):
+        """The full gas-phase model the bonded terms were fitted with (BondedModel: + pGM and
+        intramolecular van der Waals), for reference energies of isolated molecules."""
         if self._model is None:
             from ..bonded.model import BondedModel, BondedSettings
             self._model = BondedModel([replace(s) for s in self.specs], BondedSettings(**self.settings))
@@ -104,7 +114,7 @@ class FlexibleTemplate:
 
     def lj_pairs(self):
         """Intramolecular LJ pairs (i, j, weight): graph distance >= lj_min_sep (1), 1-4 (lj14_scale)."""
-        D = self.model.mols[self.index].top.dist
+        D = self.terms.mols[self.index].top.dist
         i, j = np.triu_indices(self.n, 1)
         d = D[i, j]
         w = (d >= self.settings.get("lj_min_sep", 4)).astype(float)
@@ -114,14 +124,14 @@ class FlexibleTemplate:
 
     def check_settings(self, settings):
         """The MD model must be the model the bonded terms were fitted with."""
-        st = self.model.s
+        st = self.terms.s
         for name in ("elec", "vdw", "gvdw_rep"):
             if getattr(st, name) != getattr(settings, name) and not (name == "gvdw_rep" and st.vdw != "gvdw"):
                 raise ValueError(f"template {self.name} was fitted with {name}={getattr(st, name)!r}, "
                                  f"the MD settings have {getattr(settings, name)!r}")
 
     def bonded_energy(self, R, P=None):
-        return self.model.bonded_energy(self.index, R, jax.tree_util.tree_map(jnp.asarray, self.P if P is None else P))
+        return self.terms.bonded_energy(self.index, R, jax.tree_util.tree_map(jnp.asarray, self.P if P is None else P))
 
     def save(self, path: str):
         with open(path, "wb") as fh:

@@ -76,6 +76,7 @@ class BondedSettings:
     nn_pgm_features: bool = True        # atom features include the pGM q, alpha, radius, |covalent dipoles|
     nn_table_depth: int | None = None   # typed table (atom environments to this depth; 0 = elements) + residual
     nn_resid_l2: float = 0.0            # shrinkage of the network residual towards the typed table
+    nn_context: bool = True             # sequence context (residues i-1, i, i+1) for the backbone map (cmap)
 
 
 @dataclass
@@ -103,11 +104,13 @@ def _classes(elements, bonds, depth):
     return [hashlib.md5(c.encode()).hexdigest()[:8] + ":" + c.split("(")[0] for c in col]
 
 
-class BondedModel:
+class BondedTerms:
+    """The bonded half of the model: families, tying keys, index sets, parameters and the bonded
+    energy (and the neural bonded terms).  No gas-phase nonbonded setup, so it serves MD templates
+    of any size; BondedModel adds the pGM + van der Waals intramolecular model for fitting."""
+
     def __init__(self, mols: list[MolSpec], settings: BondedSettings = BondedSettings()):
         self.s = settings
-        self.pd, self.ind = elec_flags(settings.elec)
-        check_vdw(settings.vdw, settings.gvdw_rep)
         self.mols = mols
         self.fams = [f for f in settings.families if f not in ("flux", "nnb")]
         for m in mols:
@@ -115,11 +118,8 @@ class BondedModel:
                 m.top = build_topology(m.elements, m.bonds, (m.bonds, m.bond_orders), m.ref_xyz * 10.0)
         self.nnb = None
         if "nnb" in settings.families:
-            from .nn import NNBonded
-            self.nnb = NNBonded(mols, settings.nn_width, settings.nn_layers, settings.nn_ref, settings.nn_basis,
-                                b_span=settings.nn_b_span, th_span=settings.nn_th_span,
-                                out_scale=settings.nn_out_scale, pgm_features=settings.nn_pgm_features,
-                                table_depth=settings.nn_table_depth, resid_l2=settings.nn_resid_l2)
+            from .nn import NNBConfig, NNBonded
+            self.nnb = NNBonded.for_molecules(mols, NNBConfig.from_settings(settings))
         # tying keys
         self.keyf = []
         for m in mols:
@@ -156,12 +156,13 @@ class BondedModel:
             for Im in self.I:
                 Im[f]["k"] = np.array([pos[k] for k in Im[f]["_keys"]], int)
         self._static_extras()
-        self._nonbonded_setup()
 
     def _key(self, which, key):
-        if key not in self.ref_keys[which]:
+        pos = self.__dict__.setdefault("_ref_pos", {"b0": {}, "th0": {}})[which]
+        if key not in pos:
+            pos[key] = len(self.ref_keys[which])
             self.ref_keys[which].append(key)
-        return self.ref_keys[which].index(key)
+        return pos[key]
 
     def _static_extras(self):
         # pGM Gaussian pair exponents for the overlap families
@@ -186,9 +187,8 @@ class BondedModel:
 
     # ------------------------------------------------------------------ parameters
     def init_params(self, rng_scale: float = 0.0, hold=()) -> dict:
-        """Reference values from the reference geometries (key means); force constants at the
-        families' defaults; fitted pGM charges / covalent dipoles at the type means of the ESP fits,
-        over the molecules not in `hold` where the type occurs in any of them."""
+        """Reference values from the reference geometries (key means), force constants at the
+        families' defaults, the neural bonded network's initial weights."""
         b0 = np.zeros(len(self.ref_keys["b0"])); nb = np.zeros_like(b0)
         th0 = np.zeros(len(self.ref_keys["th0"])); na = np.zeros_like(th0)
         pr = {}
@@ -217,22 +217,8 @@ class BondedModel:
                     P[f][pname] = jnp.asarray(acc[0] / np.maximum(acc[1], 1))
                 else:
                     P[f][pname] = jnp.full((nk,) + shape, float(init))
-        if self.s.flux:
-            P["flux"] = {"jb": jnp.zeros(len(self.ref_keys["b0"])), "jc": jnp.zeros(len(self.ref_keys["b0"]))}
-            if int(self.s.flux) >= 2:                   # quadratic covalent-dipole flux (field-responsive bonds)
-                P["flux"]["jc2"] = jnp.zeros(len(self.ref_keys["b0"]))
-        if self.s.escale:
-            P["escale"] = {"kappa": jnp.zeros(len(self.es_pos))}
         if self.nnb is not None:
             P["nnb"] = self.nnb.init_params()
-        if self.s.qbci >= 0:
-            P["bci"] = {"t": jnp.zeros(len(self.t_pos)), "dc": jnp.zeros(len(self.dc_pos))}
-        if self.s.qfit >= 0:                      # start from the ESP-fitted values, averaged per type
-            def mean(v):
-                w = [x for i, x in v if i not in hold]
-                return np.mean(w if w else [x for _, x in v])
-            P["elec"] = {"q": jnp.asarray([mean(self.q_acc[k]) for k in self.q_keys]),
-                         "c": jnp.asarray([mean(self.c_acc[k]) for k in self.c_keys])}
         return P
 
     def linear_mask(self, P) -> dict:
@@ -241,8 +227,6 @@ class BondedModel:
         for f in self.fams:
             for pname in T.REGISTRY[f].linear:
                 out[f][pname] = True
-        if "escale" in P:
-            out["escale"]["kappa"] = True
         return out
 
     # ------------------------------------------------------------------ energies
@@ -263,6 +247,48 @@ class BondedModel:
         if self.nnb is not None:
             e = e + self.nnb.energy(P["nnb"], m, R)
         return e
+
+    def n_params(self, P, only_linear: bool = False) -> int:
+        leaves = jax.tree_util.tree_leaves(P)
+        return int(sum(np.size(x) for x in leaves))
+
+
+class BondedModel(BondedTerms):
+    """Bonded terms + gas-phase pGM (all pairs, induced dipoles) + intramolecular van der Waals:
+    the model the bonded terms are fitted with (Fitter)."""
+
+    def __init__(self, mols: list[MolSpec], settings: BondedSettings = BondedSettings()):
+        super().__init__(mols, settings)
+        self.pd, self.ind = elec_flags(settings.elec)
+        check_vdw(settings.vdw, settings.gvdw_rep)
+        self._nonbonded_setup()
+
+    def init_params(self, rng_scale: float = 0.0, hold=()) -> dict:
+        """BondedTerms.init_params plus charge / dipole flux, learned pair scales and fitted
+        charges or bond-charge increments when the settings ask for them (fitted pGM charges /
+        covalent dipoles start at the type means of the ESP fits over the molecules not in `hold`)."""
+        P = super().init_params(rng_scale, hold)
+        if self.s.flux:
+            P["flux"] = {"jb": jnp.zeros(len(self.ref_keys["b0"])), "jc": jnp.zeros(len(self.ref_keys["b0"]))}
+            if int(self.s.flux) >= 2:                   # quadratic covalent-dipole flux (field-responsive bonds)
+                P["flux"]["jc2"] = jnp.zeros(len(self.ref_keys["b0"]))
+        if self.s.escale:
+            P["escale"] = {"kappa": jnp.zeros(len(self.es_pos))}
+        if self.s.qbci >= 0:
+            P["bci"] = {"t": jnp.zeros(len(self.t_pos)), "dc": jnp.zeros(len(self.dc_pos))}
+        if self.s.qfit >= 0:                      # start from the ESP-fitted values, averaged per type
+            def mean(v):
+                w = [x for i, x in v if i not in hold]
+                return np.mean(w if w else [x for _, x in v])
+            P["elec"] = {"q": jnp.asarray([mean(self.q_acc[k]) for k in self.q_keys]),
+                         "c": jnp.asarray([mean(self.c_acc[k]) for k in self.c_keys])}
+        return P
+
+    def linear_mask(self, P) -> dict:
+        out = super().linear_mask(P)
+        if "escale" in P:
+            out["escale"]["kappa"] = True
+        return out
 
     def _nonbonded_setup(self):
         dens = DENSITIES["gaussian"]
@@ -463,7 +489,3 @@ class BondedModel:
         if self.s.escale and "escale" in P and self.nb[m] is not None:
             e = e + jnp.sum(P["escale"]["kappa"][self.nb[m]["es_glob"]] * self.escale_terms(m, R, eparams))
         return e, dip
-
-    def n_params(self, P, only_linear: bool = False) -> int:
-        leaves = jax.tree_util.tree_leaves(P)
-        return int(sum(np.size(x) for x in leaves))

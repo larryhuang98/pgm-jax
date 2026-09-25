@@ -1,10 +1,13 @@
 """Valence topology of one molecule from its bond graph: internal coordinates, the coupling index
-sets of class II force fields, topological pair classes, and symmetry classes for tying.
+sets of class II force fields, topological pair classes, peptide backbone and residues, and
+symmetry classes for tying.
 
 All index arrays are numpy int arrays (static for jit).  Conventions:
   bonds (nb, 2); angles (na, 3) with the centre in the middle; propers (nt, 4) i-j-k-l about
   bond j-k; impropers (ni, 4) = (centre, a, b, c) for planar 3-coordinated centres;
-  graph distance matrix `dist` (n, n) in bonds (1 = 1-2, 2 = 1-3, 3 = 1-4, ...).
+  graph distance matrix `dist` (n, n) in bonds (1 = 1-2, 2 = 1-3, 3 = 1-4, ...), dense for
+  molecules up to DENSE_MAX atoms (None above; pairs13/pairs14 are always built, pairs15 only
+  with the dense matrix).
 Couplings (Abdullah et al. 2025, eqs 3, 5, 6, 8-10):
   bond_bond      the two bonds of every angle
   bond_angle     (bond, angle) for the two bonds of every angle
@@ -12,19 +15,33 @@ Couplings (Abdullah et al. 2025, eqs 3, 5, 6, 8-10):
   torsion_bond   (torsion, bond) for the three bonds of every torsion
   torsion_angle  (torsion, angle) for the two angles of every torsion
   aat            (torsion, angle1, angle2): the two angles of every torsion
+Peptides (found from the graph, no atom names needed; `peptide_backbone`):
+  residue        (n,) residue index of every atom: the components left after cutting the
+                 peptide bonds C(i-1)-N(i) (caps such as ACE / NME are residues of their own)
+  cmaps          (k, 5) C(i-1), N, CA, C, N(i+1) for every residue with both backbone torsions
+                 phi = C(i-1)-N-CA-C and psi = N-CA-C-N(i+1)
 """
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
 
+DENSE_MAX = 1000                     # atoms: dense graph-distance matrix and pairs15 up to this size
 
-def _graph_dist(n, bonds):
-    D = np.full((n, n), 99, int)
+
+def _neighbours(n, bonds):
     nbr = [[] for _ in range(n)]
     for i, j in bonds:
-        nbr[i].append(j); nbr[j].append(i)
+        nbr[int(i)].append(int(j)); nbr[int(j)].append(int(i))
+    return nbr
+
+
+def _graph_dist(n, bonds):
+    """Dense graph distances (99 = not connected) and neighbour lists."""
+    nbr = _neighbours(n, bonds)
+    D = np.full((n, n), 99, int)
     for s in range(n):
         D[s, s] = 0
         front = [s]
@@ -39,7 +56,28 @@ def _graph_dist(n, bonds):
     return D, nbr
 
 
+def near_pairs(nbr, depth: int = 3) -> dict:
+    """{(i, j): graph distance} for i < j within `depth` bonds (breadth-first, linear in n)."""
+    out = {}
+    for s in range(len(nbr)):
+        seen = {s: 0}
+        q = deque([s])
+        while q:
+            u = q.popleft()
+            if seen[u] == depth:
+                continue
+            for v in nbr[u]:
+                if v not in seen:
+                    seen[v] = seen[u] + 1
+                    q.append(v)
+        for v, d in seen.items():
+            if v > s:
+                out[(s, v)] = d
+    return out
+
+
 def _ring_bonds(bonds, nbr):
+    """Bonds in a ring: (i, j) with j reachable from i without the bond itself."""
     ring = set()
     for i, j in bonds:
         seen, stack = {i}, [i]
@@ -57,7 +95,7 @@ def _ring_bonds(bonds, nbr):
 def atom_classes(elements, bonds, rounds: int = 6):
     """Symmetry classes by colour refinement on the bond graph (element as initial colour)."""
     n = len(elements)
-    _, nbr = _graph_dist(n, bonds)
+    nbr = _neighbours(n, bonds)
     col = [str(e) for e in elements]
     for _ in range(rounds):
         new = [col[i] + "(" + ",".join(sorted(col[j] for j in nbr[i])) + ")" for i in range(n)]
@@ -70,6 +108,71 @@ def atom_classes(elements, bonds, rounds: int = 6):
     return col
 
 
+# ------------------------------------------------------------------ peptides
+def _carbonyl_carbons(elements, nbr, order):
+    """Carbons with a double (or resonance) bond to an oxygen; without bond orders, carbons with
+    three neighbours of which one is a terminal oxygen."""
+    out = set()
+    for c, e in enumerate(elements):
+        if e != "C":
+            continue
+        for o in nbr[c]:
+            if elements[o] != "O":
+                continue
+            bo = order.get((min(c, o), max(c, o)))
+            if (bo is not None and bo >= 1.5) or (bo is None and len(nbr[c]) == 3 and len(nbr[o]) == 1):
+                out.add(c)
+                break
+    return out
+
+
+def peptide_backbone(elements, nbr, order=None):
+    """Backbone units (N, CA, C) of a peptide graph, the phi/psi quintuples and the residues.
+
+    A unit is N - CA - C with N a nitrogen, CA a tetrahedral carbon and C a carbonyl carbon; its
+    previous carbonyl C(i-1) is the carbonyl carbon bonded to N (other than through CA), its next
+    nitrogen N(i+1) the nitrogen bonded to C.  Peptide bonds are C(i-1)-N(i) bonds; cutting them
+    splits the molecule into residues.  Returns (units (k, 3), cmaps (m, 5), residue (n,))."""
+    order = order or {}
+    n = len(elements)
+    carb = _carbonyl_carbons(elements, nbr, order)
+    units, cmaps, peptide = [], [], set()
+    for ca in range(n):
+        if elements[ca] != "C" or len(nbr[ca]) != 4 or ca in carb:
+            continue
+        for nn in nbr[ca]:
+            if elements[nn] != "N":
+                continue
+            for c in nbr[ca]:
+                if c not in carb:
+                    continue
+                units.append((nn, ca, c))
+                prev = [x for x in nbr[nn] if x != ca and x in carb]
+                nxt = [x for x in nbr[c] if elements[x] == "N"]
+                for p in prev:
+                    peptide.add((min(p, nn), max(p, nn)))
+                for x in nxt:
+                    peptide.add((min(c, x), max(c, x)))
+                if prev and nxt:
+                    cmaps.append((prev[0], nn, ca, c, nxt[0]))
+    # residues: connected components without the peptide bonds, numbered by their lowest atom
+    residue = np.full(n, -1, int)
+    r = 0
+    for s in range(n):
+        if residue[s] >= 0:
+            continue
+        residue[s] = r
+        stack = [s]
+        while stack:
+            u = stack.pop()
+            for v in nbr[u]:
+                if residue[v] < 0 and (min(u, v), max(u, v)) not in peptide:
+                    residue[v] = r
+                    stack.append(v)
+        r += 1
+    return (np.array(sorted(set(units)), int).reshape(-1, 3), np.array(sorted(set(cmaps)), int).reshape(-1, 5), residue)
+
+
 @dataclass
 class Topology:
     n: int
@@ -78,7 +181,7 @@ class Topology:
     angles: np.ndarray
     propers: np.ndarray
     impropers: np.ndarray
-    dist: np.ndarray
+    dist: np.ndarray                     # (n, n) graph distances, or None above DENSE_MAX atoms
     rigid_torsion: np.ndarray            # (nt,) bool: central bond in a ring or of order > 1
     classes: list                         # symmetry class per atom (tying key base)
     bond_bond: np.ndarray = field(default=None)
@@ -89,8 +192,12 @@ class Topology:
     aat: np.ndarray = field(default=None)
     pairs13: np.ndarray = field(default=None)
     pairs14: np.ndarray = field(default=None)
-    pairs15: np.ndarray = field(default=None)
+    pairs15: np.ndarray = field(default=None)     # None above DENSE_MAX atoms
     amber_impropers: np.ndarray = field(default=None)   # (k, 4) Amber-ordered impropers (centre third), from a prmtop
+    residue: np.ndarray = field(default=None)     # (n,) residue index (peptide_backbone)
+    backbone: np.ndarray = field(default=None)    # (k, 3) N, CA, C of every backbone unit
+    cmaps: np.ndarray = field(default=None)       # (m, 5) C(i-1), N, CA, C, N(i+1)
+    near: dict = field(default=None, repr=False)  # {(i, j): d} for pairs within 3 bonds
 
     # ------------------------------------------------------------------ keys
     def key(self, atoms, kind: str, classes=None) -> str:
@@ -104,15 +211,26 @@ class Topology:
             c = [c[0]] + sorted(c[1:])
         return kind + ":" + "-".join(c)
 
+    def graph_distance(self, i, j) -> int:
+        """Graph distance of atoms i, j (4 stands for 'at least 4' without the dense matrix)."""
+        if self.dist is not None:
+            return int(self.dist[i, j])
+        if i == j:
+            return 0
+        return self.near.get((min(i, j), max(i, j)), 4)
 
-def build_topology(elements, bonds, bond_orders=None, xyz=None, classes=None) -> Topology:
+
+def build_topology(elements, bonds, bond_orders=None, xyz=None, classes=None, dense: bool | None = None) -> Topology:
     n = len(elements)
     bonds = np.array(sorted(tuple(sorted(b)) for b in bonds), int).reshape(-1, 2)
     order = {}
     if bond_orders is not None:
         raw = [tuple(sorted(b)) for b in bond_orders[0]]
         order = dict(zip(raw, bond_orders[1]))
-    D, nbr = _graph_dist(n, bonds)
+    dense = n <= DENSE_MAX if dense is None else dense
+    nbr = _neighbours(n, bonds)
+    D = _graph_dist(n, bonds)[0] if dense else None
+    near = near_pairs(nbr, 3)
     ring = _ring_bonds([tuple(b) for b in bonds], nbr)
     bidx = {tuple(b): k for k, b in enumerate(bonds)}
     bond_of = lambda i, j: bidx[tuple(sorted((i, j)))]
@@ -154,23 +272,33 @@ def build_topology(elements, bonds, bond_orders=None, xyz=None, classes=None) ->
 
     top = Topology(n=n, elements=list(elements), bonds=bonds, angles=angles, propers=propers,
                    impropers=impropers, dist=D, rigid_torsion=np.array(rigid, bool),
-                   classes=classes or atom_classes(elements, [tuple(b) for b in bonds]))
+                   classes=classes or atom_classes(elements, [tuple(b) for b in bonds]), near=near)
     top.bond_bond = np.array([(bond_of(i, j), bond_of(j, k)) for i, j, k in angles], int).reshape(-1, 2)
     top.bond_angle = np.array([(bond_of(a_[0], a_[1]), m) for m, (i, j, k) in enumerate(angles)
                                for a_ in ((i, j), (j, k))], int).reshape(-1, 2)
+    by_centre = {}
+    for m, (i, j, k) in enumerate(angles):
+        by_centre.setdefault(int(j), []).append(m)
     aa = []
-    for m1, (i1, j1, k1) in enumerate(angles):
-        for m2 in range(m1 + 1, len(angles)):
-            i2, j2, k2 = angles[m2]
-            if j1 == j2 and len({i1, k1} & {i2, k2}) == 1:
-                aa.append((m1, m2))
-    top.angle_angle = np.array(aa, int).reshape(-1, 2)
+    for ms in by_centre.values():                       # angle pairs share their centre
+        for p, m1 in enumerate(ms):
+            i1, _, k1 = angles[m1]
+            for m2 in ms[p + 1:]:
+                i2, _, k2 = angles[m2]
+                if len({i1, k1} & {i2, k2}) == 1:
+                    aa.append((m1, m2))
+    top.angle_angle = np.array(sorted(aa), int).reshape(-1, 2)
     top.torsion_bond = np.array([(t, bond_of(*p)) for t, (i, j, k, l) in enumerate(propers)
                                  for p in ((i, j), (j, k), (k, l))], int).reshape(-1, 2)
     top.torsion_angle = np.array([(t, aidx[a_]) for t, (i, j, k, l) in enumerate(propers)
                                   for a_ in ((i, j, k), (j, k, l))], int).reshape(-1, 2)
     top.aat = np.array([(t, aidx[(i, j, k)], aidx[(j, k, l)]) for t, (i, j, k, l) in enumerate(propers)], int).reshape(-1, 3)
-    iu = np.triu_indices(n, 1)
-    for name, sel in (("pairs13", D[iu] == 2), ("pairs14", D[iu] == 3), ("pairs15", D[iu] >= 4)):
-        setattr(top, name, np.stack([iu[0][sel], iu[1][sel]], 1).astype(int).reshape(-1, 2))
+    for name, d in (("pairs13", 2), ("pairs14", 3)):
+        pp = sorted(p for p, dd in near.items() if dd == d)
+        setattr(top, name, np.array(pp, int).reshape(-1, 2))
+    if dense:
+        iu = np.triu_indices(n, 1)
+        sel = D[iu] >= 4
+        top.pairs15 = np.stack([iu[0][sel], iu[1][sel]], 1).astype(int).reshape(-1, 2)
+    top.backbone, top.cmaps, top.residue = peptide_backbone(elements, nbr, order)
     return top

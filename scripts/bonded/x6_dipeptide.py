@@ -12,7 +12,7 @@ sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"
 import jax  # noqa: E402
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
-from experiments import FAMILY_SETS, concat  # noqa: E402
+from experiments import FAMILY_SETS, families_of, concat  # noqa: E402
 from pgm_jax.bonded.data import frames, mol_spec  # noqa: E402
 from pgm_jax.bonded.fit import KCAL, Fitter  # noqa: E402
 from pgm_jax.bonded.model import BondedModel, BondedSettings  # noqa: E402
@@ -39,7 +39,7 @@ g_tr, g_te = grid.subset(np.nonzero(train_mask)[0]), grid.subset(np.nonzero(~tra
 md = frames(name, "train500")
 te_md = frames(name, "test298")
 train = concat(([] if a.no_grid else [g_tr]) + ([md] if (md is not None and not a.no_md) else []))
-st = BondedSettings(families=FAMILY_SETS.get(a.families, tuple(a.families.split("+"))), elec_exclude=a.elec, ind_exclude=a.ind,
+st = BondedSettings(families=families_of(a.families), elec_exclude=a.elec, ind_exclude=a.ind,
                     elec14_scale=a.elec14, lj14_scale=a.lj14)
 model = BondedModel([spec], st)
 data = {0: {"train": train, "test": g_te, "grid": grid}}

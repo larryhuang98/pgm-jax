@@ -11,7 +11,7 @@ sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"
 import jax
 jax.config.update("jax_enable_x64", True)
 import numpy as np
-from experiments import FAMILY_SETS, load
+from experiments import FAMILY_SETS, families_of, load
 from pgm_jax.bonded import terms as T
 from pgm_jax.bonded.fit import Fitter
 from pgm_jax.bonded.model import BondedModel, BondedSettings
@@ -44,7 +44,7 @@ os.makedirs(os.path.dirname(out_path), exist_ok=True)
 res = {"args": vars(a), "molecules": {}}
 nn = BondedSettings(families=("nnb",), nn_width=a.width, nn_layers=a.layers, nn_ref=a.ref,
                     nn_th_span=a.th_span, nn_out_scale=a.out_scale, nn_pgm_features=not a.no_pgm_features,
-                    nn_basis=FAMILY_SETS.get(a.basis, tuple(a.basis.split("+"))),
+                    nn_basis=families_of(a.basis),
                     nn_table_depth=a.table_depth, nn_resid_l2=a.resid_l2)
 
 

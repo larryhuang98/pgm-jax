@@ -58,7 +58,7 @@ def test_every_family_gradient_and_invariance():
     # every family with instances in ethanal contributes (conj / hc_lone: see test_electronic_families)
     for f in model.fams:
         P0 = jax.tree_util.tree_map(jnp.zeros_like, P); P0["ref"] = P["ref"]; P0[f] = P[f]
-        if f in ("bond_morse", "conj", "hc_lone"):
+        if f in ("bond_morse", "conj", "hc_lone") or len(model.I[0][f]["k"]) == 0:   # cmap: no backbone
             continue
         assert abs(float(model.bonded_energy(0, X, P0))) > 0, f
 

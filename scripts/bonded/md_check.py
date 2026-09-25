@@ -13,7 +13,7 @@ sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"
 import jax  # noqa: E402
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
-from experiments import FAMILY_SETS, load, mol_list  # noqa: E402
+from experiments import FAMILY_SETS, families_of, load, mol_list  # noqa: E402
 from pgm_jax.bonded import terms as T  # noqa: E402
 from pgm_jax.bonded.data import frames  # noqa: E402
 from pgm_jax.bonded.fit import KCAL, Fitter  # noqa: E402
@@ -77,7 +77,7 @@ def main():
     a = ap.parse_args()
     names = [n for n in mol_list(a.mols) if n != "methanethiol"]
     specs, data = load(names)
-    st = BondedSettings(families=FAMILY_SETS.get(a.families, tuple(a.families.split("+"))), elec_exclude=a.elec,
+    st = BondedSettings(families=families_of(a.families), elec_exclude=a.elec,
                         elec14_scale=a.elec14, lj14_scale=a.lj14)
     out = {"name": a.name, "args": vars(a), "molecules": {}}
     for i, spec in enumerate(specs):

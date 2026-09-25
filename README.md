@@ -265,11 +265,15 @@ bonded-only 1-4 treatment with class II couplings it reproduces as one option.
   dipoles fitted with the bonded terms (`qfit`: typed values; `qbci`: typed bond-charge increments
   on the ESP charges), shared parameters across molecules (`typing="type"`); `esp()` gives the
   molecule's electrostatic potential on a grid.
-- Three term sets, `terms.SETS`: `"amber"` (harmonic bonds and angles, Amber torsions and
+- Term sets, `terms.SETS`: `"amber"` (harmonic bonds and angles, Amber torsions and
   impropers; `typing="amber"` with GAFF types, `amber.init_from_prmtop` starts from GAFF and matches
-  cpptraj), `"explore"` (the class II set; add any registry family) and `"nn"` (`nn.py`: a graph
-  network predicts per-instance class II parameters from the bond graph and pGM parameters;
-  frozen for MD, so an MD step costs the same as the classical terms).
+  cpptraj), `"protein"` (the Amber forms + `cmap`, a Fourier phi/psi correction per residue, found
+  from the bond graph), `"explore"` (the class II set; add any registry family) and `"nn"` (`nn/`:
+  a graph network predicts per-instance parameters of a basis set from the bond graph and pGM
+  parameters, with residue context for the backbone maps; frozen for MD, so an MD step costs the
+  same as the classical terms; `NNBonded.save` / `load` / `prepare` apply a trained network to new
+  molecules). `amber.export_bonded` writes fitted protein-set parameters into a prmtop (checked
+  against sander: `scripts/bonded/check_export.py`).
 - `fit.py`: energy + force (+ dipole, + QM ESP restraint) loss with per-molecule offsets, L-BFGS
   (after Adam for the neural set) on everything (reference values, force constants, exponents, flux, charges) with JAX gradients,
   optional L1.
@@ -316,11 +320,12 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `scripts/fit_liquid.py` | LJ from liquid density + heat of vaporization (ensemble gradients, Gauss-Newton) |
 | `examples/`, `docs/` | fit-and-run examples; how-tos for bonded and van der Waals parameterization |
 | `paper/` | the pGM-JAX paper (LaTeX, PDF, figure data and scripts) |
-| `pgm_jax/bonded/` | bonded terms for flexible pGM molecules: `topology.py`, `terms.py` (term registry, `SETS`), `model.py`, `fit.py`, `bench.py`, `data.py`, `molecules.py`, `amber.py` (GAFF prmtop import), `nn.py` (neural bonded terms) |
+| `pgm_jax/bonded/` | bonded terms for flexible pGM molecules: `topology.py` (incl. peptide backbone and residues from the graph), `terms/` (registry and `SETS`: `core`, `classical`, `class2`, `explore`, `cmap`), `model.py` (`BondedTerms`, `BondedModel`), `fit.py`, `bench.py`, `data.py`, `molecules.py`, `amber.py` (GAFF / ff19SB import, prmtop export), `nn/` (neural bonded terms: `features`, `layers`, `instances`, `model`) |
+| `pgm_jax/prmtop.py` | Amber prmtop as raw sections: read, edit, write (unknown sections such as pGM's kept verbatim) |
 | `scripts/bonded/` | the bonded study: sampling, DFT labels, pGM parameters, experiments, report |
 | `scripts/run_md.py` | MD from an Amber prmtop + inpcrd/rst7 (Amber-style options) |
 | `scripts/bench_md.py`, `scripts/pgm_supercell.py` | MD speed benchmark; replicate a pGM prmtop for larger systems |
-| `tests/` | `pytest -q`: 68 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
+| `tests/` | `pytest -q`: 76 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
 | `scripts/validate_amber.py` | comparison with sander / pmemd-pgm / PyRESP (`compare`, `pyresp`, `virial`) |
 | `scripts/bench.py` | timings on the current device |
 | `validation/` | Amber reference runs (inputs + outputs) and `validate_amber.json` |
