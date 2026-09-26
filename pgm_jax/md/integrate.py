@@ -17,6 +17,9 @@
 Restraints (restraints.py, `restraints=`) add their energy to the potential energy and their
 atomic forces to the force-field forces before these are mapped to the bodies; the barostat's trial
 energy includes them at the scaled positions and box.
+An alchemical region (alchemy.py, `alchemy=`) makes the Hamiltonian depend on the state's coupling
+MDState.lam = (lambda_elec, lambda_vdw), a traced value like kT, so lambda windows share one
+compiled step (batched with jax.vmap); without one the step is unchanged.
 
 Units: nm, ps, amu, kJ/mol, K."""
 from __future__ import annotations
@@ -67,6 +70,8 @@ class MDState:
     cg_total: jnp.ndarray = None      # CG iterations summed over all force evaluations (float64)
     kT: jnp.ndarray = None            # thermostat kB T (kJ/mol) as a state variable (replica exchange, remd.py:
                                       # one compiled step for every temperature); None: Integrator.kT
+    lam: jnp.ndarray = None           # (2,) alchemical coupling (lambda_elec, lambda_vdw) of the state (alchemy.py:
+                                      # lambda windows share one compiled step); None: the Alchemy's default
 
 
 def upgrade_state(st: MDState, aux) -> MDState:
@@ -84,7 +89,7 @@ class Integrator:
     def __init__(self, ff: PGMForceField, rigid: RigidMolecules, neighbors, dt: float = 0.001,
                  ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0,
                  pressure: float = 1.0, barostat_interval: int = 100, params=None,
-                 thermostat: str | Thermostat = "langevin", tau_t: float = 1.0, restraints=None):
+                 thermostat: str | Thermostat = "langevin", tau_t: float = 1.0, restraints=None, alchemy=None):
         ensemble = ensemble.lower()
         if ensemble not in ("nve", "nvt", "npt"):
             raise ValueError("ensemble must be nve, nvt or npt")
@@ -102,6 +107,9 @@ class Integrator:
         self.restraints = as_restraints(restraints)
         if self.restraints is not None:
             self.restraints.check(rigid.sys.n)
+        self.alchemy = alchemy                     # alchemy.Alchemy or None (then every hook below is inactive)
+        if alchemy is not None:
+            alchemy.check(ff)
         self.compile()
 
     def compile(self):
@@ -110,11 +118,14 @@ class Integrator:
         self.forces = jax.jit(self._state_forces)
 
     # --------------------------------------------------------------------- forces
-    def _forces(self, body, box, induction, nbr, force_rebuild=False):
+    def _forces(self, body, box, induction, nbr, force_rebuild=False, lam=None):
         pos = self.rigid.positions(body)
         nbr = self.nb.update(nbr, pos, body.center, box, force_rebuild)
         cand, ovf = self.nb.candidates(nbr, body.center, box, pos)
-        res = self.ff.compute(pos, box, cand, induction, self.params)
+        if self.alchemy is None:
+            res = self.ff.compute(pos, box, cand, induction, self.params)
+        else:                                      # Hamiltonian at the state's coupling lam
+            res = self.alchemy.compute(self.ff, pos, box, cand, induction, self.params, lam)
         res = self._add_restraints(res._replace(overflow=res.overflow | ovf), pos, box)
         return self.rigid.forces(body, res.forces), res, nbr
 
@@ -141,7 +152,7 @@ class Integrator:
                       overflow=st.overflow | res.overflow, cg_total=st.cg_total + res.iterations)
 
     def _state_forces(self, st: MDState, force_rebuild=True) -> MDState:
-        F, res, nbr = self._forces(st.dyn.position, st.box, st.induction, st.nbr, force_rebuild)
+        F, res, nbr = self._forces(st.dyn.position, st.box, st.induction, st.nbr, force_rebuild, lam=st.lam)
         return self._with_result(st, F, res, nbr)
 
     # --------------------------------------------------------------------- setup
@@ -217,7 +228,7 @@ class Integrator:
             dyn = simulate.position_step(dyn, self.shift, dt / 2)
             dyn, aux, heat = self._o_step(dyn, aux, heat, dt, self.thermostat_kT(st))
             dyn = simulate.position_step(dyn, self.shift, dt / 2)
-        F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr)
+        F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr, lam=st.lam)
         st = self._with_result(st.set(dyn=dyn, aux=aux, heat=heat), F, res, nbr)
         st = st.set(dyn=simulate.momentum_step(st.dyn, dt / 2), step=st.step + 1)
         if self.ensemble == "npt":
@@ -237,7 +248,10 @@ class Integrator:
         pos_n = self.rigid.positions(body_n)
         nbr_n = self.nb.update(st.nbr, pos_n, body_n.center, Hn, True)
         cand, ovf0 = self.nb.candidates(nbr_n, body_n.center, Hn, pos_n)
-        e_n, ind_n, _, ovf = self.ff.energy(pos_n, Hn, cand, st.induction, self.params)
+        if self.alchemy is None:
+            e_n, ind_n, _, ovf = self.ff.energy(pos_n, Hn, cand, st.induction, self.params)
+        else:
+            e_n, ind_n, _, ovf = self.alchemy.energy(self.ff, pos_n, Hn, cand, st.induction, self.params, st.lam)
         e_n = e_n + self._restraint_energy(pos_n, Hn)
         ovf = ovf | ovf0
         kT = self.thermostat_kT(st)
@@ -247,7 +261,7 @@ class Integrator:
 
         def acc(st):
             st = st.set(dyn=st.dyn.set(position=body_n), box=Hn, induction=ind_n)
-            F, res, nbr = self._forces(body_n, Hn, ind_n, nbr_n)
+            F, res, nbr = self._forces(body_n, Hn, ind_n, nbr_n, lam=st.lam)
             return self._with_result(st, F, res, nbr)
 
         st = jax.lax.cond(accept, acc, lambda s: s, st)

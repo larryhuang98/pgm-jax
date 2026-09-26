@@ -51,7 +51,8 @@ class Simulation:
     def __init__(self, sys: System, pos_nm, H_nm, settings: MDSettings = MDSettings(), dt: float = 0.001,
                  ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0, pressure: float = 1.0,
                  barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None, params=None, log=sys.stdout,
-                 neighbor_list: str = "auto", thermostat="langevin", tau_t: float = 1.0, restraints=None):
+                 neighbor_list: str = "auto", thermostat="langevin", tau_t: float = 1.0, restraints=None,
+                 alchemy=None):
         H = reduce_box(H_nm)
         check_box(H, settings.pair_cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
@@ -66,7 +67,8 @@ class Simulation:
         self._make_neighbors(H)
         self._size_lists(self.rigid.body0, H)
         self.integ = Integrator(self.ff, self.rigid, self.nb, dt, ensemble, temperature, gamma, pressure,
-                                barostat_interval, params, thermostat=thermostat, tau_t=tau_t, restraints=restraints)
+                                barostat_interval, params, thermostat=thermostat, tau_t=tau_t, restraints=restraints,
+                                alchemy=alchemy)
         self.dt, self.ensemble, self.T0 = dt, ensemble, temperature
         body = self.rigid.body0
         mom = None
@@ -84,6 +86,8 @@ class Simulation:
                     f"template fit RMSD {self.rigid.fit_rmsd:.2e} nm, device {jax.devices()[0]}")
         if self.integ.restraints is not None:
             self._print(f"# restraints: {self.integ.restraints.describe()}")
+        if alchemy is not None:
+            self._print(f"# alchemical region: {alchemy.describe()}")
 
     @classmethod
     def from_amber(cls, prmtop: str, coords: str, use_velocities: bool = True, charges: str = "pgm",
@@ -145,8 +149,12 @@ class Simulation:
 
     def _pressure(self, st):
         pos = self.rigid.positions(st.dyn.position)
-        W = self.ff.strain_derivative(pos, st.box, self.nb.candidates(st.nbr, st.dyn.position.center, st.box, pos)[0],
-                                      st.induction.mu, self.integ.params) + self.integ.restraint_strain(pos, st.box)
+        idx = self.nb.candidates(st.nbr, st.dyn.position.center, st.box, pos)[0]
+        if self.integ.alchemy is None:
+            W = self.ff.strain_derivative(pos, st.box, idx, st.induction.mu, self.integ.params)
+        else:
+            W = self.integ.alchemy.strain_derivative(self.ff, pos, st.box, idx, st.induction.mu, self.integ.params, st.lam)
+        W = W + self.integ.restraint_strain(pos, st.box)
         ke_t = self.integ.kinetic(st)[1]
         return (2.0 * ke_t - jnp.trace(W)) / (3.0 * volume(st.box)) * 16.605390671738466
 
@@ -255,6 +263,8 @@ class Simulation:
         restart + checkpoint; `dipoles`: cell dipole sampled every `dipoles` steps into prefix.dip
         (does not shorten the blocks); `induced`: per-atom induced dipoles into prefix.mu.nc."""
         block = int(np.gcd.reduce([x for x in (report, traj, restart, nsteps, induced) if x > 0]))
+        if dipoles and self.integ.alchemy is not None:
+            raise NotImplementedError("the cell dipole (dipoles=) does not scale an alchemical region's charges")
         tfile = NetCDFTrajectory(prefix + ".nc", self.sys.n, append=append) if traj else None
         self._recorder = DipoleRecorder(self, prefix + ".dip", dipoles, append=append) if dipoles else None
         mufile = InducedDipoleFile(prefix + ".mu.nc", self.sys.n, append=append) if induced else None
