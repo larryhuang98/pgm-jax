@@ -45,7 +45,7 @@ class Simulation:
                  barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None, params=None, log=sys.stdout,
                  neighbor_list: str = "auto", thermostat="langevin", tau_t: float = 1.0):
         H = reduce_box(H_nm)
-        check_box(H, settings.cutoff + settings.skin)
+        check_box(H, settings.pair_cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
         self.rigid = RigidMolecules(sys, pos_nm, H)
         self.ff = PGMForceField(sys, H, settings)
@@ -66,7 +66,7 @@ class Simulation:
         self._print(f"# pgm_jax MD: {sys.nmol} rigid molecules, {sys.n} atoms, {ensemble.upper()}{thermo}, "
                     f"dt {dt * 1000:g} fs, "
                     f"{settings.precision} precision, PME grid {self.ff.pme.K} order {settings.pme_order}, "
-                    f"cutoff {settings.cutoff} nm, {self.nb.kind} neighbour list, predictor {settings.predictor}"
+                    f"{settings.describe_cutoffs()}, {self.nb.kind} neighbour list, predictor {settings.predictor}"
                     f"{' (fused)' if settings.fused else ''}, dipole tol {settings.dipole_tol:g}, "
                     f"template fit RMSD {self.rigid.fit_rmsd:.2e} nm, device {jax.devices()[0]}")
 
@@ -123,18 +123,14 @@ class Simulation:
     # ----------------------------------------------------------------- running
     def _size_lists(self, body, H, factor: float = 1.2, nbr=None):
         """Static sizes: molecules per atom row of the molecule list (molecule mode) and pairs per
-        compacted force-field row (intramolecular + intermolecular inside the cutoff), with
-        head-room above the current maxima."""
+        compacted force-field row (intramolecular + intermolecular inside the cutoffs; each part of
+        split rows), with head-room above the current maxima (PGMForceField.size_rows)."""
         pos = self.rigid.positions(body)
         nbr = self.nb.allocate(pos, body.center, H) if nbr is None else nbr
         if self.nb.kind == "molecule":
             self.nb.size(nbr, body.center, H, pos, factor)
         idx = self.nb.candidates(nbr, body.center, H, pos)[0]
-        saved, self.ff.mc = self.ff.mc, None
-        cmax = int(jax.jit(self.ff.row_counts)(jnp.asarray(pos), jnp.asarray(H), idx))
-        width = int(idx.shape[1]) + int(self.ff.intra.shape[1])
-        # pair counts inside a sphere fluctuate by a few per cent: half the list head-room
-        self.ff.mc = min(int(np.ceil((cmax * (1.0 + 0.5 * (factor - 1.0)) + 8) / 8.0) * 8), width)
+        self.ff.size_rows(pos, H, idx, factor)
         return nbr
 
     def _make_neighbors(self, H):
@@ -144,11 +140,11 @@ class Simulation:
         s = self.settings
         mode = self._nb_mode
         if mode == "auto":
-            mode = "molecule" if MoleculeNeighbors.fits(H, s.cutoff, s.skin, self._r_list) else "atom"
+            mode = "molecule" if MoleculeNeighbors.fits(H, s.pair_cutoff, s.skin, self._r_list) else "atom"
         if mode == "molecule":
-            self.nb = MoleculeNeighbors(self.sys.mol, self.sys.nmol, self._r_list, H, s.cutoff, s.skin)
+            self.nb = MoleculeNeighbors(self.sys.mol, self.sys.nmol, self._r_list, H, s.pair_cutoff, s.skin)
         else:
-            self.nb = AtomNeighbors(self.sys.n, H, s.cutoff, s.skin)
+            self.nb = AtomNeighbors(self.sys.n, H, s.pair_cutoff, s.skin)
         self._nb_volume = float(volume(jnp.asarray(H)))
 
     def _rebuild_neighbors(self):
@@ -189,11 +185,10 @@ class Simulation:
             if not (nb_bad or row_bad):
                 break
             body = start.dyn.position
-            old = (self.ff.mc, getattr(self.nb, "cap", None))
+            old = (self.ff.capacity, getattr(self.nb, "cap", None))
             nbr = self._size_lists(body, start.box, 1.3, None if nb_bad else start.nbr)
             if row_bad:                                          # never shrink below what overflowed
-                if self.ff.mc is not None and old[0] is not None:
-                    self.ff.mc = max(self.ff.mc, old[0] + 8)
+                self.ff.grow_rows(old[0])
                 if getattr(self.nb, "cap", None) is not None and old[1] is not None:
                     self.nb.cap = max(self.nb.cap, old[1] + 4)
             self.integ.compile()

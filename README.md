@@ -118,6 +118,14 @@ How it works:
   partners, then its intermolecular neighbours, compacted every step to the pairs inside the
   cutoff and stored as a structure of arrays; per-atom sums, analytic pair forces
   (grad G_n = -G_{n+1} x), no scatter-adds.
+- **Separate electrostatics cutoff** (`MDSettings(cutoff=0.9, **elec_cutoff_settings(0.7))`,
+  pmemd's es_cutoff; `--elec-cut` in the benchmarks, `--es-cut` in `run_md.py`): the real-space
+  electrostatics is cut at 0.7 nm with a larger Ewald coefficient (Amber's dsum_tol rule,
+  `ewald_beta_for`) and a finer PME grid, while van der Waals keeps its fitted cutoff and tail
+  correction. Each row is split into an electrostatic part, the only one the dipole CG streams,
+  and a van der Waals part read once per step. The recommended settings keep the force error of
+  the defaults (3e-5 relative for a solvated protein) and make ubiquitin in water 1.3x faster,
+  98k waters 1.5x (measurements in `docs/protein_ff.md`, What limits the speed).
 - **Neighbour list** of molecular centres (JAX-MD cell list, float32): rotations never invalidate
   it, so for water it is rebuilt every ~30 steps instead of ~10 for an atom list, at a tenth of
   the cost. Each step every atom keeps the molecules whose centre can bring an atom inside its
@@ -333,7 +341,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/md/thermostats.py` | `Langevin`, `Bussi` (global rescaling, fastest with pGM), `GLE` (`GLE.band()`: smooth slow-band kernel), exact O steps, heat bookkeeping |
 | `pgm_jax/md/flexible.py` | flexible molecules in MD: `FlexibleTemplate` (bonded fit -> MD), `RigidTemplate` (water, ions by constraints), `FlexibleSimulation` (atoms, g-BAOAB with SHAKE / RATTLE, `constraints="h-bonds"`, `hmr`), `liquid_box` |
 | `pgm_jax/protein/` | proteins: `residues` (bond orders, terminal keys), `library` (`ResidueLibrary`: pGM parameters by residue and atom name, JSON), `amber` (`load_amber`: tleap system -> pgm_jax molecules; `amber_template`: ff19SB-form bonded terms + CMAP), `pmemd` (`write_pgm_prmtop`: the engine's model as a pmemd-pgm prmtop; `pmemd_mdin`, `pmemd_grid`) |
-| `scripts/protein/` | `build_amber.py` (PDB -> solvated tleap topology), `bench_protein.py` (speed of a solvated protein), `write_pgm_prmtop.py` (pmemd-pgm prmtop + mdin), `check_pgm_prmtop.py` (single points and MD against pmemd-pgm) |
+| `scripts/protein/` | `build_amber.py` (PDB -> solvated tleap topology), `bench_protein.py` (speed of a solvated protein), `write_pgm_prmtop.py` (pmemd-pgm prmtop + mdin), `check_pgm_prmtop.py` (single points and MD against pmemd-pgm), `elec_accuracy.py` (electrostatic error of real-space cutoffs) |
 | `pgm_jax/ensemble.py` | `Reweighting`: ensemble averages, n_eff and parameter gradients from saved frames; Karplus J couplings, phi/psi regions |
 | `pgm_jax/md/topology.py` | `MDTopology`: neighbour-list groups (heavy-atom groups for large molecules), special pairs with van der Waals weights, constraints |
 | `pgm_jax/md/constraints.py` | SHAKE / RATTLE solved exactly per cluster (water, CH3, ...), vectorised; hydrogen mass repartitioning |
@@ -345,7 +353,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `scripts/bonded/` | the bonded study: sampling, DFT labels, pGM parameters, experiments, report |
 | `scripts/run_md.py` | MD from an Amber prmtop + inpcrd/rst7 (Amber-style options) |
 | `scripts/bench_md.py`, `scripts/pgm_supercell.py` | MD speed benchmark; replicate a pGM prmtop for larger systems |
-| `tests/` | `pytest -q`: 97 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
+| `tests/` | `pytest -q`: 107 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
 | `scripts/validate_amber.py` | comparison with sander / pmemd-pgm / PyRESP (`compare`, `pyresp`, `virial`) |
 | `scripts/bench.py` | timings on the current device |
 | `validation/` | Amber reference runs (inputs + outputs) and `validate_amber.json` |
@@ -394,7 +402,10 @@ Conventions worth knowing:
   `pressure` / `virial_derivative` add the cutoff-impulse part of the continuum tail
   (`PeriodicLJ.tail_virial`), giving the standard P_tail = 2 E_tail / V that Amber uses.
 - **Cutoffs.** Periodic pairs beyond rc are masked on the current distance (hard cutoff, as
-  Amber); a neighbour list built with `skin` stays valid for small displacements.
+  Amber); a neighbour list built with `skin` stays valid for small displacements. In MD,
+  `MDSettings.elec_cutoff` (default None: `cutoff`) cuts the real-space electrostatics at its own
+  distance and `cutoff` then applies to van der Waals; `ewald_beta` and the PME grid must match it
+  (`elec_cutoff_settings`).
 
 ## Limits
 

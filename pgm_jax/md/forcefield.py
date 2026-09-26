@@ -39,6 +39,18 @@ PME forces come from autodiff through the splines.  The molecular virial is the 
 derivative at fixed mu (molecular centres of mass scaled with the box), by autodiff of the whole
 energy.
 
+Separate electrostatics cutoff (`elec_cutoff`; pmemd's es_cutoff next to vdw_cutoff): the real-space
+Ewald sum converges as erfc(b0 r)/r, which a larger b0 makes short-ranged, while the van der Waals
+term keeps the cutoff (and long-range correction) its parameters were fitted with.  With
+elec_cutoff < cutoff every row is split into two compact structures of arrays: the electrostatic
+rows (pairs inside elec_cutoff, special partners first, with their van der Waals weights; capacity
+mc_e) and the van der Waals rows (pairs between elec_cutoff and cutoff with a nonzero van der Waals
+weight; capacity mc - mc_e).  The CG field sweeps, the permanent and induced energies, their forces,
+the virial and the differentiable path use only the electrostatic rows, and the van der Waals term
+sums over both.  The dipole matvec, which is memory bound, then streams (elec_cutoff / cutoff)^3 of
+the bytes (0.47 at 0.7 / 0.9 nm).  ewald_beta and the PME grid must be chosen for the shorter cutoff
+(`elec_cutoff_settings`).  elec_cutoff = None or = cutoff is the single-cutoff engine, unchanged.
+
 Differentiability: E(pos, H, theta) at fixed mu is differentiable throughout (forces, virial,
 dE/dtheta by Hellmann-Feynman).  With `differentiable=True`, compute() also returns forces and
 dipoles with exact derivatives: the dipole solve is a jax.custom_vjp whose backward pass solves
@@ -75,7 +87,9 @@ _SQRT_PI = math.sqrt(math.pi)
 @dataclass(frozen=True)
 class MDSettings:
     """Nonbonded and induction settings; names in comments are the pmemd-pgm equivalents."""
-    cutoff: float = 0.9               # nm; cut, ee_dsum_cut (direct space and LJ)
+    cutoff: float = 0.9               # nm; cut / vdw_cutoff (van der Waals; electrostatics too unless elec_cutoff)
+    elec_cutoff: float | None = None  # nm; es_cutoff: real-space electrostatics (None: cutoff).  Shorter than
+                                      # cutoff: set ewald_beta and the PME grid for it (elec_cutoff_settings)
     skin: float = 0.1                 # nm; skinnb
     ewald_beta: float = 4.0           # nm^-1; ew_coeff (0.4 A^-1)
     pme_grid: tuple | None = None     # nfft1..3; None: from pme_spacing
@@ -113,6 +127,69 @@ class MDSettings:
     @property
     def dtype(self):
         return jnp.float32 if self.precision == "mixed" else jnp.float64
+
+    @property
+    def elec_rc(self) -> float:
+        """Real-space electrostatics cutoff (nm)."""
+        return float(self.cutoff) if self.elec_cutoff is None else float(self.elec_cutoff)
+
+    @property
+    def pair_cutoff(self) -> float:
+        """Cutoff of the pair rows and of the neighbour list (nm): the larger of the electrostatics
+        and van der Waals cutoffs (the latter only with a van der Waals term)."""
+        return self.elec_rc if self.vdw == "none" else max(float(self.cutoff), self.elec_rc)
+
+    def describe_cutoffs(self) -> str:
+        """Cutoffs for log headers."""
+        if self.elec_cutoff is None or self.elec_rc == float(self.cutoff):
+            return f"cutoff {self.cutoff} nm"
+        return f"cutoff {self.cutoff} nm (electrostatics {self.elec_rc} nm, Ewald {self.ewald_beta:.4g} /nm)"
+
+
+# Direct-sum tolerance, in Amber's convention (ewald_beta_for), of the default pair 0.9 nm / 4.0 nm^-1.
+DSUM_TOL = 3.95e-8
+
+
+def ewald_beta_for(elec_cutoff: float, dsum_tol: float = DSUM_TOL) -> float:
+    """Ewald coefficient (nm^-1) for the real-space cutoff elec_cutoff (nm) and a direct-sum
+    tolerance in Amber's convention (sander / pmemd `dsum_tol`): erfc(beta rc) / rc = dsum_tol with
+    rc in Angstrom, solved by bisection as Amber does.  Amber's default dsum_tol = 1e-5 gives the
+    ew_coeff of its outputs (0.34864 A^-1 at 8 A, 0.30768 at 9 A).  The pGM-JAX default pair
+    0.9 nm / 4.0 nm^-1 (erfc(3.6) = 3.6e-7; pmemd-pgm's ew_coeff 0.4 A^-1 at 9 A) is
+    dsum_tol = 3.95e-8 (DSUM_TOL); at that tolerance 0.8 nm needs 4.52 nm^-1, 0.7 nm 5.19 and 0.6 nm
+    6.09.  The rule bounds the charge-charge term; the dipole terms of pGM decay with higher powers
+    of beta, so the measured real-space force error grows as the cutoff shrinks (ubiquitin: 4e-6 at
+    0.9 nm, 8e-6 at 0.7, 3e-5 at 0.6; pGM water 2e-5 at 0.7, 1e-4 at 0.6)."""
+    rc = float(elec_cutoff)
+    if not rc > 0.0:
+        raise ValueError(f"elec_cutoff must be positive, got {elec_cutoff}")
+    f = lambda b: math.erfc(b * rc) / (10.0 * rc) - dsum_tol
+    if not (0.0 < dsum_tol and f(0.0) > 0.0):
+        raise ValueError(f"dsum_tol must be in (0, 1/rc_A) = (0, {1.0 / (10.0 * rc):.3g}), got {dsum_tol}")
+    lo, hi = 0.0, 1.0
+    while f(hi) > 0.0:
+        hi *= 2.0
+    for _ in range(100):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if f(mid) > 0.0 else (lo, mid)
+    return 0.5 * (lo + hi)
+
+
+def elec_cutoff_settings(elec_cutoff: float, dsum_tol: float = DSUM_TOL, exponent: float = 1.6) -> dict:
+    """MDSettings arguments for a real-space electrostatics cutoff: ewald_beta from ewald_beta_for and
+    the PME grid spacing h = 0.08 nm (4.0 / beta)^exponent, scaled from the default pair
+    (4.0 nm^-1, 0.08 nm).
+
+        MDSettings(cutoff=0.9, **elec_cutoff_settings(0.7))   # LJ at 0.9 nm, electrostatics at 0.7
+
+    At a fixed spline order the PME force error of pGM (charges and dipoles) grows roughly as
+    beta^9.5 h^6 (measured, order 6, ubiquitin in water): keeping beta x h fixed (exponent 1: 0.7 nm,
+    5.19 nm^-1, 0.0616 nm) is the cheaper grid but multiplies the force error by 2.5 at 0.7 nm; exponent
+    1.6 (the default: 0.7 nm, 5.19 nm^-1, 0.0527 nm) keeps the error of the default settings (3e-5
+    relative for ubiquitin, 7e-5 for pGM water at 0.8 and 0.7 nm) for 25 % more PME work per CG
+    iteration (8 % per step for ubiquitin).  Measurements: docs/protein_ff.md (What limits the speed)."""
+    b = ewald_beta_for(elec_cutoff, dsum_tol)
+    return {"elec_cutoff": float(elec_cutoff), "ewald_beta": b, "pme_spacing": 0.08 * (4.0 / b) ** exponent}
 
 
 _PRED = {"mu3": (3.0, -3.0, 1.0), "mu4": (4.0, -6.0, 4.0, -1.0)}
@@ -156,7 +233,8 @@ def _push(stack, x):
 
 class PGMForceField:
     def __init__(self, sys: System, H, settings: MDSettings = MDSettings(), short_capacity: int = 48,
-                 row_capacity: int | None = None, topology: MDTopology | None = None):
+                 row_capacity: int | None = None, topology: MDTopology | None = None,
+                 elec_capacity: int | None = None):
         self.sys, self.s = sys, settings
         if settings.predictor not in ("mu4", "mu3", "ls", "none"):
             raise ValueError(f"unknown predictor {settings.predictor!r}")
@@ -177,7 +255,16 @@ class PGMForceField:
         self.masses = jnp.asarray(sys.masses)
         self.S = max(1, int(settings.extrap_steps))
         self.ms = int(short_capacity)
-        self.mc = row_capacity            # intermolecular pairs kept per row (None: no compaction)
+        self.mc = row_capacity            # pairs kept per row (None: no compaction)
+        # cutoffs (nm): electrostatics, van der Waals, rows.  With elec_cutoff < cutoff (and a van der
+        # Waals term) the rows are split: mc_e electrostatic entries, then mc - mc_e van der Waals ones
+        self.rc_e, self.rc_v, self.rc_pair = settings.elec_rc, float(settings.cutoff), settings.pair_cutoff
+        if not (self.rc_e > 0.0 and self.rc_v > 0.0):
+            raise ValueError(f"cutoffs must be positive (cutoff {settings.cutoff}, elec_cutoff {settings.elec_cutoff})")
+        self.split = settings.vdw != "none" and self.rc_e < self.rc_v
+        if elec_capacity is not None and not self.split:
+            raise ValueError("elec_capacity applies only to split rows (elec_cutoff < cutoff with a van der Waals term)")
+        self.mc_e = elec_capacity
         # special partners of every atom (fixed table with van der Waals weights; md/topology.py)
         self.topology = MDTopology.rigid(sys) if topology is None else topology
         self.special = jnp.asarray(self.topology.special)
@@ -225,12 +312,59 @@ class PGMForceField:
         hit = (k[:, :ni] == self.special) & (self.special < self.n)
         return tuple(xc.at[:, :ni].set(jnp.where(hit, xic, xc[:, :ni])) for xc, xic in zip(x, xi))
 
-    def _rows(self, pos, H, idx):
-        """Rows = [special partners | candidates from the neighbour list], masked to the cutoff and,
-        with a row capacity set, compacted to the pairs inside it.  List candidates in the atom's
-        special groups are dropped (those pairs come from the table).  Returns k, x = (x, y, z)
-        components (compute dtype), the within mask, van der Waals weights (0 off `within`) and
+    def _special_exact(self, pos, H, k, x, sp):
+        """Replace the displacements of the special pairs, the entries of the first sp.shape[1]
+        columns where sp, by differences of offsets within the molecule (as _intra_exact)."""
+        w = sp.shape[1]
+        if w == 0:
+            return x
+        off = (pos - pos[self.first][self.mol]).astype(self.cd)
+        xi = self._displacements(off, k[:, :w], H)
+        return tuple(xc.at[:, :w].set(jnp.where(sp, xic, xc[:, :w])) for xc, xic in zip(x, xi))
+
+    def _compact_parts(self, k, wv, masks, widths):
+        """Compact every row into consecutive parts: the entries where masks[j] go, in column order, to
+        part j (widths[j] columns).  One scatter of the partner indices places all parts (the slots
+        of two parts come from one scan, one count per 16 bits); the scatter of anything else over
+        the candidate rows is avoided: list entries have van der Waals weight 1, and the special
+        entries, which lead each part, take their weights from the small special block.  Returns,
+        per part, (k, within, weights, special-entry mask of the first min(S, width) columns), and
         the overflow flag."""
+        N, ni, C = self.n, self.special.shape[1], k.shape[1]
+        if len(masks) == 1:
+            slots = [jnp.cumsum(masks[0].astype(jnp.int32), axis=1) - 1]
+        else:
+            if C >= 1 << 15:
+                raise ValueError(f"candidate rows of {C} entries: at most {(1 << 15) - 1} for the packed counters")
+            cs = jnp.cumsum(masks[0].astype(jnp.int32) + (masks[1].astype(jnp.int32) << 16), axis=1)
+            slots = [(cs & 0xFFFF) - 1, (cs >> 16) - 1]
+        starts = [int(o) for o in np.cumsum([0] + list(widths))]
+        tgt = jnp.full(k.shape, starts[-1], jnp.int32)                  # past the end: dropped
+        for m, sl, w, o in reversed(list(zip(masks, slots, widths, starts))):
+            tgt = jnp.where(m & (sl < w), o + sl, tgt)
+        rows = jnp.broadcast_to(jnp.arange(N, dtype=jnp.int32)[:, None], k.shape)
+        kk = jnp.zeros((N, starts[-1] + 1), k.dtype).at[rows, tgt].set(k)
+        parts, overflow = [], jnp.zeros((), bool)
+        for m, sl, w, o in zip(masks, slots, widths, starts):
+            count = sl[:, -1] + 1
+            within = jnp.arange(w)[None, :] < jnp.minimum(count, w)[:, None]
+            ws = min(ni, w)
+            sp = jnp.arange(ws)[None, :] < jnp.sum(m[:, :ni], axis=1)[:, None]
+            t = jnp.where(m[:, :ni] & (sl[:, :ni] < ws), sl[:, :ni], ws)
+            r = jnp.broadcast_to(jnp.arange(N, dtype=jnp.int32)[:, None], t.shape)
+            wsp = jnp.zeros((N, ws + 1), wv.dtype).at[r, t].set(wv[:, :ni])[:, :ws]
+            wp = jnp.concatenate([jnp.where(sp, wsp, 1.0), jnp.ones((N, w - ws), wv.dtype)], axis=1)
+            parts.append((kk[:, o:o + w], within, jnp.where(within, wp, 0.0), sp))
+            overflow = overflow | (jnp.max(count) > w)
+        return parts, overflow
+
+    def _rows(self, pos, H, idx):
+        """Rows = [special partners | candidates from the neighbour list], masked to the pair cutoff
+        and, with a row capacity set, compacted to the pairs inside it.  List candidates in the atom's
+        special groups are dropped (those pairs come from the table).  Returns k, x = (x, y, z)
+        components (compute dtype), the within mask, van der Waals weights (0 off `within` and
+        beyond the van der Waals cutoff), the overflow flag, and the van der Waals rows (k, x,
+        within, weights) of split rows (_split_rows; None otherwise, when k, x, ... hold every pair)."""
         N, cd = self.n, self.cd
         ni = self.special.shape[1]
         cand = jnp.concatenate([self.special, idx.astype(self.special.dtype)], axis=1)
@@ -243,29 +377,95 @@ class PGMForceField:
         p = pos.astype(cd)
         Hc = H.astype(cd)
         x = self._displacements(p, k, Hc)
-        within = keep & (x[0] * x[0] + x[1] * x[1] + x[2] * x[2] < self.s.cutoff ** 2)
+        r2 = x[0] * x[0] + x[1] * x[1] + x[2] * x[2]
+        if self.split:
+            return self._split_rows(pos, p, Hc, k, x, r2, keep, wv)
+        within = keep & (r2 < self.rc_pair ** 2)
         overflow = jnp.zeros((), bool)
         if self.mc is not None:
-            mc = self.mc
-            slot = jnp.cumsum(within, axis=1) - 1
-            count = slot[:, -1] + 1
-            tgt = jnp.where(within & (slot < mc), slot, mc)
-            rows = jnp.broadcast_to(jnp.arange(N)[:, None], k.shape)
-            k = jnp.zeros((N, mc + 1), k.dtype).at[rows, tgt].set(k)[:, :mc]
-            wv = jnp.zeros((N, mc + 1), wv.dtype).at[rows, tgt].set(wv)[:, :mc]
-            within = jnp.arange(mc)[None, :] < jnp.minimum(count, mc)[:, None]
+            ((k, within, wv, _),), overflow = self._compact_parts(k, wv, (within,), (self.mc,))
             x = self._displacements(p, k, Hc)                  # recompute on the compacted rows
-            overflow = jnp.max(count) > mc
+            r2 = x[0] * x[0] + x[1] * x[1] + x[2] * x[2]
+        if self.rc_v < self.rc_pair:                           # van der Waals cut before electrostatics
+            wv = jnp.where(r2 < self.rc_v ** 2, wv, 0.0)
         x = self._intra_exact(pos, Hc, k, x, cd)
-        return k, x, within, jnp.where(within, wv, 0.0), overflow
+        return k, x, within, jnp.where(within, wv, 0.0), overflow, None
 
-    def row_counts(self, pos, H, idx):
-        """Largest number of pairs (special + list pairs inside the cutoff) in any row."""
+    def _split_rows(self, pos, p, H, k, x, r2, keep, wv):
+        """Rows split at the electrostatics cutoff (elec_cutoff < cutoff): electrostatic rows (pairs
+        inside elec_cutoff, with their van der Waals weights) and van der Waals rows (pairs between
+        elec_cutoff and cutoff with a nonzero van der Waals weight), compacted to their own
+        capacities (mc_e and mc - mc_e) into separate arrays, so that the CG streams only the
+        electrostatic ones (_compact_parts).  Compaction keeps the column order, so each part starts
+        with its special partners, whose exact displacements are then found by count.  Without a
+        capacity (single points) both parts span the candidate rows, masked."""
+        N = self.n
+        ni = self.special.shape[1]
+        ein = keep & (r2 < self.rc_e ** 2)
+        vin = keep & ~ein & (r2 < self.rc_v ** 2) & (wv != 0)
+        if self.mc is None:
+            sp = self.special < N
+            xe = self._special_exact(pos, H, k, x, sp & ein[:, :ni])
+            xv = self._special_exact(pos, H, k, x, sp & vin[:, :ni])
+            return (k, xe, ein, jnp.where(ein, wv, 0.0), jnp.zeros((), bool),
+                    (k, xv, vin, jnp.where(vin, wv, 0.0)))
+        if self.mc_e is None or not 0 <= self.mc_e <= self.mc:
+            raise ValueError(f"split rows need 0 <= mc_e <= mc (got mc {self.mc}, mc_e {self.mc_e}); see size_rows")
+        ((ke, ein, wve, spe), (kv, vin, wvv, spv)), overflow = self._compact_parts(
+            k, wv, (ein, vin), (self.mc_e, self.mc - self.mc_e))
+        xe = self._special_exact(pos, H, ke, self._displacements(p, ke, H), spe)
+        xv = self._special_exact(pos, H, kv, self._displacements(p, kv, H), spv)
+        return ke, xe, ein, wve, overflow, (kv, xv, vin, wvv)
+
+    def pair_counts(self, pos, H, idx):
+        """Largest numbers of pairs in any row: (electrostatic rows, van der Waals rows); the rows hold
+        every pair inside the pair cutoff and the second count is 0 unless the rows are split."""
         saved, self.mc = self.mc, None
         try:
-            return jnp.max(jnp.sum(self._rows(pos, H, idx)[2], axis=1))
+            _, _, within, _, _, vrows = self._rows(pos, H, idx)
         finally:
             self.mc = saved
+        ce = jnp.max(jnp.sum(within, axis=1))
+        cv = jnp.zeros_like(ce) if vrows is None else jnp.max(jnp.sum(vrows[2], axis=1))
+        return jnp.stack([ce, cv])
+
+    def row_counts(self, pos, H, idx):
+        """Largest number of pairs (special + list pairs inside the cutoffs) in any row."""
+        saved, self.mc = self.mc, None
+        try:
+            _, _, within, _, _, vrows = self._rows(pos, H, idx)
+        finally:
+            self.mc = saved
+        n = jnp.sum(within, axis=1)
+        return jnp.max(n if vrows is None else n + jnp.sum(vrows[2], axis=1))
+
+    @property
+    def capacity(self) -> tuple:
+        """(mc, mc_e): pairs kept per row and, for split rows, how many of them are electrostatic."""
+        return self.mc, self.mc_e
+
+    def size_rows(self, pos, H, idx, factor: float = 1.2):
+        """Set the row capacities (static shapes: re-jit afterwards) from the largest pair counts at
+        pos, with half the neighbour list's head-room (pair counts inside a sphere fluctuate by a few
+        per cent), in multiples of 8, at most the candidate width; split rows size each part."""
+        ce, cv = (int(c) for c in jax.jit(self.pair_counts)(jnp.asarray(pos), jnp.asarray(H), idx))
+        width = int(idx.shape[1]) + int(self.special.shape[1])
+        cap = lambda c: min(int(np.ceil((c * (1.0 + 0.5 * (factor - 1.0)) + 8) / 8.0) * 8), width)
+        self.mc_e = cap(ce) if self.split else None
+        self.mc = self.mc_e + cap(cv) if self.split else cap(ce)
+        return self.capacity
+
+    def grow_rows(self, old):
+        """After a row overflow at capacities `old` (`capacity`): every part of the rows at least 8
+        wider than it was (the driver re-sizes where the block started, where the rows fit)."""
+        mc, mc_e = old
+        if self.mc is None or mc is None:
+            return
+        if self.split and self.mc_e is not None and mc_e is not None:
+            e = max(self.mc_e, mc_e + 8)
+            self.mc, self.mc_e = e + max(self.mc - self.mc_e, mc - mc_e + 8), e
+        else:
+            self.mc = max(self.mc, mc + 8)
 
     def _pair_a(self, R, k):
         return 1.0 / jnp.sqrt(2.0 * (R[:, None] ** 2 + R[k] ** 2))
@@ -280,16 +480,22 @@ class PGMForceField:
         return (r,) + tuple((u - v) * w for u, v in zip(A, B))
 
     def geometry(self, pos, H, idx, P, forces: bool = False):
-        """Row displacements and kernels G0..G2 (G3 and LJ pair parameters with `forces`)."""
+        """Displacements and kernels G0..G2 of the electrostatic rows (with `forces`: G3, distances,
+        van der Waals weights and pair parameters, and for split rows the van der Waals rows under
+        "vdw_rows")."""
         cd = self.cd
         nmax = 4 if forces else 3
-        k, x, within, wv, overflow = self._rows(pos, H, idx)
+        k, x, within, wv, overflow, vrows = self._rows(pos, H, idx)
         r, *G = self._kernels(x, within, self._pair_a(P["radius"].astype(cd), k), nmax)
         g = {"k": k, "x": x, "overflow": overflow}
         for n in range(nmax):
             g[f"G{n}"] = G[n]
         if forces:
             g.update(r=r, wv=wv, vp=self._vdw_params(P, k))
+            if vrows is not None:
+                kv, xv, vin, wvv = vrows
+                rv = jnp.sqrt(jnp.where(vin, xv[0] * xv[0] + xv[1] * xv[1] + xv[2] * xv[2], 1.0))
+                g["vdw_rows"] = {"k": kv, "x": xv, "r": rv, "wv": wvv, "vp": self._vdw_params(P, kv)}
         if self.s.local_niter > 0:
             short = within & (r < self.s.local_cut)
             g["short"] = self._short_rows(k, x, g["G1"], g["G2"], short)
@@ -569,32 +775,44 @@ class PGMForceField:
         sl = jnp.sum(jnp.sum(elj, axis=1).astype(jnp.float64))
         return KE * se + sl, (KE * se, sl)
 
+    def _vdw_sum(self, x, within, wv, vp):
+        """sum over row entries of e_vdW (each pair twice), float64 (autodiff path, van der Waals rows)."""
+        r = jnp.sqrt(jnp.where(within, x[0] * x[0] + x[1] * x[1] + x[2] * x[2], 1.0))
+        return jnp.sum(jnp.sum(self._vdw_rows(r, vp, wv), axis=1).astype(jnp.float64))
+
     def _row_inputs(self, pos, H, idx, P, d):
-        """Rows for the differentiable (autodiff) energy."""
+        """Rows for the differentiable (autodiff) energy; the last item holds the van der Waals rows
+        (x, within, weights, pair parameters) of split rows, else None."""
         cd = self.cd
-        k, x, within, wv, _ = self._rows(pos, H, idx)
+        k, x, within, wv, _, vrows = self._rows(pos, H, idx)
         R, q = P["radius"], P["q"]
         a = self._pair_a(R.astype(cd), k)
         dc = d.astype(cd)
         di = tuple(dc[:, j][:, None] for j in range(3))
         dk = tuple(dc[:, j][k] for j in range(3))
         consts = (dk, q.astype(cd)[:, None], q.astype(cd)[k], a, within, wv, self._vdw_params(P, k))
-        return x, di, consts
+        if vrows is not None:
+            vrows = (vrows[1], vrows[2], vrows[3], self._vdw_params(P, vrows[0]))
+        return x, di, consts, vrows
 
     def energy_fixed_mu(self, pos, H, mu, idx, P):
         """Total energy (kJ/mol, float64) and components with the induced dipoles held at mu;
         differentiable in positions and box (used for virials and Monte Carlo trials)."""
         p = self.perm_dipoles(pos, H, P["cov"])
         d = p + mu
-        x, di, (dk, qi, qk, a, within, wv, vp) = self._row_inputs(pos, H, idx, P, d)
+        x, di, (dk, qi, qk, a, within, wv, vp), vrows = self._row_inputs(pos, H, idx, P, d)
         spair, (se, sl) = self._pair_sum(x, di, dk, qi, qk, a, within, wv, vp)
+        if vrows is not None:
+            sl = sl + self._vdw_sum(*vrows)
         e_elec = 0.5 * se + self._nonpair(pos, H, d, mu, P)
         e_lj = 0.5 * sl + self._vdw_tail(P, H)
         return e_elec + e_lj, {"elec": e_elec, "vdw": e_lj}
 
     def _row_terms(self, g, q, d):
         """Pair energies (each pair counted in both rows) and the row sums of de_ik/dx_ik, from
-        the kernels G0..G3 (grad_x G_n = -G_{n+1} x); charges q and total dipoles d, compute dtype."""
+        the kernels G0..G3 (grad_x G_n = -G_{n+1} x); charges q and total dipoles d, compute dtype.
+        Electrostatics over the electrostatic rows, van der Waals over those and the van der Waals
+        rows of split rows."""
         k, x = g["k"], g["x"]
         G0, G1, G2, G3 = g["G0"], g["G1"], g["G2"], g["G3"]
         qi, qk = q[:, None], q[k]
@@ -611,9 +829,15 @@ class PGMForceField:
         qiG1, qkG1 = qi * G1, qk * G1
         gx = jnp.stack([jnp.sum(radial * x[j] + qiG1 * dk[j] - qkG1 * di[j] - G2 * (di[j] * dkx + dk[j] * dix), axis=1)
                         for j in range(3)], -1)
-        glx = jnp.stack([jnp.sum(glj * x[j], axis=1) for j in range(3)], -1)
+        glx = jnp.stack([jnp.sum(glj * x[j], axis=1) for j in range(3)], -1).astype(jnp.float64)
         rowsum = lambda v: jnp.sum(jnp.sum(v, axis=1).astype(jnp.float64))   # rows in compute dtype, total in float64
-        return rowsum(e), rowsum(elj), gx.astype(jnp.float64), glx.astype(jnp.float64)
+        sl = rowsum(elj)
+        if "vdw_rows" in g:                                    # split rows: van der Waals beyond elec_cutoff
+            t = g["vdw_rows"]
+            elt, glt = self._vdw_rows(t["r"], t["vp"], t["wv"], grad=True)
+            glx = glx + jnp.stack([jnp.sum(glt * t["x"][j], axis=1) for j in range(3)], -1).astype(jnp.float64)
+            sl = sl + rowsum(elt)
+        return rowsum(e), sl, gx.astype(jnp.float64), glx
 
     def _energy_forces(self, pos, H, mu, g, P):
         """Energy and forces at fixed mu: analytic row forces for the pair terms (no scatter-adds),
@@ -636,7 +860,7 @@ class PGMForceField:
         single points and parameter fitting outside MD (which keeps its own neighbour list)."""
         from .neighbors import AtomNeighbors
         H = jnp.asarray(H, jnp.float64)
-        return AtomNeighbors(self.n, H, self.s.cutoff, 0.0).allocate(jnp.asarray(pos, jnp.float64), None, H).idx
+        return AtomNeighbors(self.n, H, self.rc_pair, 0.0).allocate(jnp.asarray(pos, jnp.float64), None, H).idx
 
     def compute(self, pos, H, idx, ind: InductionState, params=None) -> Result:
         """Solve the induced dipoles (predicted guess), then energy and forces.  idx: candidate
@@ -648,8 +872,9 @@ class PGMForceField:
         p = self.perm_dipoles(pos, H, P["cov"])
         S = self.pme.setup(pos, H)
         Gk = self.pme.influence(H)
-        if self.ind:
-            mu, it, err, ind = self._solve(g, S, Gk, P, p, ind)
+        if self.ind:                                           # the solve sees the electrostatic rows only
+            ge = {key: v for key, v in g.items() if key != "vdw_rows"}
+            mu, it, err, ind = self._solve(ge, S, Gk, P, p, ind)
         else:                                                  # no induced dipoles ("q", "qp")
             mu, it, err = jnp.zeros((self.n, 3)), jnp.zeros((), jnp.int32), jnp.zeros(())
         energy, forces = self._energy_forces(pos, H, mu, g, P)
