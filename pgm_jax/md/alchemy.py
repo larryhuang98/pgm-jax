@@ -225,7 +225,7 @@ class Alchemy:
         if abs(charge) > 1e-6:
             raise NotImplementedError(f"the solute carries a net charge ({charge:+.4f} e): charged solutes need "
                                       "finite-size corrections of the periodic electrostatics, not implemented")
-        self.bound = None                          # (vdw form, van der Waals cutoff, long-range correction)
+        self.bound = None                          # (vdw form, van der Waals cutoff, long-range correction, elec)
         self._intra = None                         # the solute's intramolecular van der Waals pairs (i, j, weight)
         self._gas = None                           # gas-phase electrostatics of the solute ("keep")
 
@@ -238,14 +238,15 @@ class Alchemy:
         return jnp.asarray(a, jnp.float64)
 
     def check(self, ff):
-        """Bind to a force field (cutoff, long-range correction, van der Waals form); refuse what the
+        """Bind to a force field (van der Waals form and cutoff, long-range correction, electrostatics
+        level; the solute's intramolecular van der Waals pairs from its topology); refuse what the
         Hamiltonian does not implement."""
         s = ff.s
         if ff.sys.fingerprint() != self.sys.fingerprint():
             raise ValueError("the alchemical region was built for another System")
         if s.vdw not in ("lj", "none"):
             raise NotImplementedError(f"soft-core van der Waals is implemented for vdw='lj' (and 'none'), not {s.vdw!r}")
-        b = (s.vdw, float(ff.rc_v), bool(s.lj_lrc))
+        b = (s.vdw, float(ff.rc_v), bool(s.lj_lrc), s.elec)
         if self.bound is not None and self.bound != b:
             raise ValueError(f"the alchemical region is bound to other settings {self.bound}, not {b}")
         self.bound = b
