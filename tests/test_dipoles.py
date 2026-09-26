@@ -15,7 +15,7 @@ from pgm_jax.md.forcefield import PGMForceField  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
 from pgm_jax.units import KE  # noqa: E402
 from test_grad import methanol, water  # noqa: E402
-from test_md import settings, small_box  # noqa: E402
+from test_md import need_water_box, settings, small_box  # noqa: E402
 
 KB = 0.0083144626181532
 
@@ -210,3 +210,30 @@ def test_recorded_series_match_the_state(tmp_path, monkeypatch, engine):
         _, prefix_b = _run(tmp_path, "b", 5, engine)
         _, db = read_dipoles(prefix_b + ".dip")
         assert np.abs(db["M"] - d["M"]).max() < 1e-8, np.abs(db["M"] - d["M"]).max()
+
+
+@need_water_box
+def test_trajectory_dipoles_of_an_amber_trajectory(tmp_path):
+    """scripts/trajectory_dipoles.py on the Amber NetCDF trajectory of a run (the format pmemd
+    writes) re-solves the induced dipoles and reproduces the cell dipoles the run recorded."""
+    import os
+    import sys
+    from pgm_jax.md.forcefield import MDSettings
+    from test_md import RST, TOP
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+    import trajectory_dipoles
+    s = MDSettings(cutoff=0.9, skin=0.1, ewald_beta=4.0, pme_grid=(48, 48, 48), pme_order=6, lj_lrc=True,
+                   dipole_tol=1e-10, max_iter=300, precision="double")
+    sim = Simulation.from_amber(TOP, RST, settings=s, dt=0.002, ensemble="nvt", thermostat="bussi", log=None, seed=2)
+    prefix = str(tmp_path / "w")
+    sim.run(20, report=10, traj=10, prefix=prefix, dipoles=10)
+    out = str(tmp_path / "t.dip")
+    trajectory_dipoles.main([TOP, prefix + ".nc", "-o", out, "--nfft", "48", "48", "48", "--tol", "1e-10",
+                             "--precision", "double", "--alpha-every", "1"])
+    _, a = read_dipoles(prefix + ".dip")
+    meta, b = read_dipoles(out)
+    assert len(a["M"]) == len(b["M"]) == 2 and meta["n_atoms"] == sim.sys.n
+    scale = np.abs(a["M"]).max()
+    for k in ("M_charge", "M_perm", "M_ind", "M"):        # coordinates are float32 in the trajectory
+        assert np.abs(a[k] - b[k]).max() < 1e-4 * scale, (k, np.abs(a[k] - b[k]).max(), scale)
+    assert np.allclose(a["volume_nm3"], b["volume_nm3"], rtol=1e-6) and np.isfinite(b["alpha_nm3"]).all()

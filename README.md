@@ -186,8 +186,10 @@ How it works:
   from the model's own cell polarizability (adiabatic induced dipoles carry no thermal
   fluctuation of the electronic response), jackknife block errors, the running estimate and an
   IR spectrum. 512 pGM waters (the box above), 15 ns: eps = 31.0 +- 0.4 (both engines agree;
-  TIP3P control 104 +- 3, literature 89-104); why this is far below the published 84 of
-  pGM3P-25 and experiment's 78.4: `docs/dielectric.md`.
+  TIP3P control 104 +- 3, literature 89-104). pmemd.pgm.cuda with pGM3P-25's published geometry and
+  Lennard-Jones gives the same, 34.3 +- 0.6 (pgm_jax 33.9 +- 0.7); the published 84.3 is not
+  reproduced by any definition of the dipole, and the published liquid dipole (2.413 D) is TIP3P's
+  point charges from the topology's CHARGE section, not the model's (2.12 D): `docs/dielectric.md`.
 - **Virtual sites** (`Molecule.vsites`, `pgm_jax/md/vsites.py`, `docs/virtual_sites.md`): massless
   interaction sites placed from parent atoms of the same molecule (two- and three-particle
   averages, out-of-plane and local-coordinate sites as in OpenMM, Amber's extra-point frames),
@@ -513,8 +515,9 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `scripts/bonded/` | the bonded study: sampling, DFT labels, pGM parameters, experiments, report |
 | `scripts/run_md.py` | MD from an Amber prmtop + inpcrd/rst7 (Amber-style options; `--dipoles`, `--induced`) |
 | `scripts/dielectric.py`, `scripts/water_dielectric.py` | eps (and IR spectrum) from `.dip` series; the water validation runs (pGM, pGM3P-25 geometry, TIP3P control) |
+| `scripts/pgm3p25_prmtop.py`, `scripts/trajectory_dipoles.py` | pGM3P-25 with its published geometry and LJ as a pmemd-pgm topology (supercells, mdin); cell-dipole series (`.dip`) of Amber trajectories (e.g. pmemd.pgm) with the induced dipoles solved by pgm_jax |
 | `scripts/bench_md.py`, `scripts/pgm_supercell.py` | MD speed benchmark (`--mts`, `--ps` / `--rdf`: drift, <U>, group temperatures, density, g_OO); replicate a pGM prmtop for larger systems |
-| `tests/` | `pytest -q`: 207 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
+| `tests/` | `pytest -q`: 208 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
 | `scripts/validate_amber.py` | comparison with sander / pmemd-pgm / PyRESP (`compare`, `pyresp`, `virial`) |
 | `scripts/bench.py` | timings on the current device |
 | `validation/` | Amber reference runs (inputs + outputs) and `validate_amber.json` |

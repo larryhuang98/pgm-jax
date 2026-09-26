@@ -169,6 +169,52 @@ and a shoulder near 250 cm^-1 (hydrogen-bond stretch), falling to 5 % of the max
 1000 cm^-1; rigid molecules have no intramolecular bands. Liquid water's librational band peaks
 near 680 cm^-1; the band of the pGM box lies about 200 cm^-1 lower.
 
+## Independent check: pmemd.pgm.cuda with the published parameters
+
+To separate the model from the engine, pGM3P-25 with its published geometry and Lennard-Jones was
+written as a pmemd-pgm topology (`scripts/pgm3p25_prmtop.py`) and sampled with pmemd.pgm.cuda
+itself; the cell dipoles of its trajectories were then evaluated with the model's induced dipoles
+re-solved at every frame (`scripts/trajectory_dipoles.py`, tol 1e-6, one frame per ps).
+
+Runs: pmemd.pgm.cuda_SPFP (`~/ambers/pgm-larry-install`), 4,096 waters (the 512-water box 2 x 2 x 2;
+pmemd.pgm.cuda needs three neighbour-list cells across the box), NPT 298 K / 1 bar, Langevin 1/ps,
+Monte Carlo barostat, SETTLE, 2 fs, 9 A cutoff, PME 96^3 order 6, ew_coeff 0.4, vdwmeth 1,
+dipole_scf_tol 1e-5 (`pgm3p25_prmtop.py --mdin`); four independent runs of 0.1 ns + 3 ns on four GPUs
+(114 ns/day each), the first 300 ps of each discarded: 10.8 ns. The heat of vaporization uses the
+gas-phase energy of one molecule at the published geometry (-976.42 kcal/mol with pmemd-pgm's
+Coulomb constant; `Model`, dense pGM) and <EPtot>/N from pmemd.
+
+| pGM3P-25, published parameters | pmemd.pgm.cuda (this check) | pgm_jax (table above) | Wu et al. 2025 |
+|---|---|---|---|
+| density (g/cm^3) | 1.0097 +- 0.0002 | 1.010 | 1.003 |
+| heat of vaporization (kcal/mol) | 9.54 | | 9.847 |
+| mean molecular dipole, liquid (D) | 2.124 | 2.13 | 2.413 |
+| molecular dipole, gas phase (D) | 1.462 (experiment 1.855) | | |
+| eps (M_q + M_perm + M_ind, + eps_inf 1.794) | **34.3 +- 0.6** | **33.9 +- 0.7** | 84.3 |
+
+Other definitions of M on the same pmemd frames (1 + fluctuation; errors 2 %): pGM charges only 236,
+charges + covalent dipoles 123, charges + induced dipoles 100, TIP3P's point charges (-0.834 / +0.417 e)
+40.3.
+
+- **The two engines agree** (34.3 +- 0.6 and 33.9 +- 0.7; liquid dipole 2.12 and 2.13 D; density
+  1.0097 and 1.010): eps of about 34 is a property of pGM3P-25 with these parameters, not of
+  pgm_jax's sampling or analysis.
+- **The published dipole is not the model's.** 2.413 D is exactly the dipole of TIP3P's charges at
+  the published geometry, 2 x 0.417 e x 0.9745 A x cos(51.82 deg) = 2.4132 D, the same for every
+  molecule and frame. The repository's `dipole_calc.py` (github.com/yxwu21/pGM3P-25) takes the
+  charges from the topology with MDAnalysis, which reads the prmtop's CHARGE section; tleap fills it
+  with TIP3P's charges, and pmemd-pgm never uses it (it reads POL_GAUSS_MONOPOLES_LIST). No
+  covalent or induced dipoles enter. `pgm3p25_prmtop.py` therefore writes the pGM monopoles into
+  CHARGE (in Amber units), so charge-only tools at least see the model's charges.
+- **The published eps = 84.3 is not reproduced** by any of these definitions of M on these
+  trajectories (TIP3P's point charges give 40, not 84). The public repository does not contain the
+  dielectric analysis (its `analysis.py` calls scripts in a directory on this cluster that is not
+  public), so how 84.3 was obtained cannot be checked from here.
+- Density and heat of vaporization differ from the published ones by 0.7 % and 3 %; the paper does
+  not give all its run settings (512 waters, CPU pmemd; cutoff and long-range correction not stated).
+- The model is under-polar in the gas phase (1.46 D against 1.855 D): consistent with eps of about 34
+  and with its hydration free energy (-4.91 +- 0.07 kcal/mol against -6.3; `docs/free_energy.md`).
+
 ## Limits
 
 - Charged molecules: M is the molecular dipole M_D (no ionic current), so for electrolytes eps
