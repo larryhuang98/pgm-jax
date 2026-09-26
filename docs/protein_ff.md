@@ -19,6 +19,7 @@ Amber. Everything below is in the repository, and each item has at least one tes
 | Export | `bonded/amber.py`, `prmtop.py` | `export_bonded`: per-instance parameters + CMAP into a prmtop (pmemd-pgm / sander) |
 | MD topology | `md/topology.py` | neighbour-list groups (heavy-atom groups), special pairs with vdW weights, constraints |
 | Constraints | `md/constraints.py` | SHAKE / RATTLE per cluster, vectorised; hydrogen mass repartitioning, one mass or per molecule (`AmberSystem.hmr`) |
+| Restraints | `md/restraints.py` | positional, distance, angle, dihedral, centre-of-mass distance (Amber NMR form); `AmberSystem.select` / `position_restraints` |
 | MD | `md/flexible.py` | `FlexibleTemplate` (`from_fit`, `from_network`), `RigidTemplate`, `FlexibleSimulation` (g-BAOAB, `minimize`) |
 | Top-down | `ensemble.py` | `Reweighting` (averages, n_eff, chi2 and gradients), Karplus J couplings, phi/psi regions |
 
@@ -62,6 +63,27 @@ sim = FlexibleSimulation(asys.system(), asys.templates({k: tpl}), asys.system_po
 sim.minimize(300)            # after minimization, equilibrate with thermostat="langevin" (faster warm-up)
 sim.run(500000, report=5000, traj=5000, prefix="ubq")
 ```
+
+Restraints (`pgm_jax/md/restraints.py`; Amber conventions, E = k x^2, k in kJ/mol/nm^2 or
+kJ/mol/rad^2, `KCAL_A2` = 418.4 per kcal/mol/A^2) go in with `restraints=` or, on a running
+simulation, `set_restraints` (which recompiles the step). Positional restraints on the protein
+built from the current positions, released in stages:
+
+```python
+from pgm_jax.md.restraints import KCAL_A2, DihedralRestraint, harmonic
+x0, H0 = sim.positions_nm(), sim.state.box                   # e.g. after minimize()
+for k in (10.0, 5.0, 1.0, 0.1):                              # kcal/mol/A^2 on the heavy atoms
+    sim.set_restraints(asys.position_restraints(k * KCAL_A2, "heavy", x0, H0))   # scaling "com"
+    sim.run(25000, report=5000, prefix=f"eq_k{k:g}")         # log column erestraint
+sim.set_restraints(None)
+# a phi restraint (IUPAC sign, rad): atoms in system order, e.g. from prot.atom_names
+sim.set_restraints(DihedralRestraint([[c0, n1, ca1, c1]], harmonic(np.radians(-63.0)), k=50.0))
+```
+
+Under NPT the reference of a "com" restraint moves with the molecule's scaled centre, which is
+what the molecular Monte Carlo barostat does to the protein; "fractional" scales every reference
+point with the box, "none" keeps it fixed. Restraints are not stored in checkpoints: pass them
+again when continuing.
 
 ## Training the neural bonded model for proteins
 

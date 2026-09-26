@@ -43,7 +43,7 @@ class Simulation:
     def __init__(self, sys: System, pos_nm, H_nm, settings: MDSettings = MDSettings(), dt: float = 0.001,
                  ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0, pressure: float = 1.0,
                  barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None, params=None, log=sys.stdout,
-                 neighbor_list: str = "auto", thermostat="langevin", tau_t: float = 1.0):
+                 neighbor_list: str = "auto", thermostat="langevin", tau_t: float = 1.0, restraints=None):
         H = reduce_box(H_nm)
         check_box(H, settings.cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
@@ -54,7 +54,7 @@ class Simulation:
         self._make_neighbors(H)
         self._size_lists(self.rigid.body0, H)
         self.integ = Integrator(self.ff, self.rigid, self.nb, dt, ensemble, temperature, gamma, pressure,
-                                barostat_interval, params, thermostat=thermostat, tau_t=tau_t)
+                                barostat_interval, params, thermostat=thermostat, tau_t=tau_t, restraints=restraints)
         self.dt, self.ensemble, self.T0 = dt, ensemble, temperature
         body = self.rigid.body0
         mom = None
@@ -69,6 +69,8 @@ class Simulation:
                     f"cutoff {settings.cutoff} nm, {self.nb.kind} neighbour list, predictor {settings.predictor}"
                     f"{' (fused)' if settings.fused else ''}, dipole tol {settings.dipole_tol:g}, "
                     f"template fit RMSD {self.rigid.fit_rmsd:.2e} nm, device {jax.devices()[0]}")
+        if self.integ.restraints is not None:
+            self._print(f"# restraints: {self.integ.restraints.describe()}")
 
     @classmethod
     def from_amber(cls, prmtop: str, coords: str, use_velocities: bool = True, **kw) -> "Simulation":
@@ -94,21 +96,46 @@ class Simulation:
                "vdw": float(st.vdw), "volume_nm3": V, "density_g_cm3": mass / V * AMU_NM3_TO_G_CM3,
                "cg_iter": int(st.iters), "cg_iter_max": int(st.max_iters), "cg_resid_max": float(st.resid),
                "cg_mean": float(st.cg_total) / max(int(st.step), 1)}
+        if self.integ.restraints is not None:             # part of epot
+            out["erestraint"] = float(sum(self.restraint_energies().values()))
         if self.ensemble == "npt":
             tries, acc = int(st.mc[0]), int(st.mc[1])
             out["mc_accept"] = acc / max(tries, 1)
         return out
 
+    def restraint_energies(self) -> dict:
+        """Restraint energy by kind (kJ/mol) at the current state ({} without restraints)."""
+        if self.integ.restraints is None:
+            return {}
+        if getattr(self, "_restraint_jit", None) is None:
+            self._restraint_jit = jax.jit(self.integ.restraints.energies)
+        st = self.state
+        return {k: float(v) for k, v in self._restraint_jit(self.rigid.positions(st.dyn.position), st.box).items()}
+
+    def set_restraints(self, restraints):
+        """Replace the restraints (md/restraints.py; None removes them), e.g. to release positional
+        restraints in stages: recompiles the step and recomputes the forces of the current state."""
+        from .restraints import as_restraints
+        r = as_restraints(restraints)
+        if r is not None:
+            r.check(self.sys.n)
+        self.integ.restraints = r
+        self.integ.compile()
+        self._restraint_jit = None
+        self.__dict__.pop("_pressure_jit", None)
+        st = self.state
+        self.state = self.integ.forces(st, False).set(induction=st.induction)
+
     def _pressure(self, st):
         pos = self.rigid.positions(st.dyn.position)
         W = self.ff.strain_derivative(pos, st.box, self.nb.candidates(st.nbr, st.dyn.position.center, st.box, pos)[0],
-                                      st.induction.mu, self.integ.params)
+                                      st.induction.mu, self.integ.params) + self.integ.restraint_strain(pos, st.box)
         ke_t = self.integ.kinetic(st)[1]
         return (2.0 * ke_t - jnp.trace(W)) / (3.0 * volume(st.box)) * 16.605390671738466
 
     def pressure(self) -> float:
-        """Instantaneous pressure (bar) from the molecular virial (at the converged dipoles) and the
-        centre-of-mass kinetic energy."""
+        """Instantaneous pressure (bar) from the molecular virial (at the converged dipoles; with the
+        restraints) and the centre-of-mass kinetic energy."""
         if not hasattr(self, "_pressure_jit"):
             self._pressure_jit = jax.jit(self._pressure)
         return float(self._pressure_jit(self.state))
