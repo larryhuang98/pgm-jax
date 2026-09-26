@@ -1,0 +1,7 @@
+source leaprc.protein.ff19SB
+source leaprc.water.tip3p
+m = sequence { ACE ALA SER NME }
+addions m Na+ 1 Cl- 1
+solvatebox m TIP3PBOX 5.0
+saveamberparm m pep_wat.prmtop pep_wat.inpcrd
+quit
