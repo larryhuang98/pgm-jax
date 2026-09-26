@@ -7,6 +7,8 @@
 Steps run in jit-compiled blocks on the device; between blocks the host checks the neighbour
 list (reallocates and repeats the block on overflow), re-wraps molecules into the box, reports
 and writes files.  Molecules are the prmtop residues; identical residues share one template.
+Virtual sites (Amber extra points, Molecule.vsites; md/vsites.py) are massless points of the rigid
+templates, placed from their parents at the start.
 run(dipoles=n) also samples the cell dipole every n steps (on the device, inside the blocks) into
 prefix.dip, and run(induced=n) writes per-atom induced dipoles to prefix.mu.nc (md/dipoles.py)."""
 from __future__ import annotations
@@ -29,6 +31,7 @@ from .integrate import KB, Integrator, upgrade_state
 from .io import NetCDFTrajectory, box_from_cell, read_coordinates, write_restart
 from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .rigid import RigidMolecules
+from .vsites import VirtualSites
 
 AMU_NM3_TO_G_CM3 = 1.66053906660e-3
 
@@ -37,7 +40,7 @@ def _dedupe(mols: list[Molecule]) -> list[Molecule]:
     seen, out = {}, []
     for m in mols:
         key = (m.name, tuple(m.elements), tuple(m.types), m.q.tobytes(), m.radius.tobytes(), m.alpha.tobytes(),
-               tuple(m.cov), m.lj_rmin_half.tobytes(), m.lj_sqrt_eps.tobytes(), tuple(m.bonds))
+               tuple(m.cov), m.lj_rmin_half.tobytes(), m.lj_sqrt_eps.tobytes(), tuple(m.bonds), tuple(m.vsites))
         out.append(seen.setdefault(key, m))
     return out
 
@@ -52,6 +55,10 @@ class Simulation:
         H = reduce_box(H_nm)
         check_box(H, settings.pair_cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
+        self.vsites = VirtualSites.of(sys)
+        if self.vsites is not None:                     # sites of the rigid templates from their parents
+            pos_nm = np.asarray(self.vsites.place(np.asarray(pos_nm, float), H))
+            self.vsites.check(pos_nm, H, (sys.cov_i, sys.cov_j))
         self.rigid = RigidMolecules(sys, pos_nm, H)
         self.ff = PGMForceField(sys, H, settings)
         self._r_list = float(jnp.max(jnp.linalg.norm(self.rigid.local, axis=1)))
@@ -68,7 +75,8 @@ class Simulation:
         self.state = self.integ.init(body, H, jax.random.PRNGKey(seed), mom)
         self.time_ps = 0.0
         thermo = '' if self.integ.thermostat is None else f" ({self.integ.thermostat.describe()})"
-        self._print(f"# pgm_jax MD: {sys.nmol} rigid molecules, {sys.n} atoms, {ensemble.upper()}{thermo}, "
+        self._print(f"# pgm_jax MD: {sys.nmol} rigid molecules, {sys.n} atoms"
+                    f"{'' if self.vsites is None else f' ({self.vsites.n_sites} virtual sites)'}, {ensemble.upper()}{thermo}, "
                     f"dt {dt * 1000:g} fs, "
                     f"{settings.precision} precision, PME grid {self.ff.pme.K} order {settings.pme_order}, "
                     f"{settings.describe_cutoffs()}, {self.nb.kind} neighbour list, predictor {settings.predictor}"
@@ -78,8 +86,11 @@ class Simulation:
             self._print(f"# restraints: {self.integ.restraints.describe()}")
 
     @classmethod
-    def from_amber(cls, prmtop: str, coords: str, use_velocities: bool = True, **kw) -> "Simulation":
-        mols = _dedupe(read_prmtop_pgm(prmtop, first_residue_only=False))
+    def from_amber(cls, prmtop: str, coords: str, use_velocities: bool = True, charges: str = "pgm",
+                   **kw) -> "Simulation":
+        """charges: "pgm" (a pGM prmtop) or "amber" (the point charges of a classical prmtop, e.g.
+        TIP4P-Ew; with MDSettings(elec="q")); extra points become virtual sites (read_prmtop_pgm)."""
+        mols = _dedupe(read_prmtop_pgm(prmtop, first_residue_only=False, charges=charges))
         sys = System(mols)
         xyz, vel, box = read_coordinates(coords)
         if box is None:

@@ -86,7 +86,8 @@ class Constraints:
                 inc[k, i, s], inc[k, j, s] = 1.0, -1.0
                 ends[k, s] = (i, j)
                 d[k, s], cmask[k, s] = d0[c], 1.0
-        invm = np.concatenate([1.0 / np.asarray(masses, float), [0.0]])
+        m = np.asarray(masses, float)
+        invm = np.concatenate([np.divide(1.0, m, out=np.zeros_like(m), where=m != 0), [0.0]])   # massless sites: never in a cluster
         self.atoms = jnp.asarray(atoms)
         self.inc = jnp.asarray(inc)
         self.d2 = jnp.asarray(d * d)
@@ -172,19 +173,21 @@ class Constraints:
 def repartition_masses(masses, elements, bonds, h_mass=3.024) -> np.ndarray:
     """Hydrogen mass repartitioning: every hydrogen gets h_mass (amu), taken from the heavy atom it
     is bonded to (total mass unchanged).  h_mass: one mass for every hydrogen, or one value per atom
-    (read at the hydrogens; NaN keeps that hydrogen's mass)."""
+    (read at the hydrogens; NaN keeps that hydrogen's mass).  Massless atoms (virtual sites) neither
+    give nor take mass."""
     m = np.asarray(masses, float).copy()
+    real = m > 0
     target = np.asarray(h_mass, float)
     if target.ndim and target.shape != m.shape:
         raise ValueError(f"h_mass: a scalar or one value per atom ({len(m)})")
     target = np.broadcast_to(target, m.shape)
     for i, j in np.asarray(bonds, int).reshape(-1, 2):
         for h, x in ((i, j), (j, i)):
-            if elements[h] == "H" and elements[x] != "H" and np.isfinite(target[h]):
+            if elements[h] == "H" and elements[x] != "H" and np.isfinite(target[h]) and real[h] and real[x]:
                 dm = target[h] - m[h]
                 m[h] += dm
                 m[x] -= dm
-    if np.any(m <= 0):
+    if np.any(m[real] <= 0):
         raise ValueError("hydrogen mass repartitioning left a non-positive mass")
     return m
 

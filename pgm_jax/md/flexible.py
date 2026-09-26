@@ -27,7 +27,9 @@ reference lengths; rigid templates always) are applied with SHAKE / RATTLE in g-
                              MDSettings(), dt=0.002, constraints="h-bonds", hmr=3.024)
 
 Molecules are kept whole: positions are never wrapped atom by atom, only whole molecules are
-shifted by lattice vectors.  Units: nm, ps, amu, kJ/mol, K."""
+shifted by lattice vectors.  Virtual sites (Molecule.vsites, md/vsites.py) are not integrated: they
+are rebuilt from their parents every step and their forces are spread to their parents.
+Units: nm, ps, amu, kJ/mol, K."""
 from __future__ import annotations
 
 import pickle
@@ -47,6 +49,7 @@ from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .rigid import _unwrap
 from .simulation import Simulation
 from .topology import MDTopology, MoleculeRule
+from .vsites import VirtualSites
 
 
 # ----------------------------------------------------------------------------- templates
@@ -200,15 +203,19 @@ class FlexibleTemplate:
 class RigidTemplate:
     """A rigid molecule of up to three atoms (water, ions) for FlexibleSimulation: every distance
     held by a constraint (from the geometry `xyz`, nm), no bonded terms, no intramolecular van der
-    Waals (Amber's rigid water)."""
+    Waals (Amber's rigid water).  Virtual sites of the molecule (TIP4P's M site, TIP5P's lone pairs)
+    come on top of the three atoms: they are placed, not constrained."""
     has_bonded = False
 
     def __init__(self, molecule, xyz=None, name: str | None = None):
         self.pgm = molecule
         self.name = name or molecule.name
         self.n = molecule.n
-        if self.n > 3:
-            raise ValueError("RigidTemplate holds up to three atoms by distances; use a FlexibleTemplate")
+        sites = {vs.site for vs in molecule.vsites}
+        self.real_atoms = [a for a in range(self.n) if a not in sites]
+        if len(self.real_atoms) > 3:
+            raise ValueError("RigidTemplate holds up to three atoms (plus virtual sites) by distances; "
+                             "use a FlexibleTemplate")
         x = np.asarray(xyz if xyz is not None else molecule.extra.get("xyz"), float) if self.n > 1 else np.zeros((1, 3))
         self.xyz = x.reshape(self.n, 3)
 
@@ -221,7 +228,8 @@ class RigidTemplate:
         return list(self.pgm.elements)
 
     def md_rule(self, constraints: str = "none") -> MoleculeRule:
-        pairs = [(i, j) for i in range(self.n) for j in range(i + 1, self.n)]
+        ra = self.real_atoms
+        pairs = [(i, j) for k, i in enumerate(ra) for j in ra[k + 1:]]
         cons = tuple((i, j, float(np.linalg.norm(self.xyz[i] - self.xyz[j]))) for i, j in pairs)
         return MoleculeRule(bonds=[], vdw="none", constraints=cons)
 
@@ -268,7 +276,8 @@ class FlexibleMolecules:
     neighbour-list-group centres, whole-molecule wrapping.  `templates[k]` belongs to
     `sys.molecules[k]` (same atom order); `topology` is the system's MDTopology."""
 
-    def __init__(self, sys: System, pos, H, templates, topology: MDTopology, masses=None):
+    def __init__(self, sys: System, pos, H, templates, topology: MDTopology, masses=None,
+                 vsites: VirtualSites | None = None):
         if len(templates) != sys.nmol:
             raise ValueError("one template per molecule")
         pos, H = np.asarray(pos, float), np.asarray(H, float)
@@ -279,7 +288,12 @@ class FlexibleMolecules:
         self.n_group = topology.n_group
         m = np.asarray(sys.masses if masses is None else masses, float)
         self.masses = jnp.asarray(m)
-        self.mass = jnp.asarray(m)[:, None]
+        self.vsites = vsites
+        if vsites is None:
+            self.mass = jnp.asarray(m)[:, None]
+        else:                  # the integrator's masses: 1 at the sites, whose momenta are held at 0 (`real`)
+            self.real = jnp.asarray(vsites.real, jnp.float64)[:, None]
+            self.mass = jnp.asarray(np.where(vsites.real, m, 1.0))[:, None]
         self.mmol = jax.ops.segment_sum(self.masses, self.mol, self.nmol)
         self.mgroup = jax.ops.segment_sum(self.masses, self.group, self.n_group)
         whole = np.zeros_like(pos)
@@ -290,9 +304,17 @@ class FlexibleMolecules:
                 raise ValueError(f"template {tpl.name} does not match molecule {k} ({molk.name})")
             bonds = tpl.terms.mols[tpl.index].top.bonds if tpl.has_bonded else molk.bonds
             whole[sl] = _unwrap_bonded(pos[sl], H, bonds)
+            if tpl.has_bonded and molk.vsites:
+                sites = {vs.site for vs in molk.vsites}
+                if any(int(a) in sites for b in bonds for a in b):
+                    raise ValueError(f"template {tpl.name}: bonded terms involve virtual sites; "
+                                     "sites carry no bonded terms")
             if tpl.has_bonded:
                 groups.setdefault(id(tpl), (tpl, []))[1].append(np.arange(sl.start, sl.stop))
         self.groups = [(tpl, jnp.asarray(np.array(rows))) for tpl, rows in groups.values()]
+        if vsites is not None:
+            whole = np.asarray(vsites.place(whole, H))
+            vsites.check(whole, H, (sys.cov_i, sys.cov_j))
         self.pos0 = jnp.asarray(whole)
         self.r_max = topology.group_radius(whole, m)
         self.dof_correction = 0
@@ -338,10 +360,12 @@ class FlexibleIntegrator(Integrator):
     def __init__(self, ff: PGMForceField, flex: FlexibleMolecules, neighbors, dt: float = 0.0005,
                  constraints: Constraints | None = None, **kw):
         self.flex = flex
+        self.vsites = getattr(flex, "vsites", None)
         self.cons = constraints if (constraints is not None and constraints.nc) else None
         super().__init__(ff, flex, neighbors, dt, **kw)
         nc = self.cons.nc if self.cons is not None else 0
-        self.dof = 3 * flex.n - nc - (3 if self.ensemble == "nve" else 0)
+        self.n_real = flex.n - (0 if self.vsites is None else self.vsites.n_sites)
+        self.dof = 3 * self.n_real - nc - (3 if self.ensemble == "nve" else 0)
 
     def _forces(self, pos, box, induction, nbr, force_rebuild=False):
         centers = self.flex.list_centers(pos)
@@ -352,7 +376,13 @@ class FlexibleIntegrator(Integrator):
         energy = dict(res.energy)
         energy["total"] = res.energy["total"] + e_in
         res = self._add_restraints(res._replace(energy=energy, overflow=res.overflow | ovf), pos, box)
+        if self.vsites is not None:                          # site forces to the parents
+            return self.vsites.spread(pos, box, res.forces - g_in), res, nbr
         return res.forces - g_in, res, nbr
+
+    def place(self, pos, box):
+        """Positions with the virtual sites rebuilt from their parents (identity without sites)."""
+        return pos if self.vsites is None else self.vsites.place(pos, box)
 
     def init(self, pos, box, key, momentum=None) -> MDState:
         box = jnp.asarray(box, jnp.float64)
@@ -360,14 +390,20 @@ class FlexibleIntegrator(Integrator):
         if self.cons is not None:                          # start on the constraint surface
             for _ in range(3):
                 pos = self.cons.positions(pos, pos)
+        pos = self.place(pos, box)
         nbr = self.nb.allocate(pos, self.flex.list_centers(pos), box)
         key, split = jax.random.split(key)
         zero = jnp.zeros_like(pos)
         dyn = Dynamics(pos, zero, zero, self.flex.mass, key)
-        if momentum is None:
+        if momentum is None and self.vsites is not None:     # real atoms only, zero total momentum
+            real = self.flex.real
+            p = jnp.sqrt(self.flex.mass * self.kT) * jax.random.normal(split, pos.shape, jnp.float64) * real
+            dyn = dyn.set(momentum=(p - jnp.sum(p, 0) / self.n_real) * real)
+        elif momentum is None:
             dyn = simulate.initialize_momenta(dyn, split, self.kT)
         else:
-            dyn = dyn.set(momentum=jnp.asarray(momentum, jnp.float64))
+            p = jnp.asarray(momentum, jnp.float64)
+            dyn = dyn.set(momentum=p if self.vsites is None else p * self.flex.real)
         if self.cons is not None:
             dyn = dyn.set(momentum=self.cons.momenta(pos, dyn.momentum, self.flex.masses))
         z = jnp.zeros((), jnp.float64)
@@ -388,21 +424,27 @@ class FlexibleIntegrator(Integrator):
             project = lambda u: u                                      # noqa: E731
         else:
             project = lambda u: self.cons.momenta(q, u * sm, self.flex.masses) / sm   # noqa: E731
-        return dyn.momentum / sm, None, (lambda v: dyn.set(momentum=v * sm)), project
+        mask = None if self.vsites is None else jnp.broadcast_to(self.flex.real, dyn.momentum.shape)   # sites: no noise
+        return dyn.momentum / sm, mask, (lambda v: dyn.set(momentum=v * sm)), project
 
     # ------------------------------------------------------------------ constrained steps (g-BAOAB)
     def _kick(self, dyn: Dynamics, h: float) -> Dynamics:
         p = dyn.momentum + h * dyn.force
-        return dyn.set(momentum=self.cons.momenta(dyn.position, p, self.flex.masses))
+        return dyn.set(momentum=p if self.cons is None else self.cons.momenta(dyn.position, p, self.flex.masses))
 
     def _drift(self, dyn: Dynamics, h: float) -> Dynamics:
+        """Positions advanced by h (SHAKE) and momenta consistent with the constrained move (RATTLE).
+        Virtual sites have zero momentum, so they stay where they are; `_step` rebuilds them once
+        per step, before the forces."""
         q = dyn.position
-        q1 = self.cons.positions(q + h * dyn.momentum / dyn.mass, q)
+        q1 = q + h * dyn.momentum / dyn.mass
+        if self.cons is not None:
+            q1 = self.cons.positions(q1, q)
         p = dyn.mass * (q1 - q) / h
-        return dyn.set(position=q1, momentum=self.cons.momenta(q1, p, self.flex.masses))
+        return dyn.set(position=q1, momentum=p if self.cons is None else self.cons.momenta(q1, p, self.flex.masses))
 
     def _step(self, st: MDState) -> MDState:
-        if self.cons is None:
+        if self.cons is None and self.vsites is None:
             return super()._step(st)
         dt = self.dt
         aux, heat = st.aux, st.heat
@@ -413,6 +455,8 @@ class FlexibleIntegrator(Integrator):
             dyn = self._drift(dyn, dt / 2)
             dyn, aux, heat = self._o_step(dyn, aux, heat, dt, self.thermostat_kT(st))
             dyn = self._drift(dyn, dt / 2)
+        if self.vsites is not None:
+            dyn = dyn.set(position=self.vsites.place(dyn.position, st.box))
         F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr)
         st = self._with_result(st.set(dyn=dyn, aux=aux, heat=heat), F, res, nbr)
         st = st.set(dyn=self._kick(st.dyn, dt / 2), step=st.step + 1)
@@ -467,7 +511,7 @@ class FlexibleIntegrator(Integrator):
         ke, ke_t = self.kinetic(st)
         n_t = 3 * self.nmol - (3 if self.ensemble == "nve" else 0)
         nc = self.cons.nc if self.cons is not None else 0
-        n_i = 3 * self.flex.n - 3 * self.nmol - nc
+        n_i = 3 * self.n_real - 3 * self.nmol - nc
         return 2.0 * ke_t / (n_t * KB), 2.0 * (ke - ke_t) / (max(n_i, 1) * KB)
 
 
@@ -496,7 +540,8 @@ class FlexibleSimulation(Simulation):
         kw = {} if max_single is None else {"max_single": max_single}
         self.topology = MDTopology.build(sys, [rules[id(t)] for t in templates], **kw)
         masses = hmr_masses(sys, hmr)
-        self.flex = FlexibleMolecules(sys, pos_nm, H, templates, self.topology, masses)
+        self.vsites = VirtualSites.of(sys)
+        self.flex = FlexibleMolecules(sys, pos_nm, H, templates, self.topology, masses, self.vsites)
         self.rigid = self.flex                                   # wrap() / positions() used by the base driver
         self.ff = PGMForceField(sys, H, settings, topology=self.topology)
         self.ff.masses = jnp.asarray(masses)
@@ -515,7 +560,8 @@ class FlexibleSimulation(Simulation):
         self.state = self.integ.init(pos0, H, jax.random.PRNGKey(seed), mom)
         self.time_ps = 0.0
         nflex = sum(1 for t in templates if t.has_bonded)
-        self._print(f"# pgm_jax MD: {sys.nmol} molecules ({nflex} flexible), {sys.n} atoms, "
+        self._print(f"# pgm_jax MD: {sys.nmol} molecules ({nflex} flexible), {sys.n} atoms"
+                    f"{'' if self.vsites is None else f' ({self.vsites.n_sites} virtual sites)'}, "
                     f"{self.topology.n_group} list groups, {self.constraints.nc} constraints, {ensemble.upper()}"
                     f"{'' if self.integ.thermostat is None else ' (' + self.integ.thermostat.describe() + ')'}, "
                     f"dt {dt * 1000:g} fs, {settings.precision} precision, PME grid {self.ff.pme.K} order "
@@ -538,6 +584,7 @@ class FlexibleSimulation(Simulation):
             new = pos + h * F / jnp.maximum(fmax, 1e-12)
             if cons is not None:
                 new = cons.positions(new, pos)
+            new = integ.place(new, box)
             F1, res, nbr1 = integ._forces(new, box, induction, nbr)
             return new, F1, res, nbr1
 

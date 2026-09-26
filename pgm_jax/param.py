@@ -55,28 +55,69 @@ def _prmtop_sections(path: str) -> dict[str, list[str]]:
     return out
 
 
-def read_prmtop_pgm(path: str, first_residue_only: bool = True) -> list[Molecule]:
+AMBER_CHARGE = 18.2223                 # prmtop CHARGE unit: e -> sqrt(kcal A / mol)
+
+
+def prmtop_extra_points(s) -> dict:
+    """Amber extra points of parsed prmtop sections (`_prmtop_sections`): {atom: VirtualSite}
+    (global indices) from the bond graph by Amber's rules (md/vsites.py amber_extra_points).
+    Custom frames (pmemd's VIRTUAL_SITE_FRAMES) are not read: they raise."""
+    from .md.vsites import amber_extra_points
+    if "VIRTUAL_SITE_FRAMES" in s:
+        raise NotImplementedError("prmtop has VIRTUAL_SITE_FRAMES (pmemd custom extra-point frames): not supported; "
+                                  "define the sites with Molecule.vsites (md/vsites.py)")
+    trip = lambda sec: np.array([int(x) for x in s.get(sec, [])], int).reshape(-1, 3)          # noqa: E731
+    bh, bx = trip("BONDS_INC_HYDROGEN"), trip("BONDS_WITHOUT_HYDROGEN")
+    req = [float(x) for x in s.get("BOND_EQUIL_VALUE", [])]
+    as_list = lambda b: [(i // 3, j // 3, t - 1) for i, j, t in b]                              # noqa: E731
+    eps = amber_extra_points(s["AMBER_ATOM_TYPE"], as_list(bh), as_list(bx), req)
+    mass = np.array([float(x) for x in s["MASS"]])
+    for e in eps:
+        if mass[e] != 0.0:
+            raise ValueError(f"extra point {e + 1} has mass {mass[e]:g}; Amber extra points are massless")
+    return eps
+
+
+def read_prmtop_pgm(path: str, first_residue_only: bool = True, charges: str = "pgm",
+                    point_radius: float | None = None) -> list[Molecule]:
     """Molecules (one per residue) from an Amber pGM prmtop: pGM multipoles, radii and
     polarizabilities, covalent dipoles, LJ from the type-pair tables (converted to per-type
     R* and sqrt(eps); NBFIX-style pairs that break Lorentz-Berthelot raise), bonds, masses.
     Molecules of several residues (proteins; covalent dipoles across residues raise):
-    protein.load_amber(prmtop, coords, electrostatics="prmtop")."""
+    protein.load_amber(prmtop, coords, electrostatics="prmtop").
+    charges="amber" reads a classical prmtop instead: point charges CHARGE / 18.2223 (Gaussian
+    radius `point_radius`, default md.vsites.POINT_RADIUS = 1e-4 nm), no polarizability, no
+    covalent dipoles (run with MDSettings(elec="q")).
+    Extra points (atom type EP, mass 0) become virtual sites (Molecule.vsites) with Amber's frames
+    (md/vsites.py); their element is "EP"."""
     s = _prmtop_sections(path)
     names = s["ATOM_NAME"]
     types = s["AMBER_ATOM_TYPE"]
     res_ptr = [int(x) - 1 for x in s["RESIDUE_POINTER"]] + [len(names)]
     res_lab = s["RESIDUE_LABEL"]
-    q = np.array([float(x) for x in s["POL_GAUSS_MONOPOLES_LIST"]])
-    rad = np.array([float(x) for x in s["POL_GAUSS_RADII_LIST"]])
-    alp = np.array([float(x) for x in s["POL_GAUSS_POLARIZABILITY_LIST"]])
-    nptr = [int(x) for x in s["POL_GAUSS_COVALENT_POINTERS_LIST"]]
-    catm = [int(x) - 1 for x in s["POL_GAUSS_COVALENT_ATOMS_LIST"]]
-    cdip = [float(x) for x in s["POL_GAUSS_COVALENT_DIPOLES_LIST"]]
+    if charges == "pgm":
+        if "POL_GAUSS_MONOPOLES_LIST" not in s:
+            raise ValueError(f"{path} has no pGM sections (POL_GAUSS_*): pass charges='amber' for its point charges")
+        q = np.array([float(x) for x in s["POL_GAUSS_MONOPOLES_LIST"]])
+        rad = np.array([float(x) for x in s["POL_GAUSS_RADII_LIST"]])
+        alp = np.array([float(x) for x in s["POL_GAUSS_POLARIZABILITY_LIST"]])
+        nptr = [int(x) for x in s["POL_GAUSS_COVALENT_POINTERS_LIST"]]
+        catm = [int(x) - 1 for x in s["POL_GAUSS_COVALENT_ATOMS_LIST"]]
+        cdip = [float(x) for x in s["POL_GAUSS_COVALENT_DIPOLES_LIST"]]
+    elif charges == "amber":
+        from .md.vsites import POINT_RADIUS
+        q = np.array([float(x) for x in s["CHARGE"]]) / AMBER_CHARGE
+        rad = np.full(len(names), (POINT_RADIUS if point_radius is None else float(point_radius)) / ANG)
+        alp = np.zeros(len(names))
+        nptr, catm, cdip = [0] * len(names), [], []
+    else:
+        raise ValueError("charges: 'pgm' (POL_GAUSS sections) or 'amber' (point charges from CHARGE)")
     start = np.concatenate([[0], np.cumsum(nptr)])
     mass = np.array([float(x) for x in s["MASS"]])
     rh, se = _prmtop_lj(s)
     bonds = [(int(a) // 3, int(b) // 3) for sec in ("BONDS_INC_HYDROGEN", "BONDS_WITHOUT_HYDROGEN")
              for a, b in zip(s.get(sec, [])[0::3], s.get(sec, [])[1::3])]
+    eps = prmtop_extra_points(s)
     mols = []
     nres = len(res_lab) if not first_residue_only else 1
     for r in range(nres):
@@ -89,13 +130,19 @@ def read_prmtop_pgm(path: str, first_residue_only: bool = True) -> list[Molecule
                                      "read multi-residue molecules with protein.load_amber(electrostatics='prmtop')")
                 cov.append((i - a0, catm[k] - a0, cdip[k] * ANG))
         if "ATOMIC_NUMBER" in s:
-            el = [Z2EL[int(z)] for z in s["ATOMIC_NUMBER"][a0:a1]]
+            el = [Z2EL[int(z)] if a not in eps else "EP" for a, z in zip(range(a0, a1), s["ATOMIC_NUMBER"][a0:a1])]
         else:
-            el = [re.sub(r"\d+", "", n)[:1].upper() for n in names[a0:a1]]
+            el = [re.sub(r"\d+", "", n)[:1].upper() if a not in eps else "EP" for a, n in zip(range(a0, a1), names[a0:a1])]
         bd = [(i - a0, j - a0) for i, j in bonds if a0 <= i < a1 and a0 <= j < a1]
+        vs = []
+        for e in range(a0, a1):
+            if e in eps:
+                if not all(a0 <= a < a1 for a in eps[e].atoms):
+                    raise ValueError(f"extra point {e + 1}: frame atoms {[a + 1 for a in eps[e].atoms]} outside its residue")
+                vs.append(eps[e].shifted(-a0))
         mols.append(Molecule(name=res_lab[r], elements=el, types=types[a0:a1], q=q[a0:a1].copy(),
                              radius=rad[a0:a1] * ANG, alpha=alp[a0:a1] * ANG ** 3, cov=cov,
-                             lj_rmin_half=rh[a0:a1], lj_sqrt_eps=se[a0:a1], bonds=bd, masses=mass[a0:a1]))
+                             lj_rmin_half=rh[a0:a1], lj_sqrt_eps=se[a0:a1], bonds=bd, masses=mass[a0:a1], vsites=vs))
     return mols
 
 
@@ -126,11 +173,13 @@ def molecule_to_dict(m: Molecule) -> dict:
             "bonds": [[int(i), int(j)] for i, j in m.bonds], "masses": m.masses.tolist(), "keys": m.keys,
             "gvdw_sqrt_a": m.gvdw_sqrt_a.tolist(), "gvdw_sqrt_c6": m.gvdw_sqrt_c6.tolist(), "gvdw_b": m.gvdw_b.tolist(),
             "quad": [[int(i), int(j), int(k), float(t)] for i, j, k, t in m.quad],
-            "extra": {k: np.asarray(v).tolist() for k, v in m.extra.items()}}
+            "extra": {k: np.asarray(v).tolist() for k, v in m.extra.items()},
+            "vsites": [vs.to_list() for vs in m.vsites]}
 
 
 def molecule_from_dict(d: dict) -> Molecule:
     """Also reads the older format (no LJ, bonds, masses, keys: defaults are used)."""
+    from .md.vsites import VirtualSite
     return Molecule(name=d["name"], elements=d["elements"], types=d["types"], q=np.array(d["q"]),
                     radius=np.array(d["radius_nm"]), alpha=np.array(d["alpha_nm3"]),
                     cov=[(int(i), int(j), float(c)) for i, j, c in d["cov"]],
@@ -138,7 +187,8 @@ def molecule_from_dict(d: dict) -> Molecule:
                     bonds=[(int(i), int(j)) for i, j in d.get("bonds", [])], masses=d.get("masses"),
                     keys=d.get("keys", {}), extra={k: np.array(v) for k, v in d.get("extra", {}).items()},
                     gvdw_sqrt_a=d.get("gvdw_sqrt_a"), gvdw_sqrt_c6=d.get("gvdw_sqrt_c6"), gvdw_b=d.get("gvdw_b"),
-                    quad=[(int(i), int(j), int(k), float(t)) for i, j, k, t in d.get("quad", [])])
+                    quad=[(int(i), int(j), int(k), float(t)) for i, j, k, t in d.get("quad", [])],
+                    vsites=[VirtualSite.from_list(v) for v in d.get("vsites", [])])
 
 
 def save_molecule(m: Molecule, path: str) -> None:
@@ -250,6 +300,8 @@ def reorder(m: Molecule, perm: np.ndarray) -> Molecule:
     inv = np.empty(n, dtype=int)
     inv[perm] = np.arange(n)
     keys = {qn: (ks if qn == "cov" else [ks[k] for k in inv]) for qn, ks in m.keys.items()}
+    if m.vsites:
+        raise NotImplementedError(f"{m.name}: reorder of a molecule with virtual sites")
     return Molecule(name=m.name, elements=[m.elements[k] for k in inv], types=[m.types[k] for k in inv],
                     q=m.q[inv], radius=m.radius[inv], alpha=m.alpha[inv],
                     cov=[(int(perm[i]), int(perm[j]), c) for i, j, c in m.cov],

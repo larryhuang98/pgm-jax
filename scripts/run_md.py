@@ -65,6 +65,9 @@ def main(argv=None):
     ap.add_argument("--extrap-order", type=int, default=3, help="dipole_scf_init_order (--predictor ls)")
     ap.add_argument("--extrap-steps", type=int, default=2, help="dipole_scf_init_step (--predictor ls)")
     ap.add_argument("--precision", default="mixed", choices=["mixed", "double"])
+    ap.add_argument("--charges", default="pgm", choices=["pgm", "amber"],
+                    help="pgm: a pGM prmtop; amber: the point charges of a classical prmtop (e.g. TIP4P-Ew, extra "
+                         "points as virtual sites), electrostatics level q")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-velocities", action="store_true", help="ignore velocities in the coordinates (irest=0)")
     ap.add_argument("--report", type=int, default=1000)
@@ -84,8 +87,8 @@ def main(argv=None):
                     lj_lrc=bool(a.vdwmeth), dipole_tol=a.dipole_tol, max_iter=a.max_iter, local_cut=a.local_cut / 10,
                     local_niter=a.local_niter, peek=a.peek, predictor=a.predictor,
                     extrap_order=a.extrap_order, extrap_steps=a.extrap_steps,
-                    precision=a.precision)
-    sim = Simulation.from_amber(a.prmtop, a.coords, use_velocities=not a.no_velocities, settings=st,
+                    precision=a.precision, elec="q" if a.charges == "amber" else "qpi")
+    sim = Simulation.from_amber(a.prmtop, a.coords, use_velocities=not a.no_velocities, settings=st, charges=a.charges,
                                 dt=a.dt / 1000, ensemble=a.ensemble, temperature=a.temp, gamma=a.gamma,
                                 thermostat=a.thermostat, tau_t=a.tautp,
                                 pressure=a.press, barostat_interval=a.barostat_interval, seed=a.seed)

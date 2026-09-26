@@ -236,6 +236,12 @@ def write_pgm_prmtop(asys, out: str, templates=None, params=None, system=None, l
     pt0 = Prmtop.read(asys.prmtop)
     if "CTITLE" in pt0 or ("CHARMM_UREY_BRADLEY_COUNT" in pt0 and np.any(pt0.get("CHARMM_UREY_BRADLEY_COUNT"))):
         raise ValueError(f"{asys.prmtop} is a CHARMM (chamber) topology; only Amber topologies are converted")
+    if any(m.molecule.vsites for m in asys.molecules):
+        # pmemd.pgm (CPU) spreads extra-point forces in its pGM branch (pme_force.F90: orient_frc), but
+        # pmemd.pgm.cuda's pGM force path (cuda/pgm_gpu.cpp) never calls kOrientForces: on the GPU the
+        # forces on extra points would not reach their frames, so this topology would not run the model
+        raise NotImplementedError("write_pgm_prmtop: systems with virtual sites (Amber extra points) are not "
+                                  "supported: pmemd.pgm.cuda's pGM force path does not spread extra-point forces")
     n = int(pt0.pointers["NATOM"])
     order = np.asarray(asys.order)
     if len(order) != n or sorted(order.tolist()) != list(range(n)):
