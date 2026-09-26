@@ -4,6 +4,7 @@ the README (NVT, gamma 1/ps, 9 A cutoff, PME 48^3 per replica, order 6, dipole_s
 
     python scripts/bench_md.py --replicate 2 --steps 10000 --precision mixed
     python scripts/bench_md.py --replicate 2 --engine constraints --dt 0.002     # atoms + SHAKE/RATTLE
+    python scripts/bench_md.py --replicate 2 --elec-cut 0.7 --grid 48           # electrostatics cut at 0.7 nm
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ import numpy as np
 jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
+from pgm_jax.md.forcefield import DSUM_TOL, MDSettings, ewald_beta_for  # noqa: E402
 from pgm_jax.md.io import box_from_cell, read_coordinates  # noqa: E402
 from pgm_jax.md.simulation import Simulation, _dedupe  # noqa: E402
 from pgm_jax.param import read_prmtop_pgm  # noqa: E402
@@ -34,7 +35,12 @@ def main():
     ap.add_argument("--steps", type=int, default=5000)
     ap.add_argument("--precision", default="mixed")
     ap.add_argument("--ensemble", default="nvt")
-    ap.add_argument("--cut", type=float, default=0.9)
+    ap.add_argument("--cut", type=float, default=0.9, help="van der Waals (and default electrostatics) cutoff (nm)")
+    ap.add_argument("--elec-cut", type=float, default=None, help="real-space electrostatics cutoff (nm); --beta then "
+                    "defaults to ewald_beta_for(elec_cut, dsum_tol) and --grid to 48 (beta / 4)^1.6 (a multiple of 4; "
+                    "the grid rule of elec_cutoff_settings)")
+    ap.add_argument("--dsum-tol", type=float, default=DSUM_TOL, help="direct-sum tolerance for --elec-cut (Amber convention)")
+    ap.add_argument("--beta", type=float, default=None, help="Ewald coefficient (nm^-1); default 4.0")
     ap.add_argument("--dt", type=float, default=0.001)
     ap.add_argument("--order", type=int, default=6)
     ap.add_argument("--tol", type=float, default=1e-5)
@@ -43,7 +49,7 @@ def main():
     ap.add_argument("--thermostat", default="langevin", help="langevin | bussi | gle")
     ap.add_argument("--tau", type=float, default=1.0, help="Bussi time constant (ps)")
     ap.add_argument("--hmr", type=float, default=None, help="hydrogen mass (amu), constraints engine only")
-    ap.add_argument("--grid", type=int, default=48, help="PME points per replica along each lattice vector")
+    ap.add_argument("--grid", type=int, default=None, help="PME points per replica along each lattice vector (default 48)")
     ap.add_argument("--skin", type=float, default=0.1)
     ap.add_argument("--engine", default="rigid", help="rigid (rigid bodies) | constraints (atoms + SHAKE/RATTLE, "
                     "the engine of flexible and macromolecular systems)")
@@ -56,9 +62,11 @@ def main():
     pos = np.concatenate([xyz * 0.1 + s for s in shifts])
     v = np.concatenate([vel * 0.1] * len(shifts))
     sys_ = System(mols * len(shifts))
-    grid = tuple(a.grid * n for _ in range(3))
-    st = MDSettings(cutoff=a.cut, skin=a.skin, ewald_beta=4.0, pme_grid=grid, pme_order=a.order, lj_lrc=bool(a.lrc),
-                    dipole_tol=a.tol, precision=a.precision)
+    beta = a.beta if a.beta is not None else (4.0 if a.elec_cut is None else ewald_beta_for(a.elec_cut, a.dsum_tol))
+    per = a.grid if a.grid is not None else int(np.ceil(48 * (beta / 4.0) ** 1.6 / 4.0 - 1e-9)) * 4
+    grid = tuple(per * n for _ in range(3))
+    st = MDSettings(cutoff=a.cut, skin=a.skin, ewald_beta=beta, pme_grid=grid, pme_order=a.order, lj_lrc=bool(a.lrc),
+                    dipole_tol=a.tol, precision=a.precision, elec_cutoff=a.elec_cut)
     if a.engine == "rigid":
         sim = Simulation(sys_, pos, H * n, settings=st, ensemble=a.ensemble, temperature=298.0, gamma=a.gamma,
                          barostat_interval=100, dt=a.dt, vel_nm_ps=v, log=sys.stdout,
@@ -78,8 +86,9 @@ def main():
         done += 1000
     el = time.time() - t0
     o = sim.observables()
-    print(f"{a.engine}: {sys_.nmol} waters ({sys_.n} atoms), dt {a.dt * 1000:g} fs, {a.precision}, {a.ensemble}, cut {a.cut} nm, PME {grid} order {a.order}, "
-          f"tol {a.tol:g}, skin {a.skin}, rows {sim.ff.mc}: {el / done * 1e3:.3f} ms/step, "
+    print(f"{a.engine}: {sys_.nmol} waters ({sys_.n} atoms), dt {a.dt * 1000:g} fs, {a.precision}, {a.ensemble}, "
+          f"{st.describe_cutoffs()}, beta {beta:.4f}, PME {grid} order {a.order}, "
+          f"tol {a.tol:g}, skin {a.skin}, rows {sim.ff.mc} (electrostatic {sim.ff.mc_e or sim.ff.mc}): {el / done * 1e3:.3f} ms/step, "
           f"{done * a.dt / 1000 / el * 86400:.1f} ns/day; T {o['temp_K']:.1f} K, density {o['density_g_cm3']:.4f}, "
           f"CG iters {o['cg_mean']:.2f} mean, max {o['cg_iter_max']}", flush=True)
 

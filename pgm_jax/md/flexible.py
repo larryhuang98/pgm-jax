@@ -484,7 +484,7 @@ class FlexibleSimulation(Simulation):
                  constraints: str = "none", hmr: float | None = None, max_single: int | None = None,
                  thermostat="langevin", tau_t: float = 1.0):
         H = reduce_box(H_nm)
-        check_box(H, settings.cutoff + settings.skin)
+        check_box(H, settings.pair_cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
         uniq = {id(t): t for t in templates}.values()
         for tpl in uniq:
@@ -520,7 +520,7 @@ class FlexibleSimulation(Simulation):
                     f"{self.topology.n_group} list groups, {self.constraints.nc} constraints, {ensemble.upper()}"
                     f"{'' if self.integ.thermostat is None else ' (' + self.integ.thermostat.describe() + ')'}, "
                     f"dt {dt * 1000:g} fs, {settings.precision} precision, PME grid {self.ff.pme.K} order "
-                    f"{settings.pme_order}, cutoff {settings.cutoff} nm, {self.nb.kind} neighbour list (group radius "
+                    f"{settings.pme_order}, {settings.describe_cutoffs()}, {self.nb.kind} neighbour list (group radius "
                     f"{self.r_list:.3f} nm), dipole tol {settings.dipole_tol:g}, device {jax.devices()[0]}")
 
     def minimize(self, steps: int = 500, max_step: float = 0.01, ftol: float = 50.0, seed: int = 1) -> dict:
@@ -568,11 +568,12 @@ class FlexibleSimulation(Simulation):
         s = self.settings
         mode = self._nb_mode
         if mode == "auto":
-            mode = "molecule" if MoleculeNeighbors.fits(H, s.cutoff, s.skin, self._r_list) else "atom"
+            mode = "molecule" if MoleculeNeighbors.fits(H, s.pair_cutoff, s.skin, self._r_list) else "atom"
         if mode == "molecule":
-            self.nb = MoleculeNeighbors(self.topology.group, self.topology.n_group, self._r_list, H, s.cutoff, s.skin)
+            self.nb = MoleculeNeighbors(self.topology.group, self.topology.n_group, self._r_list, H, s.pair_cutoff,
+                                        s.skin)
         else:
-            self.nb = AtomNeighbors(self.sys.n, H, s.cutoff, s.skin)
+            self.nb = AtomNeighbors(self.sys.n, H, s.pair_cutoff, s.skin)
         self._nb_volume = float(volume(jnp.asarray(H)))
 
     def _size_lists(self, pos, H, factor: float = 1.2, nbr=None):
@@ -581,10 +582,7 @@ class FlexibleSimulation(Simulation):
         if self.nb.kind == "molecule":
             self.nb.size(nbr, c, H, pos, factor)
         idx = self.nb.candidates(nbr, c, H, pos)[0]
-        self.ff.mc = None
-        cmax = int(jax.jit(self.ff.row_counts)(jnp.asarray(pos), jnp.asarray(H), idx))
-        width = int(idx.shape[1]) + int(self.ff.special.shape[1])
-        self.ff.mc = min(int(np.ceil((cmax * (1.0 + 0.5 * (factor - 1.0)) + 8) / 8.0) * 8), width)
+        self.ff.size_rows(pos, H, idx, factor)
         return nbr
 
     def _advance(self, n: int):

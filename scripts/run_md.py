@@ -21,7 +21,7 @@ import jax
 jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
+from pgm_jax.md.forcefield import DSUM_TOL, MDSettings, ewald_beta_for  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
 
 
@@ -41,11 +41,16 @@ def main(argv=None):
     ap.add_argument("--tautp", type=float, default=1.0, help="Bussi time constant, ps (tautp)")
     ap.add_argument("--press", type=float, default=1.0, help="bar (pres0)")
     ap.add_argument("--barostat-interval", type=int, default=100, help="steps between MC volume moves (mcbarint)")
-    ap.add_argument("--cut", type=float, default=9.0, help="A: direct space and LJ cutoff")
+    ap.add_argument("--cut", type=float, default=9.0, help="A: LJ cutoff (vdw_cutoff), and direct space unless --es-cut")
+    ap.add_argument("--es-cut", type=float, default=None,
+                    help="A: real-space electrostatics cutoff (pmemd es_cutoff); --ew-coeff then defaults to Amber's "
+                         "dsum_tol rule with --dsum-tol and --pme-spacing to 0.5 (0.4 / ew_coeff)^1.6 A (the grid rule "
+                         "of elec_cutoff_settings, which keeps the PME force error)")
+    ap.add_argument("--dsum-tol", type=float, default=DSUM_TOL, help="direct-sum tolerance for --es-cut (Amber dsum_tol)")
     ap.add_argument("--skin", type=float, default=1.0, help="A (skinnb)")
-    ap.add_argument("--ew-coeff", type=float, default=0.4, help="1/A")
+    ap.add_argument("--ew-coeff", type=float, default=None, help="1/A (default 0.4, or from --es-cut)")
     ap.add_argument("--nfft", type=int, nargs=3, help="PME grid; default from --pme-spacing")
-    ap.add_argument("--pme-spacing", type=float, default=0.5, help="A")
+    ap.add_argument("--pme-spacing", type=float, default=None, help="A (default 0.5, or from --es-cut)")
     ap.add_argument("--order", type=int, default=8, help="PME B-spline order")
     ap.add_argument("--vdwmeth", type=int, default=1, choices=[0, 1], help="1: LJ long-range correction")
     ap.add_argument("--dipole-tol", type=float, default=1e-5, help="dipole_scf_tol (pmemd-pgm criterion)")
@@ -66,7 +71,12 @@ def main(argv=None):
     ap.add_argument("--restart", type=int, default=0, help="steps between restart/checkpoint files")
     ap.add_argument("--pressure", action="store_true", help="also report the virial pressure")
     a = ap.parse_args(argv)
+    if a.ew_coeff is None:
+        a.ew_coeff = 0.4 if a.es_cut is None else ewald_beta_for(a.es_cut / 10, a.dsum_tol) / 10
+    if a.pme_spacing is None:
+        a.pme_spacing = 0.5 if a.es_cut is None else 0.5 * (0.4 / a.ew_coeff) ** 1.6
     st = MDSettings(cutoff=a.cut / 10, skin=a.skin / 10, ewald_beta=a.ew_coeff * 10,
+                    elec_cutoff=None if a.es_cut is None else a.es_cut / 10,
                     pme_grid=tuple(a.nfft) if a.nfft else None, pme_spacing=a.pme_spacing / 10, pme_order=a.order,
                     lj_lrc=bool(a.vdwmeth), dipole_tol=a.dipole_tol, max_iter=a.max_iter, local_cut=a.local_cut / 10,
                     local_niter=a.local_niter, peek=a.peek, predictor=a.predictor,
