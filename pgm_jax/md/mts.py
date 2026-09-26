@@ -57,8 +57,8 @@ Induced-dipole predictor: the dipole history lives on the outer steps (one full 
 step).  With `anchor` (default with fast induced dipoles) the history holds mu - mu_fast, whose
 short-range part is removed, and the guess is mu_fast(x_new) + extrapolation(mu - mu_fast): mu_fast
 is known at the new positions before the solve (the last fast evaluation), so the fused initial
-residual of the solver still applies (ubiquitin, 8 fs outer step: 18.5 CG iterations, against 17.0
-per step at 4 fs without MTS).  MDState.induction.mu stays the converged dipoles; only the history
+residual of the solver still applies (ubiquitin, 8 fs outer step: 18.1 CG iterations, 17.4 with
+the quadratic predictor mu3, against 16.9 per step at 4 fs without MTS).  MDState.induction.mu stays the converged dipoles; only the history
 (and so the checkpoint's induction state) is in the anchored form.
 
 Barostat: the Monte Carlo barostat runs at outer steps (its trial energy is the full energy); an
