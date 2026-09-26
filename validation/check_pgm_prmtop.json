@@ -1,0 +1,1561 @@
+{
+ "water512": {
+  "atoms": 1536,
+  "write": {
+   "atoms": 1536,
+   "lj_types": 2,
+   "excluded_pairs": 1536,
+   "pairs_14": 0,
+   "dihedrals_14": 0,
+   "lj14_scale": 1.0,
+   "lj14_mode": "SCNB 1",
+   "covalent_dipoles": 2048,
+   "rigid_length_change_A": 2.3314683517128287e-14,
+   "hmr": null
+  },
+  "settings": {
+   "cut_A": 9.0,
+   "ew_coeff": 0.4,
+   "nfft": [
+    32,
+    32,
+    32
+   ],
+   "order": 6,
+   "dipole_scf_tol": 1e-09
+  },
+  "engine": {
+   "EELEC": -506165.1458600841,
+   "1-4 EEL": 0.0,
+   "cg_iterations": 16,
+   "cg_residual": 3.581109230778169e-10,
+   "BOND": 0.0,
+   "ANGLE": 0.0,
+   "DIHED": 0.0,
+   "CMAP": 0.0,
+   "1-4 NB": 0.0,
+   "VDWAALS": 697.928992728611,
+   "seconds": 5.861856460571289
+  },
+  "rms_force": 35.72635250347359,
+  "cpu": {
+   "energies": {
+    "BOND": -6.650738364474884e-23,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 697.929,
+    "EELEC": -506165.062
+   },
+   "rigid_bond_energy_removed": 6.650738364474884e-23,
+   "diff": {
+    "BOND": -6.650738364474884e-23,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 7.271388994922745e-06,
+    "EELEC": 0.08386008412344381
+   },
+   "force_rms_diff": 0.00024233287915614212,
+   "force_max_diff": 0.0009929426654480267,
+   "force_max_diff_without_cmap_atoms": 0.0009929426654480267,
+   "force_rms_diff_without_cmap_atoms": 0.00024233287915614212,
+   "seconds": 0.29052233695983887
+  },
+  "gpu_dpfp": {
+   "skipped": "pmemd.pgm.cuda_DPFP: box too small for the GPU neighbour list at this cutoff"
+  },
+  "gpu_spfp": {
+   "skipped": "pmemd.pgm.cuda_SPFP: box too small for the GPU neighbour list at this cutoff"
+  },
+  "cpu_original": {
+   "energies": {
+    "BOND": -6.650738364474884e-23,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 697.929,
+    "EELEC": -506165.062
+   },
+   "rigid_bond_energy_removed": 6.650738364474884e-23,
+   "diff": {
+    "BOND": -6.650738364474884e-23,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 7.271388994922745e-06,
+    "EELEC": 0.08386008412344381
+   },
+   "force_rms_diff": 0.00024233287915614212,
+   "force_max_diff": 0.0009929426654480267,
+   "force_max_diff_without_cmap_atoms": 0.0009929426654480267,
+   "force_rms_diff_without_cmap_atoms": 0.00024233287915614212,
+   "seconds": 0.2872951030731201
+  },
+  "seconds": 7.630731105804443
+ },
+ "water4096": {
+  "atoms": 12288,
+  "write": {
+   "atoms": 12288,
+   "lj_types": 2,
+   "excluded_pairs": 12288,
+   "pairs_14": 0,
+   "dihedrals_14": 0,
+   "lj14_scale": 1.0,
+   "lj14_mode": "SCNB 1",
+   "covalent_dipoles": 16384,
+   "rigid_length_change_A": 7.300464188730871e-08,
+   "hmr": null
+  },
+  "settings": {
+   "cut_A": 9.0,
+   "ew_coeff": 0.4,
+   "nfft": [
+    60,
+    60,
+    60
+   ],
+   "order": 6,
+   "dipole_scf_tol": 1e-09
+  },
+  "engine": {
+   "EELEC": -2223199.7809556415,
+   "1-4 EEL": 0.0,
+   "cg_iterations": 15,
+   "cg_residual": 4.770234057457774e-10,
+   "BOND": 0.0,
+   "ANGLE": 0.0,
+   "DIHED": 0.0,
+   "CMAP": 0.0,
+   "1-4 NB": 0.0,
+   "VDWAALS": 2437.469068305827,
+   "seconds": 8.685886144638062
+  },
+  "rms_force": 6.7211467388852215,
+  "cpu": {
+   "energies": {
+    "BOND": -2.7273118699371983e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 2437.4691,
+    "EELEC": -2223198.6069
+   },
+   "rigid_bond_energy_removed": 2.7273118699371983e-08,
+   "diff": {
+    "BOND": -2.7273118699371983e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 3.169417277604225e-05,
+    "EELEC": 1.1740556415170431
+   },
+   "force_rms_diff": 0.0004150387323172678,
+   "force_max_diff": 0.0016853198096757893,
+   "force_max_diff_without_cmap_atoms": 0.0016853198096757893,
+   "force_rms_diff_without_cmap_atoms": 0.0004150387323172678,
+   "seconds": 1.1601388454437256
+  },
+  "gpu_dpfp": {
+   "energies": {
+    "BOND": -2.7273118699371983e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 2437.4691,
+    "EELEC": -2223198.6069
+   },
+   "rigid_bond_energy_removed": 2.7273118699371983e-08,
+   "diff": {
+    "BOND": -2.7273118699371983e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 3.169417277604225e-05,
+    "EELEC": 1.1740556415170431
+   },
+   "force_rms_diff": 0.00041503885644869344,
+   "force_max_diff": 0.0016853198096757893,
+   "force_max_diff_without_cmap_atoms": 0.0016853198096757893,
+   "force_rms_diff_without_cmap_atoms": 0.00041503885644869344,
+   "seconds": 0.6336972713470459
+  },
+  "gpu_spfp": {
+   "energies": {
+    "BOND": -2.7273118699371983e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 2437.471,
+    "EELEC": -2223198.5336
+   },
+   "rigid_bond_energy_removed": 2.7273118699371983e-08,
+   "diff": {
+    "BOND": -2.7273118699371983e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 0.0019316941729812243,
+    "EELEC": 1.2473556413315237
+   },
+   "force_rms_diff": 0.00041469134895580866,
+   "force_max_diff": 0.0018459739237997042,
+   "force_max_diff_without_cmap_atoms": 0.0018459739237997042,
+   "force_rms_diff_without_cmap_atoms": 0.00041469134895580866,
+   "seconds": 0.4747896194458008
+  },
+  "cpu_original": {
+   "energies": {
+    "BOND": -1.1488307450936987e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 2437.4691,
+    "EELEC": -2223198.6069
+   },
+   "rigid_bond_energy_removed": 1.1488307450936987e-08,
+   "diff": {
+    "BOND": -1.1488307450936987e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 3.169417277604225e-05,
+    "EELEC": 1.1740556415170431
+   },
+   "force_rms_diff": 0.00041503775284349484,
+   "force_max_diff": 0.0016849605970481463,
+   "force_max_diff_without_cmap_atoms": 0.0016849605970481463,
+   "force_rms_diff_without_cmap_atoms": 0.00041503775284349484,
+   "seconds": 1.3491828441619873
+  },
+  "seconds": 13.699870824813843
+ },
+ "pep": {
+  "atoms": 791,
+  "write": {
+   "atoms": 791,
+   "lj_types": 12,
+   "excluded_pairs": 912,
+   "pairs_14": 69,
+   "dihedrals_14": 69,
+   "lj14_scale": 0.5,
+   "lj14_mode": "CHARMM 1-4 tables",
+   "covalent_dipoles": 0,
+   "rigid_length_change_A": 0.0002948003117630993,
+   "hmr": null
+  },
+  "settings": {
+   "cut_A": 9.0,
+   "ew_coeff": 0.4,
+   "nfft": [
+    36,
+    36,
+    32
+   ],
+   "order": 6,
+   "dipole_scf_tol": 1e-09
+  },
+  "engine": {
+   "EELEC": -31607.033510880967,
+   "1-4 EEL": 0.0,
+   "cg_iterations": 19,
+   "cg_residual": 4.2710802108315895e-10,
+   "cmap_force_max": 1.3142705121258185,
+   "BOND": 0.14891306573541568,
+   "ANGLE": 0.6775650070060222,
+   "DIHED": 4.66819534326585,
+   "CMAP": -5.205889999854732,
+   "1-4 NB": 9.112613293206794,
+   "VDWAALS": 252.68755588526145,
+   "seconds": 8.39018440246582
+  },
+  "rms_force": 6.113052931745483,
+  "cpu": {
+   "energies": {
+    "BOND": 0.14889979431798875,
+    "ANGLE": 0.6776,
+    "DIHED": 4.6682,
+    "CMAP": -5.2059,
+    "1-4 NB": 9.1126,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 252.6876,
+    "EELEC": -31607.0267
+   },
+   "rigid_bond_energy_removed": 2.056820112687128e-07,
+   "diff": {
+    "BOND": -1.3271417426935495e-05,
+    "ANGLE": 3.4992993977800424e-05,
+    "DIHED": 4.6567341493997105e-06,
+    "CMAP": -1.0000145267419214e-05,
+    "1-4 NB": -1.329320679310797e-05,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 4.4114738557254896e-05,
+    "EELEC": 0.00681088096825988
+   },
+   "force_rms_diff": 6.744971437693708e-05,
+   "force_max_diff": 0.001751364244563014,
+   "force_max_diff_without_cmap_atoms": 0.00014017230740215325,
+   "force_rms_diff_without_cmap_atoms": 2.884034244273566e-05,
+   "seconds": 0.10371589660644531
+  },
+  "gpu_dpfp": {
+   "skipped": "pmemd.pgm.cuda_DPFP: box too small for the GPU neighbour list at this cutoff"
+  },
+  "gpu_spfp": {
+   "skipped": "pmemd.pgm.cuda_SPFP: box too small for the GPU neighbour list at this cutoff"
+  },
+  "seconds": 10.890581130981445
+ },
+ "trpcage": {
+  "atoms": 6215,
+  "write": {
+   "atoms": 6215,
+   "lj_types": 21,
+   "excluded_pairs": 7597,
+   "pairs_14": 812,
+   "dihedrals_14": 812,
+   "lj14_scale": 0.5,
+   "lj14_mode": "CHARMM 1-4 tables",
+   "covalent_dipoles": 0,
+   "rigid_length_change_A": 0.0002951984483654524,
+   "hmr": null
+  },
+  "settings": {
+   "cut_A": 9.0,
+   "ew_coeff": 0.4,
+   "nfft": [
+    64,
+    60,
+    60
+   ],
+   "order": 6,
+   "dipole_scf_tol": 1e-09
+  },
+  "engine": {
+   "EELEC": -248643.17883767746,
+   "1-4 EEL": 0.0,
+   "cg_iterations": 28,
+   "cg_residual": 5.816860474996583e-10,
+   "cmap_force_max": 8.581142601141241,
+   "BOND": 8.54600397878882,
+   "ANGLE": 49.524153252965405,
+   "DIHED": 115.31342106633554,
+   "CMAP": 1.2862644827405598,
+   "1-4 NB": 63.891533507245654,
+   "VDWAALS": 1897.1819863581277,
+   "seconds": 10.050947666168213
+  },
+  "rms_force": 5.553956344427606,
+  "cpu": {
+   "energies": {
+    "BOND": 8.545999129712675,
+    "ANGLE": 49.5242,
+    "DIHED": 115.3134,
+    "CMAP": 1.2894,
+    "1-4 NB": 63.8915,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 1897.182,
+    "EELEC": -248643.1341
+   },
+   "rigid_bond_energy_removed": 8.702873245328356e-07,
+   "diff": {
+    "BOND": -4.849076145063691e-06,
+    "ANGLE": 4.674703459528473e-05,
+    "DIHED": -2.1066335534669633e-05,
+    "CMAP": 0.003135517259440279,
+    "1-4 NB": -3.350724565365226e-05,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 1.364187232866243e-05,
+    "EELEC": 0.04473767746821977
+   },
+   "force_rms_diff": 0.000834187012676159,
+   "force_max_diff": 0.04652493275678793,
+   "force_max_diff_without_cmap_atoms": 0.00013913278175792243,
+   "force_rms_diff_without_cmap_atoms": 2.6437747757122664e-05,
+   "seconds": 0.9245734214782715
+  },
+  "gpu_dpfp": {
+   "energies": {
+    "BOND": 8.545999129712675,
+    "ANGLE": 49.5242,
+    "DIHED": 115.3134,
+    "CMAP": 1.2894,
+    "1-4 NB": 63.8915,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 1897.182,
+    "EELEC": -248643.1341
+   },
+   "rigid_bond_energy_removed": 8.702873245328356e-07,
+   "diff": {
+    "BOND": -4.849076145063691e-06,
+    "ANGLE": 4.674703459528473e-05,
+    "DIHED": -2.1066335534669633e-05,
+    "CMAP": 0.003135517259440279,
+    "1-4 NB": -3.350724565365226e-05,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 1.364187232866243e-05,
+    "EELEC": 0.04473767746821977
+   },
+   "force_rms_diff": 0.0008341871518603265,
+   "force_max_diff": 0.04652493275678793,
+   "force_max_diff_without_cmap_atoms": 0.00013913278175792243,
+   "force_rms_diff_without_cmap_atoms": 2.6439131064224773e-05,
+   "seconds": 0.5381734371185303
+  },
+  "gpu_spfp": {
+   "energies": {
+    "BOND": 8.545999129712675,
+    "ANGLE": 49.5242,
+    "DIHED": 115.3135,
+    "CMAP": 1.2894,
+    "1-4 NB": 63.8915,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 1897.1836,
+    "EELEC": -248643.1282
+   },
+   "rigid_bond_energy_removed": 8.702873245328356e-07,
+   "diff": {
+    "BOND": -4.849076145063691e-06,
+    "ANGLE": 4.674703459528473e-05,
+    "DIHED": 7.893366446865002e-05,
+    "CMAP": 0.003135517259440279,
+    "1-4 NB": -3.350724565365226e-05,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 0.001613641872381777,
+    "EELEC": 0.05063767745741643
+   },
+   "force_rms_diff": 0.0008345085211731561,
+   "force_max_diff": 0.0465240386871163,
+   "force_max_diff_without_cmap_atoms": 0.00047303291351497023,
+   "force_rms_diff_without_cmap_atoms": 3.262098694491182e-05,
+   "seconds": 0.40229129791259766
+  },
+  "seconds": 14.467701435089111
+ },
+ "water512_lambda": {
+  "atoms": 1536,
+  "write": {
+   "atoms": 1536,
+   "lj_types": 2,
+   "excluded_pairs": 1536,
+   "pairs_14": 0,
+   "dihedrals_14": 0,
+   "lj14_scale": 1.0,
+   "lj14_mode": "SCNB 1",
+   "covalent_dipoles": 2048,
+   "rigid_length_change_A": 2.3314683517128287e-14,
+   "hmr": null
+  },
+  "settings": {
+   "cut_A": 9.0,
+   "ew_coeff": 0.4,
+   "nfft": [
+    32,
+    32,
+    32
+   ],
+   "order": 6,
+   "dipole_scf_tol": 1e-09
+  },
+  "engine": {
+   "EELEC": -506165.06204201194,
+   "1-4 EEL": 0.0,
+   "cg_iterations": 16,
+   "cg_residual": 3.581235090766924e-10,
+   "BOND": 0.0,
+   "ANGLE": 0.0,
+   "DIHED": 0.0,
+   "CMAP": 0.0,
+   "1-4 NB": 0.0,
+   "VDWAALS": 697.928992728611,
+   "seconds": 5.7194390296936035
+  },
+  "rms_force": 35.726543332232275,
+  "cpu": {
+   "energies": {
+    "BOND": -6.650738364474884e-23,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 697.929,
+    "EELEC": -506165.062
+   },
+   "rigid_bond_energy_removed": 6.650738364474884e-23,
+   "diff": {
+    "BOND": -6.650738364474884e-23,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 7.271388994922745e-06,
+    "EELEC": 4.2011961340904236e-05
+   },
+   "force_rms_diff": 8.673873250894736e-07,
+   "force_max_diff": 3.7894753006639803e-06,
+   "force_max_diff_without_cmap_atoms": 3.7894753006639803e-06,
+   "force_rms_diff_without_cmap_atoms": 8.673873250894736e-07,
+   "seconds": 0.28481197357177734
+  },
+  "gpu_dpfp": {
+   "skipped": "pmemd.pgm.cuda_DPFP: box too small for the GPU neighbour list at this cutoff"
+  },
+  "gpu_spfp": {
+   "skipped": "pmemd.pgm.cuda_SPFP: box too small for the GPU neighbour list at this cutoff"
+  },
+  "cpu_original": {
+   "energies": {
+    "BOND": -6.650738364474884e-23,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 697.929,
+    "EELEC": -506165.062
+   },
+   "rigid_bond_energy_removed": 6.650738364474884e-23,
+   "diff": {
+    "BOND": -6.650738364474884e-23,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 7.271388994922745e-06,
+    "EELEC": 4.2011961340904236e-05
+   },
+   "force_rms_diff": 8.673873250894736e-07,
+   "force_max_diff": 3.7894753006639803e-06,
+   "force_max_diff_without_cmap_atoms": 3.7894753006639803e-06,
+   "force_rms_diff_without_cmap_atoms": 8.673873250894736e-07,
+   "seconds": 0.2834460735321045
+  },
+  "seconds": 7.436331748962402
+ },
+ "water4096_lambda": {
+  "atoms": 12288,
+  "write": {
+   "atoms": 12288,
+   "lj_types": 2,
+   "excluded_pairs": 12288,
+   "pairs_14": 0,
+   "dihedrals_14": 0,
+   "lj14_scale": 1.0,
+   "lj14_mode": "SCNB 1",
+   "covalent_dipoles": 16384,
+   "rigid_length_change_A": 7.300464188730871e-08,
+   "hmr": null
+  },
+  "settings": {
+   "cut_A": 9.0,
+   "ew_coeff": 0.4,
+   "nfft": [
+    60,
+    60,
+    60
+   ],
+   "order": 6,
+   "dipole_scf_tol": 1e-09
+  },
+  "engine": {
+   "EELEC": -2223198.606874205,
+   "1-4 EEL": 0.0,
+   "cg_iterations": 15,
+   "cg_residual": 4.770452322455653e-10,
+   "BOND": 0.0,
+   "ANGLE": 0.0,
+   "DIHED": 0.0,
+   "CMAP": 0.0,
+   "1-4 NB": 0.0,
+   "VDWAALS": 2437.469068305827,
+   "seconds": 8.91581416130066
+  },
+  "rms_force": 6.721455337465447,
+  "cpu": {
+   "energies": {
+    "BOND": -2.7273118699371983e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 2437.4691,
+    "EELEC": -2223198.6069
+   },
+   "rigid_bond_energy_removed": 2.7273118699371983e-08,
+   "diff": {
+    "BOND": -2.7273118699371983e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 3.169417277604225e-05,
+    "EELEC": -2.579484134912491e-05
+   },
+   "force_rms_diff": 1.8490078091466497e-07,
+   "force_max_diff": 1.1504730430544896e-06,
+   "force_max_diff_without_cmap_atoms": 1.1504730430544896e-06,
+   "force_rms_diff_without_cmap_atoms": 1.8490078091466497e-07,
+   "seconds": 1.3572323322296143
+  },
+  "gpu_dpfp": {
+   "energies": {
+    "BOND": -2.7273118699371983e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 2437.4691,
+    "EELEC": -2223198.6069
+   },
+   "rigid_bond_energy_removed": 2.7273118699371983e-08,
+   "diff": {
+    "BOND": -2.7273118699371983e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 3.169417277604225e-05,
+    "EELEC": -2.579484134912491e-05
+   },
+   "force_rms_diff": 1.8494756111712215e-07,
+   "force_max_diff": 1.1504730430544896e-06,
+   "force_max_diff_without_cmap_atoms": 1.1504730430544896e-06,
+   "force_rms_diff_without_cmap_atoms": 1.8494756111712215e-07,
+   "seconds": 0.6353003978729248
+  },
+  "gpu_spfp": {
+   "energies": {
+    "BOND": -2.7273118699371983e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 2437.471,
+    "EELEC": -2223198.5336
+   },
+   "rigid_bond_energy_removed": 2.7273118699371983e-08,
+   "diff": {
+    "BOND": -2.7273118699371983e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 0.0019316941729812243,
+    "EELEC": 0.07327420497313142
+   },
+   "force_rms_diff": 7.72934282299275e-05,
+   "force_max_diff": 0.0007602407821454271,
+   "force_max_diff_without_cmap_atoms": 0.0007602407821454271,
+   "force_rms_diff_without_cmap_atoms": 7.72934282299275e-05,
+   "seconds": 0.45934605598449707
+  },
+  "cpu_original": {
+   "energies": {
+    "BOND": -1.1488307450936987e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 2437.4691,
+    "EELEC": -2223198.6069
+   },
+   "rigid_bond_energy_removed": 1.1488307450936987e-08,
+   "diff": {
+    "BOND": -1.1488307450936987e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 3.169417277604225e-05,
+    "EELEC": -2.579484134912491e-05
+   },
+   "force_rms_diff": 1.8564857721741782e-07,
+   "force_max_diff": 1.428214009280282e-06,
+   "force_max_diff_without_cmap_atoms": 1.428214009280282e-06,
+   "force_rms_diff_without_cmap_atoms": 1.8564857721741782e-07,
+   "seconds": 1.3521595001220703
+  },
+  "seconds": 14.121498584747314
+ },
+ "pep_lambda": {
+  "atoms": 791,
+  "write": {
+   "atoms": 791,
+   "lj_types": 12,
+   "excluded_pairs": 912,
+   "pairs_14": 69,
+   "dihedrals_14": 69,
+   "lj14_scale": 0.5,
+   "lj14_mode": "CHARMM 1-4 tables",
+   "covalent_dipoles": 0,
+   "rigid_length_change_A": 0.0002948003117630993,
+   "hmr": null
+  },
+  "settings": {
+   "cut_A": 9.0,
+   "ew_coeff": 0.4,
+   "nfft": [
+    36,
+    36,
+    32
+   ],
+   "order": 6,
+   "dipole_scf_tol": 1e-09
+  },
+  "engine": {
+   "EELEC": -31607.0267179622,
+   "1-4 EEL": 0.0,
+   "cg_iterations": 19,
+   "cg_residual": 4.2710853930566573e-10,
+   "cmap_force_max": 1.3142705121258185,
+   "BOND": 0.14891306573541568,
+   "ANGLE": 0.6775650070060222,
+   "DIHED": 4.66819534326585,
+   "CMAP": -5.205889999854732,
+   "1-4 NB": 9.112613293206794,
+   "VDWAALS": 252.68755588526145,
+   "seconds": 8.185300588607788
+  },
+  "rms_force": 6.113065874414329,
+  "cpu": {
+   "energies": {
+    "BOND": 0.14889979431798875,
+    "ANGLE": 0.6776,
+    "DIHED": 4.6682,
+    "CMAP": -5.2059,
+    "1-4 NB": 9.1126,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 252.6876,
+    "EELEC": -31607.0267
+   },
+   "rigid_bond_energy_removed": 2.056820112687128e-07,
+   "diff": {
+    "BOND": -1.3271417426935495e-05,
+    "ANGLE": 3.4992993977800424e-05,
+    "DIHED": 4.6567341493997105e-06,
+    "CMAP": -1.0000145267419214e-05,
+    "1-4 NB": -1.329320679310797e-05,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 4.4114738557254896e-05,
+    "EELEC": 1.796220021788031e-05
+   },
+   "force_rms_diff": 6.094077278682823e-05,
+   "force_max_diff": 0.00175122268106076,
+   "force_max_diff_without_cmap_atoms": 1.9227169261171184e-06,
+   "force_rms_diff_without_cmap_atoms": 1.543739597126795e-07,
+   "seconds": 0.10476493835449219
+  },
+  "gpu_dpfp": {
+   "skipped": "pmemd.pgm.cuda_DPFP: box too small for the GPU neighbour list at this cutoff"
+  },
+  "gpu_spfp": {
+   "skipped": "pmemd.pgm.cuda_SPFP: box too small for the GPU neighbour list at this cutoff"
+  },
+  "seconds": 10.673019886016846
+ },
+ "trpcage_lambda": {
+  "atoms": 6215,
+  "write": {
+   "atoms": 6215,
+   "lj_types": 21,
+   "excluded_pairs": 7597,
+   "pairs_14": 812,
+   "dihedrals_14": 812,
+   "lj14_scale": 0.5,
+   "lj14_mode": "CHARMM 1-4 tables",
+   "covalent_dipoles": 0,
+   "rigid_length_change_A": 0.0002951984483654524,
+   "hmr": null
+  },
+  "settings": {
+   "cut_A": 9.0,
+   "ew_coeff": 0.4,
+   "nfft": [
+    64,
+    60,
+    60
+   ],
+   "order": 6,
+   "dipole_scf_tol": 1e-09
+  },
+  "engine": {
+   "EELEC": -248643.13418515268,
+   "1-4 EEL": 0.0,
+   "cg_iterations": 28,
+   "cg_residual": 5.816865762915459e-10,
+   "cmap_force_max": 8.581142601141241,
+   "BOND": 8.54600397878882,
+   "ANGLE": 49.524153252965405,
+   "DIHED": 115.31342106633554,
+   "CMAP": 1.2862644827405598,
+   "1-4 NB": 63.891533507245654,
+   "VDWAALS": 1897.1819863581277,
+   "seconds": 10.67996072769165
+  },
+  "rms_force": 5.5539681179032705,
+  "cpu": {
+   "energies": {
+    "BOND": 8.545999129712675,
+    "ANGLE": 49.5242,
+    "DIHED": 115.3134,
+    "CMAP": 1.2894,
+    "1-4 NB": 63.8915,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 1897.182,
+    "EELEC": -248643.1341
+   },
+   "rigid_bond_energy_removed": 8.702873245328356e-07,
+   "diff": {
+    "BOND": -4.849076145063691e-06,
+    "ANGLE": 4.674703459528473e-05,
+    "DIHED": -2.1066335534669633e-05,
+    "CMAP": 0.003135517259440279,
+    "1-4 NB": -3.350724565365226e-05,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 1.364187232866243e-05,
+    "EELEC": 8.515268564224243e-05
+   },
+   "force_rms_diff": 0.0008337277510904293,
+   "force_max_diff": 0.046524036437759264,
+   "force_max_diff_without_cmap_atoms": 8.32612788759235e-06,
+   "force_rms_diff_without_cmap_atoms": 2.0365724654396138e-07,
+   "seconds": 0.9140481948852539
+  },
+  "gpu_dpfp": {
+   "energies": {
+    "BOND": 8.545999129712675,
+    "ANGLE": 49.5242,
+    "DIHED": 115.3134,
+    "CMAP": 1.2894,
+    "1-4 NB": 63.8915,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 1897.182,
+    "EELEC": -248643.1341
+   },
+   "rigid_bond_energy_removed": 8.702873245328356e-07,
+   "diff": {
+    "BOND": -4.849076145063691e-06,
+    "ANGLE": 4.674703459528473e-05,
+    "DIHED": -2.1066335534669633e-05,
+    "CMAP": 0.003135517259440279,
+    "1-4 NB": -3.350724565365226e-05,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 1.364187232866243e-05,
+    "EELEC": 8.515268564224243e-05
+   },
+   "force_rms_diff": 0.0008337278831789029,
+   "force_max_diff": 0.046524036437759264,
+   "force_max_diff_without_cmap_atoms": 1.595552241884235e-05,
+   "force_rms_diff_without_cmap_atoms": 3.2020290654342e-07,
+   "seconds": 0.5366318225860596
+  },
+  "gpu_spfp": {
+   "energies": {
+    "BOND": 8.545999129712675,
+    "ANGLE": 49.5242,
+    "DIHED": 115.3135,
+    "CMAP": 1.2894,
+    "1-4 NB": 63.8915,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 1897.1836,
+    "EELEC": -248643.1282
+   },
+   "rigid_bond_energy_removed": 8.702873245328356e-07,
+   "diff": {
+    "BOND": -4.849076145063691e-06,
+    "ANGLE": 4.674703459528473e-05,
+    "DIHED": 7.893366446865002e-05,
+    "CMAP": 0.003135517259440279,
+    "1-4 NB": -3.350724565365226e-05,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 0.001613641872381777,
+    "EELEC": 0.0059851526748389006
+   },
+   "force_rms_diff": 0.0008341653643627276,
+   "force_max_diff": 0.04652314236808763,
+   "force_max_diff_without_cmap_atoms": 0.00047314993276970085,
+   "force_rms_diff_without_cmap_atoms": 2.365411277303511e-05,
+   "seconds": 0.4026036262512207
+  },
+  "seconds": 14.699219942092896
+ },
+ "water512_tight": {
+  "atoms": 1536,
+  "write": {
+   "atoms": 1536,
+   "lj_types": 2,
+   "excluded_pairs": 1536,
+   "pairs_14": 0,
+   "dihedrals_14": 0,
+   "lj14_scale": 1.0,
+   "lj14_mode": "SCNB 1",
+   "covalent_dipoles": 2048,
+   "rigid_length_change_A": 2.3314683517128287e-14,
+   "hmr": null
+  },
+  "settings": {
+   "cut_A": 9.0,
+   "ew_coeff": 0.4,
+   "nfft": [
+    60,
+    60,
+    60
+   ],
+   "order": 8,
+   "dipole_scf_tol": 1e-09
+  },
+  "engine": {
+   "EELEC": -506165.0525095045,
+   "1-4 EEL": 0.0,
+   "cg_iterations": 16,
+   "cg_residual": 3.5803338031677555e-10,
+   "BOND": 0.0,
+   "ANGLE": 0.0,
+   "DIHED": 0.0,
+   "CMAP": 0.0,
+   "1-4 NB": 0.0,
+   "VDWAALS": 697.928992728611,
+   "seconds": 5.937124729156494
+  },
+  "rms_force": 35.726566517707326,
+  "cpu": {
+   "energies": {
+    "BOND": -6.650738364474884e-23,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 697.929,
+    "EELEC": -506165.0525
+   },
+   "rigid_bond_energy_removed": 6.650738364474884e-23,
+   "diff": {
+    "BOND": -6.650738364474884e-23,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 7.271388994922745e-06,
+    "EELEC": 9.504496119916439e-06
+   },
+   "force_rms_diff": 8.85781481829028e-07,
+   "force_max_diff": 3.886542884856681e-06,
+   "force_max_diff_without_cmap_atoms": 3.886542884856681e-06,
+   "force_rms_diff_without_cmap_atoms": 8.85781481829028e-07,
+   "seconds": 0.6222364902496338
+  },
+  "cpu_original": {
+   "energies": {
+    "BOND": -6.650738364474884e-23,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 697.929,
+    "EELEC": -506165.0525
+   },
+   "rigid_bond_energy_removed": 6.650738364474884e-23,
+   "diff": {
+    "BOND": -6.650738364474884e-23,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 7.271388994922745e-06,
+    "EELEC": 9.504496119916439e-06
+   },
+   "force_rms_diff": 8.85781481829028e-07,
+   "force_max_diff": 3.886542884856681e-06,
+   "force_max_diff_without_cmap_atoms": 3.886542884856681e-06,
+   "force_rms_diff_without_cmap_atoms": 8.85781481829028e-07,
+   "seconds": 0.6346783638000488
+  },
+  "seconds": 7.5521790981292725
+ },
+ "water4096_tight": {
+  "atoms": 12288,
+  "write": {
+   "atoms": 12288,
+   "lj_types": 2,
+   "excluded_pairs": 12288,
+   "pairs_14": 0,
+   "dihedrals_14": 0,
+   "lj14_scale": 1.0,
+   "lj14_mode": "SCNB 1",
+   "covalent_dipoles": 16384,
+   "rigid_length_change_A": 7.300464188730871e-08,
+   "hmr": null
+  },
+  "settings": {
+   "cut_A": 9.0,
+   "ew_coeff": 0.4,
+   "nfft": [
+    120,
+    120,
+    120
+   ],
+   "order": 8,
+   "dipole_scf_tol": 1e-09
+  },
+  "engine": {
+   "EELEC": -2223198.4296554285,
+   "1-4 EEL": 0.0,
+   "cg_iterations": 15,
+   "cg_residual": 4.772469411787214e-10,
+   "BOND": 0.0,
+   "ANGLE": 0.0,
+   "DIHED": 0.0,
+   "CMAP": 0.0,
+   "1-4 NB": 0.0,
+   "VDWAALS": 2437.469068305827,
+   "seconds": 8.892034769058228
+  },
+  "rms_force": 6.721484628947434,
+  "cpu": {
+   "energies": {
+    "BOND": -2.7273118699371983e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 2437.4691,
+    "EELEC": -2223198.4295
+   },
+   "rigid_bond_energy_removed": 2.7273118699371983e-08,
+   "diff": {
+    "BOND": -2.7273118699371983e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 3.169417277604225e-05,
+    "EELEC": 0.0001554284244775772
+   },
+   "force_rms_diff": 1.8261714099851304e-07,
+   "force_max_diff": 1.1386021157022697e-06,
+   "force_max_diff_without_cmap_atoms": 1.1386021157022697e-06,
+   "force_rms_diff_without_cmap_atoms": 1.8261714099851304e-07,
+   "seconds": 2.408139705657959
+  },
+  "cpu_original": {
+   "energies": {
+    "BOND": -1.1488307450936987e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 2437.4691,
+    "EELEC": -2223198.4295
+   },
+   "rigid_bond_energy_removed": 1.1488307450936987e-08,
+   "diff": {
+    "BOND": -1.1488307450936987e-08,
+    "ANGLE": 0.0,
+    "DIHED": 0.0,
+    "CMAP": 0.0,
+    "1-4 NB": 0.0,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 3.169417277604225e-05,
+    "EELEC": 0.0001554284244775772
+   },
+   "force_rms_diff": 1.824593554240758e-07,
+   "force_max_diff": 1.098929985232644e-06,
+   "force_max_diff_without_cmap_atoms": 1.098929985232644e-06,
+   "force_rms_diff_without_cmap_atoms": 1.824593554240758e-07,
+   "seconds": 2.3938980102539062
+  },
+  "seconds": 15.33818507194519
+ },
+ "pep_tight": {
+  "atoms": 791,
+  "write": {
+   "atoms": 791,
+   "lj_types": 12,
+   "excluded_pairs": 912,
+   "pairs_14": 69,
+   "dihedrals_14": 69,
+   "lj14_scale": 0.5,
+   "lj14_mode": "CHARMM 1-4 tables",
+   "covalent_dipoles": 0,
+   "rigid_length_change_A": 0.0002948003117630993,
+   "hmr": null
+  },
+  "settings": {
+   "cut_A": 9.0,
+   "ew_coeff": 0.4,
+   "nfft": [
+    72,
+    72,
+    60
+   ],
+   "order": 8,
+   "dipole_scf_tol": 1e-09
+  },
+  "engine": {
+   "EELEC": -31607.025357485323,
+   "1-4 EEL": 0.0,
+   "cg_iterations": 19,
+   "cg_residual": 4.272501132950383e-10,
+   "cmap_force_max": 1.3142705121258185,
+   "BOND": 0.14891306573541568,
+   "ANGLE": 0.6775650070060222,
+   "DIHED": 4.66819534326585,
+   "CMAP": -5.205889999854732,
+   "1-4 NB": 9.112613293206794,
+   "VDWAALS": 252.68755588526145,
+   "seconds": 7.7955992221832275
+  },
+  "rms_force": 6.113067617470084,
+  "cpu": {
+   "energies": {
+    "BOND": 0.14889979431798875,
+    "ANGLE": 0.6776,
+    "DIHED": 4.6682,
+    "CMAP": -5.2059,
+    "1-4 NB": 9.1126,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 252.6876,
+    "EELEC": -31607.0253
+   },
+   "rigid_bond_energy_removed": 2.056820112687128e-07,
+   "diff": {
+    "BOND": -1.3271417426935495e-05,
+    "ANGLE": 3.4992993977800424e-05,
+    "DIHED": 4.6567341493997105e-06,
+    "CMAP": -1.0000145267419214e-05,
+    "1-4 NB": -1.329320679310797e-05,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 4.4114738557254896e-05,
+    "EELEC": 5.748532203142531e-05
+   },
+   "force_rms_diff": 6.09424309669055e-05,
+   "force_max_diff": 0.0017511720152008081,
+   "force_max_diff_without_cmap_atoms": 9.299921401861866e-07,
+   "force_rms_diff_without_cmap_atoms": 1.4436223251357193e-07,
+   "seconds": 0.28368616104125977
+  },
+  "seconds": 9.4841468334198
+ },
+ "trpcage_tight": {
+  "atoms": 6215,
+  "write": {
+   "atoms": 6215,
+   "lj_types": 21,
+   "excluded_pairs": 7597,
+   "pairs_14": 812,
+   "dihedrals_14": 812,
+   "lj14_scale": 0.5,
+   "lj14_mode": "CHARMM 1-4 tables",
+   "covalent_dipoles": 0,
+   "rigid_length_change_A": 0.0002951984483654524,
+   "hmr": null
+  },
+  "settings": {
+   "cut_A": 9.0,
+   "ew_coeff": 0.4,
+   "nfft": [
+    128,
+    120,
+    100
+   ],
+   "order": 8,
+   "dipole_scf_tol": 1e-09
+  },
+  "engine": {
+   "EELEC": -248643.13543053385,
+   "1-4 EEL": 0.0,
+   "cg_iterations": 28,
+   "cg_residual": 5.817835455072913e-10,
+   "cmap_force_max": 8.581142601141241,
+   "BOND": 8.54600397878882,
+   "ANGLE": 49.524153252965405,
+   "DIHED": 115.31342106633554,
+   "CMAP": 1.2862644827405598,
+   "1-4 NB": 63.891533507245654,
+   "VDWAALS": 1897.1819863581277,
+   "seconds": 10.411990642547607
+  },
+  "rms_force": 5.553968315997919,
+  "cpu": {
+   "energies": {
+    "BOND": 8.545999129712675,
+    "ANGLE": 49.5242,
+    "DIHED": 115.3134,
+    "CMAP": 1.2894,
+    "1-4 NB": 63.8915,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 1897.182,
+    "EELEC": -248643.1353
+   },
+   "rigid_bond_energy_removed": 8.702873245328356e-07,
+   "diff": {
+    "BOND": -4.849076145063691e-06,
+    "ANGLE": 4.674703459528473e-05,
+    "DIHED": -2.1066335534669633e-05,
+    "CMAP": 0.003135517259440279,
+    "1-4 NB": -3.350724565365226e-05,
+    "1-4 EEL": 0.0,
+    "VDWAALS": 1.364187232866243e-05,
+    "EELEC": 0.00013053385191597044
+   },
+   "force_rms_diff": 0.0008337294530421031,
+   "force_max_diff": 0.046524090530906115,
+   "force_max_diff_without_cmap_atoms": 8.226810395584039e-06,
+   "force_rms_diff_without_cmap_atoms": 2.050123463874532e-07,
+   "seconds": 2.4358651638031006
+  },
+  "seconds": 15.194966316223145
+ },
+ "md_trpcage": {
+  "atoms": 6215,
+  "ps": 200.0,
+  "dt_fs": 2.0,
+  "hmr": null,
+  "thermostat": "Langevin 1/ps",
+  "ms_per_step": 1.41,
+  "pme_grid": [
+   64,
+   60,
+   60
+  ],
+  "shake": "X-H + rigid water",
+  "temperature_mean": 297.71534999999994,
+  "temperature_std": 3.9087298291772488,
+  "eptot_first_last": [
+   -247397.3325,
+   -247279.8803
+  ],
+  "ns_per_day": 122.46,
+  "wall_seconds": 141.49621629714966,
+  "ca_rmsd_A": [
+   0.851,
+   0.774,
+   1.024,
+   1.14,
+   1.443,
+   1.271,
+   1.383,
+   0.836,
+   1.453,
+   1.76,
+   2.489,
+   2.471,
+   3.121,
+   3.432,
+   3.25,
+   3.277,
+   2.738,
+   2.642,
+   2.783,
+   2.998
+  ],
+  "ca_rmsd_second_half_mean": 2.920109573050583,
+  "ca_rmsd_max": 3.431650708452684
+ },
+ "md_trpcage_s21": {
+  "atoms": 6215,
+  "ps": 200.0,
+  "dt_fs": 2.0,
+  "hmr": null,
+  "thermostat": "Langevin 1/ps",
+  "ms_per_step": 1.46,
+  "pme_grid": [
+   64,
+   60,
+   60
+  ],
+  "shake": "X-H + rigid water",
+  "temperature_mean": 297.46684999999997,
+  "temperature_std": 3.922397809694983,
+  "eptot_first_last": [
+   -247389.5716,
+   -247273.6516
+  ],
+  "ns_per_day": 118.75,
+  "wall_seconds": 145.96477222442627,
+  "ca_rmsd_A": [
+   1.359,
+   1.652,
+   1.391,
+   1.514,
+   1.624,
+   1.45,
+   2.348,
+   1.567,
+   1.706,
+   2.101,
+   2.245,
+   2.395,
+   2.644,
+   2.365,
+   2.055,
+   2.101,
+   2.198,
+   2.767,
+   2.057,
+   2.127
+  ],
+  "ca_rmsd_second_half_mean": 2.295398446014457,
+  "ca_rmsd_max": 2.7671448071893816
+ },
+ "md_trpcage_s31": {
+  "atoms": 6215,
+  "ps": 200.0,
+  "dt_fs": 2.0,
+  "hmr": null,
+  "thermostat": "Langevin 1/ps",
+  "ms_per_step": 1.45,
+  "pme_grid": [
+   64,
+   60,
+   60
+  ],
+  "shake": "X-H + rigid water",
+  "temperature_mean": 297.83405,
+  "temperature_std": 3.5109555818181466,
+  "eptot_first_last": [
+   -247402.8282,
+   -247285.273
+  ],
+  "ns_per_day": 118.98,
+  "wall_seconds": 145.68084859848022,
+  "ca_rmsd_A": [
+   1.009,
+   1.185,
+   1.412,
+   1.97,
+   1.968,
+   1.53,
+   1.583,
+   1.924,
+   2.047,
+   1.967,
+   1.3,
+   1.962,
+   1.635,
+   1.851,
+   1.561,
+   2.006,
+   1.803,
+   1.873,
+   2.002,
+   2.529
+  ],
+  "ca_rmsd_second_half_mean": 1.8521873216355218,
+  "ca_rmsd_max": 2.5289188768472486
+ },
+ "engine_md_trpcage_s3": {
+  "atoms": 6215,
+  "ps": 200.0,
+  "ns_per_day": 94.56076674816691,
+  "ca_rmsd_A": [
+   1.778,
+   1.536,
+   1.731,
+   1.515,
+   2.26,
+   1.827,
+   2.544,
+   2.811,
+   2.866,
+   2.961,
+   2.93,
+   2.764,
+   3.109,
+   3.296,
+   3.225,
+   2.877,
+   2.938,
+   3.023,
+   2.878,
+   3.142
+  ],
+  "ca_rmsd_second_half_mean": 3.0182271342772458,
+  "ca_rmsd_max": 3.2964530618206265
+ },
+ "engine_md_trpcage_s4": {
+  "atoms": 6215,
+  "ps": 200.0,
+  "ns_per_day": 94.83916914410669,
+  "ca_rmsd_A": [
+   1.173,
+   1.075,
+   0.986,
+   1.015,
+   1.532,
+   0.81,
+   1.211,
+   0.866,
+   1.23,
+   1.296,
+   2.249,
+   2.011,
+   2.195,
+   1.978,
+   1.899,
+   2.336,
+   1.622,
+   2.059,
+   1.676,
+   1.593
+  ],
+  "ca_rmsd_second_half_mean": 1.961936575982664,
+  "ca_rmsd_max": 2.3364889065329173
+ },
+ "engine_md_trpcage_s5": {
+  "atoms": 6215,
+  "ps": 200.0,
+  "ns_per_day": 87.43290635163285,
+  "ca_rmsd_A": [
+   1.339,
+   1.145,
+   1.3,
+   0.986,
+   0.95,
+   1.339,
+   0.99,
+   0.843,
+   1.002,
+   0.784,
+   0.73,
+   0.998,
+   1.193,
+   1.302,
+   1.479,
+   1.895,
+   2.078,
+   2.177,
+   2.311,
+   2.33
+  ],
+  "ca_rmsd_second_half_mean": 1.6493732332832358,
+  "ca_rmsd_max": 2.3304710736043925
+ },
+ "md_ubq": {
+  "atoms": 15955,
+  "ps": 20.0,
+  "dt_fs": 2.0,
+  "hmr": null,
+  "thermostat": "Langevin 1/ps",
+  "ms_per_step": 1.77,
+  "pme_grid": [
+   72,
+   80,
+   80
+  ],
+  "shake": "X-H + rigid water",
+  "temperature_mean": 297.99299999999994,
+  "temperature_std": 3.3362600318320528,
+  "eptot_first_last": [
+   -626146.9745,
+   -625873.549
+  ],
+  "ns_per_day": 97.43,
+  "wall_seconds": 18.16730570793152,
+  "ca_rmsd_A": [
+   0.812,
+   1.099
+  ],
+  "ca_rmsd_second_half_mean": 1.0992518809977048,
+  "ca_rmsd_max": 1.0992518809977048
+ },
+ "md_dhfr": {
+  "atoms": 25780,
+  "ps": 20.0,
+  "dt_fs": 2.0,
+  "hmr": null,
+  "thermostat": "Langevin 1/ps",
+  "ms_per_step": 2.51,
+  "pme_grid": [
+   96,
+   96,
+   96
+  ],
+  "shake": "X-H + rigid water",
+  "temperature_mean": 297.6915,
+  "temperature_std": 3.3884676108825436,
+  "eptot_first_last": [
+   -999828.5862,
+   -999486.8143
+  ],
+  "ns_per_day": 68.81,
+  "wall_seconds": 25.59495997428894,
+  "ca_rmsd_A": [
+   1.026,
+   1.338
+  ],
+  "ca_rmsd_second_half_mean": 1.3375701064575407,
+  "ca_rmsd_max": 1.3375701064575407
+ },
+ "md_mbp": {
+  "atoms": 46329,
+  "ps": 20.0,
+  "dt_fs": 2.0,
+  "hmr": null,
+  "thermostat": "Langevin 1/ps",
+  "ms_per_step": 3.27,
+  "pme_grid": [
+   96,
+   108,
+   120
+  ],
+  "shake": "X-H + rigid water",
+  "temperature_mean": 297.5225,
+  "temperature_std": 2.4600586883243265,
+  "eptot_first_last": [
+   -1760044.113,
+   -1759369.1943
+  ],
+  "ns_per_day": 52.85,
+  "wall_seconds": 33.273428440093994,
+  "ca_rmsd_A": [
+   1.255,
+   1.345
+  ],
+  "ca_rmsd_second_half_mean": 1.345241228107522,
+  "ca_rmsd_max": 1.345241228107522
+ }
+}

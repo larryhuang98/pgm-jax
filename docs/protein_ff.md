@@ -17,6 +17,7 @@ Amber. Everything below is in the repository, and each item has at least one tes
 | Neural bonded | `bonded/nn/` | `NNBConfig`, `NNBonded` (`for_molecules`, `prepare`, `save` / `load`); residue context for the backbone map |
 | Fitting | `bonded/model.py`, `bonded/fit.py` | `BondedModel` (bonded + gas-phase pGM), `Fitter` (Adam + L-BFGS) |
 | Export | `bonded/amber.py`, `prmtop.py` | `export_bonded`: per-instance parameters + CMAP into a prmtop (pmemd-pgm / sander) |
+| pmemd-pgm | `protein/pmemd.py` | `write_pgm_prmtop`: the engine's whole model (pGM, LJ, exclusions, 1-4, bonded, masses) as a pmemd-pgm prmtop; `pmemd_mdin`, `pmemd_grid` |
 | MD topology | `md/topology.py` | neighbour-list groups (heavy-atom groups), special pairs with vdW weights, constraints |
 | Constraints | `md/constraints.py` | SHAKE / RATTLE per cluster, vectorised; hydrogen mass repartitioning |
 | MD | `md/flexible.py` | `FlexibleTemplate` (`from_fit`, `from_network`), `RigidTemplate`, `FlexibleSimulation` (g-BAOAB, `minimize`) |
@@ -63,6 +64,105 @@ sim.minimize(300)            # after minimization, equilibrate with thermostat="
 sim.run(500000, report=5000, traj=5000, prefix="ubq")
 ```
 
+## Production MD with pmemd-pgm
+
+pmemd.pgm.cuda runs the engine's model 3 to 7 times faster from about 16k atoms on (table below).
+`write_pgm_prmtop` writes that model into the system's tleap prmtop and `pmemd_mdin` the matching
+nonbonded settings, so both codes simulate the same system:
+
+```python
+from pgm_jax.protein import pmemd_grid, pmemd_mdin, write_pgm_prmtop
+templates = asys.templates({k: tpl})                       # exactly what FlexibleSimulation gets
+write_pgm_prmtop(asys, "ubq_pgm.prmtop", templates, hmr=3.024)
+st = MDSettings(pme_grid=pmemd_grid(asys.box))             # a PME grid both codes accept
+open("min.in", "w").write(pmemd_mdin(st, asys.box, maxcyc=500))                      # tleap clashes
+open("heat.in", "w").write(pmemd_mdin(st, asys.box, nstlim=4000, dt=0.0005, tempi=0.0))
+open("md.in", "w").write(pmemd_mdin(st, asys.box, nstlim=500000, dt=0.002, irest=1))
+```
+
+```bash
+python scripts/protein/write_pgm_prmtop.py ubq.prmtop ubq.inpcrd ubq_pgm.prmtop --library lib.json --hmr 3.024 --mdin ubq
+pmemd.pgm.cuda_SPFP -O -i ubq.min.in -p ubq_pgm.prmtop -c ubq.inpcrd -o min.out -r min.rst7   # then ubq.heat.in, ubq.md.in
+```
+
+What is written (details in `protein/pmemd.py`):
+
+- **pGM**: the `POL_GAUSS_*` sections with the engine's values (`system.expand(params)`, so fitted
+  parameter tables too). pgm_jax's covalent-dipole convention is pmemd-pgm's.
+- **Van der Waals**: LJ types and tables rebuilt from the engine's per-atom R* and eps. The
+  exclusion list holds the pairs without regular LJ in the engine: every pair of a rigid molecule,
+  pairs fewer than `lj_min_sep` bonds apart in a flexible one. pmemd-pgm keeps excluded pairs in
+  its pGM electrostatics, so neither code has electrostatic exclusions.
+- **1-4 pairs**: one dihedral with the 1-4 flag per pair 3 bonds apart. pmemd-pgm drops the
+  separate 1-4 electrostatics and hard-codes SCNB = 1. `lj14_scale = 1/2` (Amber's, `amber_template`)
+  is therefore written as the CHARMM-type 1-4 LJ tables (`LENNARD_JONES_14_*` = lj14_scale x LJ).
+  pmemd reads them, on the CPU and the GPU, when `FORCE_FIELD_TYPE` names CHARMM. The other
+  CHARMM sections are present and empty.
+- **Bonded terms**: `export_bonded` (the Fourier CMAP tabulated on Amber's 24 x 24 grid), or the
+  input's own terms with `templates=None` (e.g. ff19SB with its CMAP grids).
+- **Rigid water**: the SHAKE / SETTLE lengths are the RigidTemplate distances. A template takes
+  the geometry of the first water, which in tleap's boxes differs from TIP3P's 0.9572 / 1.5136 A
+  by up to 3e-4 A. **Masses**: `hmr` as in `FlexibleSimulation`.
+
+Single points: pmemd-pgm on the written file against the engine at the same coordinates
+(float64, dipole tolerance 1e-9; cut 9 A, Ewald coefficient 0.4 A^-1, PME spacing <= 0.8 A, order
+6; placeholder electrostatics, `amber_template`; `scripts/protein/check_pgm_prmtop.py`,
+`validation/check_pgm_prmtop.json`). Energies are in kcal/mol, forces in kcal/mol/A. The first
+EELEC and force numbers are with each code's own PME. The second ones are with pmemd's
+influence-function factor in the engine (see below).
+
+| System (atoms) | pmemd | EELEC | EELEC diff | BOND, ANGLE, DIHED, 1-4 NB, VDWAALS: max diff | CMAP diff | max force diff (backbone-map atoms excluded) | max force diff, backbone-map atoms |
+|---|---|---|---|---|---|---|---|
+| 512 pGM3P-25 waters, round trip (1,536) | CPU | -506,165 | 0.084 / 4e-5 | 7e-6 | - | 1e-3 / 4e-6 | - |
+| 4,096 pGM waters, round trip (12,288) | CPU, DPFP | -2,223,199 | 1.17 / 3e-5 | 3e-5 | - | 2e-3 / 1e-6 | - |
+| same | SPFP | | 1.25 / 0.073 | 2e-3 | - | 2e-3 / 8e-4 | - |
+| ACE-ALA-SER-NME in TIP3P, NaCl (791) | CPU | -31,607 | 7e-3 / 2e-5 | 4e-5 | 1e-5 | 1e-4 / 2e-6 | 2e-3 |
+| Trp-cage in TIP3P (6,215) | CPU, DPFP | -248,643 | 0.045 / 9e-5 | 5e-5 | 3e-3 | 1e-4 / 2e-5 | 0.047 |
+| same | SPFP | | 0.051 / 6e-3 | 2e-3 | 3e-3 | 5e-4 / 5e-4 | 0.047 |
+
+pmemd prints energies to 1e-4 kcal/mol. The round trips also run pmemd on the original pGM
+prmtops, with identical energies. The remaining differences:
+
+- **Coulomb constant.** pmemd-pgm uses Tinker's 332.05382 kcal A/mol, 2.98e-5 below the engine's
+  CODATA value, so its electrostatic energies and forces are the engine's times 0.9999702. A
+  prmtop cannot change this. The comparison gives the engine pmemd-pgm's constant (charges and
+  covalent dipoles times its square root).
+- **PME influence function.** pmemd multiplies the Euler-spline influence function by
+  lambda(m)^2 (`factor_lambda` in pme_recip_dat.F90), and the engine does not. At 0.8 A and order
+  6 the electrostatic energies differ by 2-5e-7 relative and the forces by up to 2e-3. With the
+  factor in the engine (`check_pgm_prmtop.py --amber-lambda`) or with a fine grid (0.4 A,
+  order 8: `--tight`), EELEC agrees to 1e-4 kcal/mol (at most 6e-10 relative) and the forces
+  to 2e-5.
+- **CMAP.** pmemd interpolates the 24 x 24 tabulation of the Fourier map bicubically. For
+  Trp-cage the CMAP energy differs by 3e-3 kcal/mol and the forces on backbone atoms by up to 0.05
+  kcal/mol/A (CMAP forces reach 8.6). Amber's format fixes the grid (pmemd allocates 24 x 24).
+- **SPFP** adds about 3e-8 relative to EELEC and 5-8e-4 kcal/mol/A to the forces.
+- pmemd's CPU code removes the net PME force (`netfrc=1`); its GPU code and the engine do not
+  (the check sets `netfrc=0`). pmemd.pgm.cuda also needs at least three neighbour-list cells per box
+  dimension (the 512-water box and the small peptide box run on the CPU only at 9 A), PME orders
+  4 to 6, and grids that are multiples of 4 with factors 2, 3, 5 (`pmemd_grid`).
+
+MD with pmemd.pgm.cuda_SPFP (placeholder electrostatics, `amber_template`; 500 minimisation steps,
+2 ps at 0.5 fs heating from 0 K, then NVT at 298 K, Langevin 1/ps, dt 2 fs, SHAKE on X-H bonds,
+rigid water, no HMR, 9 A, PME <= 0.8 A order 6, dipole_scf_tol 1e-5; `check_pgm_prmtop.py md`).
+The engine column is the table under "Speed and size": the same settings, with HMR.
+
+| System | Atoms | pmemd.pgm.cuda ms/step | ns/day | engine ms/step | pmemd speed-up |
+|---|---|---|---|---|---|
+| Trp-cage 1L2Y | 6,215 | 1.41-1.46 | 119-122 | 1.72 | 1.2 |
+| Ubiquitin 1UBQ | 15,955 | 1.77 | 97 | 5.06 | 2.9 |
+| DHFR 1RX2 | 25,780 | 2.51 | 69 | 7.68 | 3.1 |
+| MBP 1OMP | 46,329 | 3.27 | 53 | 22.0 | 6.7 |
+
+Trp-cage, 200 ps from three seeds in each code: pmemd holds 297.5-297.8 K (sd 3.5-3.9 K) with no
+SHAKE failures. The CA RMSD from the NMR model, averaged over the second 100 ps, is 1.9, 2.3 and 2.9
+A (maximum 3.4 A). The engine gives 1.6, 2.0 and 3.0 A (maximum 3.3 A) with the same model and
+protocol (`check_pgm_prmtop.py md-engine`, 87-95 ns/day). Both codes show the same 2-3 A drift, a
+property of this test model (placeholder electrostatics, the order-3 Fourier version of ff19SB's
+CMAP), not of either code. pmemd's `tempi` draws velocities for every degree of freedom before
+SHAKE, so a constrained system starts about 1.5x too hot (440 K for Trp-cage). Three pmemd runs
+started that way drifted to 3.3-4.3 A, so `md` heats from 0 K instead.
+
 ## Training the neural bonded model for proteins
 
 ```python
@@ -107,6 +207,7 @@ print(rw.n_eff(th))                                                      # resam
 | Rigid water by constraints vs rigid bodies | same energy (1e-8 relative); the rigid-body engine is unchanged (2.05 ms/step, 12k atoms) |
 | SHAKE / RATTLE | exact to 1e-12; 4096 waters: 0.042 ms per SHAKE |
 | Peptide + water, X-H constraints + HMR, 2 fs; solvated ACE-ALA-SER-NME | stable (tests) |
+| pmemd-pgm prmtop of the engine's model, pmemd.pgm single points (water, peptide, Trp-cage; CPU, DPFP, SPFP) | all terms agree to pmemd's print precision; forces to 2e-5 kcal/mol/A (with pmemd's PME factor in the engine) except the CMAP interpolation (section "Production MD with pmemd-pgm"; `tests/test_pgm_prmtop.py`) |
 
 Benchmark: `python scripts/protein/bench_protein.py sys.prmtop sys.inpcrd [--library lib.json] [--tol 1e-4]`.
 

@@ -58,7 +58,9 @@ def _prmtop_sections(path: str) -> dict[str, list[str]]:
 def read_prmtop_pgm(path: str, first_residue_only: bool = True) -> list[Molecule]:
     """Molecules (one per residue) from an Amber pGM prmtop: pGM multipoles, radii and
     polarizabilities, covalent dipoles, LJ from the type-pair tables (converted to per-type
-    R* and sqrt(eps); NBFIX-style pairs that break Lorentz-Berthelot raise), bonds, masses."""
+    R* and sqrt(eps); NBFIX-style pairs that break Lorentz-Berthelot raise), bonds, masses.
+    Molecules of several residues (proteins; covalent dipoles across residues raise):
+    protein.load_amber(prmtop, coords, electrostatics="prmtop")."""
     s = _prmtop_sections(path)
     names = s["ATOM_NAME"]
     types = s["AMBER_ATOM_TYPE"]
@@ -82,6 +84,9 @@ def read_prmtop_pgm(path: str, first_residue_only: bool = True) -> list[Molecule
         cov = []
         for i in range(a0, a1):
             for k in range(start[i], start[i + 1]):
+                if not a0 <= catm[k] < a1:
+                    raise ValueError(f"atom {i + 1} has a covalent dipole to atom {catm[k] + 1} of another residue: "
+                                     "read multi-residue molecules with protein.load_amber(electrostatics='prmtop')")
                 cov.append((i - a0, catm[k] - a0, cdip[k] * ANG))
         if "ATOMIC_NUMBER" in s:
             el = [Z2EL[int(z)] for z in s["ATOMIC_NUMBER"][a0:a1]]

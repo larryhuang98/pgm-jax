@@ -6,6 +6,8 @@
              Amber charges, or assembled from fitted fragments
   amber      load_amber: a tleap system (protein, water, ions) as pgm_jax molecules and bonded
              model inputs; amber_template: Amber-form bonded terms + CMAP from the prmtop
+  pmemd      write_pgm_prmtop: the engine's model as a pmemd-pgm prmtop (production MD with
+             pmemd.pgm.cuda); pmemd_mdin, pmemd_grid: the matching nonbonded settings
 
 The route from a structure to MD:
     pdb4amber / tleap (protein.pdb -> protein.prmtop, protein.inpcrd; solvent, ions)
@@ -17,3 +19,4 @@ The route from a structure to MD:
 """
 from .amber import AmberSystem, LoadedMolecule, amber_template, load_amber  # noqa: F401
 from .library import ResidueLibrary  # noqa: F401
+from .pmemd import pmemd_grid, pmemd_mdin, write_pgm_prmtop  # noqa: F401

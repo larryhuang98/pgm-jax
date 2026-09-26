@@ -1,7 +1,8 @@
 """Amber prmtop files as ordered raw sections: every %FLAG with its %FORMAT and %COMMENT lines is
 read, can be read typed, changed, added or removed, and is written back in Amber's fixed-width
 format.  Sections this module does not interpret (pGM's POL_GAUSS_*, CMAP grids, ...) are kept as
-they are, so a prmtop can be edited without knowing all of it (bonded/amber.py export).
+they are, so a prmtop can be edited without knowing all of it (bonded/amber.py export).  A section
+whose %FORMAT is not a single repeated field (FORCE_FIELD_TYPE's (i2,a78)) is kept as raw lines.
 
     top = Prmtop.read("protein.prmtop")
     k = top.get("BOND_FORCE_CONSTANT")               # numpy array
@@ -36,6 +37,15 @@ class Section:
     fmt: str                                   # e.g. "10I8"
     values: list
     comments: list = field(default_factory=list)
+    raw: bool = False                          # values are the section's lines, written verbatim
+
+
+def _parsable(fmt: str) -> bool:
+    try:
+        parse_format(fmt)
+        return True
+    except ValueError:
+        return False
 
 
 class Prmtop:
@@ -50,7 +60,10 @@ class Prmtop:
 
         def finish():
             if cur is not None:
-                cur.values = cls._parse(cur.fmt, raw)
+                if _parsable(cur.fmt):
+                    cur.values = cls._parse(cur.fmt, raw)
+                else:
+                    cur.values, cur.raw = list(raw), True
                 secs.append(cur)
 
         with open(path) as fh:
@@ -92,6 +105,8 @@ class Prmtop:
 
     def get(self, name: str):
         s = self.sections[name]
+        if s.raw:
+            return list(s.values)
         kind = parse_format(s.fmt)[1]
         if kind == "a":
             return [v.strip() for v in s.values]
@@ -99,19 +114,21 @@ class Prmtop:
 
     def set(self, name: str, values, fmt: str | None = None, comments=None, after: str | None = None):
         """Replace a section's values (keeping its format), or add a new one (fmt required) after
-        the section `after` (default: at the end)."""
+        the section `after` (default: at the end).  With a format this module does not parse, the
+        values are the section's lines."""
         vals = list(values.tolist() if isinstance(values, np.ndarray) else values)
         if name in self.sections:
             s = self.sections[name]
             s.values = vals
             if fmt is not None:
                 s.fmt = fmt
+                s.raw = not _parsable(fmt)
             if comments is not None:
                 s.comments = ["  " + c for c in comments]
             return
         if fmt is None:
             raise ValueError(f"new section {name} needs a format")
-        new = Section(name, fmt, vals, ["  " + c for c in (comments or [])])
+        new = Section(name, fmt, vals, ["  " + c for c in (comments or [])], raw=not _parsable(fmt))
         items = list(self.sections.items())
         pos = len(items) if after is None or after not in self.sections else [k for k, _ in items].index(after) + 1
         items.insert(pos, (name, new))
@@ -156,5 +173,5 @@ class Prmtop:
                 for c in s.comments:
                     fh.write(f"%COMMENT{c}\n")
                 fh.write(f"%FORMAT({s.fmt})".ljust(80) + "\n")
-                for ln in self._format(s.fmt, s.values):
+                for ln in (s.values or [""]) if s.raw else self._format(s.fmt, s.values):
                     fh.write(ln + "\n")
