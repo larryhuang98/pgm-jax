@@ -514,7 +514,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `scripts/run_md.py` | MD from an Amber prmtop + inpcrd/rst7 (Amber-style options; `--dipoles`, `--induced`) |
 | `scripts/dielectric.py`, `scripts/water_dielectric.py` | eps (and IR spectrum) from `.dip` series; the water validation runs (pGM, pGM3P-25 geometry, TIP3P control) |
 | `scripts/bench_md.py`, `scripts/pgm_supercell.py` | MD speed benchmark (`--mts`, `--ps` / `--rdf`: drift, <U>, group temperatures, density, g_OO); replicate a pGM prmtop for larger systems |
-| `tests/` | `pytest -q`: 139 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
+| `tests/` | `pytest -q`: 207 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
 | `scripts/validate_amber.py` | comparison with sander / pmemd-pgm / PyRESP (`compare`, `pyresp`, `virial`) |
 | `scripts/bench.py` | timings on the current device |
 | `validation/` | Amber reference runs (inputs + outputs) and `validate_amber.json` |
