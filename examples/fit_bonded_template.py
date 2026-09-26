@@ -2,12 +2,15 @@
 
     python examples/fit_bonded_template.py methanol                      # class II set (T.PAPER)
     python examples/fit_bonded_template.py ethanol --families diag+ub --out runs/flex/ethanol_ub.flex
+    python examples/fit_bonded_template.py methanol --flux 1 --wmu 1 --maxiter 4000   # + charge flux
 
 The molecule needs data/bonded/molecules/<name>.json (topology), data/bonded/params/<name>.json
 (pGM charges, covalent dipoles, polarizabilities and LJ) and DFT-labelled frames
 (data/bonded/dft/<name>__train500__*.npz, ...__test298__*.npz); docs/howto_bonded.md explains how
 to make them for a new molecule.  The fit uses pGM electrostatics with all pairs and LJ from 1-5
-pairs on, i.e. exactly the model the MD engine runs, so the template is MD-ready."""
+pairs on, i.e. exactly the model the MD engine runs, so the template is MD-ready.  With --flux the
+charges and covalent dipoles depend on the bond lengths (BondedSettings.flux; md/flux.py runs it in
+MD); --wmu weights the gas-phase dipoles in the loss, which the flux parameters mostly affect."""
 import argparse, os, sys, time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
@@ -24,6 +27,8 @@ ap.add_argument("name")
 ap.add_argument("--families", default="paper", help="a key of FAMILY_SETS or families joined by '+'")
 ap.add_argument("--lj14", type=float, default=0.0, help="scale of 1-4 LJ (0: LJ from 1-5 pairs on only)")
 ap.add_argument("--maxiter", type=int, default=20000)
+ap.add_argument("--flux", type=int, default=0, help="1: charge + covalent-dipole flux; 2: + quadratic dipole flux")
+ap.add_argument("--wmu", type=float, default=0.0, help="weight of the molecular dipoles in the loss")
 ap.add_argument("--out", default="")
 a = ap.parse_args()
 
@@ -34,8 +39,8 @@ if unknown:
 specs, data = load([a.name])
 if not specs:
     raise SystemExit(f"no DFT frames for {a.name}")
-model = BondedModel(specs, BondedSettings(families=fams, lj14_scale=a.lj14))
-fit = Fitter(model, {0: {"train": data[0]["train"], "test": data[0]["test"]}})
+model = BondedModel(specs, BondedSettings(families=fams, lj14_scale=a.lj14, flux=a.flux))
+fit = Fitter(model, {0: {"train": data[0]["train"], "test": data[0]["test"]}}, w_mu=a.wmu)
 t0 = time.time()
 P = fit.fit(model.init_params(), maxiter=a.maxiter, verbose=False)
 m = fit.metrics(P, "test")[0]

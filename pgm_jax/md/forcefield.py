@@ -51,6 +51,12 @@ sums over both.  The dipole matvec, which is memory bound, then streams (elec_cu
 the bytes (0.47 at 0.7 / 0.9 nm).  ewald_beta and the PME grid must be chosen for the shorter cutoff
 (`elec_cutoff_settings`).  elec_cutoff = None or = cutoff is the single-cutoff engine, unchanged.
 
+Charge flux (`flux=`, md/flux.py): charges q(R) and covalent-dipole strengths c(R) that depend on
+bond lengths.  Every energy evaluation takes them at its own positions (charges_at); the forces add
+-phi . dq/dR - (dE/dc) . dc/dR, with the potential phi = dE/dq from one more row sum and the PME
+charge gradient, pulled back through the bond-local flux map by one vector-Jacobian product
+(_energy_forces_flux).  Without flux none of this code runs.
+
 Differentiability: E(pos, H, theta) at fixed mu is differentiable throughout (forces, virial,
 dE/dtheta by Hellmann-Feynman).  With `differentiable=True`, compute() also returns forces and
 dipoles with exact derivatives: the dipole solve is a jax.custom_vjp whose backward pass solves
@@ -234,7 +240,7 @@ def _push(stack, x):
 class PGMForceField:
     def __init__(self, sys: System, H, settings: MDSettings = MDSettings(), short_capacity: int = 48,
                  row_capacity: int | None = None, topology: MDTopology | None = None,
-                 elec_capacity: int | None = None):
+                 elec_capacity: int | None = None, flux=None):
         self.sys, self.s = sys, settings
         if settings.predictor not in ("mu4", "mu3", "ls", "none"):
             raise ValueError(f"unknown predictor {settings.predictor!r}")
@@ -274,11 +280,30 @@ class PGMForceField:
         first = np.searchsorted(mol, np.arange(sys.nmol)) if np.all(np.diff(mol) >= 0) else \
             np.array([int(np.nonzero(mol == k)[0][0]) for k in range(sys.nmol)])
         self.first = jnp.asarray(first)
+        self.flux = flux                  # md/flux.py ChargeFlux (geometry-dependent q and c) or None
+        if flux is not None and (flux.n_atoms != sys.n or len(flux.cov_bond) != len(sys.cov_i)):
+            raise ValueError(f"charge flux for {flux.n_atoms} atoms / {len(flux.cov_bond)} covalent dipoles; the "
+                             f"system has {sys.n} / {len(sys.cov_i)}")
 
     # ------------------------------------------------------------------ building blocks
     def _atoms(self, params):
         P = self.sys.expand(params)
-        return {k: jnp.asarray(v, jnp.float64) for k, v in P.items()}
+        P = {k: jnp.asarray(v, jnp.float64) for k, v in P.items()}
+        if self.flux is not None:                     # flux parameters ride along; charges_at applies them
+            P["flux"] = self.flux.theta(params)
+        elif isinstance(params, dict) and "flux" in params:
+            raise ValueError("the parameters have charge-flux values but the force field has no charge flux")
+        return P
+
+    def charges_at(self, pos, H, P):
+        """P (from _atoms) with the charges q and covalent-dipole strengths cov of the geometry pos
+        (charge flux, md/flux.py); P itself without flux or when already applied."""
+        if "flux" not in P:
+            return P
+        q, cov = self.flux.charges(pos, H, P["q"], P["cov"], P["flux"])
+        out = {k: v for k, v in P.items() if k != "flux"}
+        out.update(q=q, cov=cov)
+        return out
 
     def perm_dipoles(self, pos, H, cov_c):
         if len(self.sys.cov_i) == 0 or not self.pd:
@@ -534,6 +559,15 @@ class PGMForceField:
         dkx = dk[0] * x[0] + dk[1] * x[1] + dk[2] * x[2]
         c = -G2 * dkx if q is None else -q[k] * G1 - G2 * dkx
         return jnp.stack([jnp.sum(c * x[j] + G1 * dk[j], axis=1) for j in range(3)], -1)
+
+    @staticmethod
+    def _row_potential(g, q, d):
+        """sum_k de_ik/dq_i = sum_k q_k G0 + (d_k . x_ik) G1: the direct-space potential at each atom
+        (charge flux)."""
+        k, x, G0, G1 = g["k"], g["x"], g["G0"], g["G1"]
+        dk = d[k]
+        dkx = dk[..., 0] * x[0] + dk[..., 1] * x[1] + dk[..., 2] * x[2]
+        return jnp.sum(q[k] * G0 + dkx * G1, axis=1)
 
     def _rec_grad(self, S, Gk, q, d):
         return self.pme.grad_dipoles(S, Gk, q, d.astype(self.cd)).astype(self.cd)
@@ -809,7 +843,9 @@ class PGMForceField:
 
     def energy_fixed_mu(self, pos, H, mu, idx, P):
         """Total energy (kJ/mol, float64) and components with the induced dipoles held at mu;
-        differentiable in positions and box (used for virials and Monte Carlo trials)."""
+        differentiable in positions and box (used for virials and Monte Carlo trials).  With charge
+        flux, q and c are taken at pos."""
+        P = self.charges_at(pos, H, P)
         p = self.perm_dipoles(pos, H, P["cov"])
         d = p + mu
         x, di, (dk, qi, qk, a, within, wv, vp), vrows = self._row_inputs(pos, H, idx, P, d)
@@ -851,9 +887,12 @@ class PGMForceField:
             sl = sl + rowsum(elt)
         return rowsum(e), sl, gx.astype(jnp.float64), glx
 
-    def _energy_forces(self, pos, H, mu, g, P):
+    def _energy_forces(self, pos, H, mu, g, P, flux_pull=None):
         """Energy and forces at fixed mu: analytic row forces for the pair terms (no scatter-adds),
-        autodiff for PME, one vector-Jacobian product through the covalent-dipole frames."""
+        autodiff for PME, one vector-Jacobian product through the covalent-dipole frames.  With
+        charge flux (flux_pull: the pull-back of the flux map at pos): _energy_forces_flux."""
+        if flux_pull is not None:
+            return self._energy_forces_flux(pos, H, mu, g, P, flux_pull)
         cd = self.cd
         p, vjp_p = jax.vjp(lambda y: self.perm_dipoles(y, H, P["cov"]), pos)
         d = p + mu
@@ -862,6 +901,27 @@ class PGMForceField:
         dEdd = KE * self._row_field(g, qc, dc).astype(jnp.float64)
         e_np, (gpos_np, gd_np) = jax.value_and_grad(self._nonpair, argnums=(0, 2))(pos, H, d, mu, P)
         forces = -(KE * gx_el + gx_lj + gpos_np + vjp_p(dEdd + gd_np)[0])
+        e_elec = 0.5 * KE * se + e_np
+        e_lj = 0.5 * sl + self._vdw_tail(P, H)
+        return {"elec": e_elec, "vdw": e_lj, "total": e_elec + e_lj}, forces
+
+    def _energy_forces_flux(self, pos, H, mu, g, P, flux_pull):
+        """_energy_forces with charge flux; P holds q(R) and c(R).  F = -dE/dR|_{q,c,mu}
+        - phi . dq/dR - (dE/dc) . dc/dR: the potential phi = dE/dq (rows, and PME, self and
+        background terms from the autodiff of _nonpair with q among the arguments) and dE/dc (the
+        covalent-frame pull-back taken with respect to c as well) go through flux_pull, a jax.vjp
+        of the bond-local map R -> (q, c)."""
+        cd = self.cd
+        p, vjp_p = jax.vjp(lambda y, c: self.perm_dipoles(y, H, c), pos, P["cov"])
+        d = p + mu
+        qc, dc = P["q"].astype(cd), d.astype(cd)
+        se, sl, gx_el, gx_lj = self._row_terms(g, qc, dc)
+        dEdd = KE * self._row_field(g, qc, dc).astype(jnp.float64)
+        phi = KE * self._row_potential(g, qc, dc).astype(jnp.float64)
+        e_np, (gpos_np, gd_np, gq_np) = jax.value_and_grad(
+            lambda y, dd, q: self._nonpair(y, H, dd, mu, dict(P, q=q)), argnums=(0, 1, 2))(pos, d, P["q"])
+        gpos_p, gcov = vjp_p(dEdd + gd_np)
+        forces = -(KE * gx_el + gx_lj + gpos_np + gpos_p + flux_pull((phi + gq_np, gcov))[0])
         e_elec = 0.5 * KE * se + e_np
         e_lj = 0.5 * sl + self._vdw_tail(P, H)
         return {"elec": e_elec, "vdw": e_lj, "total": e_elec + e_lj}, forces
@@ -880,6 +940,10 @@ class PGMForceField:
         forces and Result.induction.mu can be differentiated (jax.grad / vjp) in params, pos, H."""
         pos, H = jnp.asarray(pos, jnp.float64), jnp.asarray(H, jnp.float64)
         P = self._atoms(params)
+        pull = None
+        if self.flux is not None:                              # q(R), c(R) and the flux map's pull-back
+            (q, cov), pull = jax.vjp(lambda y: self.flux.charges(y, H, P["q"], P["cov"], P["flux"]), pos)
+            P = {**{k: v for k, v in P.items() if k != "flux"}, "q": q, "cov": cov}
         g = self.geometry(pos, H, idx, P, forces=True)
         p = self.perm_dipoles(pos, H, P["cov"])
         S = self.pme.setup(pos, H)
@@ -889,14 +953,14 @@ class PGMForceField:
             mu, it, err, ind = self._solve(ge, S, Gk, P, p, ind)
         else:                                                  # no induced dipoles ("q", "qp")
             mu, it, err = jnp.zeros((self.n, 3)), jnp.zeros((), jnp.int32), jnp.zeros(())
-        energy, forces = self._energy_forces(pos, H, mu, g, P)
+        energy, forces = self._energy_forces(pos, H, mu, g, P, pull)
         return Result(energy, forces, ind, it, err, g["overflow"])
 
     def energy(self, pos, H, idx, ind: InductionState, params=None):
         """Energy only (Monte Carlo barostat trials): dipoles solved from the last converged ones
         (no history update); returns (total, InductionState with mu, iterations, overflow)."""
         pos, H = jnp.asarray(pos, jnp.float64), jnp.asarray(H, jnp.float64)
-        P = self._atoms(params)
+        P = self.charges_at(pos, H, self._atoms(params))
         g = self.geometry(pos, H, idx, P)
         p = self.perm_dipoles(pos, H, P["cov"])
         S = self.pme.setup(pos, H)

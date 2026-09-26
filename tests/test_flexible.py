@@ -37,7 +37,7 @@ def test_template_roundtrip_and_pgm_only(tmp_path):
     y = jnp.asarray(x + 0.004 * np.random.default_rng(1).normal(size=x.shape))
     assert abs(float(t2.bonded_energy(y)) - float(tpl.bonded_energy(y))) < 1e-10
     assert float(tpl.bonded_energy(y)) > 0.0
-    for bad in (dict(elec_exclude=3), dict(flux=1), dict(escale=(1,))):
+    for bad in (dict(elec_exclude=3), dict(escale=(1,))):                  # (charge flux runs: test_flux.py)
         with pytest.raises(ValueError):
             template(**bad)
 

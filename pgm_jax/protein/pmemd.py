@@ -57,8 +57,9 @@ What a prmtop cannot carry, measured by scripts/protein/check_pgm_prmtop.py (doc
     of the electrostatic energy at 0.8 A grid spacing and order 6, nothing at 0.4 A and order 8;
   * pmemd interpolates the tabulated CMAP bicubically: Trp-cage's CMAP energy differs by 3e-3
     kcal/mol, backbone forces by up to 0.05 kcal/mol/A (Amber's format fixes 24 x 24 grids);
-  * one lj14_scale for all flexible molecules; LJ and full pGM (elec "qpi") only, no GVDW or
-    quadrupoles; Amber's number formats (9 significant digits, CMAP grids to 1e-5 kcal/mol).
+  * one lj14_scale for all flexible molecules; LJ and full pGM (elec "qpi") only, no GVDW,
+    quadrupoles or charge flux (md/flux.py; refused); Amber's number formats (9 significant
+    digits, CMAP grids to 1e-5 kcal/mol).
 Everything else agrees to pmemd's print precision (1e-4 kcal/mol) and the forces to 2e-5 kcal/mol/A.
 """
 from __future__ import annotations
@@ -233,6 +234,11 @@ def write_pgm_prmtop(asys, out: str, templates=None, params=None, system=None, l
     hmr        hydrogen mass (amu) for mass repartitioning, as FlexibleSimulation(hmr=...)
     Returns a summary (counts, 1-4 mode, bonded export counts)."""
     from ..bonded.amber import export_bonded
+    from ..md.flux import template_flux_order
+    flux = [t.name for t in (templates or []) if t is not None and template_flux_order(t)]
+    if flux or (isinstance(params, dict) and "flux" in params):
+        raise ValueError(f"charge flux ({', '.join(flux) or 'flux parameters'}): pmemd-pgm has no charge flux, so the "
+                         "model cannot be written as a pmemd-pgm prmtop")
     pt0 = Prmtop.read(asys.prmtop)
     if "CTITLE" in pt0 or ("CHARMM_UREY_BRADLEY_COUNT" in pt0 and np.any(pt0.get("CHARMM_UREY_BRADLEY_COUNT"))):
         raise ValueError(f"{asys.prmtop} is a CHARMM (chamber) topology; only Amber topologies are converted")

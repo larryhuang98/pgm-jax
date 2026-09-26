@@ -10,7 +10,9 @@ The force field treats every pair electrostatically (pGM has no exclusions); the
 term of the intramolecular pairs follows the fitted model,
     E_vdW,intra = sum_{pairs d_ij >= lj_min_sep} U_ij + lj14_scale sum_{1-4 pairs} U_ij,
 through the special pairs of md/topology.py (inside the cutoff, as every other pair), so the
-extra energy of a flexible molecule is its bonded energy.  Large molecules are split into
+extra energy of a flexible molecule is its bonded energy.  Templates fitted with charge flux
+(BondedSettings.flux) bring it along (md/flux.py: charges and covalent dipoles follow the bond
+lengths).  Large molecules are split into
 heavy-atom groups for the neighbour list.  Optional distance constraints (X-H bonds at their
 reference lengths; rigid templates always) are applied with SHAKE / RATTLE in g-BAOAB order
 (md/constraints.py); with hydrogen mass repartitioning (`hmr`) that allows 2 fs.
@@ -41,6 +43,7 @@ from ..system import System
 from ._jaxmd import simulate
 from .box import check_box, inv3, reduce_box, volume
 from .constraints import Constraints, hmr_masses
+from .flux import ChargeFlux
 from .forcefield import MDSettings, PGMForceField
 from .integrate import KB, Dynamics, Integrator, MDState, upgrade_state
 from .neighbors import AtomNeighbors, MoleculeNeighbors
@@ -53,7 +56,8 @@ from .topology import MDTopology, MoleculeRule
 class FlexibleTemplate:
     """Bonded parameters of one molecule type, fitted with pgm_jax.bonded, plus its pGM molecule.
     The MD engine treats electrostatics with all pairs, so the fit must have used pGM electrostatics
-    without exclusions, charge flux or refitted charges."""
+    without exclusions or refitted charges.  Charge flux (BondedSettings.flux) runs as fitted
+    (md/flux.py; FlexibleSimulation builds it from the templates)."""
 
     def __init__(self, specs, settings: dict, P: dict, index: int = 0):
         from ..bonded.model import BondedSettings
@@ -65,8 +69,6 @@ class FlexibleTemplate:
         bad = []
         if st.elec_exclude != 0 or st.elec14_scale != 1.0:
             bad.append("electrostatic exclusions")
-        if st.flux:
-            bad.append("charge flux")
         if st.qfit >= 0 or st.qbci >= 0:
             bad.append("fitted charges")
         if st.escale:
@@ -498,7 +500,7 @@ class FlexibleSimulation(Simulation):
         masses = hmr_masses(sys, hmr)
         self.flex = FlexibleMolecules(sys, pos_nm, H, templates, self.topology, masses)
         self.rigid = self.flex                                   # wrap() / positions() used by the base driver
-        self.ff = PGMForceField(sys, H, settings, topology=self.topology)
+        self.ff = PGMForceField(sys, H, settings, topology=self.topology, flux=ChargeFlux.from_templates(sys, templates))
         self.ff.masses = jnp.asarray(masses)
         self.constraints = Constraints(self.topology.constraints, self.topology.constraint_d0, masses)
         self.r_list = self._r_list = self.flex.r_max + r_margin
@@ -523,6 +525,8 @@ class FlexibleSimulation(Simulation):
                     f"{self.r_list:.3f} nm), dipole tol {settings.dipole_tol:g}, device {jax.devices()[0]}")
         if self.integ.restraints is not None:
             self._print(f"# restraints: {self.integ.restraints.describe()}")
+        if self.ff.flux is not None:
+            self._print(f"# {self.ff.flux.describe()}")
 
     def minimize(self, steps: int = 500, max_step: float = 0.01, ftol: float = 50.0, seed: int = 1) -> dict:
         """Steepest descent (adaptive step, at most max_step nm per atom, constraints kept by SHAKE)
