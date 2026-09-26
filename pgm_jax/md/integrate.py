@@ -2,12 +2,14 @@
 
   NVE : velocity Verlet with the NO_SQUISH free-rotor splitting for quaternions (JAX-MD
         simulate.momentum_step / position_step, rigid_body registrations; Miller et al. 2002).
-  NVT : BAOAB Langevin, friction `gamma` (1/ps).  The O step is an exact Ornstein-Uhlenbeck update
-        of the centre-of-mass momenta and of the body-frame angular momenta,
-        L_l <- c L_l + sqrt(I_l kT (1 - c^2)) xi_l, c = exp(-gamma dt), mapped to and from the
-        quaternion conjugate momenta.  (JAX-MD 0.2.29's rigid-body stochastic_step draws the
-        quaternion-momentum noise with a diagonal covariance instead of sum_l s_l^2 P_l P_l^T, which
-        under-heats the rotations: rigid water settled 15-25 K below the target.)
+  NVT : BAOAB with the O step of a thermostat from thermostats.py (Langevin friction `gamma`,
+        Bussi rescaling `tau_t`, or a smooth GLE).  For rigid bodies the thermostat acts on the
+        mass-scaled centre-of-mass momenta and body-frame angular momenta, L_l / sqrt(I_l), mapped
+        to and from the quaternion conjugate momenta.  (JAX-MD 0.2.29's rigid-body stochastic_step
+        draws the quaternion-momentum noise with a diagonal covariance instead of
+        sum_l s_l^2 P_l P_l^T, which under-heats the rotations: rigid water settled 15-25 K below
+        the target.)  The heat exchanged in the O steps is booked in MDState.heat, so
+        E_tot + |aux|^2/2 - heat is conserved up to integration and induction errors.
   NPT : NVT plus an isotropic Monte Carlo barostat every `barostat_interval` steps (Amber
         barostat = 2, OpenMM MonteCarloBarostat): centres of mass and box are scaled,
         orientations and momenta are kept, acceptance on dE + P dV - N kT ln(V'/V); the
@@ -24,6 +26,7 @@ from ._jaxmd import dataclasses, rigid_body, simulate, space
 from .box import volume
 from .forcefield import InductionState, PGMForceField
 from .rigid import RigidBody, RigidMolecules
+from .thermostats import Thermostat, make_thermostat
 
 KB = 0.0083144626181532                  # kJ/mol/K
 BAR = 1.0 / 16.605390671738466           # kJ/mol/nm^3 per bar
@@ -55,12 +58,27 @@ class MDState:
     mc: jnp.ndarray                   # (tries, accepts, window tries, window accepts) int32
     mc_dv: jnp.ndarray                # current maximum volume change (nm^3)
     overflow: jnp.ndarray             # a force evaluation exceeded the row capacity (block must be repeated)
+    aux: jnp.ndarray = None           # thermostat auxiliary momenta (mass-scaled), (n_aux,) + momenta shape
+    heat: jnp.ndarray = None          # heat taken up in the thermostat steps since the start (kJ/mol)
+    cg_total: jnp.ndarray = None      # CG iterations summed over all force evaluations (float64)
+
+
+def upgrade_state(st: MDState, aux) -> MDState:
+    """States pickled before the thermostat fields existed: add them."""
+    if getattr(st, "aux", None) is None:
+        st = st.set(aux=aux)
+    if getattr(st, "heat", None) is None:
+        st = st.set(heat=jnp.zeros((), jnp.float64))
+    if getattr(st, "cg_total", None) is None:
+        st = st.set(cg_total=jnp.zeros((), jnp.float64))
+    return st
 
 
 class Integrator:
     def __init__(self, ff: PGMForceField, rigid: RigidMolecules, neighbors, dt: float = 0.001,
                  ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0,
-                 pressure: float = 1.0, barostat_interval: int = 100, params=None):
+                 pressure: float = 1.0, barostat_interval: int = 100, params=None,
+                 thermostat: str | Thermostat = "langevin", tau_t: float = 1.0):
         ensemble = ensemble.lower()
         if ensemble not in ("nve", "nvt", "npt"):
             raise ValueError("ensemble must be nve, nvt or npt")
@@ -68,6 +86,7 @@ class Integrator:
         self.dt, self.ensemble = float(dt), ensemble
         self.kT = KB * float(temperature)
         self.gamma_value = float(gamma)
+        self.thermostat = None if ensemble == "nve" else make_thermostat(thermostat, gamma, tau_t)
         self.pressure = float(pressure) * BAR
         self.interval = int(barostat_interval)
         self.params = params
@@ -94,7 +113,7 @@ class Integrator:
         return st.set(dyn=st.dyn.set(force=F), nbr=nbr, induction=res.induction, epot=res.energy["total"],
                       elec=res.energy["elec"], vdw=res.energy["vdw"], iters=res.iterations,
                       max_iters=jnp.maximum(st.max_iters, res.iterations), resid=jnp.maximum(st.resid, res.residual),
-                      overflow=st.overflow | res.overflow)
+                      overflow=st.overflow | res.overflow, cg_total=st.cg_total + res.iterations)
 
     def _state_forces(self, st: MDState, force_rebuild=True) -> MDState:
         F, res, nbr = self._forces(st.dyn.position, st.box, st.induction, st.nbr, force_rebuild)
@@ -114,41 +133,66 @@ class Integrator:
             dyn = dyn.set(momentum=momentum)
         z = jnp.zeros((), jnp.float64)
         zi = jnp.zeros((), jnp.int32)
+        dyn, aux = self._init_aux(dyn)
         st = MDState(dyn=dyn, box=box, induction=self.ff.init_induction(), nbr=nbr, epot=z, elec=z, vdw=z,
                      iters=zi, max_iters=zi, resid=z, step=zi, mc=jnp.zeros(4, jnp.int32),
-                     mc_dv=jnp.asarray(0.01 * float(volume(box)), jnp.float64), overflow=jnp.zeros((), bool))
+                     mc_dv=jnp.asarray(0.01 * float(volume(box)), jnp.float64), overflow=jnp.zeros((), bool),
+                     aux=aux, heat=z, cg_total=z)
         return self.forces(st, False)
+
+    # --------------------------------------------------------------------- thermostat
+    def _scaled(self, dyn: Dynamics):
+        """Mass-scaled momenta of the thermostatted degrees of freedom, a mask (0 for rotations about
+        axes with zero moment of inertia), the inverse map and the constraint projection."""
+        P, M = dyn.momentum.center, dyn.mass.center                       # M: (nmol, 1)
+        q = dyn.position.orientation
+        I = dyn.mass.orientation                                         # (nmol, 3) principal moments
+        L = rigid_body.conjugate_momentum_to_angular_momentum(q, dyn.momentum.orientation)
+        has = I > 0
+        v = jnp.stack([P / jnp.sqrt(M), jnp.where(has, L / jnp.sqrt(jnp.where(has, I, 1.0)), 0.0)])
+        mask = jnp.stack([jnp.ones_like(P), has.astype(P.dtype)])
+
+        def unpack(v):
+            Pq = rigid_body.angular_momentum_to_conjugate_momentum(q, v[1] * jnp.sqrt(I))
+            return dyn.set(momentum=RigidBody(v[0] * jnp.sqrt(M), Pq))
+        return v, mask, unpack, (lambda u: u)
+
+    def _init_aux(self, dyn: Dynamics):
+        v, mask, _, project = self._scaled(dyn)
+        if self.thermostat is None or self.thermostat.n_aux == 0:
+            return dyn, jnp.zeros((0,) + v.shape, jnp.float64)
+        key, k = jax.random.split(dyn.rng)
+        aux = jax.vmap(project)(self.thermostat.init_aux(k, v.shape, self.kT))
+        if mask is not None:
+            aux = aux * mask[None]
+        return dyn.set(rng=key), aux
+
+    def _o_step(self, dyn: Dynamics, aux, heat, h: float):
+        """Thermostat step at fixed positions; returns dyn, auxiliaries and the updated heat."""
+        v, mask, unpack, project = self._scaled(dyn)
+        key, k = jax.random.split(dyn.rng)
+        e0 = 0.5 * (jnp.sum(v * v) + jnp.sum(aux * aux))
+        v, aux = self.thermostat.apply(v, aux, k, h, self.kT, float(self.dof), project, mask)
+        e1 = 0.5 * (jnp.sum(v * v) + jnp.sum(aux * aux))
+        return unpack(v).set(rng=key), aux, heat + (e1 - e0)
 
     # --------------------------------------------------------------------- one step
     def _step(self, st: MDState) -> MDState:
         dt = self.dt
+        aux, heat = st.aux, st.heat
         dyn = simulate.momentum_step(st.dyn, dt / 2)
         if self.ensemble == "nve":
             dyn = simulate.position_step(dyn, self.shift, dt)
         else:
             dyn = simulate.position_step(dyn, self.shift, dt / 2)
-            dyn = self._ou_step(dyn, dt)
+            dyn, aux, heat = self._o_step(dyn, aux, heat, dt)
             dyn = simulate.position_step(dyn, self.shift, dt / 2)
         F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr)
-        st = self._with_result(st.set(dyn=dyn), F, res, nbr)
+        st = self._with_result(st.set(dyn=dyn, aux=aux, heat=heat), F, res, nbr)
         st = st.set(dyn=simulate.momentum_step(st.dyn, dt / 2), step=st.step + 1)
         if self.ensemble == "npt":
             st = jax.lax.cond(st.step % self.interval == 0, self._barostat, lambda s: s, st)
         return st
-
-    def _ou_step(self, dyn: Dynamics, dt: float) -> Dynamics:
-        """Exact Ornstein-Uhlenbeck step for centre-of-mass and body-frame angular momenta."""
-        key, k1, k2 = jax.random.split(dyn.rng, 3)
-        c = jnp.exp(-self.gamma_value * dt)
-        s = jnp.sqrt(self.kT * (1.0 - c * c))
-        P, M = dyn.momentum.center, dyn.mass.center                       # M: (nmol, 1)
-        P = c * P + s * jnp.sqrt(M) * jax.random.normal(k1, P.shape, P.dtype)
-        q = dyn.position.orientation
-        I = dyn.mass.orientation                                         # (nmol, 3) principal moments
-        L = rigid_body.conjugate_momentum_to_angular_momentum(q, dyn.momentum.orientation)
-        L = c * L + s * jnp.sqrt(I) * jax.random.normal(k2, L.shape, L.dtype)
-        Pq = rigid_body.angular_momentum_to_conjugate_momentum(q, L)
-        return dyn.set(momentum=RigidBody(P, Pq), rng=key)
 
     def _barostat(self, st: MDState) -> MDState:
         key, k1, k2 = jax.random.split(st.dyn.rng, 3)

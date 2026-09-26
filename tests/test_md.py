@@ -196,7 +196,8 @@ def test_langevin_equipartition():
     from pgm_jax.md._jaxmd import simulate
     zero = jax.tree_util.tree_map(jnp.zeros_like, rig.body0)
     dyn = simulate.canonicalize_mass(Dynamics(rig.body0, zero, zero, rig.mass, jax.random.PRNGKey(0)))
-    step = jax.jit(lambda d: integ._ou_step(d, 0.002))
+    aux = jnp.zeros((0, 2, sys.nmol, 3))
+    step = jax.jit(lambda d: integ._o_step(d, aux, 0.0, 0.002)[0])
     kt, kr = [], []
     for i in range(3000):
         dyn = step(dyn)

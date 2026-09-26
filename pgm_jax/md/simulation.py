@@ -22,7 +22,7 @@ from ..param import read_prmtop_pgm
 from ..system import Molecule, System
 from .box import check_box, reduce_box, volume
 from .forcefield import MDSettings, PGMForceField
-from .integrate import KB, Integrator
+from .integrate import KB, Integrator, upgrade_state
 from .io import NetCDFTrajectory, box_from_cell, read_coordinates, write_restart
 from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .rigid import RigidMolecules
@@ -43,7 +43,7 @@ class Simulation:
     def __init__(self, sys: System, pos_nm, H_nm, settings: MDSettings = MDSettings(), dt: float = 0.001,
                  ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0, pressure: float = 1.0,
                  barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None, params=None, log=sys.stdout,
-                 neighbor_list: str = "auto"):
+                 neighbor_list: str = "auto", thermostat="langevin", tau_t: float = 1.0):
         H = reduce_box(H_nm)
         check_box(H, settings.cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
@@ -54,7 +54,7 @@ class Simulation:
         self._make_neighbors(H)
         self._size_lists(self.rigid.body0, H)
         self.integ = Integrator(self.ff, self.rigid, self.nb, dt, ensemble, temperature, gamma, pressure,
-                                barostat_interval, params)
+                                barostat_interval, params, thermostat=thermostat, tau_t=tau_t)
         self.dt, self.ensemble, self.T0 = dt, ensemble, temperature
         body = self.rigid.body0
         mom = None
@@ -62,7 +62,9 @@ class Simulation:
             mom = self.rigid.momenta_from_velocities(body, self.rigid.positions(body), jnp.asarray(vel_nm_ps))
         self.state = self.integ.init(body, H, jax.random.PRNGKey(seed), mom)
         self.time_ps = 0.0
-        self._print(f"# pgm_jax MD: {sys.nmol} rigid molecules, {sys.n} atoms, {ensemble.upper()}, dt {dt * 1000:g} fs, "
+        thermo = '' if self.integ.thermostat is None else f" ({self.integ.thermostat.describe()})"
+        self._print(f"# pgm_jax MD: {sys.nmol} rigid molecules, {sys.n} atoms, {ensemble.upper()}{thermo}, "
+                    f"dt {dt * 1000:g} fs, "
                     f"{settings.precision} precision, PME grid {self.ff.pme.K} order {settings.pme_order}, "
                     f"cutoff {settings.cutoff} nm, {self.nb.kind} neighbour list, predictor {settings.predictor}"
                     f"{' (fused)' if settings.fused else ''}, dipole tol {settings.dipole_tol:g}, "
@@ -88,8 +90,10 @@ class Simulation:
         out = {"step": int(st.step), "time_ps": self.time_ps, "temp_K": 2 * ke / (self.integ.dof * KB),
                "temp_trans": t_tr, "temp_rot": t_rot,
                "etot": ke + float(st.epot), "ekin": ke, "epot": float(st.epot), "elec": float(st.elec),
+               "econs": ke + float(st.epot) + 0.5 * float(jnp.sum(st.aux * st.aux)) - float(st.heat),
                "vdw": float(st.vdw), "volume_nm3": V, "density_g_cm3": mass / V * AMU_NM3_TO_G_CM3,
-               "cg_iter": int(st.iters), "cg_iter_max": int(st.max_iters), "cg_resid_max": float(st.resid)}
+               "cg_iter": int(st.iters), "cg_iter_max": int(st.max_iters), "cg_resid_max": float(st.resid),
+               "cg_mean": float(st.cg_total) / max(int(st.step), 1)}
         if self.ensemble == "npt":
             tries, acc = int(st.mc[0]), int(st.mc[1])
             out["mc_accept"] = acc / max(tries, 1)
@@ -257,6 +261,7 @@ class Simulation:
         with open(path, "rb") as fh:
             d = pickle.load(fh)
         st = jax.tree_util.tree_map(jnp.asarray, d["state"])
+        st = upgrade_state(st, self.state.aux)          # checkpoints from before the thermostat fields
         nbr = self.nb.allocate(self.rigid.positions(st.dyn.position), st.dyn.position.center, st.box)
         self.state = st.set(nbr=nbr)                   # forces, dipoles and history are part of the state
         self.time_ps = d["time_ps"]

@@ -32,6 +32,9 @@ ap.add_argument("--local-cut", type=float, default=0.3, help="preconditioner ran
 ap.add_argument("--predictor", default="mu4")
 ap.add_argument("--beta", type=float, default=4.0, help="Ewald coefficient (nm^-1)")
 ap.add_argument("--spacing", type=float, default=0.08, help="PME grid spacing (nm)")
+ap.add_argument("--thermostat", default="langevin", help="langevin | bussi | gle")
+ap.add_argument("--tau", type=float, default=1.0, help="Bussi time constant (ps)")
+ap.add_argument("--gamma", type=float, default=1.0, help="Langevin friction (1/ps)")
 a = ap.parse_args()
 lib = ResidueLibrary.load(a.library) if a.library else "placeholder"
 t0 = time.time()
@@ -41,7 +44,8 @@ tpl = {k: amber_template(asys.molecules[k], a.prmtop) for k in prot}
 st = MDSettings(cutoff=a.cut, skin=0.1, dipole_tol=a.tol, precision=a.precision, local_niter=a.local_niter,
                 local_cut=a.local_cut, predictor=a.predictor, ewald_beta=a.beta, pme_spacing=a.spacing)
 sim = FlexibleSimulation(asys.system(), asys.templates(tpl), asys.system_positions(), asys.box, st, dt=a.dt,
-                         ensemble="nvt", constraints="h-bonds", hmr=a.hmr, log=sys.stdout)
+                         ensemble="nvt", constraints="h-bonds", hmr=a.hmr, log=sys.stdout,
+                         thermostat=a.thermostat, tau_t=a.tau, gamma=a.gamma)
 print(f"setup {time.time() - t0:.1f} s: {sim.sys.n} atoms, {len(prot)} protein chain(s) "
       f"({sum(asys.molecules[k].n for k in prot)} atoms), {sim.topology.n_group} groups, "
       f"special width {sim.topology.special.shape[1]}, rows {sim.ff.mc}", flush=True)
@@ -57,7 +61,7 @@ while done < a.steps:
 el = time.time() - t0
 o = sim.observables()
 print(f"{sim.sys.n} atoms, dt {a.dt * 1000:g} fs, {a.precision}: {el / done * 1e3:.3f} ms/step, "
-      f"{done * a.dt / 1000 / el * 86400:.1f} ns/day; T {o['temp_K']:.1f} K, CG iters {o['cg_iter']} (max {o['cg_iter_max']}), "
+      f"{done * a.dt / 1000 / el * 86400:.1f} ns/day; T {o['temp_K']:.1f} K, CG iters {o['cg_mean']:.2f} mean (max {o['cg_iter_max']}), "
       f"shake {o['shake_err']:.1e}", flush=True)
 mem = jax.devices()[0].memory_stats() or {}
 if "peak_bytes_in_use" in mem:

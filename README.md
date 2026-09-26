@@ -16,7 +16,8 @@ any order. Validated against Amber (sander, pmemd-pgm) and PyRESP.
   parameters of analytic terms once; MD cost = classical terms).
 - **Systems:** gas phase (`Model`), periodic (`PeriodicModel`, Ewald, triclinic boxes), and
   **molecular dynamics with JAX-MD** (`pgm_jax.md`: smooth PME, neighbour lists, pmemd-pgm's induction
-  solver, rigid or flexible molecules, NVE / Langevin NVT / Monte Carlo NPT, Amber inputs and outputs).
+  solver, rigid or flexible molecules, NVE / NVT (Langevin, Bussi, smooth GLE) / Monte Carlo NPT, Amber
+  inputs and outputs).
 - **Parameterization:** gradients of QM losses (energies, forces, dipoles, ESP) by autodiff;
   gradients of liquid properties (density, heat of vaporization) by fluctuation formulas over MD
   frames; bonded terms for flexible pGM molecules (`pgm_jax.bonded`).
@@ -130,9 +131,18 @@ How it works:
   (the energy is variational in mu).
 - **Rigid molecules** (every molecule; the model has no bonded terms) as JAX-MD rigid bodies:
   NO_SQUISH quaternion integration from JAX-MD `simulate`. Equivalent to SHAKE-rigid water.
-- **Thermostat**: BAOAB Langevin with an exact Ornstein-Uhlenbeck step on centre-of-mass and
-  body-frame angular momenta. **Barostat**: isotropic Monte Carlo, molecular scaling (Amber
-  `barostat=2`), adaptive step.
+- **Thermostats** (`thermostat=` in `Simulation` / `FlexibleSimulation`, `pgm_jax/md/thermostats.py`): BAOAB with an
+  exact O step on the mass-scaled momenta (for rigid bodies, centre-of-mass and body-frame angular momenta).
+  - `"langevin"` (friction `gamma`, the default): white noise per degree of freedom.
+  - `"bussi"` (time constant `tau_t`): global stochastic velocity rescaling. It is the fastest
+    choice. Per-atom white noise roughens the trajectory and spoils the dipole predictor: pGM
+    water at 1 fs needs 6 CG iterations with Langevin 1/ps and 4 (as in NVE) with Bussi.
+  - `"gle"`: a slow-band generalized Langevin thermostat. Every degree of freedom is coupled to
+    the bath, the noise is smooth in time, and CG stays at 4 iterations.
+  The heat of each O step is booked, so `observables()["econs"]` = E_tot + |aux|^2/2 - heat is
+  conserved up to integration and induction errors, as E_tot is in NVE.
+  Measurements and theory: `docs/thermostat_ideas.md`.
+- **Barostat**: isotropic Monte Carlo, molecular scaling (Amber `barostat=2`), adaptive step.
 - **Differentiable forces and dipoles** (`MDSettings(differentiable=True)`): `compute()` returns
   energy, forces and induced dipoles that `jax.grad` / `jax.vjp` can differentiate with respect to
   the parameters, positions and box, e.g. for force or dipole matching. The dipole solve is
@@ -196,7 +206,7 @@ electrostatics already includes every intramolecular pair, so a flexible molecul
     E_intra = E_bonded(R) + LJ over pairs >= lj_min_sep bonds apart (+ lj14_scale x 1-4 LJ),
 
 exactly the gas-phase model the bonded terms were fitted with. Atoms are integrated individually
-(velocity Verlet / BAOAB Langevin; the MC barostat scales molecular centres), molecules are kept
+(velocity Verlet / BAOAB with any of the thermostats; the MC barostat scales molecular centres), molecules are kept
 whole across the boundaries, and the neighbour list is still built between molecular centres
 (with the molecule's radius plus a margin, checked every block).
 
@@ -318,6 +328,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/model.py` | gas-phase `Model`: energies, forces, batching, n-body energies (compiled once per topology) |
 | `pgm_jax/param.py` | Amber pGM prmtop reader (incl. LJ, bonds, masses), JSON save/load, py_resp `.chg` + pGM-pol table, atom mapping |
 | `pgm_jax/md/` | MD engine: `forcefield.py` (PME + direct rows + induction solver), `pme.py`, `kernels.py`, `neighbors.py` (JAX-MD lists), `rigid.py` (JAX-MD rigid bodies), `integrate.py`, `simulation.py`, `io.py` (Amber NetCDF), `box.py` |
+| `pgm_jax/md/thermostats.py` | `Langevin`, `Bussi` (global rescaling, fastest with pGM), `GLE` (`GLE.band()`: smooth slow-band kernel), exact O steps, heat bookkeeping |
 | `pgm_jax/md/flexible.py` | flexible molecules in MD: `FlexibleTemplate` (bonded fit -> MD), `RigidTemplate` (water, ions by constraints), `FlexibleSimulation` (atoms, g-BAOAB with SHAKE / RATTLE, `constraints="h-bonds"`, `hmr`), `liquid_box` |
 | `pgm_jax/protein/` | proteins: `residues` (bond orders, terminal keys), `library` (`ResidueLibrary`: pGM parameters by residue and atom name, JSON), `amber` (`load_amber`: tleap system -> pgm_jax molecules; `amber_template`: ff19SB-form bonded terms + CMAP) |
 | `scripts/protein/` | `build_amber.py` (PDB -> solvated tleap topology), `bench_protein.py` (speed of a solvated protein) |
@@ -332,7 +343,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `scripts/bonded/` | the bonded study: sampling, DFT labels, pGM parameters, experiments, report |
 | `scripts/run_md.py` | MD from an Amber prmtop + inpcrd/rst7 (Amber-style options) |
 | `scripts/bench_md.py`, `scripts/pgm_supercell.py` | MD speed benchmark; replicate a pGM prmtop for larger systems |
-| `tests/` | `pytest -q`: 87 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
+| `tests/` | `pytest -q`: 94 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
 | `scripts/validate_amber.py` | comparison with sander / pmemd-pgm / PyRESP (`compare`, `pyresp`, `virial`) |
 | `scripts/bench.py` | timings on the current device |
 | `validation/` | Amber reference runs (inputs + outputs) and `validate_amber.json` |

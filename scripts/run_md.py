@@ -36,6 +36,9 @@ def main(argv=None):
     ap.add_argument("--dt", type=float, default=1.0, help="fs")
     ap.add_argument("--temp", type=float, default=298.0, help="K (temp0)")
     ap.add_argument("--gamma", type=float, default=2.0, help="Langevin friction, 1/ps (gamma_ln)")
+    ap.add_argument("--thermostat", default="langevin", choices=["langevin", "bussi", "gle"],
+                    help="langevin (ntt=3), bussi (ntt=11, fastest with pGM), gle (smooth slow-band)")
+    ap.add_argument("--tautp", type=float, default=1.0, help="Bussi time constant, ps (tautp)")
     ap.add_argument("--press", type=float, default=1.0, help="bar (pres0)")
     ap.add_argument("--barostat-interval", type=int, default=100, help="steps between MC volume moves (mcbarint)")
     ap.add_argument("--cut", type=float, default=9.0, help="A: direct space and LJ cutoff")
@@ -71,6 +74,7 @@ def main(argv=None):
                     precision=a.precision)
     sim = Simulation.from_amber(a.prmtop, a.coords, use_velocities=not a.no_velocities, settings=st,
                                 dt=a.dt / 1000, ensemble=a.ensemble, temperature=a.temp, gamma=a.gamma,
+                                thermostat=a.thermostat, tau_t=a.tautp,
                                 pressure=a.press, barostat_interval=a.barostat_interval, seed=a.seed)
     if a.checkpoint:
         sim.load(a.checkpoint)

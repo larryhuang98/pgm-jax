@@ -42,7 +42,7 @@ from ._jaxmd import simulate
 from .box import check_box, inv3, reduce_box, volume
 from .constraints import Constraints, repartition_masses
 from .forcefield import MDSettings, PGMForceField
-from .integrate import KB, Dynamics, Integrator, MDState
+from .integrate import KB, Dynamics, Integrator, MDState, upgrade_state
 from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .rigid import _unwrap
 from .simulation import Simulation
@@ -330,10 +330,10 @@ class FlexibleMolecules:
 
 # ----------------------------------------------------------------------------- integrator
 class FlexibleIntegrator(Integrator):
-    """Velocity Verlet (NVE) / BAOAB Langevin (NVT) on atoms, with constraints in g-BAOAB order
-    (SHAKE after every drift, RATTLE after every kick and friction step); NPT adds the Monte Carlo
-    barostat with molecular scaling (centres of mass scaled, molecules translated rigidly, which
-    keeps the constraints)."""
+    """Velocity Verlet (NVE) / BAOAB (NVT, thermostats.py: Langevin, Bussi or GLE) on atoms, with
+    constraints in g-BAOAB order (SHAKE after every drift, RATTLE after every kick and thermostat
+    step; GLE auxiliaries are projected too); NPT adds the Monte Carlo barostat with molecular
+    scaling (centres of mass scaled, molecules translated rigidly, which keeps the constraints)."""
 
     def __init__(self, ff: PGMForceField, flex: FlexibleMolecules, neighbors, dt: float = 0.0005,
                  constraints: Constraints | None = None, **kw):
@@ -372,10 +372,23 @@ class FlexibleIntegrator(Integrator):
             dyn = dyn.set(momentum=self.cons.momenta(pos, dyn.momentum, self.flex.masses))
         z = jnp.zeros((), jnp.float64)
         zi = jnp.zeros((), jnp.int32)
+        dyn, aux = self._init_aux(dyn)
         st = MDState(dyn=dyn, box=box, induction=self.ff.init_induction(), nbr=nbr, epot=z, elec=z, vdw=z,
                      iters=zi, max_iters=zi, resid=z, step=zi, mc=jnp.zeros(4, jnp.int32),
-                     mc_dv=jnp.asarray(0.01 * float(volume(box)), jnp.float64), overflow=jnp.zeros((), bool))
+                     mc_dv=jnp.asarray(0.01 * float(volume(box)), jnp.float64), overflow=jnp.zeros((), bool),
+                     aux=aux, heat=z, cg_total=z)
         return self.forces(st, False)
+
+    def _scaled(self, dyn: Dynamics):
+        """Mass-scaled atomic momenta; the projection keeps them (and the thermostat
+        auxiliaries) on the constraint tangent space."""
+        sm = jnp.sqrt(dyn.mass)
+        q = dyn.position
+        if self.cons is None:
+            project = lambda u: u                                      # noqa: E731
+        else:
+            project = lambda u: self.cons.momenta(q, u * sm, self.flex.masses) / sm   # noqa: E731
+        return dyn.momentum / sm, None, (lambda v: dyn.set(momentum=v * sm)), project
 
     # ------------------------------------------------------------------ constrained steps (g-BAOAB)
     def _kick(self, dyn: Dynamics, h: float) -> Dynamics:
@@ -392,27 +405,20 @@ class FlexibleIntegrator(Integrator):
         if self.cons is None:
             return super()._step(st)
         dt = self.dt
+        aux, heat = st.aux, st.heat
         dyn = self._kick(st.dyn, dt / 2)
         if self.ensemble == "nve":
             dyn = self._drift(dyn, dt)
         else:
             dyn = self._drift(dyn, dt / 2)
-            dyn = self._ou_step(dyn, dt)
-            dyn = dyn.set(momentum=self.cons.momenta(dyn.position, dyn.momentum, self.flex.masses))
+            dyn, aux, heat = self._o_step(dyn, aux, heat, dt)
             dyn = self._drift(dyn, dt / 2)
         F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr)
-        st = self._with_result(st.set(dyn=dyn), F, res, nbr)
+        st = self._with_result(st.set(dyn=dyn, aux=aux, heat=heat), F, res, nbr)
         st = st.set(dyn=self._kick(st.dyn, dt / 2), step=st.step + 1)
         if self.ensemble == "npt":
             st = jax.lax.cond(st.step % self.interval == 0, self._barostat, lambda s: s, st)
         return st
-
-    def _ou_step(self, dyn: Dynamics, dt: float) -> Dynamics:
-        key, k1 = jax.random.split(dyn.rng)
-        c = jnp.exp(-self.gamma_value * dt)
-        s = jnp.sqrt(self.kT * (1.0 - c * c))
-        P = c * dyn.momentum + s * jnp.sqrt(dyn.mass) * jax.random.normal(k1, dyn.momentum.shape, dyn.momentum.dtype)
-        return dyn.set(momentum=P, rng=key)
 
     def _barostat(self, st: MDState) -> MDState:
         key, k1, k2 = jax.random.split(st.dyn.rng, 3)
@@ -475,7 +481,8 @@ class FlexibleSimulation(Simulation):
                  dt: float = 0.0005, ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0,
                  pressure: float = 1.0, barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None,
                  params=None, log=None, neighbor_list: str = "auto", r_margin: float = 0.05,
-                 constraints: str = "none", hmr: float | None = None, max_single: int | None = None):
+                 constraints: str = "none", hmr: float | None = None, max_single: int | None = None,
+                 thermostat="langevin", tau_t: float = 1.0):
         H = reduce_box(H_nm)
         check_box(H, settings.cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
@@ -502,14 +509,16 @@ class FlexibleSimulation(Simulation):
         self._size_lists(pos0, H)
         self.integ = FlexibleIntegrator(self.ff, self.flex, self.nb, dt, constraints=self.constraints,
                                         ensemble=ensemble, temperature=temperature, gamma=gamma, pressure=pressure,
-                                        barostat_interval=barostat_interval, params=params)
+                                        barostat_interval=barostat_interval, params=params,
+                                        thermostat=thermostat, tau_t=tau_t)
         self.dt, self.ensemble, self.T0 = dt, ensemble, temperature
         mom = None if vel_nm_ps is None else self.flex.mass * jnp.asarray(vel_nm_ps)
         self.state = self.integ.init(pos0, H, jax.random.PRNGKey(seed), mom)
         self.time_ps = 0.0
         nflex = sum(1 for t in templates if t.has_bonded)
         self._print(f"# pgm_jax MD: {sys.nmol} molecules ({nflex} flexible), {sys.n} atoms, "
-                    f"{self.topology.n_group} list groups, {self.constraints.nc} constraints, {ensemble.upper()}, "
+                    f"{self.topology.n_group} list groups, {self.constraints.nc} constraints, {ensemble.upper()}"
+                    f"{'' if self.integ.thermostat is None else ' (' + self.integ.thermostat.describe() + ')'}, "
                     f"dt {dt * 1000:g} fs, {settings.precision} precision, PME grid {self.ff.pme.K} order "
                     f"{settings.pme_order}, cutoff {settings.cutoff} nm, {self.nb.kind} neighbour list (group radius "
                     f"{self.r_list:.3f} nm), dipole tol {settings.dipole_tol:g}, device {jax.devices()[0]}")
@@ -610,7 +619,7 @@ class FlexibleSimulation(Simulation):
     def load(self, path: str):
         with open(path, "rb") as fh:
             d = pickle.load(fh)
-        st = jax.tree_util.tree_map(jnp.asarray, d["state"])
+        st = upgrade_state(jax.tree_util.tree_map(jnp.asarray, d["state"]), self.state.aux)
         pos = st.dyn.position
         self.state = st.set(nbr=self.nb.allocate(pos, self.flex.list_centers(pos), st.box))
         self.time_ps = d["time_ps"]

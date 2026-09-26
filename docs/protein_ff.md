@@ -57,8 +57,9 @@ tpl = amber_template(asys.molecules[k], "runs/protein/ubq.prmtop")          # ff
 #                              tpl = FlexibleTemplate.from_network(net, P, asys.molecules[k].spec, lj14_scale=0.5)
 sim = FlexibleSimulation(asys.system(), asys.templates({k: tpl}), asys.system_positions(), asys.box,
                          MDSettings(dipole_tol=1e-4), dt=0.002, ensemble="npt",
-                         constraints="h-bonds", hmr=3.024)
-sim.minimize(300)
+                         constraints="h-bonds", hmr=3.024,
+                         thermostat="bussi", tau_t=1.0)   # fastest with pGM (docs/thermostat_ideas.md)
+sim.minimize(300)            # after minimization, equilibrate with thermostat="langevin" (faster warm-up)
 sim.run(500000, report=5000, traj=5000, prefix="ubq")
 ```
 
@@ -158,6 +159,9 @@ constraints --grid 36`): 12k atoms 2.14 ms/step, 41k 11.9, 98k 35.0, with 6-7 CG
 - **dipole tol 1e-4 on top:** 64 ns/day, 1.9x the baseline.
 - **Local preconditioner** (`local_niter` 2, 0.3 nm): 13 -> 7 iterations, but only 7 % faster.
   The inner sweeps cost about what they save, as in pmemd-pgm.
+- **Thermostat** (`thermostat="bussi"`): per-atom Langevin noise spoils the dipole predictor.
+  Ubiquitin at 2 fs: 34.2 -> 36.1 ns/day; at 1 fs: 19.7 -> 21.7 ns/day (CG 10.4 -> 8.4).
+  Together with the cutoff lever and tol 1e-4: 63.4 ns/day at 2 fs. See docs/thermostat_ideas.md.
 - **Truncated octahedron** (`build_amber.py --box oct`): ubiquitin 15,955 -> 15,238 atoms,
   34 -> 38 ns/day. DHFR 25,780 -> 22,492 atoms, 22.5 -> 25.7 ns/day.
 - **Langevin thermostat and the dipole predictor.** Langevin (BAOAB here, ntt=3 in pmemd) gives

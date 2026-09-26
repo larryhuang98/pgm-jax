@@ -1,7 +1,8 @@
 # Thermostats for polarizable MD: why Langevin hurts the dipole predictor, and what to use instead
 
-Status: research notes with prototype measurements (2026-09-25). The prototypes live in
-`runs/langevin/` on the cluster (`pred.py`, `gle.py`); nothing here is in the MD engine yet.
+Status: implemented in `pgm_jax/md/thermostats.py`: `thermostat="langevin" | "bussi" | "gle"` in
+`Simulation` and `FlexibleSimulation`; tests in `tests/test_thermostats.py`. Section 7 gives the
+engine benchmarks. The research prototypes live in `runs/langevin/` on the cluster.
 All numbers: pGM water, 4096 molecules (12k atoms), constraints engine, tol 1e-5, 1 fs unless noted.
 
 ## 1. The effect
@@ -215,6 +216,32 @@ dy = -A dt y + B dW.
    - D 3.95 (-7.5 %; Langevin 1/ps -17 %).
    Relative to Langevin 1/ps it gives the same thermalization and H~ drift, 2 fewer CG
    iterations, and half the diffusion perturbation.
+
+## 3e. In the engine (thermostats.py): speed and temperature
+
+Mean CG iterations per step and ns/day; one RTX PRO 6000; tol 1e-5; X-H constraints + HMR for
+the proteins. "GLE" is `GLE.band()`: peak 3/ps at 20 rad/ps, width 30, floor 0.1/ps.
+
+| system | dt | Langevin 1/ps | Bussi 1 ps | GLE |
+|---|---|---|---|---|
+| water 12k (constraints) | 1 fs | 39.4 ns/day, 6.00 | 46.1, 4.01 | 46.2, 4.00 |
+| water 12k | 2 fs | 76.6, 6.50 | 79.8, 6.00 | 81.4, 6.00 |
+| ubiquitin 16k | 1 fs | 19.7, 10.4 | 21.7, 8.4 | 21.9, 8.2 |
+| ubiquitin 16k | 2 fs | 34.2, 13.2 | 36.1, 12.6 | 34.5, 12.7 |
+| DHFR 26k | 2 fs | 22.4, 13.5 | 22.7, 13.0 | 22.7, 13.0 |
+
+- **Gains by setting.** The thermostat buys +17 % at 1 fs. At 2 fs the gain is 2-6 %, because
+  the time-step error dominates the predictor there.
+- **Temperature, ubiquitin, 40 ps after minimization, 2 fs.** Mean T over the last 20 ps:
+  Langevin 295.7 K, Bussi 296.2 K, GLE 295.3 K. All three are about 2 K low, the kinetic
+  discretization offset at 2 fs.
+- **Warm-up from a minimized structure.**
+  - Langevin reaches T in about 4 ps.
+  - Bussi with tau 1 ps needs about 6 ps.
+  - GLE needs about 20 ps: its coupling to the fast protein modes is weak by design.
+  So equilibrate with Langevin (or Bussi with a short tau), and run production with Bussi.
+- **Combined with the cutoff lever.** Ubiquitin at 2 fs with Bussi, a 0.7 nm cutoff /
+  beta 5.14 / 0.062 nm grid, and tol 1e-4: 63.4 ns/day, against 34.2 with the Langevin defaults.
 
 ## 4. Prior art (literature search 2026-09-25; "not found" means not found, not proven new)
 

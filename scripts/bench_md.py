@@ -40,6 +40,8 @@ def main():
     ap.add_argument("--tol", type=float, default=1e-5)
     ap.add_argument("--lrc", type=int, default=1)
     ap.add_argument("--gamma", type=float, default=1.0)
+    ap.add_argument("--thermostat", default="langevin", help="langevin | bussi | gle")
+    ap.add_argument("--tau", type=float, default=1.0, help="Bussi time constant (ps)")
     ap.add_argument("--grid", type=int, default=48, help="PME points per replica along each lattice vector")
     ap.add_argument("--skin", type=float, default=0.1)
     ap.add_argument("--engine", default="rigid", help="rigid (rigid bodies) | constraints (atoms + SHAKE/RATTLE, "
@@ -58,13 +60,14 @@ def main():
                     dipole_tol=a.tol, precision=a.precision)
     if a.engine == "rigid":
         sim = Simulation(sys_, pos, H * n, settings=st, ensemble=a.ensemble, temperature=298.0, gamma=a.gamma,
-                         barostat_interval=100, dt=a.dt, vel_nm_ps=v, log=sys.stdout)
+                         barostat_interval=100, dt=a.dt, vel_nm_ps=v, log=sys.stdout,
+                         thermostat=a.thermostat, tau_t=a.tau)
     else:
         from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
         tpl = {id(m): RigidTemplate(m, pos[sys_.atom_slice(k)]) for k, m in enumerate(sys_.molecules)}
         sim = FlexibleSimulation(sys_, [tpl[id(m)] for m in sys_.molecules], pos, H * n, settings=st,
                                  ensemble=a.ensemble, temperature=298.0, gamma=a.gamma, barostat_interval=100,
-                                 dt=a.dt, log=sys.stdout)
+                                 dt=a.dt, log=sys.stdout, thermostat=a.thermostat, tau_t=a.tau)
     sim._advance(1000)                                          # compile + warm up
     t0 = time.time()
     done = 0
@@ -76,7 +79,7 @@ def main():
     print(f"{a.engine}: {sys_.nmol} waters ({sys_.n} atoms), dt {a.dt * 1000:g} fs, {a.precision}, {a.ensemble}, cut {a.cut} nm, PME {grid} order {a.order}, "
           f"tol {a.tol:g}, skin {a.skin}, rows {sim.ff.mc}: {el / done * 1e3:.3f} ms/step, "
           f"{done * a.dt / 1000 / el * 86400:.1f} ns/day; T {o['temp_K']:.1f} K, density {o['density_g_cm3']:.4f}, "
-          f"CG iters {o['cg_iter']}, max {o['cg_iter_max']}", flush=True)
+          f"CG iters {o['cg_mean']:.2f} mean, max {o['cg_iter_max']}", flush=True)
 
 
 if __name__ == "__main__":
