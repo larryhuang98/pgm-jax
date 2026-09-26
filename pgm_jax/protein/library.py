@@ -64,7 +64,10 @@ class ResidueLibrary:
     @classmethod
     def placeholder(cls, prmtop: str, pol_table: dict | None = None) -> "ResidueLibrary":
         """Amber charges and pGM polarizabilities / radii by atom type (GAFF equivalents, element
-        defaults), no covalent dipoles; one entry per residue name of the prmtop (first instance)."""
+        defaults), no covalent dipoles; one entry per residue name of the prmtop (first instance).
+        Amber extra points (type EP: virtual sites) keep their charge as a point charge
+        (md/vsites.py POINT_RADIUS) and get no polarizability."""
+        from ..md.vsites import AMBER_EP_TYPE, POINT_RADIUS
         pt = Prmtop.read(prmtop)
         tab = pol_table or read_pol_table()
         names, types = pt.get("ATOM_NAME"), pt.get("AMBER_ATOM_TYPE")
@@ -80,6 +83,9 @@ class ResidueLibrary:
             for a in range(ptr[r], ptr[r + 1]):
                 e = _ZEL.get(int(Z[a]), "C")
                 t = types[a].lower()
+                if types[a].strip() == AMBER_EP_TYPE:
+                    atoms[names[a]] = {"q": float(q[a]), "alpha_nm3": 0.0, "radius_nm": POINT_RADIUS}
+                    continue
                 if ptr[r + 1] - ptr[r] == 1 and e in _ION:
                     alpha, rad = _ION[e]
                 else:

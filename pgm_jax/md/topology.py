@@ -16,6 +16,10 @@ pGM electrostatics has no exclusions, but the van der Waals term does, and molec
                   the model the bonded terms were fitted with
   constraints     distance constraints (i, j, d0): rigid molecules by constraints (water: three
                   distances), X-H bonds of flexible ones (md/constraints.py)
+  virtual sites   (Molecule.vsites, md/vsites.py) are part of their host atom: same group, the
+                  host's graph distances (weight 0 to the host itself and to what the host is
+                  excluded from, as Amber's extra points); bonds to sites are not graph bonds;
+                  sites cannot be constrained
 
 MDTopology.rigid(sys) reproduces the rigid-body engine (groups = molecules, every intramolecular pair
 special with weight 0, no constraints).  Units nm."""
@@ -126,7 +130,11 @@ class MDTopology:
         """(local groups, n groups, special partners [(atom, weight)] per atom, special groups per
         group, constraints) of one molecule."""
         n = m.n
-        bonds = [(int(i), int(j)) for i, j in rule.bonds]
+        host = {vs.site: vs.host for vs in (getattr(m, "vsites", None) or ())}          # site -> host atom
+        bonds = [(int(i), int(j)) for i, j in rule.bonds if int(i) not in host and int(j) not in host]
+        bad = [(i, j) for i, j, _ in rule.constraints if i in host or j in host]
+        if bad:
+            raise ValueError(f"{m.name}: constraints {bad} involve virtual sites (sites are placed, not constrained)")
         if n <= max_single or not bonds:
             lg = np.zeros(n, int)
         else:
@@ -134,6 +142,10 @@ class MDTopology:
                 raise ValueError(f"{m.name}: a molecule without intramolecular van der Waals must be one group "
                                  f"({n} atoms > {max_single})")
             lg = heavy_atom_groups(list(m.elements), bonds)
+            if host:                                   # a site joins its host's group (renumbered, no empty groups)
+                for a, h in host.items():
+                    lg[a] = lg[h]
+                lg = np.unique(lg, return_inverse=True)[1].reshape(-1)
         n_lg = int(lg.max()) + 1 if n else 0
         depth = max(3, int(rule.lj_min_sep) - 1)
         nbr = [[] for _ in range(n)]
@@ -147,6 +159,9 @@ class MDTopology:
 
         def weight(i, j):
             if rule.vdw == "none":
+                return 0.0
+            i, j = host.get(i, i), host.get(j, j)                  # a site takes its host's place in the graph
+            if i == j:
                 return 0.0
             d = near.get((min(i, j), max(i, j)), depth + 1)
             return float(d >= rule.lj_min_sep) + float(rule.lj14_scale) * (d == 3)

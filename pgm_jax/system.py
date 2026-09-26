@@ -41,6 +41,11 @@ quantity with `Molecule(keys={quantity: [key per atom or per covalent dipole]})`
 pGM conventions (Wei et al. JCP 2020; Wang et al. JCTC 2019): all atom pairs interact in the
 electrostatics (no 1-2/1-3 masking); permanent dipoles are covalent dipoles along covalent
 basis vectors to bonded or virtually bonded atoms.
+
+Virtual sites (md/vsites.py): massless atoms of a molecule (element "EP", Amber's extra points,
+gets mass 0) whose positions are functions of other atoms, listed in `Molecule.vsites`; they carry
+parameters like any atom.  Gas-phase and Ewald models take their positions as given; the MD
+engines place them and spread their forces.
 """
 from __future__ import annotations
 
@@ -59,7 +64,7 @@ BY_MOLECULE = ("q",)                                                 # default: 
 
 MASSES = {"H": 1.008, "Li": 6.94, "C": 12.011, "N": 14.007, "O": 15.999, "F": 18.998, "Na": 22.990,
           "P": 30.974, "S": 32.06, "Cl": 35.45, "K": 39.098, "Br": 79.904, "Rb": 85.468, "I": 126.90,
-          "Cs": 132.91}
+          "Cs": 132.91, "EP": 0.0}                                   # EP: extra point (virtual site), massless
 
 
 @dataclass
@@ -81,6 +86,7 @@ class Molecule:
     masses: np.ndarray | None = None          # (m,) amu             None -> element masses
     keys: dict[str, list[str]] = field(default_factory=dict)          # tying-key overrides per quantity
     extra: dict = field(default_factory=dict)  # per-atom arrays for later channels
+    vsites: list = field(default_factory=list) # virtual sites (md/vsites.py VirtualSite, local indices)
 
     def __post_init__(self):
         m = len(self.elements)
@@ -98,6 +104,7 @@ class Molecule:
                        else np.asarray(self.masses, float).reshape(m))
         self.cov = [(int(i), int(j), float(c)) for i, j, c in self.cov]
         self.bonds = [(int(i), int(j)) for i, j in self.bonds]
+        self.vsites = list(self.vsites or [])
         assert len(self.types) == m
 
     def __setstate__(self, state):
@@ -109,6 +116,8 @@ class Molecule:
                 setattr(self, name, np.full(m, fill))
         if getattr(self, "quad", None) is None:
             self.quad = []
+        if getattr(self, "vsites", None) is None:
+            self.vsites = []
 
     @property
     def n(self) -> int:
@@ -132,7 +141,8 @@ class Molecule:
     def symmetry_classes(self) -> np.ndarray:
         """Canonical class id per atom (colour refinement; independent of the atom order)."""
         adj = [set() for _ in range(self.n)]
-        for i, j in list(self.bonds) + [(i, j) for i, j, _ in self.cov]:
+        site_edges = [(vs.site, a) for vs in self.vsites for a in vs.atoms]      # a virtual site and its parents
+        for i, j in list(self.bonds) + [(i, j) for i, j, _ in self.cov] + site_edges:
             if i != j:
                 adj[i].add(j)
                 adj[j].add(i)

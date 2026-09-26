@@ -11,8 +11,10 @@ solvent, ions) and this module turns it into pgm_jax molecules.
     hmr = asys.hmr({"water": 4.0, "protein": 3.024, "ion": None})
     rs = asys.position_restraints(418.4, "backbone", sim.positions_nm(), sim.state.box)
 
-Molecules are the connected components of the bond graph; kind "water" (a 3-atom residue with a
-water name), "ion" (one atom), "protein" (anything with a peptide backbone) or "other".  pGM
+Molecules are the connected components of the bond graph; kind "water" (a residue with a water
+name and three atoms, plus any extra points: TIP4P-Ew, OPC, TIP5P), "ion" (one atom), "protein"
+(anything with a peptide backbone) or "other".  Amber extra points (type EP) become virtual sites
+of their molecule (Molecule.vsites, Amber's frames: md/vsites.py); outside water they are refused.  pGM
 electrostatics come from a ResidueLibrary, from the prmtop itself when it is a pGM prmtop
 (POL_GAUSS_* sections; electrostatics="prmtop"), or from `ResidueLibrary.placeholder(prmtop)`.
 Water can be replaced by a given pGM water model (`water=`: Molecule, atoms in the prmtop's order).
@@ -25,7 +27,7 @@ import numpy as np
 
 from ..bonded.model import MolSpec
 from ..md.io import box_from_cell, read_coordinates
-from ..param import _prmtop_lj, _prmtop_sections
+from ..param import _prmtop_lj, _prmtop_sections, prmtop_extra_points
 from ..prmtop import Prmtop
 from ..system import Molecule, System
 from .library import ResidueLibrary
@@ -179,7 +181,8 @@ def load_amber(prmtop: str, inpcrd: str, electrostatics="placeholder", water: Mo
     names = pt.get("ATOM_NAME")
     n = len(names)
     Z = pt.get("ATOMIC_NUMBER")
-    el = [_EL[int(z)] for z in Z]
+    eps = prmtop_extra_points(s)                              # extra points -> virtual sites
+    el = ["EP" if a in eps else _EL[int(z)] for a, z in enumerate(Z)]
     types = pt.get("AMBER_ATOM_TYPE")
     mass = pt.get("MASS")
     labels = pt.get("RESIDUE_LABEL")
@@ -243,12 +246,18 @@ def load_amber(prmtop: str, inpcrd: str, electrostatics="placeholder", water: Mo
         loc = {int(a): k for k, a in enumerate(atoms)}
         lbonds = [(loc[i], loc[j]) for i, j in bonds if i in loc]
         rn = [resn[a] for a in atoms]
+        n_ep = sum(1 for a in atoms if int(a) in eps)
         if len(atoms) == 1 and (rn[0] in IONS or el[atoms[0]] not in ("H", "C", "N", "O", "S")):
             kind = "ion"
-        elif len(atoms) == 3 and rn[0] in WATER:
+        elif len(atoms) - n_ep == 3 and rn[0] in WATER:
             kind = "water"
         else:
             kind = "other"
+        if n_ep and kind != "water":
+            raise NotImplementedError(f"molecule {c} ({rn[0]}, {len(atoms)} atoms) has Amber extra points: supported in "
+                                      "water only (the bonded models have no virtual sites)")
+        vs = [type(v)(loc[v.site], v.kind, tuple(loc[x] for x in v.atoms), v.params)       # local indices
+              for v in (eps[int(a)] for a in atoms if int(a) in eps)]
         ri = resi[atoms]
         key = (kind, tuple(rn), tuple(names[a] for a in atoms), tuple(np.round(q[atoms], 8)))
         if kind == "water" and water is not None:
@@ -259,7 +268,8 @@ def load_amber(prmtop: str, inpcrd: str, electrostatics="placeholder", water: Mo
             cov = [(loc[i], loc[j], cc) for i, j, cc in cov_global if i in loc]
             mol = Molecule(name=rn[0] if kind in ("water", "ion") else f"mol{c}", elements=[el[a] for a in atoms],
                            types=[types[a] for a in atoms], q=q[atoms], radius=rad[atoms], alpha=alp[atoms], cov=cov,
-                           lj_rmin_half=rh[atoms], lj_sqrt_eps=se[atoms], bonds=lbonds, masses=mass[atoms])
+                           lj_rmin_half=rh[atoms], lj_sqrt_eps=se[atoms], bonds=lbonds, masses=mass[atoms],
+                           vsites=vs)
             if kind in ("water", "ion"):
                 shared[key] = mol
         spec = None

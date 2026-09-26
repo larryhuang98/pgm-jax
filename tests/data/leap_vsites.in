@@ -1,0 +1,13 @@
+source leaprc.protein.ff19SB
+source leaprc.water.tip4pew
+m = sequence { ACE ALA NME }
+solvatebox m TIP4PEWBOX 4.5
+saveamberparm m pep_tip4pew.prmtop pep_tip4pew.inpcrd
+w = copy WAT
+solvatebox w TIP4PEWBOX 4.5 iso
+saveamberparm w tip4pew_small.prmtop tip4pew_small.inpcrd
+loadamberparams frcmod.tip5p
+v = copy TP5
+solvatebox v TIP5PBOX 4.0 iso
+saveamberparm v tip5p_small.prmtop tip5p_small.inpcrd
+quit
