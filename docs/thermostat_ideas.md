@@ -114,6 +114,108 @@ detrended H~ over 1 and 20 ps: it stays flat for a bounded fluctuation and grows
   - NVE drift at tol 1e-4 is -0.005 to +0.0015 kT/ns/dof.
   - Measuring H~ in pmemd needs a patch that accumulates the heat of the Langevin update.
 
+## 3c. After equilibration: E_tot is stationary, H~ still drifts
+
+A thermostatted run must have a stationary E_tot once equilibrated. The heat produced by
+integration and SCF errors is removed by the thermostat. For gamma = 1/ps and an NVE heating rate
+of 0.0035 kT/ns/dof, the steady-state temperature shift is about r/(2 gamma), i.e. 2e-6 relative,
+invisible. A persistent E_tot trend after equilibration therefore means the run is not
+equilibrated, or there is a bug. The H~ drift of section 3b is a different quantity: the
+bookkeeping of the heat the thermostat silently absorbs.
+
+- **pmemd-pgm**, 500 ps Bussi equilibration, then 1 ns per thermostat at 2 fs
+  (`runs/langevin/drift/parse_prod.py`). E_tot trends in kcal/mol/ns, from 10 block means:
+  - ntt=3, gamma 1: -7.6 +- 19.6 (shipped solver), +20.9 +- 14.6 (mu4 fused)
+  - ntt=3, gamma 5: -2.9 +- 8.4 (shipped), +8.3 +- 7.8 (mu4)
+  - ntt=11 (Bussi): -67 +- 43 (shipped, partial parse), -5 +- 35 (mu4, before the failure below)
+  All are stationary. The trends in the earlier 250 ps runs were relaxation from the starting
+  structure.
+  - Failure to follow up in pmemd-pgm: the experimental mu4 + fused path with ntt=11 went to NaN
+    abruptly at step 277,500 (T about 299 K just before; no gradual heating). The shipped solver
+    with ntt=11 completed. Earlier 250 ps runs of the same combination were fine, so this is a
+    rare event.
+- **pgm_jax**, 100 ps Langevin equilibration, then 200 ps per thermostat at 2 fs. E_tot block
+  means are flat for Langevin within statistics; Bussi (tau 1 ps) was still relaxing. H~ drift
+  (kT/ns/dof):
+  - NVE +0.0034; Bussi +0.0034
+  - Langevin 1/ps +0.0051 (segments +0.0042 +- 0.0011); Langevin 5/ps +0.0125 (+0.0118 +- 0.0023)
+  - band-pass GLE +0.0073
+  These confirm section 3b.
+
+## 3d. Theory: can the memory kernel carry polarization information?
+
+Extended state z = (x, y), y = (p~, s) mass-scaled momenta and auxiliaries, O-part
+dy = -A dt y + B dW.
+
+1. **Pointwise FDT theorem.** If A = A(x) and B = B(x) depend on the configuration only, and
+   B(x) B(x)^T = kT (A(x) + A(x)^T) at every x, then rho ~ exp(-beta [U(x) + |y|^2/2]) is
+   invariant. The Hamiltonian Liouvillian annihilates any function of the energy. The O-part acts
+   at fixed x, and N(0, kT I) solves its Lyapunov equation. Polarization information may
+   therefore enter through anything that is a function of the current configuration:
+   - alpha_i, the permanent field E(x), the dipole tensor T(x);
+   - the converged BO dipoles mu*(x);
+   - the response Jacobian J(x) = d mu*/dx, or any approximation to it.
+   The approximation quality affects only efficiency, never the ensemble. The friction must be
+   smooth in x, or the splitting error and the shadow work grow.
+2. **Not allowed: dependence on velocities or on solver history.**
+   - dmu/dt = J v, the predictor error (a 4th difference along the trajectory), iteration counts,
+     residuals and past dipoles all carry momentum information.
+   - An O-step whose coefficients depend on p no longer preserves the Maxwellian: it needs the
+     Ito correction kT div_p (B B^T / 2kT) and more.
+   - A history-dependent rule makes the process non-Markovian in z, so the invariance argument
+     fails.
+   - "Adapt the friction to how badly the SCF is doing" is therefore wrong as a feedback rule.
+     The consistent way is to promote the feedback variable to a state variable with its own
+     FDT-consistent equation (as adaptive Langevin does for the friction). The ensemble is then
+     exact by construction.
+3. **Not allowed: thermalizing the polarization.** If the induced dipoles become dynamical bath
+   variables at temperature T (extended Lagrangian or Drude, or a Markovian kernel whose
+   auxiliaries are the dipoles), the nuclei see the free energy
+       F(x) = -1/2 E^T A^-1 E + (kT/2) ln det A(x) + const,   A = alpha^-1 - T(x).
+   The first term is the BO polarization energy. The second is a temperature-dependent,
+   many-body term from thermal dipole fluctuations: a classical "Drude dispersion" that the LJ
+   term already counts. The ensemble is exact only for cold auxiliaries (T* -> 0, the Drude dual
+   thermostat; stochastic XLMD with T ~ eps^1/2) or for SCF.
+   - A Fixman-like counter-potential -(kT/2) ln det A(x) would restore it. Its gradient,
+     tr(A^-1 dA), needs stochastic trace estimates, i.e. several extra solves per step.
+   - With finite-mass auxiliaries, integrating them out also puts a polarization memory into the
+     nuclear equation of motion, K(t) ~ J^T cos(Omega t) J. The dynamics is BO only when
+     Omega >> the nuclear frequencies.
+4. **Physics of the kernel.** In Mori-Zwanzig terms, projecting out the electrons of a
+   ground-state insulator gives an instantaneous (adiabatic) response, not a friction. Electronic
+   friction is nonadiabatic and exponentially small in the gap. A "polarization kernel" therefore
+   has no physical content: the thermostat is a sampling device. Its only physical requirement is
+   the ensemble (item 1). For dynamics, the requirement is to perturb the observables of interest
+   as little as possible.
+5. **Legitimate polarization-aware designs.**
+   - A configuration-dependent friction tensor that keeps noise out of the directions that move
+     the induced dipoles: Gamma(x) = gamma (I + c J~^T J~)^-1, where J~ is, for example, the local
+     direct-response Jacobian alpha dE_perm/dx. This is canonical by item 1. It needs a sparse
+     linear solve per step for the noise, so it is expensive for what it buys.
+   - The same weighting inside the smooth GLE couplings a(x).
+   - Long-wavelength-only noise is a cheap proxy: long-wavelength kicks barely change local fields.
+   The SCF goal is already met by temporal smoothness (noise through auxiliaries) or by global
+   rescaling, without any polarization information.
+6. **Design as an optimization over K(w)** (Markovian embedding, a_pp = 0):
+   - canonical: automatic, from pointwise FDT;
+   - SCF: small noise power near pi/h, and smoothness order k;
+   - energy bookkeeping (shadow work): integral K(w) w^2 h^2 g(w) dw small;
+   - thermalization: integral K(w) g(w) dw >= target;
+   - dynamics: K small at w -> 0 and in the band of the observables.
+   Fast modes (librations) equilibrate through anharmonic coupling, so a thermostat confined to
+   the slow band (about 5-50 rad/ps) serves all goals at once. The first band-pass (w0 50,
+   width 100 rad/ps) couples too strongly at 100 rad/ps, which is why its H~ drift is as large
+   as Langevin's.
+   Test of the principle, slow-band GLE (a 9.5, g 30, w0 20 /ps). Its K(w) at
+   0/10/30/100/300/1000 rad/ps is 0/1.50/2.30/0.27/0.03/0.003 per ps.
+   - H~ drift +0.0052 +- 0.0004 kT/ns/dof at 2 fs: fast band-pass 0.0073, Langevin 1/ps 0.0051,
+     NVE 0.0034.
+   - CG 4.00 at 1 fs (Langevin 6.00); cubic predictor error 9.0e-5 (NVE 7.9e-5).
+   - Cold start 146 K -> 277 K after 1 ps, the same as Langevin 1/ps (276 K).
+   - D 3.95 (-7.5 %; Langevin 1/ps -17 %).
+   Relative to Langevin 1/ps it gives the same thermalization and H~ drift, 2 fewer CG
+   iterations, and half the diffusion perturbation.
+
 ## 4. Prior art (literature search 2026-09-25; "not found" means not found, not proven new)
 
 | idea | status |
