@@ -28,7 +28,8 @@ point charges (q_O = -0.834 e; Gaussian radii 1e-4 nm, elec "q"), geometry and L
 The solute is the molecule --solute (0: the first water) with its own copy of the parameters.
 
 Flexible solutes (--solute-template, a FlexibleTemplate from pgm_jax.bonded, e.g. methanol): the
-molecule is put at the centre of the water box (waters within --clear nm of it removed) and the
+molecule is put at the centre of the water box (waters within --clear nm of it removed; with
+--rigid-solute it is held rigid at its reference geometry in the rigid engine instead) and the
 flexible engine runs everything (rigid waters by constraints, X-H bonds of the solute constrained,
 2 fs).  Its intramolecular electrostatics is kept at every lambda by the gas-phase correction
 (--intramolecular keep, the default for them): the decoupled state is the gas-phase molecule, so
@@ -128,6 +129,8 @@ def build(a):
         from pgm_jax.md.flexible import FlexibleTemplate
         mols, xyz, templates = insert_solute(FlexibleTemplate.load(a.solute_template), mols, xyz, H, a.clear)
         vel = None
+        if getattr(a, "rigid_solute", False):                 # the template's reference geometry, rigid
+            templates = None
         if a.solute != 0:
             raise ValueError("with --solute-template the solute is molecule 0")
     sys0 = System(mols)
@@ -346,6 +349,8 @@ def main():
     r.add_argument("--solute", type=int, default=0, help="molecule (residue) index of the solute")
     r.add_argument("--solute-template", help="flexible solute (FlexibleTemplate file) inserted into the water box")
     r.add_argument("--clear", type=float, default=0.25, help="nm: waters this close to the inserted solute are removed")
+    r.add_argument("--rigid-solute", action="store_true",
+                   help="hold the --solute-template molecule rigid at its reference geometry (rigid engine)")
     r.add_argument("--intramolecular", choices=["annihilate", "keep"],
                    help="solute's intramolecular electrostatics (default: annihilate for rigid, keep for flexible)")
     r.add_argument("--ns", type=float, default=2.0, help="length of every window (ns)")

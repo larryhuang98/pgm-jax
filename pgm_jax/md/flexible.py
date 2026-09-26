@@ -484,7 +484,8 @@ class FlexibleSimulation(Simulation):
     constraints: "none" | "h-bonds" (X-H bonds of the flexible templates; rigid templates are
     always constrained); hmr: hydrogen mass (amu) for mass repartitioning (the mass comes from the
     bonded heavy atom), None, or one value (or None) per molecule, e.g. AmberSystem.hmr({"water":
-    4.0, "protein": 3.024}) (constraints.hmr_masses); restraints: md/restraints.py."""
+    4.0, "protein": 3.024}) (constraints.hmr_masses); restraints: md/restraints.py; alchemy: an
+    alchemical region (md/alchemy.py)."""
 
     def __init__(self, sys: System, templates, pos_nm, H_nm, settings: MDSettings = MDSettings(),
                  dt: float = 0.0005, ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0,

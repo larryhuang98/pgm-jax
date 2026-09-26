@@ -466,8 +466,8 @@ def lone_solute(sys: System, solute: int, pos, box_nm: float = 4.0):
     sys's parameter table, so the same params and Alchemy(sub, 0) apply.  The periodic images of a
     neutral molecule contribute ~1e-3 kJ/mol at 4 nm (tests); run it with MDSettings(lj_lrc=False)
     (there is no continuum of other atoms), a PME grid for this box and an atom neighbour list
-    (neighbor_list="atom": a molecule list has no other molecule to list).  `pos`: positions of sys with
-    the solute whole."""
+    (neighbor_list="atom": a molecule list has no other molecule to list).  `pos`: positions of sys
+    with the solute whole."""
     sub, idx = sys.sub((int(solute),))
     x = np.asarray(pos, float)[idx]
     x = x - x.mean(axis=0) + 0.5 * float(box_nm)
@@ -486,8 +486,8 @@ def _select(mask, a, b):
 class LambdaWindows(MDReplicas):
     """The lambda windows of one Simulation or FlexibleSimulation with an alchemical region, at one
     temperature: the engine of FreeEnergyRun.  `lambdas` (K, 2) are the (lambda_elec, lambda_vdw)
-    of the windows (`standard_schedule`).  Every window starts from the current configuration of `sim` with
-    momenta drawn from its own random stream (`seed`) and forces at its own lambda.
+    of the windows (`standard_schedule`).  Every window starts from the current configuration of
+    `sim` with momenta drawn from its own random stream (`seed`) and forces at its own lambda.
 
     batched=True (NVT): the windows are one stacked state advanced by jax.vmap of the step (lambda
     traced in MDState.lam), one program for all windows; batched=False advances them one after the
