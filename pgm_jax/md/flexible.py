@@ -340,10 +340,12 @@ class FlexibleIntegrator(Integrator):
         self.flex = flex
         self.cons = constraints if (constraints is not None and constraints.nc) else None
         super().__init__(ff, flex, neighbors, dt, **kw)
+        if self.alchemy is not None:
+            raise NotImplementedError("alchemical regions (alchemy.py) run in the rigid-molecule engine (Simulation) only")
         nc = self.cons.nc if self.cons is not None else 0
         self.dof = 3 * flex.n - nc - (3 if self.ensemble == "nve" else 0)
 
-    def _forces(self, pos, box, induction, nbr, force_rebuild=False):
+    def _forces(self, pos, box, induction, nbr, force_rebuild=False, lam=None):
         centers = self.flex.list_centers(pos)
         nbr = self.nb.update(nbr, pos, centers, box, force_rebuild)
         cand, ovf = self.nb.candidates(nbr, centers, box, pos)
