@@ -17,7 +17,7 @@ any order. Validated against Amber (sander, pmemd-pgm) and PyRESP.
 - **Systems:** gas phase (`Model`), periodic (`PeriodicModel`, Ewald, triclinic boxes), and
   **molecular dynamics with JAX-MD** (`pgm_jax.md`: smooth PME, neighbour lists, pmemd-pgm's induction
   solver, rigid or flexible molecules, NVE / NVT (Langevin, Bussi, smooth GLE) / Monte Carlo NPT,
-  restraints, Amber inputs and outputs).
+  restraints, temperature replica exchange with batched replicas, Amber inputs and outputs).
 - **Parameterization:** gradients of QM losses (energies, forces, dipoles, ESP) by autodiff;
   gradients of liquid properties (density, heat of vaporization) by fluctuation formulas over MD
   frames; bonded terms for flexible pGM molecules (`pgm_jax.bonded`).
@@ -254,6 +254,70 @@ Hydrogen mass repartitioning (`hmr=`) takes one hydrogen mass for every molecule
 protein CH3 carbon does not (3 amu left), so the two get different masses. Ubiquitin with
 3.024 amu hydrogens runs stably at 4 fs, 1.6x the speed of 2 fs (`docs/protein_ff.md`).
 
+## Replica exchange
+
+`pgm_jax.md.remd` runs temperature replica exchange (parallel tempering) with either engine:
+`Simulation` (rigid molecules) or `FlexibleSimulation` (flexible molecules, proteins).
+
+```python
+from pgm_jax.md.remd import ReplicaExchange, geometric_ladder
+sim = FlexibleSimulation(sys, templates, pos, H, MDSettings(), dt=0.002, ensemble="nvt", temperature=300.0,
+                         thermostat="bussi", constraints="h-bonds", hmr=3.024)
+sim.minimize(300); sim.run(50000)                         # equilibrate at the lowest temperature
+rex = ReplicaExchange(sim, geometric_ladder(300.0, 400.0, 8), exchange_every=250)
+rex.run(2000000, report=5000, traj=500, restart=50000, prefix="ala3")      # 4 ns per replica
+rex.load("ala3.remd.chk")                                 # continue later (batched or sequential)
+```
+
+- **One compiled step for every temperature.** kB T is a state variable (`MDState.kT`), so all
+  replicas share one simulation object. By default (`batched=True`) they form one stacked state
+  advanced by `jax.vmap`, i.e. one program for all replicas; small systems gain most (table
+  below). `batched=False` advances the replicas one after the other through the engine's own
+  driver. Use it for NPT (under vmap a `lax.cond` with a per-replica predicate runs both branches,
+  so the barostat's trial energy would be computed every step) and for systems that fill the GPU
+  on their own.
+- **Exchanges** between neighbouring temperatures, even and odd pairs alternately (deterministic
+  even/odd, which gives more round trips than random pairs). The Metropolis test uses the reduced
+  energies u_i(x_j), which are beta_i (U + P V) for a temperature ladder. Momenta and thermostat
+  auxiliaries are rescaled by sqrt(T_new / T_old). Hamiltonian exchange would need only other
+  reduced energies and a force re-evaluation after each swap (`ReplicaExchange.reduced_energies`).
+- **What a swap moves:** positions, box, forces and energies, the induced dipoles with the
+  predictor history, the neighbour list, and the (rescaled) momenta and thermostat auxiliaries.
+  The temperature, the thermostat's random stream, the step counter and the barostat state stay
+  with the temperature slot. The exchanged energy is booked as heat, so `econs` of every
+  temperature keeps showing integration drift (swaps add only a small random walk).
+- **Outputs:** per temperature `prefix_Tkk.log` (with the replica index), `prefix_Tkk.nc` and
+  `prefix_Tkk.rst7`. For the whole run: `prefix_remd.log` (the replica at each temperature after
+  every exchange; `read_exchange_log`), `prefix_remd.json` (acceptance matrix, round trips,
+  ns/day), and the checkpoint `prefix.remd.chk` (every replica, statistics, exchange random
+  state).
+
+Validation (`scripts/protein/remd_peptide.py`, one RTX PRO 6000 Blackwell). ACE-(ALA)3-NME from
+tleap (`build_amber.py --sequence`, 8 A buffer: 580 waters, 1,782 atoms), placeholder pGM
+electrostatics, ff19SB-form bonded terms + CMAP, rigid water, X-H constraints + HMR, Bussi 1 ps,
+2 fs, mixed precision, NVT. 8 replicas at 300-400 K (geometric ladder), exchanges every 0.5 ps,
+4 ns per replica after 100 ps at 300 K; plain MD at 300 K of the same length from the same start:
+
+| Quantity | Result |
+|---|---|
+| Neighbour acceptance, 300 -> 400 K | 0.343, 0.346, 0.355, 0.368, 0.376, 0.391, 0.392 |
+| Round trips 300 -> 400 -> 300 K | 200 in 4 ns (21-28 per replica, one per 160 ps) |
+| Kinetic temperature of each slot | within 0.9 K of its target |
+| Mean potential energy at 300 K | REMD -300685.8 +- 3.5 kJ/mol, plain MD -300696.1 +- 4.9 |
+| CG iterations per step at 300 K | 7.40 (plain MD 7.36): swaps barely disturb the dipole predictor |
+| Speed, 8 replicas with exchanges and output | 60.7 ns/day per replica, 485 aggregate (sequential replicas: 20.0 and 160) |
+| Backbone at 300 K, mean of the three Ala (alpha_R / beta / PPII / alpha_L) | REMD 0.100 / 0.638 / 0.207 / 0.055, plain MD 0.086 / 0.660 / 0.210 / 0.045 |
+
+Replica engine alone (no exchanges; plain MD of the same system: 0.96 ms/step, 180 ns/day):
+
+| Replicas | 2 | 4 | 8 | 16 | 16, sequential |
+|---|---|---|---|---|---|
+| ms per replica-step | 0.61 | 0.37 | 0.33 | 0.33 | 0.98 |
+| ns/day per replica (aggregate) | 143 (285) | 117 (468) | 65.5 (524) | 33.2 (531) | 11.0 (176) |
+
+Batching pays up to about 8 replicas of this size (14k atoms together), where the GPU is full.
+Per-residue populations (300 and 400 K) and more details: `docs/protein_ff.md`.
+
 ## Fitting to liquid properties
 
 `scripts/fit_liquid.py` fits Lennard-Jones parameters to the liquid density and heat of
@@ -355,8 +419,9 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/md/` | MD engine: `forcefield.py` (PME + direct rows + induction solver), `pme.py`, `kernels.py`, `neighbors.py` (JAX-MD lists), `rigid.py` (JAX-MD rigid bodies), `integrate.py`, `simulation.py`, `io.py` (Amber NetCDF), `box.py` |
 | `pgm_jax/md/thermostats.py` | `Langevin`, `Bussi` (global rescaling, fastest with pGM), `GLE` (`GLE.band()`: smooth slow-band kernel), exact O steps, heat bookkeeping |
 | `pgm_jax/md/flexible.py` | flexible molecules in MD: `FlexibleTemplate` (bonded fit -> MD), `RigidTemplate` (water, ions by constraints), `FlexibleSimulation` (atoms, g-BAOAB with SHAKE / RATTLE, `constraints="h-bonds"`, `hmr`), `liquid_box` |
+| `pgm_jax/md/remd.py` | temperature replica exchange for both engines: `ReplicaExchange` (exchanges, statistics, round trips, outputs, checkpoints), `MDReplicas` (replicas batched with `jax.vmap`, or sequential), `geometric_ladder`, `read_exchange_log` |
 | `pgm_jax/protein/` | proteins: `residues` (bond orders, terminal keys), `library` (`ResidueLibrary`: pGM parameters by residue and atom name, JSON), `amber` (`load_amber`: tleap system -> pgm_jax molecules; `amber_template`: ff19SB-form bonded terms + CMAP; `AmberSystem.hmr` per-kind hydrogen masses, `select` / `position_restraints`), `pmemd` (`write_pgm_prmtop`: the engine's model as a pmemd-pgm prmtop; `pmemd_mdin`, `pmemd_grid`) |
-| `scripts/protein/` | `build_amber.py` (PDB -> solvated tleap topology), `bench_protein.py` (speed of a solvated protein; `--elec-cut`, `--hmr-water`, `--prod-ps`: stability and <U> with block errors), `write_pgm_prmtop.py` (pmemd-pgm prmtop + mdin), `check_pgm_prmtop.py` (single points and MD against pmemd-pgm), `elec_accuracy.py` (electrostatic error of real-space cutoffs) |
+| `scripts/protein/` | `build_amber.py` (PDB or residue sequence -> solvated tleap topology), `bench_protein.py` (speed of a solvated protein; `--elec-cut`, `--hmr-water`, `--prod-ps`: stability and <U> with block errors), `write_pgm_prmtop.py` (pmemd-pgm prmtop + mdin), `check_pgm_prmtop.py` (single points and MD against pmemd-pgm), `elec_accuracy.py` (electrostatic error of real-space cutoffs), `remd_peptide.py` (replica exchange of a solvated peptide vs plain MD: acceptance, round trips, phi/psi populations, replica speed) |
 | `pgm_jax/ensemble.py` | `Reweighting`: ensemble averages, n_eff and parameter gradients from saved frames; Karplus J couplings, phi/psi regions |
 | `pgm_jax/md/topology.py` | `MDTopology`: neighbour-list groups (heavy-atom groups for large molecules), special pairs with van der Waals weights, constraints |
 | `pgm_jax/md/constraints.py` | SHAKE / RATTLE solved exactly per cluster (water, CH3, ...), vectorised; hydrogen mass repartitioning (one mass or per molecule, `hmr_masses`) |
@@ -435,6 +500,10 @@ Conventions worth knowing:
 - GVDW per atom type (geometric A and C6, arithmetic b) generalises pmemd-pgm's single global
   set for LJ-bearing pairs; identical for pGM3P water.
 - The gas-phase induction solve is dense (3n × 3n): fine up to a few thousand atoms.
+- Replica exchange: temperature ladders only (the criterion and driver take any reduced energies,
+  but per-replica Hamiltonians are not implemented); batched replicas are NVT only (NPT runs the
+  replicas sequentially); under vmap JAX-MD's neighbour-list update runs its rebuild branch every
+  step (included in the speeds above).
 - `PeriodicModel` uses plain Ewald with a neighbour list and k-vectors built once (for
   single points and gradients); MD uses `pgm_jax.md` (smooth PME, list updates, integrators).
 - Outside `pgm_jax.md` everything is float64; single precision is used (and validated) only in MD's mixed mode.

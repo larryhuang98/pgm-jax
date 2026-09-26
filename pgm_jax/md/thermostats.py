@@ -60,6 +60,7 @@ class Thermostat:
 
     def apply(self, v, aux, key, h: float, kT: float, dof: float, project, mask):
         """One exact O step of length h.  v: mass-scaled momenta; aux: (n_aux,) + v.shape;
+        kT: kB T (kJ/mol), a float or a traced scalar (replica exchange: one per replica);
         project: projection of a mass-scaled vector onto the constraint tangent space; mask:
         1 for real degrees of freedom, 0 for padding (or None)."""
         raise NotImplementedError
@@ -76,7 +77,7 @@ class Langevin(Thermostat):
 
     def apply(self, v, aux, key, h, kT, dof, project, mask):
         c = np.exp(-self.gamma * h)
-        v = c * v + np.sqrt(kT * (1.0 - c * c)) * jax.random.normal(key, v.shape, v.dtype)
+        v = c * v + jnp.sqrt(kT * (1.0 - c * c)) * jax.random.normal(key, v.shape, v.dtype)
         v = project(v)
         return (v if mask is None else v * mask), aux
 
@@ -153,20 +154,22 @@ class GLE(Thermostat):
             out.append(np.real(Kz))
         return np.array(out)
 
-    def _propagator(self, h, kT):
-        key = (float(h), float(kT))
+    def _propagator(self, h):
+        """Drift propagator T = exp(-A h) and noise factor S at unit kT (the noise scales as sqrt(kT), so
+        kT may be a traced value, e.g. one per replica)."""
+        key = float(h)
         if key not in self._cache:
             T = scipy.linalg.expm(-self.A * h)
-            w, V = np.linalg.eigh(kT * (np.eye(len(T)) - T @ T.T))
-            S = V @ np.diag(np.sqrt(np.maximum(w, 0.0)))               # S S^T = kT (I - T T^T)
+            w, V = np.linalg.eigh(np.eye(len(T)) - T @ T.T)
+            S = V @ np.diag(np.sqrt(np.maximum(w, 0.0)))               # S S^T = I - T T^T
             self._cache[key] = (T, S)
         return self._cache[key]
 
     def apply(self, v, aux, key, h, kT, dof, project, mask):
-        T, S = self._propagator(h, kT)
+        T, S = self._propagator(h)
         y = jnp.concatenate([v[None], aux], 0)
         xi = jax.random.normal(key, y.shape, y.dtype)
-        y = jnp.tensordot(jnp.asarray(T), y, axes=1) + jnp.tensordot(jnp.asarray(S), xi, axes=1)
+        y = jnp.tensordot(jnp.asarray(T), y, axes=1) + jnp.sqrt(kT) * jnp.tensordot(jnp.asarray(S), xi, axes=1)
         y = jax.vmap(project)(y)
         if mask is not None:
             y = y * mask[None]

@@ -65,6 +65,8 @@ class MDState:
     aux: jnp.ndarray = None           # thermostat auxiliary momenta (mass-scaled), (n_aux,) + momenta shape
     heat: jnp.ndarray = None          # heat taken up in the thermostat steps since the start (kJ/mol)
     cg_total: jnp.ndarray = None      # CG iterations summed over all force evaluations (float64)
+    kT: jnp.ndarray = None            # thermostat kB T (kJ/mol) as a state variable (replica exchange, remd.py:
+                                      # one compiled step for every temperature); None: Integrator.kT
 
 
 def upgrade_state(st: MDState, aux) -> MDState:
@@ -190,12 +192,17 @@ class Integrator:
             aux = aux * mask[None]
         return dyn.set(rng=key), aux
 
-    def _o_step(self, dyn: Dynamics, aux, heat, h: float):
+    def thermostat_kT(self, st: MDState):
+        """kB T (kJ/mol) the thermostat and barostat use: the state's own (replica exchange) or the
+        integrator's."""
+        return self.kT if st.kT is None else st.kT
+
+    def _o_step(self, dyn: Dynamics, aux, heat, h: float, kT=None):
         """Thermostat step at fixed positions; returns dyn, auxiliaries and the updated heat."""
         v, mask, unpack, project = self._scaled(dyn)
         key, k = jax.random.split(dyn.rng)
         e0 = 0.5 * (jnp.sum(v * v) + jnp.sum(aux * aux))
-        v, aux = self.thermostat.apply(v, aux, k, h, self.kT, float(self.dof), project, mask)
+        v, aux = self.thermostat.apply(v, aux, k, h, self.kT if kT is None else kT, float(self.dof), project, mask)
         e1 = 0.5 * (jnp.sum(v * v) + jnp.sum(aux * aux))
         return unpack(v).set(rng=key), aux, heat + (e1 - e0)
 
@@ -208,7 +215,7 @@ class Integrator:
             dyn = simulate.position_step(dyn, self.shift, dt)
         else:
             dyn = simulate.position_step(dyn, self.shift, dt / 2)
-            dyn, aux, heat = self._o_step(dyn, aux, heat, dt)
+            dyn, aux, heat = self._o_step(dyn, aux, heat, dt, self.thermostat_kT(st))
             dyn = simulate.position_step(dyn, self.shift, dt / 2)
         F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr)
         st = self._with_result(st.set(dyn=dyn, aux=aux, heat=heat), F, res, nbr)
@@ -233,8 +240,9 @@ class Integrator:
         e_n, ind_n, _, ovf = self.ff.energy(pos_n, Hn, cand, st.induction, self.params)
         e_n = e_n + self._restraint_energy(pos_n, Hn)
         ovf = ovf | ovf0
-        w = (e_n - st.epot) + self.pressure * dV - self.nmol * self.kT * jnp.log(jnp.maximum(Vn, 1e-12) / V)
-        accept = (Vn > 0) & (jnp.log(jax.random.uniform(k2, dtype=jnp.float64)) < -w / self.kT)
+        kT = self.thermostat_kT(st)
+        w = (e_n - st.epot) + self.pressure * dV - self.nmol * kT * jnp.log(jnp.maximum(Vn, 1e-12) / V)
+        accept = (Vn > 0) & (jnp.log(jax.random.uniform(k2, dtype=jnp.float64)) < -w / kT)
         st = st.set(dyn=st.dyn.set(rng=key), overflow=st.overflow | ovf)
 
         def acc(st):

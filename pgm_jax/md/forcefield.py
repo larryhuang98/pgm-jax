@@ -467,6 +467,18 @@ class PGMForceField:
         else:
             self.mc = max(self.mc, mc + 8)
 
+    def fit_rows(self, caps):
+        """Capacities that fit every one of `caps` (`capacity` tuples, e.g. one per replica): the
+        largest of each part of the rows (static shapes: re-jit afterwards)."""
+        caps = [c for c in caps if c is not None and c[0] is not None]
+        if not caps:
+            return
+        if self.split and all(c[1] is not None for c in caps):
+            e = max(c[1] for c in caps)
+            self.mc, self.mc_e = e + max(c[0] - c[1] for c in caps), e
+        else:
+            self.mc = max(c[0] for c in caps)
+
     def _pair_a(self, R, k):
         return 1.0 / jnp.sqrt(2.0 * (R[:, None] ** 2 + R[k] ** 2))
 

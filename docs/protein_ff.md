@@ -22,6 +22,7 @@ Amber. Everything below is in the repository, and each item has at least one tes
 | Constraints | `md/constraints.py` | SHAKE / RATTLE per cluster, vectorised; hydrogen mass repartitioning, one mass or per molecule (`AmberSystem.hmr`) |
 | Restraints | `md/restraints.py` | positional, distance, angle, dihedral, centre-of-mass distance (Amber NMR form); `AmberSystem.select` / `position_restraints` |
 | MD | `md/flexible.py` | `FlexibleTemplate` (`from_fit`, `from_network`), `RigidTemplate`, `FlexibleSimulation` (g-BAOAB, `minimize`) |
+| Enhanced sampling | `md/remd.py` | temperature replica exchange, replicas batched with `jax.vmap` in one program |
 | Top-down | `ensemble.py` | `Reweighting` (averages, n_eff, chi2 and gradients), Karplus J couplings, phi/psi regions |
 
 Design rules that keep it reusable:
@@ -163,6 +164,9 @@ property of this test model (placeholder electrostatics, the order-3 Fourier ver
 CMAP), not of either code. pmemd's `tempi` draws velocities for every degree of freedom before
 SHAKE, so a constrained system starts about 1.5x too hot (440 K for Trp-cage). Three pmemd runs
 started that way drifted to 3.3-4.3 A, so `md` heats from 0 K instead.
+
+## Restraints and staged equilibration
+
 Restraints (`pgm_jax/md/restraints.py`; Amber conventions, E = k x^2, k in kJ/mol/nm^2 or
 kJ/mol/rad^2, `KCAL_A2` = 418.4 per kcal/mol/A^2) go in with `restraints=` or, on a running
 simulation, `set_restraints` (which recompiles the step). Positional restraints on the protein
@@ -185,6 +189,52 @@ point with the box, "none" keeps it fixed. Restraints are not stored in checkpoi
 again when continuing. Cost on ubiquitin (2 fs, NVT, 4.9 ms/step): 603 heavy-atom positional
 restraints are within the timing noise (0.1 ms); adding 144 distance and dihedral restraints and a
 centre-of-mass restraint costs 5 %.
+
+## Replica exchange of a peptide
+
+Temperature replica exchange (`pgm_jax.md.remd`, README "Replica exchange") with the replicas
+batched into one program by `jax.vmap`, so a small peptide fills the GPU:
+
+```bash
+python scripts/protein/build_amber.py --sequence "ACE ALA ALA ALA NME" runs/remd/ala3 --buffer 8
+python scripts/protein/remd_peptide.py remd    runs/remd/ala3.prmtop runs/remd/ala3.inpcrd --out runs/remd/ala3 --replicas 8 --tmin 300 --tmax 400 --ns 4
+python scripts/protein/remd_peptide.py plain   runs/remd/ala3.prmtop runs/remd/ala3.inpcrd --out runs/remd/ala3 --ns 4
+python scripts/protein/remd_peptide.py analyze runs/remd/ala3.prmtop runs/remd/ala3.inpcrd --out runs/remd/ala3
+python scripts/protein/remd_peptide.py bench   runs/remd/ala3.prmtop runs/remd/ala3.inpcrd --out runs/remd/ala3 --bench 1 2 4 8 16
+```
+
+Setup: 1,782 atoms (580 waters), placeholder electrostatics, ff19SB-form bonded terms + CMAP,
+X-H constraints + HMR, Bussi 1 ps, 2 fs, NVT; 8 replicas 300-400 K (geometric), exchanges every
+0.5 ps, 4 ns per replica, plain MD of 4 ns at 300 K from the same equilibrated start. Acceptance
+0.34-0.39 for every neighbour pair, 200 round trips (one per 160 ps and replica), 60.7 ns/day per
+replica (485 aggregate; the same replicas run one after the other: 20.0 and 160). Mean potential
+energy at 300 K: REMD -300685.8 +- 3.5 kJ/mol, plain MD -300696.1 +- 4.9.
+
+Backbone populations after 200 ps (frames every ps; errors from 5 blocks). alpha_L: phi > 0;
+alpha_R: phi < 0, -120 <= psi < 50; otherwise beta (phi < -90) or PPII:
+
+| Run | Residue | alpha_R | beta | PPII | alpha_L |
+|---|---|---|---|---|---|
+| REMD 300 K | Ala 1 | 0.097 +- 0.013 | 0.639 +- 0.014 | 0.203 +- 0.016 | 0.062 +- 0.013 |
+| | Ala 2 | 0.114 +- 0.015 | 0.623 +- 0.029 | 0.198 +- 0.015 | 0.064 +- 0.013 |
+| | Ala 3 | 0.088 +- 0.008 | 0.652 +- 0.017 | 0.219 +- 0.016 | 0.040 +- 0.001 |
+| plain MD 300 K | Ala 1 | 0.076 +- 0.016 | 0.642 +- 0.032 | 0.227 +- 0.017 | 0.055 +- 0.029 |
+| | Ala 2 | 0.114 +- 0.015 | 0.675 +- 0.016 | 0.182 +- 0.018 | 0.029 +- 0.002 |
+| | Ala 3 | 0.069 +- 0.003 | 0.662 +- 0.023 | 0.220 +- 0.022 | 0.050 +- 0.018 |
+| REMD 400 K | Ala 1 | 0.141 +- 0.022 | 0.555 +- 0.026 | 0.215 +- 0.007 | 0.089 +- 0.021 |
+| | Ala 2 | 0.190 +- 0.014 | 0.524 +- 0.014 | 0.217 +- 0.006 | 0.069 +- 0.013 |
+| | Ala 3 | 0.132 +- 0.010 | 0.586 +- 0.005 | 0.203 +- 0.006 | 0.079 +- 0.017 |
+
+The two 300 K ensembles agree within about two block errors; the REMD errors are smaller where
+transitions are rare in plain MD (alpha_L of Ala 1: 0.013 against 0.029). The placeholder
+electrostatics put most of the population in beta rather than PPII, so these numbers check the
+sampling, not the force field.
+
+- The swaps barely disturb the dipole predictor: 7.40 CG iterations per step at 300 K against
+  7.36 in plain MD.
+- `econs` of each temperature has no drift, but it takes a random walk of about +-50 kJ/mol in 4 ns
+  (at most 0.002 kT/ns per degree of freedom). Each accepted swap brings a trajectory with its own
+  fluctuation of the integration error, which the heat bookkeeping carries over.
 
 ## Training the neural bonded model for proteins
 
@@ -233,6 +283,7 @@ print(rw.n_eff(th))                                                      # resam
 | pmemd-pgm prmtop of the engine's model, pmemd.pgm single points (water, peptide, Trp-cage; CPU, DPFP, SPFP) | all terms agree to pmemd's print precision; forces to 2e-5 kcal/mol/A (with pmemd's PME factor in the engine) except the CMAP interpolation (section "Production MD with pmemd-pgm"; `tests/test_pgm_prmtop.py`) |
 | Ubiquitin, HMR 3.024 (protein) / 3.024 or 4.0 (water), Bussi, 4 fs, 420 ps | stable (SHAKE 2e-14, econs drift < 1e-4 kT/ns/dof); <U> +83 +- 25 kJ/mol above 1 fs (about 1 K) |
 | Restraints (positional, distance, angle, dihedral, centre-of-mass distance) | forces and strain derivative = finite differences (float64); NVE with restraints conserves the energy in both engines (`tests/test_restraints.py`) |
+| Temperature replica exchange, ACE-(ALA)3-NME, 8 replicas 300-400 K, 4 ns each | acceptance 0.34-0.39, 200 round trips; 300 K populations and energy agree with plain MD (`scripts/protein/remd_peptide.py`) |
 
 Benchmark: `python scripts/protein/bench_protein.py sys.prmtop sys.inpcrd [--library lib.json] [--tol 1e-4]
 [--elec-cut 0.7]`; electrostatic accuracy of cutoff settings: `scripts/protein/elec_accuracy.py`.
