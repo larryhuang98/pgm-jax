@@ -13,6 +13,11 @@ simulation is the outer step; the fast forces are evaluated n times per outer st
 
 Splits (`MTS.split`):
   "bonded"  F_fast = bonded terms + restraints, F_slow = everything nonbonded (flexible engine).
+  "special" F_fast = bonded terms + restraints + the pGM and van der Waals interactions of the
+            special pairs (md/topology.py: the rest of a small molecule, the nearby heavy-atom
+            groups of a large one), unswitched, with the kernel erf(a r)/r and the fast induction
+            model below; F_slow = F_full - F_fast.  pGM has no electrostatic exclusions, so the
+            1-2 and 1-3 electrostatics vibrate with the bonds and angles (flexible engine).
   "short"   F_fast = a cheap short-range nonbonded model (below) + the bonded terms + restraints;
             F_slow = F_full - F_fast, with F_full the ordinary force (converged induced dipoles,
             PME, cutoffs) at the same positions.  The groups sum exactly to the full force, and
@@ -61,14 +66,15 @@ accepted move re-evaluates every group at the scaled positions.  Replica exchang
 not support MTS yet.
 
     from pgm_jax.md.mts import MTS
-    sim = FlexibleSimulation(sys, templates, pos, H, MDSettings(), dt=0.006, mts=MTS(inner=2, split="bonded"),
-                             constraints="h-bonds", hmr=3.024, thermostat="bussi")   # 6 fs outer, bonded 3 fs
+    # a solvated protein: bonded terms and special pairs every 7/3 fs, the rest every 7 fs
+    sim = FlexibleSimulation(sys, templates, pos, H, MDSettings(predictor="mu3", **elec_cutoff_settings(0.7)),
+                             dt=0.007, mts=MTS(inner=3, split="special"), constraints="h-bonds", hmr=3.024,
+                             thermostat="bussi")
 
 Measurements, stability limits and recommended settings: docs/mts.md.  Units: nm, ps, amu,
 kJ/mol, K, e."""
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 import jax
@@ -90,7 +96,8 @@ BETA_R = 2.3268                     # erfc(BETA_R) = 1e-3: default beta_short = 
 class MTS:
     """Multiple time stepping settings (the simulation's dt is the outer step)."""
     inner: int = 2                   # fast steps per outer step
-    split: str = "short"             # "short": short-range nonbonded + bonded fast | "bonded": bonded fast
+    split: str = "short"             # fast group: "short" (short-range pGM model + bonded) | "special" (the
+                                     # topologically close pairs + bonded) | "bonded" (bonded terms)
     r_short: float = 0.5             # nm: the fast nonbonded pairs are switched off at r_short
     switch_width: float = 0.1        # nm: the switch starts at r_short - switch_width
     buffer: float = 0.1              # nm: the fast pair list holds the pairs closer than r_short + buffer
@@ -106,8 +113,8 @@ class MTS:
         if self.split == "bonded":
             return [(("slow",), 1), (("bonded",), int(self.inner))]
         if int(self.bonded) > 1:
-            return [(("slow",), 1), (("short",), int(self.inner)), (("bonded",), int(self.bonded))]
-        return [(("slow",), 1), (("short", "bonded"), int(self.inner))]
+            return [(("slow",), 1), ((self.split,), int(self.inner)), (("bonded",), int(self.bonded))]
+        return [(("slow",), 1), ((self.split, "bonded"), int(self.inner))]
 
 
 def switch(r, r_on: float, r_off: float):
@@ -157,30 +164,32 @@ class _MTSMixin:
         m, ff, s = self.mts, self.ff, self.ff.s
         if int(m.inner) != m.inner or m.inner < 1 or int(m.bonded) != m.bonded or m.bonded < 1:
             raise ValueError(f"MTS inner and bonded must be positive integers (got {m.inner}, {m.bonded})")
-        if m.split not in ("short", "bonded"):
-            raise ValueError(f"MTS split must be 'short' or 'bonded', got {m.split!r}")
+        if m.split not in ("short", "special", "bonded"):
+            raise ValueError(f"MTS split must be 'short', 'special' or 'bonded', got {m.split!r}")
         if m.o_step not in ("outer", "inner"):
             raise ValueError(f"MTS o_step must be 'outer' or 'inner', got {m.o_step!r}")
         flexible = isinstance(self, FlexibleIntegrator)
-        if not flexible and (m.split == "bonded" or m.bonded > 1):
-            raise ValueError("the rigid-body engine has no bonded terms: use MTS(split='short', bonded=1)")
+        if not flexible and (m.split != "short" or m.bonded > 1):
+            raise ValueError("rigid bodies have no bonded terms and no internal motion: use MTS(split='short', bonded=1)")
         if m.split == "bonded" and m.bonded > 1:
             raise ValueError("MTS(split='bonded') has two levels: bonded must be 1")
         self.short = m.split == "short"
+        pairs = m.split != "bonded"                      # a fast pair model (short-range list or special pairs)
         pol = m.polarization
         if pol == "auto":
-            pol = "mutual" if (self.short and ff.ind) else "none"
+            pol = "mutual" if (pairs and ff.ind) else "none"
         if pol not in ("direct", "mutual", "none"):
             raise ValueError(f"MTS polarization must be 'direct', 'mutual', 'none' or 'auto', got {m.polarization!r}")
-        if pol != "none" and not (self.short and ff.ind):
-            raise ValueError(f"MTS polarization {pol!r} needs split 'short' and induced dipoles (elec 'qi' or 'qpi')")
+        if pol != "none" and not (pairs and ff.ind):
+            raise ValueError(f"MTS polarization {pol!r} needs split 'short' or 'special' and induced dipoles "
+                             "(elec 'qi' or 'qpi')")
         self.pol = pol
         anchor = m.anchor
         if anchor is None:
             anchor = pol != "none" and s.predictor in _PRED
         if anchor and not (pol != "none" and s.predictor in _PRED):
-            raise ValueError("the anchored predictor needs fast induced dipoles (polarization 'direct') and "
-                             f"predictor mu3 or mu4 (got {pol!r}, {s.predictor!r})")
+            raise ValueError("the anchored predictor needs fast induced dipoles (polarization 'mutual' or 'direct') "
+                             f"and predictor mu3 or mu4 (got {pol!r}, {s.predictor!r})")
         self.anchor = bool(anchor)
         if self.short:
             r_on = m.r_short - m.switch_width
@@ -196,6 +205,11 @@ class _MTSMixin:
             self.beta_s = float(BETA_R / m.r_short if m.beta_short is None else m.beta_short)
             if not self.beta_s > 0:
                 raise ValueError(f"MTS beta_short must be positive, got {m.beta_short}")
+        if m.split == "special":                        # rows of the special-pair model: flexible molecules
+            flex_rows = [np.asarray(r).ravel() for _, r in getattr(self, "flex").groups]
+            if not flex_rows:
+                raise ValueError("MTS(split='special') needs flexible molecules (FlexibleTemplate)")
+            self._flex_rows = jnp.asarray(np.sort(np.concatenate(flex_rows)).astype(np.int32))
         self.levels = m.levels()
         self.nlev = len(self.levels)
         self.o_outer = m.o_step == "outer"
@@ -207,7 +221,7 @@ class _MTSMixin:
         for groups, n in self.levels:
             steps = steps / n
             hs.append(f"{'+'.join(groups)} {steps * 1000:g} fs")
-        what = ""
+        what = f"; fast pairs: the special pairs, {self.pol} induction" if self.mts.split == "special" else ""
         if self.short:
             what = (f"; fast pairs < {self.r_off:g} nm (switch from {self.r_on:g}), "
                     f"{self.pol} induction, list buffer {m.buffer:g} nm "
@@ -250,40 +264,57 @@ class _MTSMixin:
         return F
 
     # ------------------------------------------------------------------ fast nonbonded model
-    def _short_nonbonded(self, pos, H, ks, ws, within):
+    def _short_nonbonded(self, pos, H, ks, ws, within, special: bool = False, rows=None):
         """Energy (kJ/mol), atomic forces (kJ/mol/nm) and induced dipoles (e nm) of the fast
-        nonbonded model over the short-range list (module docstring).  Row sums as in the force
-        field: every pair is in both rows, F_i = -sum_k de_ik/dx_ik (+ the covalent-dipole frames)."""
+        nonbonded model over the short-range list (module docstring), or with `special` over the
+        special pairs (unswitched, the Gaussian-screened Coulomb without the long-range part removed).
+        Row sums as in the force field: every pair is in both rows, F_i = -sum_k de_ik/dx_ik (+ the
+        covalent-dipole frames).  rows: the atoms of the rows (default all; every partner of a row
+        atom must be a row atom, as within the flexible molecules)."""
         ff = self.ff
         cd = ff.cd
+        N = ff.n
         P = ff._atoms(self.params)
         p, vjp_p = jax.vjp(lambda y: ff.perm_dipoles(y, H, P["cov"]), pos)
-        x = [c.astype(cd) for c in ff._displacements(pos, ks, H)]     # float64 differences
+        at = (lambda v: v) if rows is None else (lambda v: v[rows])            # noqa: E731
+        full = (lambda v: v) if rows is None else (lambda v: jnp.zeros((N,) + v.shape[1:], v.dtype).at[rows].set(v))  # noqa: E731
+        pr = at(pos)
+        x = [pr[:, c][:, None] - pos[:, c][ks] for c in range(3)]       # float64 differences, minimum image
+        for c in (2, 1, 0):
+            n = jnp.round(x[c] / H[c, c])
+            x = [x[j] - n * H[c, j] if j <= c else x[j] for j in range(3)]
+        x = [c.astype(cd) for c in x]
         w = within.astype(cd)
         r = jnp.sqrt(jnp.where(within, x[0] * x[0] + x[1] * x[1] + x[2] * x[2], 1.0))
-        A = erf_kernels_closed(ff._pair_a(P["radius"].astype(cd), ks), r, 4)
-        B = erf_kernels_closed(jnp.asarray(self.beta_s, cd), r, 4)
-        A0, A1, A2, A3 = ((u - v) * w for u, v in zip(A, B))
-        S, dS = switch(r, self.r_on, self.r_off)
-        S, dS = S * w, dS * w
+        R = P["radius"].astype(cd)
+        A = erf_kernels_closed(1.0 / jnp.sqrt(2.0 * (at(R)[:, None] ** 2 + R[ks] ** 2)), r, 4)
+        if special:
+            A0, A1, A2, A3 = (u * w for u in A)
+            S, dS = w, jnp.zeros_like(w)
+        else:
+            B = erf_kernels_closed(jnp.asarray(self.beta_s, cd), r, 4)
+            A0, A1, A2, A3 = ((u - v) * w for u, v in zip(A, B))
+            S, dS = switch(r, self.r_on, self.r_off)
+            S, dS = S * w, dS * w
         SA1, SA2 = S * A1, S * A2
         q = P["q"].astype(cd)
-        qi, qk = q[:, None], q[ks]
+        qi, qk = at(q)[:, None], q[ks]
         pc = p.astype(cd)
         pk = [pc[:, c][ks] for c in range(3)]
-        pi = [pc[:, c][:, None] for c in range(3)]
+        pi = [at(pc)[:, c][:, None] for c in range(3)]
         rowsum = lambda v: jnp.sum(v, axis=1)                       # noqa: E731
-        alpha = P["alpha"][:, None]
+        alpha = at(P["alpha"])[:, None]
         corr = 0.0                          # polarization energy not in the pair sum (units of KE)
         if self.pol != "none":              # nu0 = alpha E_short, E_short = -dU_pair/dd at d = p
             pkx = pk[0] * x[0] + pk[1] * x[1] + pk[2] * x[2]
             cf = -qk * SA1 - SA2 * pkx
             gp = jnp.stack([rowsum(cf * x[c] + SA1 * pk[c]) for c in range(3)], -1).astype(jnp.float64)
-            mu = nu0 = -alpha * gp
+            mu = nu0 = -alpha * gp                  # (row atoms, 3)
             corr = 0.5 * jnp.sum(nu0 * nu0 / alpha)
         if self.pol == "mutual":            # nu1 = alpha T nu0 (one mutual iteration); mu = nu0 + nu1
             n0 = nu0.astype(cd)
-            nk = [n0[:, c][ks] for c in range(3)]
+            n0f = full(n0)
+            nk = [n0f[:, c][ks] for c in range(3)]
             ni = [n0[:, c][:, None] for c in range(3)]
             nkx = nk[0] * x[0] + nk[1] * x[1] + nk[2] * x[2]
             gm = jnp.stack([rowsum(-SA2 * nkx * x[c] + SA1 * nk[c]) for c in range(3)], -1).astype(jnp.float64)
@@ -291,12 +322,13 @@ class _MTSMixin:
             corr = corr - jnp.sum(nu0 * gm)
         if self.pol != "none":
             mc = mu.astype(cd)
-            mk = [mc[:, c][ks] for c in range(3)]
+            mcf = full(mc)
+            mk = [mcf[:, c][ks] for c in range(3)]
             mi = [mc[:, c][:, None] for c in range(3)]
             dk = [pk[c] + mk[c] for c in range(3)]
             di = [pi[c] + mi[c] for c in range(3)]
         else:
-            mu = jnp.zeros_like(pos)
+            mu = jnp.zeros_like(pr)
             dk, di = pk, pi
         dix = di[0] * x[0] + di[1] * x[1] + di[2] * x[2]
         dkx = dk[0] * x[0] + dk[1] * x[1] + dk[2] * x[2]
@@ -318,20 +350,48 @@ class _MTSMixin:
             e = e - A2 * nix * nkx + A1 * ninj
             rad = rad + A3 * nix * nkx - A2 * ninj
             non = [non[c] - A2 * (ni[c] * nkx + nk[c] * nix) for c in range(3)]
-        elj, glj = ff._vdw_rows(r, ff._vdw_params(P, ks), ws.astype(cd), grad=True)
+        elj, glj = ff._vdw_rows(r, self._vdw_params(P, ks, at), ws.astype(cd), grad=True)
         E = KE * e + elj
         radial = S * (KE * rad + glj) + dS * E
         SK = S * KE
         g = jnp.stack([rowsum(radial * x[c] + SK * non[c]) for c in range(3)], -1).astype(jnp.float64)
         cfd = -qk * SA1 - SA2 * dkx          # dU/dd_i (total dipoles) for the covalent-dipole frames
         gd = KE * jnp.stack([rowsum(cfd * x[c] + SA1 * dk[c]) for c in range(3)], -1).astype(jnp.float64)
-        forces = -(g + vjp_p(gd)[0])
+        forces = -(full(g) + vjp_p(full(gd))[0])
         energy = 0.5 * jnp.sum(rowsum(S * E).astype(jnp.float64)) + KE * corr
-        return energy, forces, mu
+        return energy, forces, full(mu)
+
+    def _vdw_params(self, P, k, at):
+        """Pair parameters of the van der Waals form for rows at(.) and partners k (PGMForceField
+        ._vdw_params with a subset of row atoms)."""
+        cd, vdw = self.ff.cd, self.ff.s.vdw
+        if vdw == "lj":
+            rh, se = P["lj_rmin_half"].astype(cd), P["lj_sqrt_eps"].astype(cd)
+            return (at(rh)[:, None] + rh[k], at(se)[:, None] * se[k])
+        if vdw == "gvdw":
+            sa, sc, b = (P[n].astype(cd) for n in ("gvdw_sqrt_a", "gvdw_sqrt_c6", "gvdw_b"))
+            R = P["radius"].astype(cd)
+            return (at(sa)[:, None] * sa[k], at(sc)[:, None] * sc[k], 0.5 * (at(b)[:, None] + b[k]),
+                    1.0 / jnp.sqrt(2.0 * (at(R)[:, None] ** 2 + R[k] ** 2)))
+        if vdw == "none":
+            return ()
+        raise ValueError(f"multiple time stepping: unknown van der Waals form {vdw!r}")
+
+    def _special(self):
+        """The special-pair rows of the flexible molecules as a pair list: partners (padding 0), van der
+        Waals weights, valid, and the row atoms.  (The special pairs of rigid molecules only exert
+        internal forces, which their constraints remove.)"""
+        rows = self._flex_rows
+        sp = self.ff.special[rows]
+        valid = sp < self.ff.n
+        return jnp.where(valid, sp, 0), jnp.where(valid, self.ff.special_w[rows], 0.0), valid, rows
 
     def short_energy(self, pos, H, st: MDState):
-        """Fast nonbonded energy at atom positions pos with the state's short-range list (for tests:
-        forces = -grad, since the model is variational in its dipoles)."""
+        """Fast nonbonded energy at atom positions pos (the state's short-range list, or the special
+        pairs): for tests, forces = -grad."""
+        if self.mts.split == "special":
+            ks, ws, valid, rows = self._special()
+            return self._short_nonbonded(pos, H, ks, ws, valid, special=True, rows=rows)[0]
         m = st.mts
         return self._short_nonbonded(pos, H, m.ks, m.ws, m.within)[0]
 
@@ -412,17 +472,21 @@ class _MTSMixin:
             self.compile()
 
     # ------------------------------------------------------------------ force evaluations
-    def _eval_fast(self, st: MDState, j: int, m=None, x=None) -> MDState:
+    def _eval_fast(self, st: MDState, j: int) -> MDState:
         """Forces of level j >= 1 at the current positions (short-range list refreshed if needed)."""
-        x = st.dyn.position if x is None else x
+        x = st.dyn.position
         pos = self._atoms(x)
-        m = st.mts if m is None else m
+        m = st.mts
         groups = self.levels[j][0]
         F = jnp.zeros_like(pos)
         mu, efast = m.mu, m.efast
         if "short" in groups:
             m = self._fresh(st, pos, m)
             efast, Fs, mu = self._short_nonbonded(pos, st.box, m.ks, m.ws, m.within)
+            F = F + Fs
+        if "special" in groups:
+            ks, ws, valid, rows = self._special()
+            efast, Fs, mu = self._short_nonbonded(pos, st.box, ks, ws, valid, special=True, rows=rows)
             F = F + Fs
         if "bonded" in groups:
             F = F + self._bonded_forces(pos, st.box)
@@ -572,8 +636,9 @@ def add_mts_arguments(ap, dt_help: str = "--dt") -> None:
     """--mts and friends for the MD scripts (the time step given by `dt_help` is the outer step)."""
     g = ap.add_argument_group("multiple time stepping (r-RESPA; docs/mts.md)")
     g.add_argument("--mts", type=int, default=0, help=f"fast steps per outer step (0: off; {dt_help} is then the outer step)")
-    g.add_argument("--mts-split", default="short", choices=["short", "bonded"],
-                   help="short: short-range nonbonded + bonded fast; bonded: bonded fast (flexible engine)")
+    g.add_argument("--mts-split", default="short", choices=["short", "special", "bonded"],
+                   help="fast group: short (short-range pGM model + bonded), special (the special pairs + bonded; "
+                   "flexible engine), bonded (bonded terms; flexible engine)")
     g.add_argument("--mts-rs", type=float, default=0.5, help="nm: fast nonbonded pairs switched off at this distance")
     g.add_argument("--mts-width", type=float, default=0.1, help="nm: switch width")
     g.add_argument("--mts-buffer", type=float, default=0.1, help="nm: buffer of the short-range pair list")

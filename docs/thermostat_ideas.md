@@ -283,7 +283,9 @@ pGM water, 4096 molecules, Bussi, tol 1e-5 (`runs/langevin/dtcheck.py`: 20 ps eq
   at 4 fs, 1.6x the speed of 2 fs, with <U> 0.02 kJ/mol per water (about 1 K) above 1 fs; 5 fs
   drifts. Water hydrogens at 4.0 instead of 3.024 change nothing there, presumably because the
   protein atoms set the CG count.
-- Next: multiple time stepping. For MTS the literature on AMOEBA reports:
+- Multiple time stepping is implemented and measured in docs/mts.md (ubiquitin: bonded terms
+  and special pairs every 2.33 fs, the rest every 7 fs, 1.4x the 4 fs single step at its
+  accuracy). For MTS the literature on AMOEBA reports:
   - BAOAB-RESPA1: 10 fs outer step with HMR, up to 7x, diffusion -8 % (Lagardere et al. 2019).
   - SIN(R): outer steps up to 100 fs with canonical configurations (Margul & Tuckerman 2016).
   There, the thermostat is what makes the large step possible.

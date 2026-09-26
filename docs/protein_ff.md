@@ -460,7 +460,8 @@ steps. The largest constraint error was 2.5e-14 in every run.
   same picture: 4 fs +86 / +114 kJ/mol (water 3.024 / 4.0), 5 fs +227 / +210 (drift 0.073 /
   0.041), 2 fs with water 4.0 +26 +- 32.
 - **In short.** For equilibrium sampling of this protein, 4 fs with 3.024 amu hydrogens is the
-  fastest stable setting. Per-kind masses are for systems where one mass does not fit all: a
+  fastest stable single step. With multiple time stepping (bonded terms and the special pGM pairs
+  every 2.33 fs, everything else every 7 fs) the same accuracy runs 1.4x faster (docs/mts.md). Per-kind masses are for systems where one mass does not fit all: a
   uniform 4.0 would strip CH3 carbons to 3 amu, while water-dominated systems gain from 4.0
   (pure water: 4-5 fs).
 

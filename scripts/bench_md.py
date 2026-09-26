@@ -52,6 +52,7 @@ def main():
     ap.add_argument("--thermostat", default="langevin", help="langevin | bussi | gle")
     ap.add_argument("--tau", type=float, default=1.0, help="Bussi time constant (ps)")
     ap.add_argument("--hmr", type=float, default=None, help="hydrogen mass (amu), constraints engine only")
+    ap.add_argument("--barostat-interval", type=int, default=100, help="steps between Monte Carlo volume moves (npt)")
     ap.add_argument("--grid", type=int, default=None, help="PME points per replica along each lattice vector (default 48)")
     ap.add_argument("--skin", type=float, default=0.1)
     ap.add_argument("--engine", default="rigid", help="rigid (rigid bodies) | constraints (atoms + SHAKE/RATTLE, "
@@ -78,13 +79,13 @@ def main():
                     dipole_tol=a.tol, precision=a.precision, elec_cutoff=a.elec_cut)
     if a.engine == "rigid":
         sim = Simulation(sys_, pos, H * n, settings=st, ensemble=a.ensemble, temperature=298.0, gamma=a.gamma,
-                         barostat_interval=100, dt=a.dt, vel_nm_ps=v, log=sys.stdout,
+                         barostat_interval=a.barostat_interval, dt=a.dt, vel_nm_ps=v, log=sys.stdout,
                          thermostat=a.thermostat, tau_t=a.tau, mts=mts)
     else:
         from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
         tpl = {id(m): RigidTemplate(m, pos[sys_.atom_slice(k)]) for k, m in enumerate(sys_.molecules)}
         sim = FlexibleSimulation(sys_, [tpl[id(m)] for m in sys_.molecules], pos, H * n, settings=st,
-                                 ensemble=a.ensemble, temperature=298.0, gamma=a.gamma, barostat_interval=100,
+                                 ensemble=a.ensemble, temperature=298.0, gamma=a.gamma, barostat_interval=a.barostat_interval,
                                  dt=a.dt, log=sys.stdout, thermostat=a.thermostat, tau_t=a.tau, hmr=a.hmr, mts=mts)
         print("# masses of the first molecule:", np.asarray(sim.flex.masses)[:3], flush=True)
     blk = max(1, int(round(1.0 / a.dt)))                        # 1 ps blocks

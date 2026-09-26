@@ -8,7 +8,8 @@ Steps run in jit-compiled blocks on the device; between blocks the host checks t
 list (reallocates and repeats the block on overflow), re-wraps molecules into the box, reports
 and writes files.  Molecules are the prmtop residues; identical residues share one template.
 run(dipoles=n) also samples the cell dipole every n steps (on the device, inside the blocks) into
-prefix.dip, and run(induced=n) writes per-atom induced dipoles to prefix.mu.nc (md/dipoles.py)."""
+prefix.dip, and run(induced=n) writes per-atom induced dipoles to prefix.mu.nc (md/dipoles.py).
+mts=MTS(...) integrates force groups with their own time steps (md/mts.py; dt is the outer step)."""
 from __future__ import annotations
 
 import os

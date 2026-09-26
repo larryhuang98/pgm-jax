@@ -1,10 +1,10 @@
 """Multiple time stepping (md/mts.py): one fast step per outer step is the ordinary integrator, the
-force groups sum to the full force and the fast forces are the gradient of the fast energy, the NVE
-step is time-reversible, energy conservation, per-group kinetic temperatures with thermostats,
-NPT + restraints + checkpoints, and the settings that must be refused."""
+force groups sum to the full force and the fast forces are the gradient of the fast energy (short-
+range and special-pair splits, every fast induction model), the list rebuild, the NVE step is
+time-reversible, energy conservation, per-group kinetic temperatures with thermostats (two and
+three levels), NPT + restraints + checkpoints, and the settings that must be refused."""
 import numpy as np
 import jax
-import jax.numpy as jnp
 import pytest
 
 jax.config.update("jax_enable_x64", True)
@@ -89,6 +89,25 @@ def test_groups_sum_to_the_full_force_and_fast_forces_are_gradients():
     assert np.abs(np.asarray(st3.mts.forces[1]) - np.asarray(fresh.mts.forces[1])).max() < 1e-9 * rms
 
 
+@pytest.mark.parametrize("pol", ["none", "direct", "mutual"])
+def test_special_pair_split(pol):
+    """split="special": the fast level (bonded terms + the pGM and van der Waals interactions of the
+    special pairs, unswitched) is the gradient of its energy, and one fast step per outer step is the
+    ordinary integrator."""
+    sim = methanol_sim(MTS(inner=2, split="special", polarization=pol), dt=0.001, ensemble="nvt", gamma=10.0)
+    sim._advance(40)
+    st, integ = sim.state, sim.integ
+    F1 = np.asarray(st.mts.forces[1])
+    g = jax.grad(lambda y: integ.short_energy(y, st.box, st) + integ.flex.energy(y))(st.dyn.position)
+    assert np.abs(F1 + np.asarray(g)).max() < 1e-10 * np.sqrt(np.mean(F1 ** 2))
+    out = []
+    for m in (None, MTS(inner=1, split="special", polarization=pol, anchor=False)):
+        sim = methanol_sim(m, dt=0.0005, ensemble="nvt", thermostat="bussi")
+        sim._advance(15)
+        out.append(sim.positions_nm())
+    assert np.abs(out[0] - out[1]).max() < 1e-11
+
+
 def _reverse(integ, st, n):
     flip = lambda s: s.set(dyn=s.dyn.set(momentum=jax.tree_util.tree_map(lambda p: -p, s.dyn.momentum)))  # noqa: E731
     back = integ.run(flip(integ.run(st, n)), n)
@@ -146,6 +165,21 @@ def test_group_temperatures(engine, thermostat, o_step):
         T.append((o["temp_K"], o.get("temp_trans", o.get("temp_com")), o.get("temp_rot", o.get("temp_internal"))))
     T = np.mean(T, axis=0)
     assert np.all(np.abs(T - 300.0) < 15.0), T
+
+
+def test_three_levels_thermostat():
+    """Flexible methanol with three levels (slow 2 fs, short-range 1 fs, bonded 0.5 fs) and the O step
+    in the middle of the outer step: centre-of-mass and internal temperatures at the target."""
+    sim = methanol_sim(MTS(inner=2, bonded=2, r_short=0.4, buffer=0.1), dt=0.002, ensemble="nvt",
+                       thermostat="langevin", gamma=5.0, temperature=300.0)
+    sim._advance(300)
+    T = []
+    for _ in range(120):
+        sim._advance(10)
+        o = sim.observables()
+        T.append((o["temp_K"], o["temp_com"], o["temp_internal"]))
+    T = np.mean(T, axis=0)
+    assert np.all(np.abs(T - 300.0) < 20.0), T
 
 
 def test_npt_restraints_and_checkpoint(tmp_path):
