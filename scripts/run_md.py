@@ -8,7 +8,8 @@ Options use Amber's units and names where they exist (Angstrom, fs, ew_coeff in 
 
 Outputs: <out>.log (energies, temperature, density, solver iterations, speed), <out>.nc (Amber
 NetCDF trajectory), <out>.rst7 (Amber NetCDF restart), <out>.chk (complete checkpoint; continue with
---checkpoint <out>.chk).
+--checkpoint <out>.chk); with --dipoles N, <out>.dip (cell dipole every N steps, for
+scripts/dielectric.py); with --induced N, <out>.mu.nc (per-atom induced dipoles).
 """
 from __future__ import annotations
 
@@ -70,6 +71,8 @@ def main(argv=None):
     ap.add_argument("--traj", type=int, default=0, help="steps between trajectory frames (0: none)")
     ap.add_argument("--restart", type=int, default=0, help="steps between restart/checkpoint files")
     ap.add_argument("--pressure", action="store_true", help="also report the virial pressure")
+    ap.add_argument("--dipoles", type=int, default=0, help="steps between cell-dipole samples (<out>.dip; 0: none)")
+    ap.add_argument("--induced", type=int, default=0, help="steps between per-atom induced dipole frames (<out>.mu.nc)")
     a = ap.parse_args(argv)
     if a.ew_coeff is None:
         a.ew_coeff = 0.4 if a.es_cut is None else ewald_beta_for(a.es_cut / 10, a.dsum_tol) / 10
@@ -89,7 +92,7 @@ def main(argv=None):
     if a.checkpoint:
         sim.load(a.checkpoint)
     sim.run(a.nsteps, report=a.report, traj=a.traj, restart=a.restart, prefix=a.out,
-            pressure_every_report=a.pressure, append=bool(a.checkpoint))
+            pressure_every_report=a.pressure, append=bool(a.checkpoint), dipoles=a.dipoles, induced=a.induced)
 
 
 if __name__ == "__main__":

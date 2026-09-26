@@ -1,0 +1,212 @@
+"""Cell dipole, cell polarizability, dipole recording during MD and the dielectric analysis
+(pgm_jax/md/dipoles.py, pgm_jax/md/dielectric.py)."""
+import numpy as np
+import jax
+import jax.numpy as jnp
+import pytest
+
+jax.config.update("jax_enable_x64", True)
+
+from pgm_jax import ElecChannel, Molecule, System  # noqa: E402
+from pgm_jax.channels import molecular_polarizability, perm_dipoles  # noqa: E402
+from pgm_jax.md import dielectric as D  # noqa: E402
+from pgm_jax.md.dipoles import DIP_COLUMNS, CellDipole, DipoleRecorder, cell_dipole, read_dipoles  # noqa: E402
+from pgm_jax.md.forcefield import PGMForceField  # noqa: E402
+from pgm_jax.md.simulation import Simulation  # noqa: E402
+from pgm_jax.units import KE  # noqa: E402
+from test_grad import methanol, water  # noqa: E402
+from test_md import settings, small_box  # noqa: E402
+
+KB = 0.0083144626181532
+
+
+def _solve(sys, pos, H, **kw):
+    ff = PGMForceField(sys, H, settings(**kw))
+    idx = ff.rows_for(pos, H)
+    return ff, idx, jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
+
+
+def test_decomposition_sums_to_charge_perm_and_induced_dipoles():
+    sys, pos, H = small_box(3)
+    ff, idx, res = _solve(sys, pos, H)
+    cd = CellDipole(ff)
+    C = np.asarray(cd.components(pos, H, res.induction.mu))
+    P = sys.expand(None)
+    q = np.asarray(P["q"])
+    assert np.allclose(C[0], (q[:, None] * pos).sum(0), atol=1e-12)                 # neutral molecules: sum q r
+    assert np.allclose(C[1], np.asarray(perm_dipoles(jnp.asarray(pos), sys, P["cov"])).sum(0), atol=1e-12)
+    assert np.allclose(C[2], np.asarray(res.induction.mu).sum(0), atol=1e-12)
+    assert np.allclose(np.asarray(cd.molecular(pos, H, res.induction.mu)).sum(0), C.sum(0), atol=1e-12)
+    assert np.abs(C[2]).max() > 1e-3 and np.abs(C[1]).max() > 1e-3                  # every part contributes
+
+
+@pytest.mark.parametrize("mol", ["water", "methanol"])
+def test_single_molecule_in_large_box_is_the_gas_phase_molecule(mol):
+    """Induced dipoles, total dipole and polarizability of one molecule in a periodic box approach
+    the gas-phase model's (pgm_jax.Model / ElecChannel); the difference is the field of the
+    periodic images, ~ 4 pi alpha p / (3 V) under tin-foil Ewald, so it falls as 1 / V."""
+    if mol == "water":
+        m = water()
+        t = np.radians(104.52 / 2)
+        x = np.array([[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]])
+    else:
+        m, x = methanol()
+    rng = np.random.default_rng(1)
+    x = (x - x.mean(0)) @ np.linalg.qr(rng.normal(size=(3, 3)))[0].T
+    sys = System([m])
+    e, aux = ElecChannel().energy(jnp.asarray(x), sys, None)
+    P = sys.expand(None)
+    M_gas = (np.asarray(P["q"])[:, None] * x).sum(0) + np.asarray(aux["p"]).sum(0) + np.asarray(aux["mu"]).sum(0)
+    A_gas = np.asarray(molecular_polarizability(jnp.asarray(x), sys))
+    err = []
+    for L in (3.0, 4.5):
+        H = np.eye(3) * L
+        pos = x + L / 2
+        ff, idx, res = _solve(sys, pos, H, cutoff=0.9, skin=0.0, ewald_beta=4.0, pme_grid=(int(L * 16),) * 3)
+        cd = CellDipole(ff)
+        M = np.asarray(cd.components(pos, H, res.induction.mu)).sum(0)
+        A = np.asarray(cd.polarizability(pos, H, idx, tol=1e-12))
+        bound = 4 * np.pi / (3 * L ** 3) * np.abs(A_gas).max()                     # image field / p
+        assert np.abs(np.asarray(res.induction.mu) - np.asarray(aux["mu"])).max() < 3 * bound * np.linalg.norm(M_gas)
+        assert np.abs(M - M_gas).max() < 3 * bound * np.linalg.norm(M_gas), (L, M, M_gas)
+        assert np.abs(A - A_gas).max() < 3 * bound * np.abs(A_gas).max(), (L, A, A_gas)
+        err.append(np.abs(A - A_gas).max())
+    assert 1.5 < err[0] / err[1] < 6.0, err                                          # (4.5 / 3)^3 = 3.4
+
+
+def test_cell_dipole_invariant_to_wrapping_and_origin():
+    """Neutral molecules: M is unchanged when whole molecules are moved by lattice vectors or the
+    system is translated.  A charged molecule contributes its dipole about its centre of mass, so
+    M stays invariant for a charged (even net-charged) cell too."""
+    sys, pos, H = small_box(5)
+    ff, idx, res = _solve(sys, pos, H)
+    M0 = np.asarray(CellDipole(ff).components(pos, H, res.induction.mu))
+    rng = np.random.default_rng(2)
+    shift = rng.integers(-2, 3, size=(sys.nmol, 3)) @ H
+    moved = pos + shift[sys.mol]
+    ff1, idx1, res1 = _solve(sys, moved, H)
+    M1 = np.asarray(CellDipole(ff1).components(moved, H, res1.induction.mu))
+    assert np.abs(M1 - M0).max() < 1e-10 * np.abs(M0).max(), M1 - M0
+    # translation: charges and covalent dipoles exact; induced dipoles to the PME grid accuracy
+    moved = moved + np.array([0.37, -1.1, 0.23])
+    ff1, idx1, res1 = _solve(sys, moved, H)
+    M1 = np.asarray(CellDipole(ff1).components(moved, H, res1.induction.mu))
+    assert np.abs(M1[:2] - M0[:2]).max() < 1e-12 and np.abs(M1[2] - M0[2]).max() < 1e-6 * np.abs(M0).max()
+    # a charged methanol: net charge +0.3 e in the cell
+    m, _ = methanol()
+    ion = Molecule("MeOH+", m.elements, m.types, m.q + 0.05, m.radius, m.alpha, cov=m.cov,
+                   lj_rmin_half=m.lj_rmin_half, lj_sqrt_eps=m.lj_sqrt_eps, bonds=m.bonds)
+    mols = [ion] + sys.molecules[1:]
+    sysc = System(mols)
+    assert abs(float(np.sum(sysc.expand(None)["q"])) - 0.3) < 1e-9
+    fa, ia, ra = _solve(sysc, pos, H)
+    fb, ib, rb = _solve(sysc, moved, H)
+    cd = CellDipole(fa)
+    assert np.allclose(cd.molecular_charges()[0], 0.3) and cd.molecular_charges()[1:].std() < 1e-12
+    Ma, Mb = np.asarray(cd.components(pos, H, ra.induction.mu)), np.asarray(CellDipole(fb).components(moved, H, rb.induction.mu))
+    assert np.abs(Ma[:2] - Mb[:2]).max() < 1e-12 and np.abs(Ma[2] - Mb[2]).max() < 1e-6 * np.abs(Ma).max()
+
+
+def test_dielectric_formula_on_gaussian_series():
+    rng = np.random.default_rng(0)
+    V, T, sigma, F = 15.0, 298.0, 1.3, 200000
+    M = rng.normal(size=(F, 3)) * sigma + np.array([0.4, -0.2, 0.1])
+    expected = 3 * sigma ** 2 * D.E_NM ** 2 / (3 * D.EPS0 * V * 1e-27 * D.KB_SI * T)
+    fl = D.fluctuation(M, V, T)
+    assert abs(fl / expected - 1) < 5 * np.sqrt(2 / (3 * F))
+    # the same in the model's units: 4 pi KE <dM^2> / (3 V kB T)
+    dM2 = np.mean(np.sum(M * M, 1)) - np.sum(M.mean(0) ** 2)
+    assert abs(4 * np.pi * KE * dM2 / (3 * V * KB * T) / fl - 1) < 1e-6
+    r = D.static_dielectric(M, V, T, alpha=np.where(np.arange(F) % 100 == 0, 0.95, np.nan), nblocks=20)
+    assert abs(r["eps_inf"] - (1 + 4 * np.pi * 0.95 / V)) < 1e-12
+    assert abs(r["eps"] - r["eps_inf"] - fl) < 1e-9 * fl
+    assert 0.7 < r["err"] / (expected * np.sqrt(2 / (3 * F))) < 1.3                # uncorrelated: jackknife = theory
+    # correlated (AR(1)) series: tau, and the jackknife error with blocks >> tau
+    rho, F = 0.95, 400000
+    x = np.empty((F, 3))
+    x[0] = rng.normal(size=3)
+    xi = rng.normal(size=(F, 3)) * np.sqrt(1 - rho ** 2)
+    for t in range(1, F):
+        x[t] = rho * x[t - 1] + xi[t]
+    tau = D.correlation_time(x, 0.01)
+    assert abs(tau / (-0.01 / np.log(rho)) - 1) < 0.1, tau
+    fl, err = D.jackknife(x, V, T, 50)
+    theory = fl * np.sqrt(2 * (1 + rho ** 2) / (3 * F * (1 - rho ** 2)))
+    assert 0.7 < err / theory < 1.3, (err, theory)
+    run = D.running(x, V, T)
+    assert run[-1][1] == pytest.approx(fl) and run[0][2] > run[-1][2]
+
+
+def test_ir_spectrum_of_an_oscillating_dipole():
+    """Peak at the oscillation frequency and the sum rule int alpha n dw = pi beta <dM/dt^2> / (6 c eps0 V)."""
+    dt, nu = 0.002, 500.0                                                            # ps, cm^-1
+    w0 = 2 * np.pi * D.C_LIGHT * 100 * nu * 1e-12                                     # rad/ps
+    t = np.arange(200000) * dt
+    rng = np.random.default_rng(3)
+    A = 0.2
+    M = np.stack([A * np.cos(w0 * t + 0.3), A * np.sin(w0 * t + 0.3), 1e-4 * rng.normal(size=len(t))], 1)
+    wn, an = D.ir_spectrum(M, dt, 15.0, 298.0, segment_ps=20.0)
+    assert abs(wn[np.argmax(an)] - nu) < 2.0
+    integral = np.sum(an * 100) * (wn[1] - wn[0]) * 100 * 2 * np.pi * D.C_LIGHT      # int alpha n dw, 1/m rad/s
+    mdot2 = (A * w0 * 1e12 * D.E_NM) ** 2                                            # <|dM/dt|^2> of a rotating dipole
+    expected = np.pi * mdot2 / (6 * D.C_LIGHT * D.EPS0 * 15.0e-27 * D.KB_SI * 298.0)
+    assert abs(integral / expected - 1) < 0.02, integral / expected
+
+
+def test_read_dipoles_drops_records_superseded_by_a_continuation(tmp_path):
+    p = tmp_path / "x.dip"
+    rows = [(s, 0.001 * s, 300.0, 15.0) + tuple(np.full(9, v)) + (0.04, np.nan)
+            for s, v in [(5, 1), (10, 2), (15, 3), (20, 4), (10, 20), (15, 30), (20, 40), (25, 50)]]
+    head = "# temperature_K = 298.0\n# n_atoms = 3\n# columns = " + " ".join(DIP_COLUMNS) + "\n"
+    p.write_text(head + "".join(" ".join(str(v) for v in r) + "\n" for r in rows))
+    meta, d = read_dipoles(str(p))
+    assert meta["temperature_K"] == 298.0 and meta["n_atoms"] == 3
+    assert list(d["step"]) == [5, 10, 15, 20, 25]
+    assert np.allclose(d["M"][:, 0], [3, 60, 90, 120, 150])
+
+
+def _run(tmp_path, name, report, engine="rigid"):
+    sys, pos, H = small_box(0, nw=30, nm=0 if engine == "flexible" else 4)
+    s = settings(cutoff=0.6, pme_grid=(32, 32, 32), pme_order=6, dipole_tol=1e-9, max_iter=200)
+    if engine == "rigid":
+        sim = Simulation(sys, pos, H, settings=s, dt=0.001, ensemble="nvt", thermostat="bussi", log=None, seed=4)
+    else:
+        from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
+        tpl = RigidTemplate(sys.molecules[0], pos[sys.atom_slice(0)])
+        sim = FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=0.001, ensemble="nvt", thermostat="bussi", seed=4)
+    prefix = str(tmp_path / name)
+    sim.run(40, report=report, prefix=prefix, dipoles=5, induced=20)
+    return sim, prefix
+
+
+@pytest.mark.parametrize("engine", ["rigid", "flexible"])
+def test_recorded_series_match_the_state(tmp_path, monkeypatch, engine):
+    """Samples taken on the device inside the blocks equal those taken at block ends, the last one
+    equals the final state's M, the polarizability rows equal a direct evaluation, and the per-atom
+    induced dipoles are written (NetCDF)."""
+    monkeypatch.setattr(DipoleRecorder, "alpha_every", 2)
+    sim, prefix = _run(tmp_path, "a", 20, engine)            # blocks of 20 steps, samples inside them
+    meta, d = read_dipoles(prefix + ".dip")
+    assert list(d["step"]) == [5, 10, 15, 20, 25, 30, 35, 40] and np.allclose(d["time_ps"], d["step"] * 0.001)
+    assert meta["n_atoms"] == sim.sys.n and meta["charged_molecules"] == 0 and meta["interval"] == 5
+    c = cell_dipole(sim)
+    assert np.abs(d["M"][-1] - c["total"]).max() < 1e-9
+    assert np.allclose(d["M_ind"][-1], c["ind"], atol=1e-9)
+    assert np.allclose(c["debye"]["total"] * 0.020819434, c["total"])
+    assert np.isnan(d["alpha_nm3"][::2]).all() and np.isfinite(d["alpha_nm3"][1::2]).all()
+    st = sim.state
+    pos = sim.positions_nm()
+    flex = getattr(sim, "flex", None)
+    centers = st.dyn.position.center if flex is None else flex.list_centers(jnp.asarray(pos))
+    idx = sim.nb.candidates(st.nbr, centers, st.box, jnp.asarray(pos))[0]
+    a = float(jnp.trace(CellDipole(sim.ff).polarizability(pos, st.box, idx)) / 3)
+    assert abs(d["alpha_nm3"][-1] - a) < 1e-7 * a
+    from scipy.io import netcdf_file
+    f = netcdf_file(prefix + ".mu.nc", "r", mmap=False)
+    assert list(f.variables["step"][:]) == [20, 40] and f.variables["induced_dipoles"].units == b"e nm"
+    assert np.allclose(np.array(f.variables["induced_dipoles"][-1]), np.asarray(st.induction.mu), atol=1e-7)
+    f.close()
+    if engine == "rigid":                                    # the same run sampled at block ends only
+        _, prefix_b = _run(tmp_path, "b", 5, engine)
+        _, db = read_dipoles(prefix_b + ".dip")
+        assert np.abs(db["M"] - d["M"]).max() < 1e-8, np.abs(db["M"] - d["M"]).max()

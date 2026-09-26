@@ -17,7 +17,8 @@ any order. Validated against Amber (sander, pmemd-pgm) and PyRESP.
 - **Systems:** gas phase (`Model`), periodic (`PeriodicModel`, Ewald, triclinic boxes), and
   **molecular dynamics with JAX-MD** (`pgm_jax.md`: smooth PME, neighbour lists, pmemd-pgm's induction
   solver, rigid or flexible molecules, NVE / NVT (Langevin, Bussi, smooth GLE) / Monte Carlo NPT,
-  restraints, temperature replica exchange with batched replicas, Amber inputs and outputs).
+  restraints, temperature replica exchange with batched replicas, cell dipole and dielectric
+  constant, Amber inputs and outputs).
 - **Parameterization:** gradients of QM losses (energies, forces, dipoles, ESP) by autodiff;
   gradients of liquid properties (density, heat of vaporization) by fluctuation formulas over MD
   frames; bonded terms for flexible pGM molecules (`pgm_jax.bonded`).
@@ -162,6 +163,17 @@ How it works:
   `observables()["erestraint"]` (part of `epot`, so `econs` stays conserved),
   `restraint_energies()` by kind, `set_restraints()` to release them in stages.
   `AmberSystem.select` / `position_restraints` restrain protein heavy atoms or the backbone.
+- **Cell dipole, induced dipoles, dielectric constant** (`md/dipoles.py`, `md/dielectric.py`,
+  `docs/dielectric.md`): `run(dipoles=n)` (`run_md.py --dipoles n`) samples the cell dipole
+  M = M_q + M_perm + M_ind (e nm; molecules whole, charged molecules about their centre of mass)
+  every n steps on the device, inside the blocks, into `prefix.dip`; `induced=n` writes per-atom
+  induced dipoles to `prefix.mu.nc`. Both engines. `scripts/dielectric.py` gives, for tin-foil
+  Ewald, eps = eps_inf + (<M^2> - <M>^2) / (3 eps0 V kB T) with M the total dipole and eps_inf
+  from the model's own cell polarizability (adiabatic induced dipoles carry no thermal
+  fluctuation of the electronic response), jackknife block errors, the running estimate and an
+  IR spectrum. 512 pGM waters (the box above), 15 ns: eps = 31.0 +- 0.4 (both engines agree;
+  TIP3P control 104 +- 3, literature 89-104); why this is far below the published 84 of
+  pGM3P-25 and experiment's 78.4: `docs/dielectric.md`.
 - **Differentiable forces and dipoles** (`MDSettings(differentiable=True)`): `compute()` returns
   energy, forces and induced dipoles that `jax.grad` / `jax.vjp` can differentiate with respect to
   the parameters, positions and box, e.g. for force or dipole matching. The dipole solve is
@@ -418,6 +430,8 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/param.py` | Amber pGM prmtop reader (incl. LJ, bonds, masses), JSON save/load, py_resp `.chg` + pGM-pol table, atom mapping |
 | `pgm_jax/md/` | MD engine: `forcefield.py` (PME + direct rows + induction solver), `pme.py`, `kernels.py`, `neighbors.py` (JAX-MD lists), `rigid.py` (JAX-MD rigid bodies), `integrate.py`, `simulation.py`, `io.py` (Amber NetCDF), `box.py` |
 | `pgm_jax/md/thermostats.py` | `Langevin`, `Bussi` (global rescaling, fastest with pGM), `GLE` (`GLE.band()`: smooth slow-band kernel), exact O steps, heat bookkeeping |
+| `pgm_jax/md/dipoles.py` | cell dipole M = M_q + M_perm + M_ind (`CellDipole`, `cell_dipole`), cell electronic polarizability, `DipoleRecorder` (M(t) sampled on the device into `prefix.dip`), `InducedDipoleFile` (per-atom induced dipoles, NetCDF), `read_dipoles` |
+| `pgm_jax/md/dielectric.py` | static dielectric constant (tin-foil fluctuation formula + eps_inf), jackknife block errors, running estimate, dipole correlation time, IR spectrum |
 | `pgm_jax/md/flexible.py` | flexible molecules in MD: `FlexibleTemplate` (bonded fit -> MD), `RigidTemplate` (water, ions by constraints), `FlexibleSimulation` (atoms, g-BAOAB with SHAKE / RATTLE, `constraints="h-bonds"`, `hmr`), `liquid_box` |
 | `pgm_jax/md/remd.py` | temperature replica exchange for both engines: `ReplicaExchange` (exchanges, statistics, round trips, outputs, checkpoints), `MDReplicas` (replicas batched with `jax.vmap`, or sequential), `geometric_ladder`, `read_exchange_log` |
 | `pgm_jax/protein/` | proteins: `residues` (bond orders, terminal keys), `library` (`ResidueLibrary`: pGM parameters by residue and atom name, JSON), `amber` (`load_amber`: tleap system -> pgm_jax molecules; `amber_template`: ff19SB-form bonded terms + CMAP; `AmberSystem.hmr` per-kind hydrogen masses, `select` / `position_restraints`), `pmemd` (`write_pgm_prmtop`: the engine's model as a pmemd-pgm prmtop; `pmemd_mdin`, `pmemd_grid`) |
@@ -432,7 +446,8 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/bonded/` | bonded terms for flexible pGM molecules: `topology.py` (incl. peptide backbone and residues from the graph), `terms/` (registry and `SETS`: `core`, `classical`, `class2`, `explore`, `cmap`), `model.py` (`BondedTerms`, `BondedModel`), `fit.py`, `bench.py`, `data.py`, `molecules.py`, `amber.py` (GAFF / ff19SB import, prmtop export), `nn/` (neural bonded terms: `features`, `layers`, `instances`, `model`) |
 | `pgm_jax/prmtop.py` | Amber prmtop as raw sections: read, edit, write (unknown sections such as pGM's kept verbatim) |
 | `scripts/bonded/` | the bonded study: sampling, DFT labels, pGM parameters, experiments, report |
-| `scripts/run_md.py` | MD from an Amber prmtop + inpcrd/rst7 (Amber-style options) |
+| `scripts/run_md.py` | MD from an Amber prmtop + inpcrd/rst7 (Amber-style options; `--dipoles`, `--induced`) |
+| `scripts/dielectric.py`, `scripts/water_dielectric.py` | eps (and IR spectrum) from `.dip` series; the water validation runs (pGM, pGM3P-25 geometry, TIP3P control) |
 | `scripts/bench_md.py`, `scripts/pgm_supercell.py` | MD speed benchmark; replicate a pGM prmtop for larger systems |
 | `tests/` | `pytest -q`: TESTCOUNT tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
 | `scripts/validate_amber.py` | comparison with sander / pmemd-pgm / PyRESP (`compare`, `pyresp`, `virial`) |

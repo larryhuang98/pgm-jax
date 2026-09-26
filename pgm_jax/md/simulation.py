@@ -6,7 +6,9 @@
 
 Steps run in jit-compiled blocks on the device; between blocks the host checks the neighbour
 list (reallocates and repeats the block on overflow), re-wraps molecules into the box, reports
-and writes files.  Molecules are the prmtop residues; identical residues share one template."""
+and writes files.  Molecules are the prmtop residues; identical residues share one template.
+run(dipoles=n) also samples the cell dipole every n steps (on the device, inside the blocks) into
+prefix.dip, and run(induced=n) writes per-atom induced dipoles to prefix.mu.nc (md/dipoles.py)."""
 from __future__ import annotations
 
 import os
@@ -21,6 +23,7 @@ import numpy as np
 from ..param import read_prmtop_pgm
 from ..system import Molecule, System
 from .box import check_box, reduce_box, volume
+from .dipoles import DipoleRecorder, InducedDipoleFile
 from .forcefield import MDSettings, PGMForceField
 from .integrate import KB, Integrator, upgrade_state
 from .io import NetCDFTrajectory, box_from_cell, read_coordinates, write_restart
@@ -40,6 +43,8 @@ def _dedupe(mols: list[Molecule]) -> list[Molecule]:
 
 
 class Simulation:
+    _recorder = None                    # DipoleRecorder while run(dipoles=...) is running
+
     def __init__(self, sys: System, pos_nm, H_nm, settings: MDSettings = MDSettings(), dt: float = 0.001,
                  ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0, pressure: float = 1.0,
                  barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None, params=None, log=sys.stdout,
@@ -207,7 +212,7 @@ class Simulation:
     def _advance_block(self, n: int):
         start = self.state
         for attempt in range(6):
-            new = self.integ.run(start, n)
+            new = self.integ.run(start, n) if self._recorder is None else self._recorder.run(start, n)
             jax.block_until_ready(new.epot)
             nb_bad, row_bad = self.nb.failed(new.nbr), bool(new.overflow)
             if not (nb_bad or row_bad):
@@ -225,6 +230,8 @@ class Simulation:
             start = self.integ.forces(start.set(nbr=nbr), False).set(induction=start.induction)
         else:
             raise RuntimeError("neighbour list keeps overflowing")
+        if self._recorder is not None:
+            self._recorder.keep()
         body = self.rigid.wrap(new.dyn.position, new.box)
         self.state = new.set(dyn=new.dyn.set(position=body))
         self.time_ps += n * self.dt
@@ -232,9 +239,14 @@ class Simulation:
             raise FloatingPointError(f"energy is not finite at step {int(new.step)}")
 
     def run(self, nsteps: int, report: int = 1000, traj: int = 0, restart: int = 0, prefix: str = "md",
-            pressure_every_report: bool = False, append: bool = False):
-        block = int(np.gcd.reduce([x for x in (report, traj, restart, nsteps) if x > 0]))
+            pressure_every_report: bool = False, append: bool = False, dipoles: int = 0, induced: int = 0):
+        """Every `report` steps a log line, `traj` a trajectory frame (prefix.nc), `restart` a
+        restart + checkpoint; `dipoles`: cell dipole sampled every `dipoles` steps into prefix.dip
+        (does not shorten the blocks); `induced`: per-atom induced dipoles into prefix.mu.nc."""
+        block = int(np.gcd.reduce([x for x in (report, traj, restart, nsteps, induced) if x > 0]))
         tfile = NetCDFTrajectory(prefix + ".nc", self.sys.n, append=append) if traj else None
+        self._recorder = DipoleRecorder(self, prefix + ".dip", dipoles, append=append) if dipoles else None
+        mufile = InducedDipoleFile(prefix + ".mu.nc", self.sys.n, append=append) if induced else None
         logf = open(prefix + ".log", "a" if append else "w")
         cols = None
         t0, s0 = time.time(), int(self.state.step)
@@ -244,6 +256,10 @@ class Simulation:
             self._advance(n)
             done += n
             step = int(self.state.step)
+            if self._recorder is not None:
+                self._recorder.flush()
+            if mufile is not None and step % induced == 0:
+                mufile.write(step, self.time_ps, self.state.induction.mu)
             if report and step % report == 0:
                 obs = self.observables()
                 if pressure_every_report:
@@ -264,6 +280,7 @@ class Simulation:
             if restart and step % restart == 0:
                 self.save(prefix)
         logf.close()
+        self._recorder = None
         if restart:
             self.save(prefix)
 
