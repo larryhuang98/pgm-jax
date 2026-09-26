@@ -108,7 +108,8 @@ print(rw.n_eff(th))                                                      # resam
 | SHAKE / RATTLE | exact to 1e-12; 4096 waters: 0.042 ms per SHAKE |
 | Peptide + water, X-H constraints + HMR, 2 fs; solvated ACE-ALA-SER-NME | stable (tests) |
 
-Benchmark: `python scripts/protein/bench_protein.py sys.prmtop sys.inpcrd [--library lib.json] [--tol 1e-4]`.
+Benchmark: `python scripts/protein/bench_protein.py sys.prmtop sys.inpcrd [--library lib.json] [--tol 1e-4]
+[--elec-cut 0.7]`; electrostatic accuracy of cutoff settings: `scripts/protein/elec_accuracy.py`.
 
 ## Speed and size
 
@@ -150,13 +151,67 @@ constraints --grid 36`): 12k atoms 2.14 ms/step, 41k 11.9, 98k 35.0, with 6-7 CG
   of the pGM-pol parameters, not of the placeholder charges. At 2 fs the starting residual is
   largest on charged side chains (Arg NH, Lys NZ): 0.13 against 0.036 on water.
   `scripts/protein/cg_diag.py` prints this analysis.
-- **Shorter real-space cutoff with a larger Ewald coefficient.** Cutoff 0.7 nm, beta
-  5.14 nm^-1, grid 0.062 nm. This halves the pair rows, so the matvec fits in cache again.
-  Ubiquitin: 34 -> 55 ns/day. DHFR (26k atoms): 22.5 -> 28. Trp-cage: unchanged (already in
-  cache). Force error against a tight reference, electrostatics only: 6.5e-5 relative rms
-  (2.8e-5 at the current 0.9 nm / 4.0 / 0.08 nm). In this test LJ was cut at 0.7 nm as well;
-  production needs a separate electrostatics cutoff.
-- **dipole tol 1e-4 on top:** 64 ns/day, 1.9x the baseline.
+- **Shorter real-space cutoff with a larger Ewald coefficient**, first tried with everything
+  (LJ included) cut at 0.7 nm, beta 5.14 nm^-1, grid 0.062 nm. This halves the pair rows, so the
+  matvec fits in cache again. Ubiquitin: 34 -> 55 ns/day. DHFR (26k atoms): 22.5 -> 28. Trp-cage:
+  unchanged (already in cache).
+- **Separate electrostatics cutoff** (`MDSettings(cutoff=0.9, **elec_cutoff_settings(0.7))`,
+  `bench_protein.py --elec-cut 0.7`): the production form of the previous item. The real-space
+  electrostatics is cut at 0.7 nm, and LJ keeps its fitted 0.9 nm cutoff and tail correction.
+  Each row is split into an electrostatic part (ubiquitin: 200 pairs per atom instead of 392,
+  77 MB, in cache again) and a van der Waals part (the pairs from 0.7 to 0.9 nm), which is read
+  once per step. The compiled CG loop reads only the electrostatic part. `elec_cutoff_settings`
+  takes beta from Amber's dsum_tol rule, at the tolerance of the default pair (0.9 nm, 4.0 nm^-1),
+  and the PME spacing 0.08 (4 / beta)^1.6 nm. The exponent matters: at a fixed spline order the
+  PME force error of pGM grows about as beta^9.5 h^6, so a grid that only keeps beta x spacing
+  (exponent 1: 0.062 nm at 0.7 nm, as in the first test) has 2.5 times the force error of the
+  default.
+
+  Speed (ns/day; mixed precision, Bussi, dt 2 fs, X-H constraints + HMR for the proteins, rigid
+  water by constraints, dipole tol 1e-5; mean of two runs, which agree within 1-2 %, water 12k
+  within 5 %):
+
+  | System | 0.9 nm, previous rows | 0.9 nm | elec 0.7, grid 0.053 (default accuracy) | elec 0.7, grid 0.062 | all at 0.7 (LJ too), grid 0.062 |
+  |---|---|---|---|---|---|
+  | Ubiquitin, 16k atoms | 34.5 | 36.4 | 46.0 | 49.4 | 54.9 |
+  | DHFR, 26k atoms | 22.6 | 24.2 | 25.0 | 26.2 | 29.6 |
+  | pGM water, 12k atoms | 80.8 | 85.0 | 98 | 99 | 113 |
+  | pGM water, 98k atoms | 5.4 | 5.6 | 8.5 | 9.0 | 10.3 |
+
+  The single-cutoff engine got 5-7 % faster on the way (first two columns: rows now compacted with
+  one scatter, bitwise identical results). CG iterations do not change (ubiquitin 12.6, DHFR 13.0, water 6.0). DHFR
+  gains least: its electrostatic rows (130 MB) are again at the size of the cache, and its finer
+  PME grid costs more. The last column is not a usable setting (LJ must keep its fitted cutoff);
+  the gap to it is the cost of the 0.9 nm van der Waals pairs (neighbour list, compaction, the
+  extra pairs). Water: `bench_md.py --engine constraints`, PME grid 36 per 512 waters at 0.9 nm,
+  54 (0.053 column) and 48 (0.062 columns) at 0.7 nm. At 0.6 nm the grid rule gives 0.041 nm, and
+  ubiquitin is slower again (39.6 ns/day).
+
+  Electrostatic force error against a tight reference (0.9 nm, beta 4.0, spacing 0.04 nm, dipole
+  tol 1e-9, float64), LJ at 0.9 nm in every case: rms force difference / rms electrostatic force,
+  mixed precision (float64 agrees within 1 %); ubiquitin after minimisation and 10 ps of MD
+  (`scripts/protein/elec_accuracy.py`):
+
+  | elec cutoff (nm) / beta (nm^-1) / PME spacing (nm) | Ubiquitin | pGM water (512) |
+  |---|---|---|
+  | 0.9 / 4.0 / 0.08 (default) | 2.8e-5 | 6.7e-5 |
+  | 0.8 / 4.52 / 0.066 (`elec_cutoff_settings`) | 3.0e-5 | 7.3e-5 |
+  | 0.7 / 5.19 / 0.053 (`elec_cutoff_settings`, recommended) | 3.0e-5 | 6.6e-5 |
+  | 0.6 / 6.09 / 0.041 (`elec_cutoff_settings`) | 3.0e-5 | 1.0e-4 |
+  | 0.7 / 5.19 / 0.062 (exponent 1) | 6.8e-5 | 1.7e-4 |
+  | 0.7 / 5.14 / 0.062 (first test) | 6.2e-5 | 3.0e-4 |
+  | 0.7 / 5.19, real-space part alone (spacing 0.04, float64) | 8e-6 | 2e-5 |
+
+  The reference differs by 4e-6 from 1.2 nm (water box: 1.1 nm), order 8, spacing 0.03. Energy
+  errors of the recommended settings are 1 kJ/mol or less (4e-7 relative), as for the default. At
+  0.6 nm the real-space error of pGM water alone reaches 1e-4: the dsum_tol rule bounds the charge
+  term, and the dipole terms decay more slowly at larger beta. 0.7 nm is the recommended cutoff.
+  Energy conservation is unchanged. NVE from an equilibrated frame, drift in kT/ns per degree of
+  freedom and rms fluctuation about the linear fit, 0.9 nm vs elec 0.7: ubiquitin (2 fs, HMR,
+  40 ps) -0.0006 / +0.0003 and 3.3 / 3.4 kJ/mol; effective energy with Bussi -0.0005 / -0.0002;
+  pGM water (12k atoms, 1 fs, 20 ps) +0.0006 / +0.0012 and 0.8 / 0.9 kJ/mol (with LJ at 0.7 nm
+  as well: 2.0 kJ/mol, from LJ pairs crossing the shorter hard cutoff).
+- **dipole tol 1e-4 on top** (everything at 0.7 nm): 64 ns/day, 1.9x the baseline.
 - **Local preconditioner** (`local_niter` 2, 0.3 nm): 13 -> 7 iterations, but only 7 % faster.
   The inner sweeps cost about what they save, as in pmemd-pgm.
 - **Thermostat** (`thermostat="bussi"`): per-atom Langevin noise spoils the dipole predictor.
