@@ -121,58 +121,58 @@
  },
  "bench_512_waters": {
   "tip4pew (4 sites, 1 virtual) | rigid": {
-   "ms_per_step": 0.35304729938507085,
-   "ns_per_day": 489.45283054417587,
+   "ms_per_step": 0.3534170866012573,
+   "ns_per_day": 488.94070646607287,
    "atoms": 2048
   },
   "tip4pew (4 sites, 1 virtual) | constraints": {
-   "ms_per_step": 0.41607866287231443,
-   "ns_per_day": 415.3060837273182,
+   "ms_per_step": 0.42187097072601315,
+   "ns_per_day": 409.6039120744008,
    "atoms": 2048
   },
   "3-site control (M charge on O) | rigid": {
-   "ms_per_step": 0.3295919179916382,
-   "ns_per_day": 524.2847004652098,
+   "ms_per_step": 0.3290564298629761,
+   "ns_per_day": 525.1378922209678,
    "atoms": 1536
   },
   "3-site control (M charge on O) | constraints": {
-   "ms_per_step": 0.31430389881134035,
-   "ns_per_day": 549.786371258864,
+   "ms_per_step": 0.32806603908538823,
+   "ns_per_day": 526.7232185377898,
    "atoms": 1536
   },
   "place alone": {
-   "ms_per_call": 0.014805316925048828
+   "ms_per_call": 0.014639854431152344
   },
   "spread alone": {
-   "ms_per_call": 0.0292360782623291
+   "ms_per_call": 0.025160789489746094
   }
  },
  "bench_4096_waters": {
   "tip4pew (4 sites, 1 virtual) | rigid": {
-   "ms_per_step": 1.0654734611511232,
-   "ns_per_day": 162.18142103071176,
+   "ms_per_step": 1.044220495223999,
+   "ns_per_day": 165.4822911351995,
    "atoms": 16384
   },
   "tip4pew (4 sites, 1 virtual) | constraints": {
-   "ms_per_step": 1.1295279502868651,
-   "ns_per_day": 152.98426210357536,
+   "ms_per_step": 1.142203903198242,
+   "ns_per_day": 151.28647303353566,
    "atoms": 16384
   },
   "3-site control (M charge on O) | rigid": {
-   "ms_per_step": 0.7629577159881592,
-   "ns_per_day": 226.48699446756993,
+   "ms_per_step": 0.7647096157073974,
+   "ns_per_day": 225.96812757500211,
    "atoms": 12288
   },
   "3-site control (M charge on O) | constraints": {
-   "ms_per_step": 0.780147933959961,
-   "ns_per_day": 221.49645275977687,
+   "ms_per_step": 0.7805428504943848,
+   "ns_per_day": 221.38438638000585,
    "atoms": 12288
   },
   "place alone": {
-   "ms_per_call": 0.014999628067016602
+   "ms_per_call": 0.014913082122802734
   },
   "spread alone": {
-   "ms_per_call": 0.031455039978027344
+   "ms_per_call": 0.029233694076538086
   }
  },
  "no_sites_bitwise": {

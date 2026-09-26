@@ -28,7 +28,7 @@ reference lengths; rigid templates always) are applied with SHAKE / RATTLE in g-
 
 Molecules are kept whole: positions are never wrapped atom by atom, only whole molecules are
 shifted by lattice vectors.  Virtual sites (Molecule.vsites, md/vsites.py) are not integrated: they
-are rebuilt after every position update and their forces are spread to their parents.
+are rebuilt from their parents every step and their forces are spread to their parents.
 Units: nm, ps, amu, kJ/mol, K."""
 from __future__ import annotations
 

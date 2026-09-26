@@ -44,8 +44,9 @@ at zero mass; its position is placed once from the parents of the first instance
 constructions are rigid functions of a rigid molecule), and its force enters the body force and
 torque like any other.  Flexible molecules (`FlexibleSimulation`): sites are not integrated (no
 momentum; excluded from constraints, thermostat, kinetic energy, degrees of freedom and hydrogen
-mass repartitioning); they are rebuilt after every position update (after SHAKE) and their forces
-are spread to the parents before every momentum update.
+mass repartitioning).  With zero momentum the drifts leave them in place; they are rebuilt once
+per step, after the last drift (after SHAKE) and before the forces, and their forces are spread to
+the parents before every momentum update.
 
 Pair topology (md/topology.py): a site is part of its host.  It shares the host's neighbour-list
 group and takes the host's graph distances for the van der Waals weights (so it is excluded from
@@ -188,23 +189,26 @@ def _unit(v):
     return v / jnp.linalg.norm(v, axis=-1, keepdims=True)
 
 
-def _disp(pos, parents, H):
-    """(n, P, 3) displacements of the parents from the host (column 0), minimum image if H."""
-    d = pos[parents] - pos[parents[:, :1]]
+def _rel(X, H):
+    """(n, P, 3) displacements of the gathered parents X (host in column 0) from the host,
+    minimum image if H."""
+    d = X - X[:, :1]
     return d if H is None else min_image(d, H)
 
 
-def _linear(pos, H, par, w):
+# Every kernel takes the gathered parents X = pos[parents] (n, P, 3), host first, so that `spread`
+# can differentiate it with respect to X alone and move all forces with one scatter-add.
+def _linear(X, H, w):
     """average2 / average3 / outofplane: r_a + w_b d_b + w_c d_c + w_x (d_b x d_c)."""
-    d = _disp(pos, par, H)
+    d = _rel(X, H)
     db, dc = d[:, 1], d[:, 2]
-    return pos[par[:, 0]] + w[:, 0:1] * db + w[:, 1:2] * dc + w[:, 2:3] * jnp.cross(db, dc)
+    return X[:, 0] + w[:, 0:1] * db + w[:, 1:2] * dc + w[:, 2:3] * jnp.cross(db, dc)
 
 
-def _local(pos, H, par, wo, wx, wy, p):
+def _local(X, H, wo, wx, wy, p):
     """OpenMM LocalCoordinatesSite in host-relative form (valid because sum wo = 1, sum wx = sum wy = 0)."""
-    d = _disp(pos, par, H)
-    o = pos[par[:, 0]] + jnp.einsum("nk,nkc->nc", wo, d)
+    d = _rel(X, H)
+    o = X[:, 0] + jnp.einsum("nk,nkc->nc", wo, d)
     x = jnp.einsum("nk,nkc->nc", wx, d)
     y = jnp.einsum("nk,nkc->nc", wy, d)
     ex = _unit(x)
@@ -213,22 +217,22 @@ def _local(pos, H, par, wo, wx, wy, p):
     return o + p[:, 0:1] * ex + p[:, 1:2] * ey + p[:, 2:3] * ez
 
 
-def _amber(pos, H, par, wa, wc, p):
+def _amber(X, H, wa, wc, p):
     """Amber extra-point frame (sander extra_pts.F90 do_local_global), host = B."""
-    d = _disp(pos, par, H)
+    d = _rel(X, H)
     u = _unit(jnp.einsum("nk,nkc->nc", wa, d))
     v = _unit(jnp.einsum("nk,nkc->nc", wc, d))
     ez = -_unit(0.5 * (u + v))
     ex = _unit(0.5 * (v - u))
     ey = jnp.cross(ez, ex)
-    return pos[par[:, 0]] + p[:, 0:1] * ex + p[:, 1:2] * ey + p[:, 2:3] * ez
+    return X[:, 0] + p[:, 0:1] * ex + p[:, 1:2] * ey + p[:, 2:3] * ez
 
 
 def _frame_norms(pos, H, kind, par, *w):
     """Smallest length (nm) among the vectors a frame normalises, each expressed as a length: for
     "local" |x| and the part of y perpendicular to x; for "amber" |A - B|, |C - B| and 0.1 nm times
     |u + v| / 2 and |v - u| / 2 (setup check against degenerate frames)."""
-    d = _disp(pos, par, H)
+    d = _rel(pos[par], H)
     if kind == "local":
         x = jnp.einsum("nk,nkc->nc", w[1], d)
         y = jnp.einsum("nk,nkc->nc", w[2], d)
@@ -327,7 +331,8 @@ class VirtualSites:
         """(n_sites, 3) site positions in the order of self._order."""
         pos = jnp.asarray(pos)
         Hj = None if H is None else jnp.asarray(H, pos.dtype)
-        return jnp.concatenate([fn(pos, Hj, *(jnp.asarray(a) for a in arrs)) for fn, _, arrs in self._kernels])
+        return jnp.concatenate([fn(pos[arrs[0]], Hj, *(jnp.asarray(a) for a in arrs[1:]))
+                                for fn, _, arrs in self._kernels])
 
     def place(self, pos, H=None):
         """Positions with every site rebuilt from its parents (H: box for the minimum image, or
@@ -337,12 +342,22 @@ class VirtualSites:
 
     def spread(self, pos, H, forces):
         """Forces on the real atoms: every site's force moved to its parents by the transposed
-        Jacobian of the construction (vector-Jacobian product of `place` at pos); the site rows
-        of the result are zero.  Every construction is equivariant under rigid motions, so the
-        total force and the total torque about any point are conserved, and so is the work of any
-        displacement of the parents."""
-        _, pull = jax.vjp(lambda x: self.place(x, H), jnp.asarray(pos))
-        return pull(jnp.asarray(forces, jnp.asarray(pos).dtype))[0]
+        Jacobian of the construction (the vector-Jacobian product of each kernel with respect to
+        its gathered parents); the site rows of the result are zero.  One scatter-add moves
+        everything (the site rows receive minus their force).  Every construction is equivariant
+        under rigid motions, so the total force and the total torque about any point are
+        conserved, and so is the work of any displacement of the parents.  Differentiable."""
+        pos = jnp.asarray(pos)
+        F = jnp.asarray(forces, pos.dtype)
+        Hj = None if H is None else jnp.asarray(H, pos.dtype)
+        idx, vals = [], []
+        for fn, site, arrs in self._kernels:
+            par, rest = arrs[0], [jnp.asarray(a) for a in arrs[1:]]
+            _, pull = jax.vjp(lambda X: fn(X, Hj, *rest), pos[par])
+            Fs = F[site]
+            idx += [site, par.reshape(-1)]
+            vals += [-Fs, pull(Fs)[0].reshape(-1, 3)]
+        return F.at[np.concatenate(idx)].add(jnp.concatenate(vals))
 
     # ------------------------------------------------------------------ checks
     def check(self, pos, H=None, cov_pairs=None) -> None:

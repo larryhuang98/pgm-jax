@@ -123,6 +123,10 @@ def test_spread_is_the_transposed_jacobian():
     F = rng.normal(size=x.shape)
     Fs = np.asarray(vs.spread(x, None, F))
     assert np.all(Fs[6:] == 0.0)
+    # the one-scatter spreading is the vector-Jacobian product of the whole placement
+    H = np.eye(3) * 3.0
+    vjp = np.asarray(jax.vjp(lambda y: vs.place(y, jnp.asarray(H)), jnp.asarray(x))[1](jnp.asarray(F))[0])
+    assert np.abs(np.asarray(vs.spread(x, H, F)) - vjp).max() < 1e-12
     # every kind is equivariant under rigid motions: total force and torque are conserved
     assert np.abs(Fs.sum(0) - F.sum(0)).max() < 1e-12
     assert np.abs(np.cross(x, Fs).sum(0) - np.cross(x, F).sum(0)).max() < 1e-12

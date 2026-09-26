@@ -215,16 +215,17 @@ engine, the placement and spreading.
 
 | Waters (atoms with / without the site) | Engine | TIP4P-Ew | Control (no site) |
 |---|---|---|---|
-| 512 (2,048 / 1,536) | rigid bodies | 0.353 ms/step (489 ns/day) | 0.330 ms/step (524 ns/day) |
-| 512 | constraints + placed site | 0.416 (415) | 0.314 (550) |
-| 4,096 (16,384 / 12,288) | rigid bodies | 1.065 (162) | 0.763 (226) |
-| 4,096 | constraints + placed site | 1.130 (153) | 0.780 (221) |
+| 512 (2,048 / 1,536) | rigid bodies | 0.358 ms/step (483 ns/day) | 0.330 ms/step (524 ns/day) |
+| 512 | constraints + placed site | 0.418 (413) | 0.327 (529) |
+| 4,096 (16,384 / 12,288) | rigid bodies | 1.040 (166) | 0.757 (228) |
+| 4,096 | constraints + placed site | 1.138 (152) | 0.773 (224) |
 
-In the rigid engine the site costs what one more interaction site costs (7 % at 512 waters, 40 %
-at 4,096, where the atom pairs, 16 per pair of waters instead of 9, dominate). The flexible engine
-adds the placement and the spreading: 0.015 and 0.030 ms per call on their own (both sizes: a few
-small kernels, launch-bound), about 0.05 ms per step in the MD step (15 % at 512 waters, 6 % at
-4,096).
+(Means of two runs.) In the rigid engine the site costs what one more interaction site costs (8 %
+at 512 waters, 37 % at 4,096, where the atom pairs, 16 per pair of waters instead of 9, dominate).
+The flexible engine adds the placement and the spreading: 0.06-0.08 ms per step (15 % of the step
+at 512 waters, 7 % at 4,096). On their own, in a compiled loop, they take 0.015 and 0.025-0.030 ms per
+call at both sizes: a few small kernels (placement: five fusions; spreading: two, with one
+scatter-add for all forces), bound by launch latency rather than by the number of sites.
 
 Without sites nothing changes: the code path is the previous one, and the results are bitwise
 those of the commit before this feature (`validate_vsites.py identical`, CPU: rigid NPT in mixed and
