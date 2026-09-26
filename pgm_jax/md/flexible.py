@@ -347,7 +347,7 @@ class FlexibleIntegrator(Integrator):
         centers = self.flex.list_centers(pos)
         nbr = self.nb.update(nbr, pos, centers, box, force_rebuild)
         cand, ovf = self.nb.candidates(nbr, centers, box, pos)
-        res = self.ff.compute(pos, box, cand, induction, self.params)
+        res = self.ff.compute(pos, box, cand, induction, self.params, keep_geometry=self.keep_geometry)
         e_in, g_in = jax.value_and_grad(self.flex.energy)(pos)
         energy = dict(res.energy)
         energy["total"] = res.energy["total"] + e_in
@@ -485,7 +485,7 @@ class FlexibleSimulation(Simulation):
                  pressure: float = 1.0, barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None,
                  params=None, log=None, neighbor_list: str = "auto", r_margin: float = 0.05,
                  constraints: str = "none", hmr=None, max_single: int | None = None,
-                 thermostat="langevin", tau_t: float = 1.0, restraints=None):
+                 thermostat="langevin", tau_t: float = 1.0, restraints=None, mts=None):
         H = reduce_box(H_nm)
         check_box(H, settings.pair_cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
@@ -506,10 +506,14 @@ class FlexibleSimulation(Simulation):
         self._make_neighbors(H)
         pos0 = self.flex.pos0
         self._size_lists(pos0, H)
-        self.integ = FlexibleIntegrator(self.ff, self.flex, self.nb, dt, constraints=self.constraints,
-                                        ensemble=ensemble, temperature=temperature, gamma=gamma, pressure=pressure,
-                                        barostat_interval=barostat_interval, params=params,
-                                        thermostat=thermostat, tau_t=tau_t, restraints=restraints)
+        integ, extra = FlexibleIntegrator, {}
+        if mts is not None:                                  # multiple time stepping: dt is the outer step
+            from .mts import MTSFlexibleIntegrator
+            integ, extra = MTSFlexibleIntegrator, {"mts": mts}
+        self.integ = integ(self.ff, self.flex, self.nb, dt, constraints=self.constraints, ensemble=ensemble,
+                           temperature=temperature, gamma=gamma, pressure=pressure,
+                           barostat_interval=barostat_interval, params=params,
+                           thermostat=thermostat, tau_t=tau_t, restraints=restraints, **extra)
         self.dt, self.ensemble, self.T0 = dt, ensemble, temperature
         mom = None if vel_nm_ps is None else self.flex.mass * jnp.asarray(vel_nm_ps)
         self.state = self.integ.init(pos0, H, jax.random.PRNGKey(seed), mom)
@@ -523,6 +527,8 @@ class FlexibleSimulation(Simulation):
                     f"{self.r_list:.3f} nm), dipole tol {settings.dipole_tol:g}, device {jax.devices()[0]}")
         if self.integ.restraints is not None:
             self._print(f"# restraints: {self.integ.restraints.describe()}")
+        if mts is not None:
+            self._print(f"# {self.integ.describe_mts()}")
 
     def minimize(self, steps: int = 500, max_step: float = 0.01, ftol: float = 50.0, seed: int = 1) -> dict:
         """Steepest descent (adaptive step, at most max_step nm per atom, constraints kept by SHAKE)

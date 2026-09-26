@@ -48,7 +48,7 @@ class Simulation:
     def __init__(self, sys: System, pos_nm, H_nm, settings: MDSettings = MDSettings(), dt: float = 0.001,
                  ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0, pressure: float = 1.0,
                  barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None, params=None, log=sys.stdout,
-                 neighbor_list: str = "auto", thermostat="langevin", tau_t: float = 1.0, restraints=None):
+                 neighbor_list: str = "auto", thermostat="langevin", tau_t: float = 1.0, restraints=None, mts=None):
         H = reduce_box(H_nm)
         check_box(H, settings.pair_cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
@@ -58,8 +58,12 @@ class Simulation:
         self._nb_mode = neighbor_list
         self._make_neighbors(H)
         self._size_lists(self.rigid.body0, H)
-        self.integ = Integrator(self.ff, self.rigid, self.nb, dt, ensemble, temperature, gamma, pressure,
-                                barostat_interval, params, thermostat=thermostat, tau_t=tau_t, restraints=restraints)
+        integ, extra = Integrator, {}
+        if mts is not None:                                  # multiple time stepping: dt is the outer step
+            from .mts import MTSIntegrator
+            integ, extra = MTSIntegrator, {"mts": mts}
+        self.integ = integ(self.ff, self.rigid, self.nb, dt, ensemble, temperature, gamma, pressure,
+                           barostat_interval, params, thermostat=thermostat, tau_t=tau_t, restraints=restraints, **extra)
         self.dt, self.ensemble, self.T0 = dt, ensemble, temperature
         body = self.rigid.body0
         mom = None
@@ -76,6 +80,8 @@ class Simulation:
                     f"template fit RMSD {self.rigid.fit_rmsd:.2e} nm, device {jax.devices()[0]}")
         if self.integ.restraints is not None:
             self._print(f"# restraints: {self.integ.restraints.describe()}")
+        if mts is not None:
+            self._print(f"# {self.integ.describe_mts()}")
 
     @classmethod
     def from_amber(cls, prmtop: str, coords: str, use_velocities: bool = True, **kw) -> "Simulation":
@@ -214,6 +220,7 @@ class Simulation:
         for attempt in range(6):
             new = self.integ.run(start, n) if self._recorder is None else self._recorder.run(start, n)
             jax.block_until_ready(new.epot)
+            self.integ.check_block(new)
             nb_bad, row_bad = self.nb.failed(new.nbr), bool(new.overflow)
             if not (nb_bad or row_bad):
                 break
