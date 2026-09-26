@@ -154,6 +154,20 @@ How it works:
   conserved up to integration and induction errors, as E_tot is in NVE.
   Measurements and theory: `docs/thermostat_ideas.md`.
 - **Barostat**: isotropic Monte Carlo, molecular scaling (Amber `barostat=2`), adaptive step.
+- **Multiple time stepping** (`mts=MTS(...)` in `Simulation` / `FlexibleSimulation`, `--mts N`
+  in the scripts; `pgm_jax/md/mts.py`, `docs/mts.md`): r-RESPA with force groups at their own
+  time steps for both engines; `dt` is the outer step. The fast group holds the bonded terms and
+  restraints, plus either the pGM and van der Waals interactions of the special pairs
+  (`split="special"`: pGM has no exclusions, so the 1-2 / 1-3 electrostatics vibrate with the
+  bonds) or a cheap short-range pGM model (`split="short"`: Gaussian-screened pairs within 0.5 nm,
+  one-iteration mutual induction, exact forces); the slow group is the full force minus the fast
+  one (induced-dipole solve, PME). Optional third, innermost bonded level (`bonded=2`),
+  BAOAB-RESPA thermostat placement, the dipole predictor anchored on the fast dipoles, barostat
+  at outer steps. One fast step per outer step is the ordinary integrator; with MTS off the code
+  path is bit-identical. Ubiquitin with the bonded terms and special pairs every 2.33 fs and
+  everything else every 7 fs keeps the accuracy of the 4 fs single step at 1.4x its speed (1.7x
+  together with the 0.7 nm electrostatics cutoff). The water librations limit the outer step to
+  7-8 fs (pure water: no gain at equal accuracy over 4 amu hydrogens at 5 fs).
 - **Restraints** (`restraints=` in `Simulation` / `FlexibleSimulation`, `pgm_jax/md/restraints.py`):
   positional (flat-bottom radius; the reference fixed, affine with the box, or moving with its
   centroid under NPT), distance, angle, dihedral (IUPAC sign, windows across +-180 deg) and
@@ -480,6 +494,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/md/flexible.py` | flexible molecules in MD: `FlexibleTemplate` (bonded fit -> MD), `RigidTemplate` (water, ions by constraints), `FlexibleSimulation` (atoms, g-BAOAB with SHAKE / RATTLE, `constraints="h-bonds"`, `hmr`), `liquid_box` |
 | `pgm_jax/md/vsites.py` | virtual sites: `VirtualSite` (average2, average3, outofplane, local, amber), `VirtualSites` (placement, force spreading by the transposed Jacobian, checks), `amber_extra_points` (Amber's EP frames from the bond graph); `scripts/validate_vsites.py` (TIP4P-Ew vs sander, NVE, NPT, speed) |
 | `pgm_jax/md/flux.py` | charge flux in MD: `ChargeFlux` (per-bond charge and covalent-dipole flux of fitted templates, or built directly; `charges(pos)` -> q(R), c(R)), `molecule_at` (charges frozen at a geometry for rigid molecules); `scripts/validate_flux.py`, `scripts/flux_md.py` (liquid, NVE, speed, gas phase) |
+| `pgm_jax/md/mts.py` | multiple time stepping (r-RESPA) for both engines: `MTS` settings, force groups (bonded / special pairs / short-range pGM model; slow = full - fast), BAOAB-RESPA step, short-range pair list, anchored dipole predictor, CLI helpers |
 | `pgm_jax/md/remd.py` | temperature replica exchange for both engines: `ReplicaExchange` (exchanges, statistics, round trips, outputs, checkpoints), `MDReplicas` (replicas batched with `jax.vmap`, or sequential), `geometric_ladder`, `read_exchange_log` |
 | `pgm_jax/md/alchemy.py` | alchemical free energies: `Alchemy` (lambda Hamiltonian of one solute: annihilated electrostatics with a polarizability floor, soft-core van der Waals rows), `alchemical_system`, `LambdaWindows` (windows batched with `jax.vmap`), `FreeEnergyRun` (samples of u_k(x_n) and dU/dlambda, Hamiltonian replica exchange, outputs, checkpoints), `GasPhaseLeg`, `standard_schedule` |
 | `pgm_jax/md/free_energy.py` | estimators: MBAR (covariance), BAR, TI along a lambda path, statistical inefficiency, equilibration detection, `estimate` (hydration free energy from `FreeEnergyRun` samples) |
@@ -498,7 +513,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `scripts/bonded/` | the bonded study: sampling, DFT labels, pGM parameters, experiments, report |
 | `scripts/run_md.py` | MD from an Amber prmtop + inpcrd/rst7 (Amber-style options; `--dipoles`, `--induced`) |
 | `scripts/dielectric.py`, `scripts/water_dielectric.py` | eps (and IR spectrum) from `.dip` series; the water validation runs (pGM, pGM3P-25 geometry, TIP3P control) |
-| `scripts/bench_md.py`, `scripts/pgm_supercell.py` | MD speed benchmark; replicate a pGM prmtop for larger systems |
+| `scripts/bench_md.py`, `scripts/pgm_supercell.py` | MD speed benchmark (`--mts`, `--ps` / `--rdf`: drift, <U>, group temperatures, density, g_OO); replicate a pGM prmtop for larger systems |
 | `tests/` | `pytest -q`: 139 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
 | `scripts/validate_amber.py` | comparison with sander / pmemd-pgm / PyRESP (`compare`, `pyresp`, `virial`) |
 | `scripts/bench.py` | timings on the current device |

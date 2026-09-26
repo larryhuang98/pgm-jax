@@ -374,7 +374,7 @@ class FlexibleIntegrator(Integrator):
         nbr = self.nb.update(nbr, pos, centers, box, force_rebuild)
         cand, ovf = self.nb.candidates(nbr, centers, box, pos)
         if self.alchemy is None:
-            res = self.ff.compute(pos, box, cand, induction, self.params)
+            res = self.ff.compute(pos, box, cand, induction, self.params, keep_geometry=self.keep_geometry)
         else:                                      # Hamiltonian at the state's coupling lam (alchemy.py)
             res = self.alchemy.compute(self.ff, pos, box, cand, induction, self.params, lam)
         e_in, g_in = jax.value_and_grad(self.flex.energy)(pos)
@@ -531,14 +531,15 @@ class FlexibleSimulation(Simulation):
     always constrained); hmr: hydrogen mass (amu) for mass repartitioning (the mass comes from the
     bonded heavy atom), None, or one value (or None) per molecule, e.g. AmberSystem.hmr({"water":
     4.0, "protein": 3.024}) (constraints.hmr_masses); restraints: md/restraints.py; alchemy: an
-    alchemical region (md/alchemy.py)."""
+    alchemical region (md/alchemy.py); mts: multiple time stepping (md/mts.py: MTS settings; dt is
+    then the outer step)."""
 
     def __init__(self, sys: System, templates, pos_nm, H_nm, settings: MDSettings = MDSettings(),
                  dt: float = 0.0005, ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0,
                  pressure: float = 1.0, barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None,
                  params=None, log=None, neighbor_list: str = "auto", r_margin: float = 0.05,
                  constraints: str = "none", hmr=None, max_single: int | None = None,
-                 thermostat="langevin", tau_t: float = 1.0, restraints=None, alchemy=None):
+                 thermostat="langevin", tau_t: float = 1.0, restraints=None, alchemy=None, mts=None):
         H = reduce_box(H_nm)
         check_box(H, settings.pair_cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
@@ -560,10 +561,14 @@ class FlexibleSimulation(Simulation):
         self._make_neighbors(H)
         pos0 = self.flex.pos0
         self._size_lists(pos0, H)
-        self.integ = FlexibleIntegrator(self.ff, self.flex, self.nb, dt, constraints=self.constraints,
-                                        ensemble=ensemble, temperature=temperature, gamma=gamma, pressure=pressure,
-                                        barostat_interval=barostat_interval, params=params,
-                                        thermostat=thermostat, tau_t=tau_t, restraints=restraints, alchemy=alchemy)
+        integ, extra = FlexibleIntegrator, {}
+        if mts is not None:                                  # multiple time stepping: dt is the outer step
+            from .mts import MTSFlexibleIntegrator
+            integ, extra = MTSFlexibleIntegrator, {"mts": mts}
+        self.integ = integ(self.ff, self.flex, self.nb, dt, constraints=self.constraints, ensemble=ensemble,
+                           temperature=temperature, gamma=gamma, pressure=pressure,
+                           barostat_interval=barostat_interval, params=params,
+                           thermostat=thermostat, tau_t=tau_t, restraints=restraints, alchemy=alchemy, **extra)
         self.dt, self.ensemble, self.T0 = dt, ensemble, temperature
         mom = None if vel_nm_ps is None else self.flex.mass * jnp.asarray(vel_nm_ps)
         self.state = self.integ.init(pos0, H, jax.random.PRNGKey(seed), mom)
@@ -582,6 +587,8 @@ class FlexibleSimulation(Simulation):
             self._print(f"# {self.ff.flux.describe()}")
         if alchemy is not None:
             self._print(f"# alchemical region: {alchemy.describe()}")
+        if mts is not None:
+            self._print(f"# {self.integ.describe_mts()}")
 
     def minimize(self, steps: int = 500, max_step: float = 0.01, ftol: float = 50.0, seed: int = 1) -> dict:
         """Steepest descent (adaptive step, at most max_step nm per atom, constraints kept by SHAKE)

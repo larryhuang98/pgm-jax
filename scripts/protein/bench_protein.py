@@ -8,6 +8,8 @@ hydrogen mass repartitioning (--hmr for the protein, --hmr-water for water).
     # water H 4.0 amu, protein H 3.024, 4 fs, Bussi; 20 ps equilibration, 200 ps sampled every 0.5 ps
     python scripts/protein/bench_protein.py ubq.prmtop ubq.inpcrd --dt 0.004 --hmr-water 4.0 --thermostat bussi \\
         --equil-ps 20 --prod-ps 200 --coords equilibrated.rst7 --minimize 0 --save runs/ubq_4fs
+    # multiple time stepping: 8 fs outer step, short-range nonbonded + bonded forces every 4 fs (docs/mts.md)
+    python scripts/protein/bench_protein.py ... --dt 0.008 --mts 2 --elec-cut 0.7 --thermostat bussi
 
 --prod-ps prints the mean potential energy with the error of 10 block averages (masses do not
 change the configurational distribution, so <U> measures the time-step error), the mean kinetic
@@ -27,6 +29,7 @@ from pgm_jax.md.flexible import FlexibleSimulation  # noqa: E402
 from pgm_jax.md.forcefield import DSUM_TOL, MDSettings, elec_cutoff_settings  # noqa: E402
 from pgm_jax.md.integrate import KB  # noqa: E402
 from pgm_jax.md.io import box_from_cell, read_coordinates  # noqa: E402
+from pgm_jax.md.mts import add_mts_arguments, mts_from_args, mts_stats  # noqa: E402
 from pgm_jax.protein import ResidueLibrary, amber_template, load_amber  # noqa: E402
 
 ap = argparse.ArgumentParser()
@@ -55,6 +58,8 @@ ap.add_argument("--thermostat", default="langevin", help="langevin | bussi | gle
 ap.add_argument("--tau", type=float, default=1.0, help="Bussi time constant (ps)")
 ap.add_argument("--gamma", type=float, default=1.0, help="Langevin friction (1/ps)")
 ap.add_argument("--temp", type=float, default=298.0, help="temperature (K)")
+ap.add_argument("--ensemble", default="nvt", choices=["nvt", "npt"], help="npt: Monte Carlo barostat at 1 bar")
+ap.add_argument("--barostat-interval", type=int, default=100, help="steps between Monte Carlo volume moves (npt)")
 ap.add_argument("--seed", type=int, default=0)
 ap.add_argument("--coords", default=None, help="start from these coordinates and box (Amber restart in the "
                 "system's atom order, e.g. the .rst7 of --save) instead of the inpcrd; velocities are redrawn")
@@ -63,6 +68,9 @@ ap.add_argument("--equil-ps", type=float, default=0.0, help="equilibration after
 ap.add_argument("--prod-ps", type=float, default=0.0, help="sampled production after equilibration (ps)")
 ap.add_argument("--sample-ps", type=float, default=0.5, help="sampling interval of the production (ps)")
 ap.add_argument("--save", default=None, help="prefix: restart + checkpoint at the end, samples as .npz")
+ap.add_argument("--traj-ps", type=float, default=0.0, help="production frames every this many ps: CA RMSD to the first "
+                "frame and radius of gyration of the heavy atoms (and, with --save, the trajectory prefix.nc); 0: none")
+add_mts_arguments(ap)
 a = ap.parse_args()
 ew = {"ewald_beta": 4.0, "pme_spacing": 0.08} if a.elec_cut is None else elec_cutoff_settings(a.elec_cut, a.dsum_tol, a.pme_exponent)
 beta = ew["ewald_beta"] if a.beta is None else a.beta
@@ -81,8 +89,9 @@ if a.coords:
     xyz, _, cell = read_coordinates(a.coords)
     pos, H = xyz * 0.1, box_from_cell(*cell) * 0.1
 sim = FlexibleSimulation(asys.system(), asys.templates(tpl), pos, H, st, dt=a.dt, temperature=a.temp,
-                         ensemble="nvt", constraints="h-bonds", hmr=hmr, log=sys.stdout,
-                         thermostat=a.thermostat, tau_t=a.tau, gamma=a.gamma, seed=a.seed)
+                         ensemble=a.ensemble, barostat_interval=a.barostat_interval, constraints="h-bonds", hmr=hmr,
+                         log=sys.stdout,
+                         thermostat=a.thermostat, tau_t=a.tau, gamma=a.gamma, seed=a.seed, mts=mts_from_args(a))
 m = np.asarray(sim.flex.masses)
 el = np.array(sim.sys.elements)
 wat = [sim.sys.atom_slice(k) for k, mm in enumerate(asys.molecules) if mm.kind == "water"]
@@ -107,7 +116,7 @@ o = sim.observables()
 print(f"{sim.sys.n} atoms, dt {a.dt * 1000:g} fs, {a.precision}: {el_t / done * 1e3:.3f} ms/step, "
       f"{done * a.dt / 1000 / el_t * 86400:.1f} ns/day; T {o['temp_K']:.1f} K, CG iters {o['cg_mean']:.2f} mean (max {o['cg_iter_max']}), "
       f"rows {sim.ff.mc} (electrostatic {sim.ff.mc_e or sim.ff.mc}), "
-      f"shake {o['shake_err']:.1e}", flush=True)
+      f"shake {o['shake_err']:.1e}{'; ' + str(mts_stats(sim)) if a.mts else ''}", flush=True)
 mem = jax.devices()[0].memory_stats() or {}
 if "peak_bytes_in_use" in mem:
     print(f"GPU memory peak {mem['peak_bytes_in_use'] / 2**30:.2f} GiB", flush=True)
@@ -120,14 +129,26 @@ if a.equil_ps > 0:
     o = sim.observables()
     print(f"equilibrated {a.equil_ps:g} ps ({time.time() - t0:.0f} s): T {o['temp_K']:.1f} K, epot {o['epot']:.1f}", flush=True)
 if a.prod_ps > 0:
-    cols = ("time_ps", "epot", "temp_K", "econs", "shake_err", "cg_iter_max")
+    cols = ("time_ps", "epot", "temp_K", "econs", "shake_err", "cg_iter_max", "temp_com", "temp_internal", "density_g_cm3")
     rows = []
     cg0, s0 = float(sim.state.cg_total), int(sim.state.step)
+    tfile, frames = None, []
+    if a.traj_ps > 0:
+        tevery = max(1, int(round(a.traj_ps / a.sample_ps)))
+        ca, heavy = asys.select("ca"), asys.select("heavy")
+        if a.save:
+            from pgm_jax.md.io import NetCDFTrajectory
+            tfile = NetCDFTrajectory(a.save + ".nc", sim.sys.n)
     t0 = time.time()
-    for _ in range(int(round(a.prod_ps / a.sample_ps))):
+    for i in range(int(round(a.prod_ps / a.sample_ps))):
         sim._advance(nblk)
         o = sim.observables()
         rows.append([o[c] for c in cols])
+        if a.traj_ps > 0 and (i + 1) % tevery == 0:
+            x = sim.positions_nm()
+            frames.append((x[ca] * 10.0, x[heavy] * 10.0))
+            if tfile is not None:
+                tfile.write(sim.time_ps, x * 10.0, np.asarray(sim.state.box) * 10.0)
     wall = time.time() - t0
     X = np.array(rows, float)
     t, U, T, E = X[:, 0], X[:, 1], X[:, 2], X[:, 3]
@@ -139,9 +160,26 @@ if a.prod_ps > 0:
     steps = int(sim.state.step) - s0
     print(f"production {a.prod_ps:g} ps, dt {a.dt * 1000:g} fs, H masses protein {a.hmr} / water "
           f"{a.hmr if a.hmr_water is None else a.hmr_water}: <U> {U.mean():.1f} +- {Ub.std(ddof=1) / np.sqrt(nb):.1f} kJ/mol "
-          f"(std {U.std():.1f}), <T> {T.mean():.2f} K (min {T.min():.1f}, max {T.max():.1f}), shake max {X[:, 4].max():.1e}, "
+          f"(std {U.std():.1f}), <T> {T.mean():.2f} K (min {T.min():.1f}, max {T.max():.1f}; centre of mass "
+          f"{X[:, 6].mean():.2f}, internal {X[:, 7].mean():.2f}), density {X[:, 8].mean():.4f} +- "
+          f"{X[len(X) - n:, 8].reshape(nb, -1).mean(1).std(ddof=1) / np.sqrt(nb):.4f} g/cm3, shake max {X[:, 4].max():.1e}, "
           f"econs drift {drift:+.4f} kT/ns/dof, CG {(float(sim.state.cg_total) - cg0) / steps:.2f} mean "
-          f"(max {int(X[:, 5].max())}), {steps * a.dt / 1000 / wall * 86400:.1f} ns/day", flush=True)
+          f"(max {int(X[:, 5].max())}), {steps * a.dt / 1000 / wall * 86400:.1f} ns/day"
+          f"{'; ' + str(mts_stats(sim)) if a.mts else ''}", flush=True)
+    if frames:                          # molecules are whole, so the protein needs no unwrapping
+        ref = frames[0][0] - frames[0][0].mean(0)
+        rmsd, rg = [], []
+        for xc, xh in frames:
+            y = xc - xc.mean(0)
+            U, _, Vt = np.linalg.svd(y.T @ ref)
+            R = U @ np.diag([1.0, 1.0, np.sign(np.linalg.det(U @ Vt))]) @ Vt
+            rmsd.append(np.sqrt(np.mean(np.sum((y @ R - ref) ** 2, 1))))
+            h = xh - xh.mean(0)
+            rg.append(np.sqrt(np.mean(np.sum(h * h, 1))))
+        rmsd, rg, half = np.array(rmsd), np.array(rg), len(frames) // 2
+        print(f"{len(frames)} frames: CA RMSD to the first (A) mean {rmsd.mean():.2f}, second half {rmsd[half:].mean():.2f}, "
+              f"max {rmsd.max():.2f}; radius of gyration of the heavy atoms (A) {rg.mean():.2f} +- {rg.std():.2f} "
+              f"(halves {rg[:half].mean():.2f} / {rg[half:].mean():.2f})", flush=True)
     if a.save:
         np.savez(a.save + "_samples.npz", **{c: X[:, i] for i, c in enumerate(cols)}, dof=sim.integ.dof)
 if a.save:

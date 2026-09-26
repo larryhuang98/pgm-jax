@@ -72,6 +72,7 @@ class MDState:
                                       # one compiled step for every temperature); None: Integrator.kT
     lam: jnp.ndarray = None           # (2,) alchemical coupling (lambda_elec, lambda_vdw) of the state (alchemy.py:
                                       # lambda windows share one compiled step); None: the Alchemy's default
+    mts: object = None                # multiple time stepping: forces of each level, short-range list (mts.MTSState)
 
 
 def upgrade_state(st: MDState, aux) -> MDState:
@@ -86,6 +87,8 @@ def upgrade_state(st: MDState, aux) -> MDState:
 
 
 class Integrator:
+    keep_geometry = False             # ask the force field for its row geometry (multiple time stepping, mts.py)
+
     def __init__(self, ff: PGMForceField, rigid: RigidMolecules, neighbors, dt: float = 0.001,
                  ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0,
                  pressure: float = 1.0, barostat_interval: int = 100, params=None,
@@ -123,7 +126,7 @@ class Integrator:
         nbr = self.nb.update(nbr, pos, body.center, box, force_rebuild)
         cand, ovf = self.nb.candidates(nbr, body.center, box, pos)
         if self.alchemy is None:
-            res = self.ff.compute(pos, box, cand, induction, self.params)
+            res = self.ff.compute(pos, box, cand, induction, self.params, keep_geometry=self.keep_geometry)
         else:                                      # Hamiltonian at the state's coupling lam
             res = self.alchemy.compute(self.ff, pos, box, cand, induction, self.params, lam)
         res = self._add_restraints(res._replace(overflow=res.overflow | ovf), pos, box)
@@ -150,6 +153,11 @@ class Integrator:
                       elec=res.energy["elec"], vdw=res.energy["vdw"], iters=res.iterations,
                       max_iters=jnp.maximum(st.max_iters, res.iterations), resid=jnp.maximum(st.resid, res.residual),
                       overflow=st.overflow | res.overflow, cg_total=st.cg_total + res.iterations)
+
+    def check_block(self, st: MDState) -> None:
+        """Host-side check of a finished block of steps, before the driver's overflow handling (a
+        no-op here; multiple time stepping grows its short-range pair list, mts.py)."""
+        return None
 
     def _state_forces(self, st: MDState, force_rebuild=True) -> MDState:
         F, res, nbr = self._forces(st.dyn.position, st.box, st.induction, st.nbr, force_rebuild, lam=st.lam)

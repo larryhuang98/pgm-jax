@@ -10,6 +10,8 @@ Outputs: <out>.log (energies, temperature, density, solver iterations, speed), <
 NetCDF trajectory), <out>.rst7 (Amber NetCDF restart), <out>.chk (complete checkpoint; continue with
 --checkpoint <out>.chk); with --dipoles N, <out>.dip (cell dipole every N steps, for
 scripts/dielectric.py); with --induced N, <out>.mu.nc (per-atom induced dipoles).
+Multiple time stepping (docs/mts.md): --mts N makes --dt the outer step, with the short-range forces
+N times per outer step (--nsteps, --report, ... count outer steps).
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pgm_jax.md.forcefield import DSUM_TOL, MDSettings, ewald_beta_for  # noqa: E402
+from pgm_jax.md.mts import add_mts_arguments, mts_from_args  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
 
 
@@ -76,6 +79,7 @@ def main(argv=None):
     ap.add_argument("--pressure", action="store_true", help="also report the virial pressure")
     ap.add_argument("--dipoles", type=int, default=0, help="steps between cell-dipole samples (<out>.dip; 0: none)")
     ap.add_argument("--induced", type=int, default=0, help="steps between per-atom induced dipole frames (<out>.mu.nc)")
+    add_mts_arguments(ap, "--dt")
     a = ap.parse_args(argv)
     if a.ew_coeff is None:
         a.ew_coeff = 0.4 if a.es_cut is None else ewald_beta_for(a.es_cut / 10, a.dsum_tol) / 10
@@ -91,7 +95,8 @@ def main(argv=None):
     sim = Simulation.from_amber(a.prmtop, a.coords, use_velocities=not a.no_velocities, settings=st, charges=a.charges,
                                 dt=a.dt / 1000, ensemble=a.ensemble, temperature=a.temp, gamma=a.gamma,
                                 thermostat=a.thermostat, tau_t=a.tautp,
-                                pressure=a.press, barostat_interval=a.barostat_interval, seed=a.seed)
+                                pressure=a.press, barostat_interval=a.barostat_interval, seed=a.seed,
+                                mts=mts_from_args(a))
     if a.checkpoint:
         sim.load(a.checkpoint)
     sim.run(a.nsteps, report=a.report, traj=a.traj, restart=a.restart, prefix=a.out,

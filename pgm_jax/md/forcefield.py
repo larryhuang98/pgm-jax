@@ -220,6 +220,7 @@ class Result(NamedTuple):
     iterations: jnp.ndarray
     residual: jnp.ndarray    # final max|alpha r| / mean|alpha b| (before the peek step)
     overflow: jnp.ndarray    # row capacity exceeded (results invalid; driver re-sizes and repeats)
+    geometry: dict | None = None   # compute(keep_geometry=True): the electrostatic rows (md/mts.py)
 
 
 def _zero_cotangent(x):
@@ -545,7 +546,7 @@ class PGMForceField:
         for n in range(nmax):
             g[f"G{n}"] = G[n]
         if forces:
-            g.update(r=r, wv=wv, vp=self._vdw_params(P, k))
+            g.update(r=r, wv=wv, vp=self._vdw_params(P, k), within=within)
             if vrows is not None:
                 kv, xv, vin, wvv = vrows
                 rv = jnp.sqrt(jnp.where(vin, xv[0] * xv[0] + xv[1] * xv[1] + xv[2] * xv[2], 1.0))
@@ -952,10 +953,13 @@ class PGMForceField:
         H = jnp.asarray(H, jnp.float64)
         return AtomNeighbors(self.n, H, self.rc_pair, 0.0).allocate(jnp.asarray(pos, jnp.float64), None, H).idx
 
-    def compute(self, pos, H, idx, ind: InductionState, params=None) -> Result:
+    def compute(self, pos, H, idx, ind: InductionState, params=None, keep_geometry: bool = False) -> Result:
         """Solve the induced dipoles (predicted guess), then energy and forces.  idx: candidate
         rows (N, C) from a neighbour list (padding N).  With settings.differentiable, energy,
-        forces and Result.induction.mu can be differentiated (jax.grad / vjp) in params, pos, H."""
+        forces and Result.induction.mu can be differentiated (jax.grad / vjp) in params, pos, H.
+        keep_geometry: also return the row geometry (Result.geometry: partner indices k, displacements
+        x, distances r, `within` mask, van der Waals weights wv of the electrostatic rows), from which
+        multiple time stepping builds its short-range pair list (md/mts.py)."""
         pos, H = jnp.asarray(pos, jnp.float64), jnp.asarray(H, jnp.float64)
         P = self._atoms(params)
         pull = None
@@ -972,7 +976,7 @@ class PGMForceField:
         else:                                                  # no induced dipoles ("q", "qp")
             mu, it, err = jnp.zeros((self.n, 3)), jnp.zeros((), jnp.int32), jnp.zeros(())
         energy, forces = self._energy_forces(pos, H, mu, g, P, pull)
-        return Result(energy, forces, ind, it, err, g["overflow"])
+        return Result(energy, forces, ind, it, err, g["overflow"], g if keep_geometry else None)
 
     def energy(self, pos, H, idx, ind: InductionState, params=None):
         """Energy only (Monte Carlo barostat trials): dipoles solved from the last converged ones

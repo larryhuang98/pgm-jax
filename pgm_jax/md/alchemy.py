@@ -246,6 +246,9 @@ class Alchemy:
             raise ValueError("the alchemical region was built for another System")
         if s.vdw not in ("lj", "none"):
             raise NotImplementedError(f"soft-core van der Waals is implemented for vdw='lj' (and 'none'), not {s.vdw!r}")
+        if getattr(ff, "flux", None) is not None:
+            raise NotImplementedError("an alchemical region with charge flux: lambda scales the fixed charges, "
+                                      "not the flux terms, so the decoupled state would keep charges")
         b = (s.vdw, float(ff.rc_v), bool(s.lj_lrc), s.elec)
         if self.bound is not None and self.bound != b:
             raise ValueError(f"the alchemical region is bound to other settings {self.bound}, not {b}")
