@@ -156,6 +156,12 @@ def test_definitions_are_validated():
     plain = Molecule("W", w.elements + ["EP"], w.types + ["EP"], np.r_[w.q, 0.0], np.r_[w.radius, 0.01],
                      np.r_[w.alpha, 0.0], vsites=[VirtualSite.tip4p(3, 0, 1, 2, 0.02)])
     assert len({id(m) for m in _dedupe([ok, back, plain])}) == 2         # sites are part of the identity
+    # degenerate frames are refused at setup (a local frame with parallel x and y directions)
+    loc = Molecule("W", w.elements + ["EP"], w.types + ["EP"], np.r_[w.q, 0.0], np.r_[w.radius, 0.01], np.r_[w.alpha, 0.0],
+                   vsites=[VirtualSite.local(3, (0, 1, 2), (1, 0, 0), (-1, 1, 0), (-2, 2, 0), (0.01, 0, 0))])
+    x = np.array([[0, 0, 0], [0.1, 0, 0], [-0.03, 0.09, 0], [0, 0, 0]])
+    with pytest.raises(ValueError, match="degenerate"):
+        VirtualSites.of(System([loc])).check(x)
 
 
 # ----------------------------------------------------------------------------- Amber extra points
@@ -228,6 +234,8 @@ def test_amber_frame_rules():
     assert eps[3].atoms == (0, 1, 2) and np.allclose(eps[3].params[2], (0, 0, 0.05))
     with pytest.raises(ValueError, match="too many"):
         amber_extra_points(["N", "C", "C", "C", "EP"], [], [(0, 1, 0), (0, 2, 0), (0, 3, 0), (0, 4, 1)], [1.4, 0.5])
+    with pytest.raises(ValueError, match="bonded to no atom"):
+        amber_extra_points(["OW", "HW", "HW", "EP"], [(0, 1, 0), (0, 2, 0)], [], [1.0])
 
 
 # ----------------------------------------------------------------------------- pair topology
@@ -431,7 +439,11 @@ def test_load_amber_protein_in_tip4pew():
                              thermostat="bussi", log=None)
     n_wat = kinds.count("water")
     assert sim.vsites.n_sites == n_wat and sim.integ.dof == 3 * (asys.system().n - n_wat) - sim.constraints.nc
+    out = sim.minimize(10)                                  # steepest descent keeps the sites placed
+    assert out["accepted"] > 0
     sim._advance(20)
     assert np.isfinite(sim.observables()["etot"])
+    X = sim.positions_nm()
+    assert np.abs(np.linalg.norm(X[sim.vsites.site] - X[sim.vsites.host], axis=1) - 0.0125).max() < 1e-12
     with pytest.raises(NotImplementedError, match="virtual sites"):
         write_pgm_prmtop(asys, "/nonexistent/x.prmtop", tpls)

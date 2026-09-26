@@ -214,7 +214,8 @@ class RigidTemplate:
         sites = {vs.site for vs in molecule.vsites}
         self.real_atoms = [a for a in range(self.n) if a not in sites]
         if len(self.real_atoms) > 3:
-            raise ValueError("RigidTemplate holds up to three atoms (plus virtual sites) by distances; use a FlexibleTemplate")
+            raise ValueError("RigidTemplate holds up to three atoms (plus virtual sites) by distances; "
+                             "use a FlexibleTemplate")
         x = np.asarray(xyz if xyz is not None else molecule.extra.get("xyz"), float) if self.n > 1 else np.zeros((1, 3))
         self.xyz = x.reshape(self.n, 3)
 
@@ -306,7 +307,8 @@ class FlexibleMolecules:
             if tpl.has_bonded and molk.vsites:
                 sites = {vs.site for vs in molk.vsites}
                 if any(int(a) in sites for b in bonds for a in b):
-                    raise ValueError(f"template {tpl.name}: bonded terms involve virtual sites; sites carry no bonded terms")
+                    raise ValueError(f"template {tpl.name}: bonded terms involve virtual sites; "
+                                     "sites carry no bonded terms")
             if tpl.has_bonded:
                 groups.setdefault(id(tpl), (tpl, []))[1].append(np.arange(sl.start, sl.stop))
         self.groups = [(tpl, jnp.asarray(np.array(rows))) for tpl, rows in groups.values()]
@@ -422,7 +424,7 @@ class FlexibleIntegrator(Integrator):
             project = lambda u: u                                      # noqa: E731
         else:
             project = lambda u: self.cons.momenta(q, u * sm, self.flex.masses) / sm   # noqa: E731
-        mask = None if self.vsites is None else jnp.broadcast_to(self.flex.real, dyn.momentum.shape)   # no noise on sites
+        mask = None if self.vsites is None else jnp.broadcast_to(self.flex.real, dyn.momentum.shape)   # sites: no noise
         return dyn.momentum / sm, mask, (lambda v: dyn.set(momentum=v * sm)), project
 
     # ------------------------------------------------------------------ constrained steps (g-BAOAB)
@@ -430,18 +432,15 @@ class FlexibleIntegrator(Integrator):
         p = dyn.momentum + h * dyn.force
         return dyn.set(momentum=p if self.cons is None else self.cons.momenta(dyn.position, p, self.flex.masses))
 
-    def _drift(self, dyn: Dynamics, h: float, box=None) -> Dynamics:
-        """Positions advanced by h, SHAKE, virtual sites rebuilt (box: minimum image), and the
-        momenta consistent with the constrained move (RATTLE)."""
+    def _drift(self, dyn: Dynamics, h: float) -> Dynamics:
+        """Positions advanced by h (SHAKE) and momenta consistent with the constrained move (RATTLE).
+        Virtual sites have zero momentum, so they stay where they are; `_step` rebuilds them once
+        per step, before the forces."""
         q = dyn.position
         q1 = q + h * dyn.momentum / dyn.mass
         if self.cons is not None:
             q1 = self.cons.positions(q1, q)
-        if self.vsites is None:
-            p = dyn.mass * (q1 - q) / h
-        else:
-            q1 = self.vsites.place(q1, box)
-            p = self.flex.real * dyn.mass * (q1 - q) / h
+        p = dyn.mass * (q1 - q) / h
         return dyn.set(position=q1, momentum=p if self.cons is None else self.cons.momenta(q1, p, self.flex.masses))
 
     def _step(self, st: MDState) -> MDState:
@@ -451,11 +450,13 @@ class FlexibleIntegrator(Integrator):
         aux, heat = st.aux, st.heat
         dyn = self._kick(st.dyn, dt / 2)
         if self.ensemble == "nve":
-            dyn = self._drift(dyn, dt, st.box)
+            dyn = self._drift(dyn, dt)
         else:
-            dyn = self._drift(dyn, dt / 2, st.box)
+            dyn = self._drift(dyn, dt / 2)
             dyn, aux, heat = self._o_step(dyn, aux, heat, dt, self.thermostat_kT(st))
-            dyn = self._drift(dyn, dt / 2, st.box)
+            dyn = self._drift(dyn, dt / 2)
+        if self.vsites is not None:
+            dyn = dyn.set(position=self.vsites.place(dyn.position, st.box))
         F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr)
         st = self._with_result(st.set(dyn=dyn, aux=aux, heat=heat), F, res, nbr)
         st = st.set(dyn=self._kick(st.dyn, dt / 2), step=st.step + 1)

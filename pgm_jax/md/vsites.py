@@ -122,7 +122,8 @@ class VirtualSite:
                     raise ValueError(f"local site {self.site}: {name} weights {w} must sum to {target:g}")
         else:                                                        # amber
             if len(a) < 2 or len(p) != 3 or any(len(w) != len(a) for w in p[:2]) or len(p[2]) != 3:
-                raise ValueError(f"amber site {self.site}: >= 2 parents, params ((wa), (wc), (px, py, pz)); got {a}, {p}")
+                raise ValueError(f"amber site {self.site}: >= 2 parents, params ((wa), (wc), (px, py, pz)); "
+                                 f"got {a}, {p}")
             for name, w in (("A", p[0]), ("C", p[1])):
                 if abs(sum(w) - 1.0) > _SUM_TOL:
                     raise ValueError(f"amber site {self.site}: weights of {name} {w} must sum to 1")
@@ -224,17 +225,20 @@ def _amber(pos, H, par, wa, wc, p):
 
 
 def _frame_norms(pos, H, kind, par, *w):
-    """Smallest norm of the vectors a frame normalises (setup check against degenerate frames)."""
+    """Smallest length (nm) among the vectors a frame normalises, each expressed as a length: for
+    "local" |x| and the part of y perpendicular to x; for "amber" |A - B|, |C - B| and 0.1 nm times
+    |u + v| / 2 and |v - u| / 2 (setup check against degenerate frames)."""
     d = _disp(pos, par, H)
     if kind == "local":
         x = jnp.einsum("nk,nkc->nc", w[1], d)
         y = jnp.einsum("nk,nkc->nc", w[2], d)
-        vs = [x, jnp.cross(x, y) / jnp.maximum(jnp.linalg.norm(x, axis=-1, keepdims=True), 1e-300)]
+        lengths = [jnp.linalg.norm(x, axis=-1), jnp.linalg.norm(jnp.cross(_unit(x), y), axis=-1)]
     else:
         A, C = jnp.einsum("nk,nkc->nc", w[0], d), jnp.einsum("nk,nkc->nc", w[1], d)
         u, v = _unit(A), _unit(C)
-        vs = [A, C, 0.5 * (u + v) * 0.1, 0.5 * (v - u) * 0.1]           # unit-vector sums scaled to 0.1 nm
-    return min(float(jnp.min(jnp.linalg.norm(x, axis=-1))) for x in vs)
+        lengths = [jnp.linalg.norm(A, axis=-1), jnp.linalg.norm(C, axis=-1),
+                   0.05 * jnp.linalg.norm(u + v, axis=-1), 0.05 * jnp.linalg.norm(v - u, axis=-1)]
+    return min(float(jnp.min(jnp.nan_to_num(x))) for x in lengths)
 
 
 # ----------------------------------------------------------------------------- the sites of a system
@@ -251,7 +255,8 @@ class VirtualSites:
                 if not isinstance(vs, VirtualSite):
                     raise TypeError(f"{m.name}: Molecule.vsites holds VirtualSite objects, got {type(vs).__name__}")
                 if not all(0 <= a < m.n for a in (vs.site,) + vs.atoms):
-                    raise ValueError(f"{m.name}: virtual site {vs.site} with parents {vs.atoms} outside the molecule ({m.n} atoms)")
+                    raise ValueError(f"{m.name}: virtual site {vs.site} with parents {vs.atoms} outside the molecule "
+                                     f"({m.n} atoms)")
                 entries.append((m.name, vs.shifted(off)))
         if not entries:
             raise ValueError("the system has no virtual sites (use VirtualSites.of, which returns None)")
@@ -333,8 +338,9 @@ class VirtualSites:
     def spread(self, pos, H, forces):
         """Forces on the real atoms: every site's force moved to its parents by the transposed
         Jacobian of the construction (vector-Jacobian product of `place` at pos); the site rows
-        of the result are zero.  Total force and torque about any point are conserved for the
-        linear kinds; for every kind the work of any virtual displacement of the parents is."""
+        of the result are zero.  Every construction is equivariant under rigid motions, so the
+        total force and the total torque about any point are conserved, and so is the work of any
+        displacement of the parents."""
         _, pull = jax.vjp(lambda x: self.place(x, H), jnp.asarray(pos))
         return pull(jnp.asarray(forces, jnp.asarray(pos).dtype))[0]
 
@@ -453,4 +459,8 @@ def amber_extra_points(atom_types, bonds_h, bonds_heavy, bond_req) -> dict:
                   [(s * req[0], 0.0, c60 * req[0]), (-s * req[1], 0.0, c60 * req[1])])
         for (e, _), p in zip(eps[c], ps):
             out[e] = VirtualSite.amber(e, c, first, third, p, middle=middle)
+    missing = [int(e) + 1 for e in np.nonzero(is_ep)[0] if int(e) not in out]
+    if missing:
+        raise ValueError(f"extra points {missing[:10]} are bonded to no atom (Amber defines the frame through "
+                         "that bond)")
     return out

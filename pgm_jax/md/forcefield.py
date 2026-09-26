@@ -231,12 +231,15 @@ def _push(stack, x):
     return jnp.concatenate([x[None].astype(stack.dtype), stack[:-1]], 0)
 
 
-def _div_alpha(x, alpha):
-    """x / alpha, and 0 where alpha = 0.  Atoms (or virtual sites) with zero polarizability are not
-    polarizable: their induced dipole stays 0 (the Jacobi-preconditioned CG, z = alpha r, never
-    moves it, and every initial guess is 0 there) and their mu^2 / (2 alpha) is 0, with no 0/0 in
-    values or gradients (the derivative with respect to such an alpha is taken as 0).  Bitwise
-    x / alpha where alpha != 0."""
+def _div_alpha(x, alpha, mask: bool):
+    """x / alpha; with `mask`, 0 where alpha = 0.  Atoms (or virtual sites) with zero polarizability
+    are not polarizable: their induced dipole stays 0 (the Jacobi-preconditioned CG, z = alpha r,
+    never moves it, and every initial guess is 0 there) and their mu^2 / (2 alpha) is 0, with no 0/0
+    in values or gradients (the derivative with respect to such an alpha is taken as 0).  The mask
+    is static (PGMForceField.alpha_mask: some alpha of the system's parameter table is 0), so that
+    systems without such atoms run the plain division, bit for bit."""
+    if not mask:
+        return x / alpha
     pol = alpha != 0
     return jnp.where(pol, x / jnp.where(pol, alpha, 1.0), 0.0)
 
@@ -263,6 +266,9 @@ class PGMForceField:
         self.mol = jnp.asarray(mol)
         self.cov_i, self.cov_j = jnp.asarray(sys.cov_i), jnp.asarray(sys.cov_j)
         self.has_vsites = any(getattr(m, "vsites", None) for m in sys.molecules)   # md/vsites.py
+        # atoms with alpha = 0 in the parameter table: induced dipoles masked (_div_alpha).  Parameters
+        # passed at call time with new zeros need a force field built from a table with zeros
+        self.alpha_mask = bool(np.any(np.asarray(sys.expand()["alpha"]) == 0.0))
         self.masses = jnp.asarray(sys.masses)
         self.S = max(1, int(settings.extrap_steps))
         self.ms = int(short_capacity)
@@ -598,7 +604,7 @@ class PGMForceField:
 
     def _operator(self, g, S, Gk, alpha):
         cd = self.cd
-        inv_a = _div_alpha(1.0, alpha).astype(cd)[:, None]
+        inv_a = _div_alpha(1.0, alpha, self.alpha_mask).astype(cd)[:, None]
         zq = jnp.zeros(self.n, cd)
         return lambda v: v * inv_a - self._field(g, S, Gk, zq, v)
 
@@ -607,7 +613,7 @@ class PGMForceField:
         cd, s = self.cd, self.s
         tol = s.dipole_tol if tol is None else tol
         peek = s.peek if peek is None else peek
-        inv_a = _div_alpha(1.0, alpha).astype(cd)[:, None]
+        inv_a = _div_alpha(1.0, alpha, self.alpha_mask).astype(cd)[:, None]
         a_c = alpha.astype(cd)[:, None]
 
         def precond(r):
@@ -660,7 +666,7 @@ class PGMForceField:
     def _residual(self, g, S, Gk, alpha, q, p, mu):
         """b - A mu = field(q, p + mu) - mu / alpha (compute dtype): zero at the induced dipoles."""
         cd = self.cd
-        return self._field(g, S, Gk, q.astype(cd), p + mu) - _div_alpha(mu, alpha[:, None]).astype(cd)
+        return self._field(g, S, Gk, q.astype(cd), p + mu) - _div_alpha(mu, alpha[:, None], self.alpha_mask).astype(cd)
 
     def _solve(self, g, S, Gk, P, p, ind: InductionState, fused_ok: bool = True):
         """Induced dipoles; returns mu, iterations, residual, updated InductionState.  With
@@ -719,7 +725,7 @@ class PGMForceField:
                 use_fused = have & (ind.count % self.s.norm_refresh != 0)
 
                 def fused(_):
-                    r0 = self._field(g, S, Gk, qc, p + x0h) - _div_alpha(x0h, a64).astype(cd)
+                    r0 = self._field(g, S, Gk, qc, p + x0h) - _div_alpha(x0h, a64, self.alpha_mask).astype(cd)
                     return x0h, r0, ind.norm
 
                 x0, r0, norm = jax.lax.cond(use_fused, fused, lambda _: plain(x0h, have), None)
@@ -746,7 +752,7 @@ class PGMForceField:
         u_rec = self.pme.energy(self.pme.setup(pos, H), self.pme.influence(H), q, d)
         u_self = -(self.b0 / _SQRT_PI) * jnp.sum(q * q) - 0.5 * self.c_self * jnp.sum(d * d)
         u_bg = -jnp.pi * jnp.sum(q) ** 2 / (2.0 * volume(H) * self.b0 ** 2)
-        u_pol = jnp.sum(_div_alpha(mu * mu, 2.0 * P["alpha"][:, None])) if self.ind else 0.0
+        u_pol = jnp.sum(_div_alpha(mu * mu, 2.0 * P["alpha"][:, None], self.alpha_mask)) if self.ind else 0.0
         return KE * (u_rec + u_self + u_bg + u_pol)
 
     # ------------------------------------------------------------------ van der Waals rows

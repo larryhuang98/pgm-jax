@@ -4,13 +4,16 @@ GPU cost of sites.  Point charges (elec "q", Gaussian radii 1e-4 nm), Amber's EP
 
     python scripts/validate_vsites.py build       # 512 waters (8^3 lattice, 24.87 A cube) through tleap
     python scripts/validate_vsites.py equil       # NPT 298 K, rigid engine, 200 ps -> runs/vsites/equil.rst7
-    python scripts/validate_vsites.py sander      # sander single point (PME 64^3, order 8) at that frame
+    python scripts/validate_vsites.py sander      # sander single point (PME 64^3, order 8, exact erfc) at that frame
     python scripts/validate_vsites.py compare     # energies, forces and EP positions vs sander
     python scripts/validate_vsites.py nve         # NVE drift, rigid and constrained engines, mixed precision
     python scripts/validate_vsites.py npt --engine rigid --ns 4      # production (log: runs/vsites/npt_rigid.log)
+    python scripts/validate_vsites.py npt --engine constraints --dt 1 --ns 3   # (npt_constraints_1fs.log)
     python scripts/validate_vsites.py analyse     # density and <U> per molecule, block errors, vs Horn et al.
     python scripts/validate_vsites.py bench       # ms/step: TIP4P-Ew vs the same water without its site
     python scripts/validate_vsites.py identical --base DIR   # no sites: bitwise the same as the code in DIR
+    python scripts/validate_vsites.py pgm         # pGM water with charged / polarizable sites: forces and
+                                                  # strain derivative vs finite differences (float64)
 
 Energies: the engine's potential energy includes the intramolecular Coulomb energy of every
 molecule (pGM has no exclusions; a constant for rigid water), which Amber excludes: it is
@@ -28,9 +31,13 @@ import subprocess
 import sys
 import time
 
-import jax
-import jax.numpy as jnp
-import numpy as np
+_USER_PLATFORMS = os.environ.get("JAX_PLATFORMS")
+if sys.argv[1:2] == ["identical"]:        # the runs compared are subprocesses: keep the (exclusive) GPU free for them
+    os.environ["JAX_PLATFORMS"] = "cpu"
+
+import jax  # noqa: E402
+import jax.numpy as jnp  # noqa: E402
+import numpy as np  # noqa: E402
 
 jax.config.update("jax_enable_x64", True)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -179,13 +186,13 @@ def sander(a):
     wd = os.path.join(OUT, "sander")
     os.makedirs(wd, exist_ok=True)
     write_inpcrd(os.path.join(wd, "inpcrd"), pos * 10, np.diag(H) * 10, "equilibrated TIP4P-Ew")
-    open(os.path.join(wd, "mdin"), "w").write(f"""TIP4P-Ew single point: PME 64^3 order 8, ew_coeff 0.4, 9 A, LJ tail
+    open(os.path.join(wd, "mdin"), "w").write(f"""TIP4P-Ew single point: PME order 8, ew_coeff 0.4, exact erfc, 9 A, LJ tail
  &cntrl
    imin=0, nstlim=1, irest=0, ntx=1, tempi=0.0, ntb=1, ntt=0, ntc=1, ntf=1, cut=9.0,
-   ntpr=1, ntwx=1, ntwf=1, ioutfm=1, ntwr=1000, dt=0.00001, ig=1,
+   ntpr=1, ntwx=1, ntwf=1, ioutfm=1, ntwr=1000, dt=0.0000000001, ig=1,
  /
  &ewald
-   nfft1={a.grid}, nfft2={a.grid}, nfft3={a.grid}, order=8, ew_coeff=0.4, vdwmeth=1,
+   nfft1={a.grid}, nfft2={a.grid}, nfft3={a.grid}, order=8, ew_coeff=0.4, vdwmeth=1, eedmeth=3, netfrc=0,
  /
 """)
     t0 = time.time()
@@ -211,7 +218,7 @@ def compare(a):
     F_amb = np.array(f.variables["forces"][0], float)                    # kcal/mol/A
     f.close()
     f = netcdf_file(os.path.join(wd, "mdcrd"), "r", mmap=False)
-    X_amb = np.array(f.variables["coordinates"][0], float)              # after one step of 1e-5 ps
+    X_amb = np.array(f.variables["coordinates"][0], float)              # after one step of 1e-10 ps
     f.close()
     s = settings(precision="double", pme_grid=(a.grid,) * 3, pme_order=8, ewald_beta=4.0, dipole_tol=1e-12)
     ff = PGMForceField(sys_, H, s)
@@ -229,15 +236,25 @@ def compare(a):
     real = vs.real
     dF = F[real] - F_amb[real]
     ep = vs.is_site
+    # per molecule: total force and torque about the oxygen.  sander spreads an extra point's force as
+    # the frame's force and torque (orient_frc, rotations about the frame vectors); the engine uses the
+    # exact transposed Jacobian of the placement.  They agree on every rigid-body component and differ
+    # only in the internal ones, which the constraints of rigid water cancel.
+    d4 = (F - F_amb).reshape(sys_.nmol, 4, 3)[:, :3]
+    X = pos.reshape(sys_.nmol, 4, 3)[:, :3] * 10
+    dmol = d4.sum(1)
+    dtq = np.cross(X - X[:, :1], d4).sum(1)
     out = {"EELEC_sander": amb["EELEC"], "EELEC_pgm_jax": eelec, "EELEC_diff": eelec - amb["EELEC"],
            "VDWAALS_sander": amb["VDWAALS"], "VDWAALS_pgm_jax": evdw, "VDWAALS_diff": evdw - amb["VDWAALS"],
            "BOND_sander": amb["BOND"], "intramolecular_coulomb_kcal": E_in / KCAL,
            "force_rms_diff_kcal_A": float(np.sqrt(np.mean(dF ** 2))), "force_max_diff_kcal_A": float(np.abs(dF).max()),
            "force_rms_kcal_A": float(np.sqrt(np.mean(F_amb[real] ** 2))),
+           "molecule_force_rms_diff_kcal_A": float(np.sqrt(np.mean(dmol ** 2))),
+           "molecule_torque_rms_diff_kcal": float(np.sqrt(np.mean(dtq ** 2))),
            "sander_ep_force_max": float(np.abs(F_amb[ep]).max()),
            "ep_position_max_diff_A": float(np.abs(X_amb[ep] - pos[ep] * 10).max()),
            "real_position_max_diff_A": float(np.abs(X_amb[real] - pos[real] * 10).max()),
-           "settings": f"PME {a.grid}^3 order 8, ew_coeff 0.4 A^-1, cut 9 A, vdwmeth 1, float64"}
+           "settings": f"PME {a.grid}^3 order 8, ew_coeff 0.4 A^-1, eedmeth 3 (exact erfc), netfrc 0, cut 9 A, vdwmeth 1, float64"}
     print(json.dumps(out, indent=1))
     update_json("sander_single_point", out)
 
@@ -280,16 +297,17 @@ def nve(a):
 def npt(a):
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
     sys_, pos, vel, H = load(TOP, os.path.join(OUT, "equil.rst7"))
-    prefix = os.path.join(OUT, f"npt_{a.engine}")
-    kw = dict(dt=0.002, ensemble="npt", temperature=298.0, pressure=1.01325, thermostat="bussi", tau_t=1.0,
+    dt = a.dt / 1000.0
+    prefix = os.path.join(OUT, f"npt_{a.engine}" + ("" if a.dt == 2.0 else f"_{a.dt:g}fs"))
+    kw = dict(dt=dt, ensemble="npt", temperature=298.0, pressure=1.01325, thermostat="bussi", tau_t=1.0,
               vel_nm_ps=vel, seed=11, log=open(prefix + ".out", "w"))
     if a.engine == "rigid":
         sim = Simulation(sys_, pos, H, settings(), **kw)
     else:
         tpl = RigidTemplate(sys_.molecules[0], pos[:4])
         sim = FlexibleSimulation(sys_, [tpl] * sys_.nmol, pos, H, settings(), **kw)
-    n = int(round(a.ns * 1000 / 0.002))
-    sim.run(n, report=500, restart=50000, prefix=prefix)
+    n = int(round(a.ns * 1000 / dt))
+    sim.run(n, report=int(round(1.0 / dt)), restart=int(round(100.0 / dt)), prefix=prefix)
 
 
 def _log(path):
@@ -309,10 +327,9 @@ def analyse(a):
     sys_, pos, _, H = load()
     E_in, _ = intramolecular(sys_, pos)                                  # rigid: the same for every frame
     out = {"horn2004": HORN, "intramolecular_coulomb_kJ_per_molecule": E_in / NW}
-    for engine in ("rigid", "constraints"):
-        path = os.path.join(OUT, f"npt_{engine}.log")
-        if not os.path.exists(path):
-            continue
+    import glob
+    for path in sorted(glob.glob(os.path.join(OUT, "npt_*.log"))):
+        engine = os.path.basename(path)[4:-4]
         d = _log(path)
         keep = d["time_ps"] > a.skip
         rho, rho_e = _block(d["density_g_cm3"][keep])
@@ -372,9 +389,82 @@ def bench(a):
     update_json(f"bench_{sys4.nmol}_waters", out)
 
 
+def pgm_water_sites():
+    """A pGM water with a charged, polarizable M site (Gaussian, a covalent dipole from O to it) and
+    two charged, non-polarizable lone pairs (out-of-plane sites, alpha = 0), hydrogens without
+    polarizability (alpha = 0): every path of the site code at once.  Local geometry (nm)."""
+    from pgm_jax.md.vsites import VirtualSite
+    from pgm_jax.system import Molecule
+    w = ideal_water()
+    vs = [VirtualSite.tip4p(3, 0, 1, 2, 0.015, R_OH, np.degrees(2 * np.arcsin(R_HH / 2 / R_OH))),
+          VirtualSite.out_of_plane(4, 0, 1, 2, -0.2, -0.2, 6.0), VirtualSite.out_of_plane(5, 0, 1, 2, -0.2, -0.2, -6.0)]
+    m = Molecule("PW5", ["O", "H", "H", "EP", "EP", "EP"], ["OW", "HW", "HW", "MW", "LP", "LP"],
+                 q=[-0.30, 0.45, 0.45, -0.40, -0.10, -0.10], radius=[0.06, 0.05, 0.05, 0.05, 0.03, 0.03],
+                 alpha=[1.0e-3, 0.0, 0.0, 0.4e-3, 0.0, 0.0],
+                 cov=[(0, 1, -0.02), (0, 2, -0.02), (1, 0, 0.008), (2, 0, 0.008), (0, 3, 0.01)],
+                 lj_rmin_half=[0.178, 0, 0, 0, 0, 0], lj_sqrt_eps=[0.80, 0, 0, 0, 0, 0], bonds=[(0, 1), (0, 2)], vsites=vs)
+    x = np.asarray(VirtualSites.of(System([m])).place(np.concatenate([w, np.zeros((3, 3))])))
+    return m, x
+
+
+def pgm(a):
+    """Forces and molecular strain derivative of pGM water with sites against central differences
+    (float64, dipoles re-solved to 1e-12 at every displaced point); zero-polarizability checks."""
+    from pgm_jax.lj import lj_long_range
+    m, x = pgm_water_sites()
+    rng = np.random.default_rng(4)
+    n_side, a0 = 4, 0.4
+    pos = []
+    for i in range(n_side ** 3):
+        g = np.array([i // n_side ** 2, (i // n_side) % n_side, i % n_side]) + 0.5
+        R = np.linalg.qr(rng.normal(size=(3, 3)))[0]
+        pos.append((x - x[0]) @ R.T + g * a0 + rng.normal(scale=0.01, size=3))
+    H = np.eye(3) * a0 * n_side
+    sys_ = System([m] * n_side ** 3)
+    vs = VirtualSites.of(sys_)
+    pos = np.asarray(vs.place(np.concatenate(pos), H))
+    s = MDSettings(cutoff=0.7, skin=0.05, ewald_beta=5.2, pme_grid=(48,) * 3, pme_order=8, lj_lrc=True, dipole_tol=1e-12,
+                   max_iter=1000, peek=0.0, precision="double")
+    ff = PGMForceField(sys_, H, s)
+    idx = ff.rows_for(pos, H)
+    res = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
+    alpha = np.asarray(ff._atoms(None)["alpha"])
+    mu = np.asarray(res.induction.mu)
+    F = np.asarray(vs.spread(pos, H, res.forces))
+    e = jax.jit(lambda y, hh: ff.energy(vs.place(y, hh), hh, idx, ff.init_induction())[0])
+    h = 1e-5
+    errs = []
+    real = np.nonzero(vs.real)[0]
+    for a_ in rng.choice(real, 12, replace=False):
+        for k in range(3):
+            d = np.zeros_like(pos); d[a_, k] = h
+            fd = -(float(e(pos + d, H)) - float(e(pos - d, H))) / (2 * h)
+            errs.append(abs(fd - F[a_, k]) / max(1.0, abs(fd)))
+    W = np.asarray(ff.strain_derivative(pos, H, idx, res.induction.mu))
+    ms = np.asarray(sys_.masses)
+    com = np.array([np.average(pos[sys_.mol == k], 0, weights=ms[sys_.mol == k]) for k in range(sys_.nmol)])
+    tail = float(lj_long_range(ff._atoms(None), abs(np.linalg.det(H)), 0.7))
+    werr = []
+    for i in range(3):
+        for j in range(3):
+            eps = np.zeros((3, 3)); eps[i, j] = 1e-6
+            ee = lambda sgn: float(e(pos + (com @ (sgn * eps).T)[sys_.mol], H @ (np.eye(3) + sgn * eps).T))   # noqa: E731
+            fd = (ee(1.0) - ee(-1.0)) / 2e-6 - (tail if i == j else 0.0)
+            werr.append(abs(fd - W[i, j]) / max(1.0, abs(fd)))
+    out = {"waters": sys_.nmol, "sites_per_water": 3, "force_fd_max_rel_err": float(max(errs)),
+           "force_fd_components": len(errs), "strain_fd_max_rel_err": float(max(werr)),
+           "mu_at_alpha0_max": float(np.abs(mu[alpha == 0]).max()), "mu_M_site_rms": float(np.sqrt(np.mean(mu[3::6] ** 2))),
+           "energy_kJ": float(res.energy["total"]), "cg_iterations": int(res.iterations)}
+    print(json.dumps(out, indent=1))
+    update_json("pgm_sites_fd", out)
+
+
 def identical(a):
-    """No virtual sites: run the same short MD with this code and with the code in a.base (e.g. the
-    commit before the feature, `git archive`), each in its own process; positions must be bitwise equal."""
+    """No virtual sites: run the same short MD (pGM water, rigid NPT in mixed and double precision,
+    constrained NVT) with this code and with the code in a.base (e.g. the commit before the feature,
+    `git archive`), each in its own process; positions, dipoles and energies must be bitwise equal.
+    Run it on the CPU (JAX_PLATFORMS=cpu): GPU runs are not bitwise reproducible (atomics in the PME
+    spreading), not even with the same code."""
     script = r'''
 import sys, numpy as np, jax
 jax.config.update("jax_enable_x64", True)
@@ -391,7 +481,7 @@ out = {}
 for prec in ("mixed", "double"):
     sim = Simulation(System(_dedupe(read_prmtop_pgm(top, first_residue_only=False))), xyz * 0.1, H, MDSettings(precision=prec),
                      dt=0.001, ensemble="npt", seed=5, log=None)
-    sim.run(400, report=0, prefix=sys.argv[2] + prec)
+    sim.run(200, report=0, prefix=sys.argv[2] + prec)
     out[prec + "_pos"] = sim.positions_nm(); out[prec + "_mu"] = np.asarray(sim.state.induction.mu)
     out[prec + "_epot"] = np.array(sim.state.epot)
 from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
@@ -399,7 +489,7 @@ mols = _dedupe(read_prmtop_pgm(top, first_residue_only=False)); sysf = System(mo
 tpl = RigidTemplate(mols[0], xyz[:3] * 0.1)
 fs = FlexibleSimulation(sysf, [tpl] * sysf.nmol, xyz * 0.1, H, MDSettings(), dt=0.002, ensemble="nvt", constraints="none",
                         thermostat="langevin", seed=5, log=None)
-fs._advance(200); out["flex_pos"] = fs.positions_nm()
+fs._advance(100); out["flex_pos"] = fs.positions_nm()
 np.savez(sys.argv[2] + ".npz", **out)
 '''
     path = os.path.join(OUT, "identical.py")
@@ -407,6 +497,9 @@ np.savez(sys.argv[2] + ".npz", **out)
     res = {}
     for tag, root in (("base", os.path.abspath(a.base)), ("branch", ROOT)):
         env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        env.pop("JAX_PLATFORMS", None)
+        if _USER_PLATFORMS is not None:
+            env["JAX_PLATFORMS"] = _USER_PLATFORMS
         subprocess.run([sys.executable, path, root, os.path.join(OUT, "ident_" + tag)], check=True, env=env)
     A = np.load(os.path.join(OUT, "ident_base.npz"))
     B = np.load(os.path.join(OUT, "ident_branch.npz"))
@@ -418,10 +511,12 @@ np.savez(sys.argv[2] + ".npz", **out)
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("step", choices=["build", "equil", "sander", "compare", "nve", "npt", "analyse", "bench", "identical"])
+    ap.add_argument("step", choices=["build", "equil", "sander", "compare", "nve", "npt", "analyse", "bench", "identical",
+                                     "pgm"])
     ap.add_argument("--ps", type=float, default=200.0, help="equil: ps; nve: ps per run")
     ap.add_argument("--ns", type=float, default=4.0)
     ap.add_argument("--engine", default="rigid", choices=["rigid", "constraints"])
+    ap.add_argument("--dt", type=float, default=2.0, help="npt: time step (fs)")
     ap.add_argument("--grid", type=int, default=64)
     ap.add_argument("--skip", type=float, default=0.0, help="analyse: ps discarded at the start")
     ap.add_argument("--steps", type=int, default=5000)
