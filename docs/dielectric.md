@@ -212,6 +212,16 @@ Other definitions of M on the same pmemd frames (1 + fluctuation; errors 2 %): p
 charges + covalent dipoles 123, charges + induced dipoles 100, TIP3P's point charges (-0.834 / +0.417 e)
 40.3.
 
+The paper's SI gives exactly these parameters (Table S2: q = -2.04056 / 1.02028 e, alpha = 1.11765 /
+0.32963 A^3, Gaussian radii 0.60515 / 0.53623 A, permanent dipoles O->H -0.19120 and H->O 0.08588 e A;
+geometry and LJ as above) and this formula (S4.1: eps = 1 + 4 pi <dM^2> / (3 <V> kB <T>), M the total
+system dipole, tin-foil Ewald; no eps_inf). With it, on the pmemd frames: **33.5** (34.3 with eps_inf).
+Every other combination of the parts of M on the same frames: permanent + induced dipoles (no
+charges) 95, charges + induced 100, charges + permanent 123, charges only 236, induced only 30,
+permanent only 19; TIP3P's charges alone 40, with the pGM dipoles 5-13; either dipole with its sign
+flipped 200-270. On the 512-water pgm_jax run (9.5 ns; halves in brackets): full 33.1 (33.5 / 32.5),
+permanent + induced 94 (95 / 92), charges + induced 99 (100 / 97). None is near 84.3.
+
 - **The two engines agree** (34.3 +- 0.6 and 33.9 +- 0.7; liquid dipole 2.12 and 2.13 D; density
   1.0097 and 1.010): eps of about 34 is a property of pGM3P-25 with these parameters, not of
   pgm_jax's sampling or analysis.
