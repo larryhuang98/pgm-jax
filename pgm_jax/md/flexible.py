@@ -40,7 +40,7 @@ import numpy as np
 from ..system import System
 from ._jaxmd import simulate
 from .box import check_box, inv3, reduce_box, volume
-from .constraints import Constraints, repartition_masses
+from .constraints import Constraints, hmr_masses
 from .forcefield import MDSettings, PGMForceField
 from .integrate import KB, Dynamics, Integrator, MDState, upgrade_state
 from .neighbors import AtomNeighbors, MoleculeNeighbors
@@ -475,13 +475,15 @@ class FlexibleSimulation(Simulation):
     """Simulation driver for flexible molecules (same reporting, trajectories and checkpoints as
     `Simulation`); `templates[k]` (FlexibleTemplate or RigidTemplate) belongs to `sys.molecules[k]`.
     constraints: "none" | "h-bonds" (X-H bonds of the flexible templates; rigid templates are
-    always constrained); hmr: hydrogen mass (amu) for mass repartitioning, or None."""
+    always constrained); hmr: hydrogen mass (amu) for mass repartitioning (the mass comes from the
+    bonded heavy atom), None, or one value (or None) per molecule, e.g. AmberSystem.hmr({"water":
+    4.0, "protein": 3.024}) (constraints.hmr_masses)."""
 
     def __init__(self, sys: System, templates, pos_nm, H_nm, settings: MDSettings = MDSettings(),
                  dt: float = 0.0005, ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0,
                  pressure: float = 1.0, barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None,
                  params=None, log=None, neighbor_list: str = "auto", r_margin: float = 0.05,
-                 constraints: str = "none", hmr: float | None = None, max_single: int | None = None,
+                 constraints: str = "none", hmr=None, max_single: int | None = None,
                  thermostat="langevin", tau_t: float = 1.0):
         H = reduce_box(H_nm)
         check_box(H, settings.cutoff + settings.skin)
@@ -492,11 +494,7 @@ class FlexibleSimulation(Simulation):
         rules = {id(t): t.md_rule(constraints) for t in uniq}
         kw = {} if max_single is None else {"max_single": max_single}
         self.topology = MDTopology.build(sys, [rules[id(t)] for t in templates], **kw)
-        masses = np.asarray(sys.masses, float)
-        if hmr is not None:
-            bonds = np.concatenate([np.asarray(m.bonds, int).reshape(-1, 2) + sys.offsets[k]
-                                    for k, m in enumerate(sys.molecules)])
-            masses = repartition_masses(masses, sys.elements, bonds, hmr)
+        masses = hmr_masses(sys, hmr)
         self.flex = FlexibleMolecules(sys, pos_nm, H, templates, self.topology, masses)
         self.rigid = self.flex                                   # wrap() / positions() used by the base driver
         self.ff = PGMForceField(sys, H, settings, topology=self.topology)

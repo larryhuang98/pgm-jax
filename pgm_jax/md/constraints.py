@@ -11,8 +11,9 @@ the system at once (padded to the largest cluster, float64):
                      r_c . (v'_a - v'_b) = 0.
 
 The integrator (flexible.py) applies them in g-BAOAB order: after every kick, drift and friction
-step.  With hydrogen mass repartitioning (`repartition_masses`) and X-H bonds constrained,
-flexible molecules run at 2 fs.  Units nm, ps, amu."""
+step.  With hydrogen mass repartitioning (`repartition_masses`; `hmr_masses`: one hydrogen mass,
+or one per molecule) and X-H bonds constrained, flexible molecules run at 2 fs, a solvated protein
+at 4 fs (docs/protein_ff.md).  Units nm, ps, amu."""
 from __future__ import annotations
 
 import jax.numpy as jnp
@@ -168,16 +169,50 @@ class Constraints:
         return jnp.max(jnp.abs(jnp.sqrt(jnp.sum(R * R, -1) / self.d2) - 1.0) * self.cmask)
 
 
-def repartition_masses(masses, elements, bonds, h_mass: float = 3.024) -> np.ndarray:
+def repartition_masses(masses, elements, bonds, h_mass=3.024) -> np.ndarray:
     """Hydrogen mass repartitioning: every hydrogen gets h_mass (amu), taken from the heavy atom it
-    is bonded to (total mass unchanged)."""
+    is bonded to (total mass unchanged).  h_mass: one mass for every hydrogen, or one value per atom
+    (read at the hydrogens; NaN keeps that hydrogen's mass)."""
     m = np.asarray(masses, float).copy()
-    for i, j in bonds:
+    target = np.asarray(h_mass, float)
+    if target.ndim and target.shape != m.shape:
+        raise ValueError(f"h_mass: a scalar or one value per atom ({len(m)})")
+    target = np.broadcast_to(target, m.shape)
+    for i, j in np.asarray(bonds, int).reshape(-1, 2):
         for h, x in ((i, j), (j, i)):
-            if elements[h] == "H" and elements[x] != "H":
-                dm = h_mass - m[h]
+            if elements[h] == "H" and elements[x] != "H" and np.isfinite(target[h]):
+                dm = target[h] - m[h]
                 m[h] += dm
                 m[x] -= dm
     if np.any(m <= 0):
         raise ValueError("hydrogen mass repartitioning left a non-positive mass")
     return m
+
+
+def hmr_masses(sys, hmr) -> np.ndarray:
+    """Per-atom masses (amu) of a System after hydrogen mass repartitioning along its molecules'
+    bonds.  hmr: None (the system's masses); one hydrogen mass for every molecule; or a sequence
+    with one value (or None: unchanged) per molecule, e.g. water 4.0 and protein 3.024 from
+    AmberSystem.hmr({"water": 4.0, "protein": 3.024, "ion": None}).  Heavier hydrogens slow the
+    fastest motions (librations of water, X-H bends) and so allow larger time steps; a CH3 carbon
+    (12.01 amu) cannot give three hydrogens 4 amu each and keep a sensible mass, so the protein
+    keeps 3.024 while water takes 4.0."""
+    masses = np.asarray(sys.masses, float)
+    if hmr is None:
+        return masses
+    if isinstance(hmr, dict):
+        raise TypeError("hmr: a mass or one value per molecule; for masses by molecule kind use "
+                        "AmberSystem.hmr({kind: mass})")
+    if np.ndim(hmr) == 0:
+        per_mol = [float(hmr)] * sys.nmol
+    else:
+        per_mol = list(hmr)
+        if len(per_mol) != sys.nmol:
+            raise ValueError(f"hmr: one value per molecule ({sys.nmol}), got {len(per_mol)}")
+    target = np.full(sys.n, np.nan)
+    for k, h in enumerate(per_mol):
+        if h is not None:
+            target[sys.atom_slice(k)] = float(h)
+    bonds = np.concatenate([np.asarray(m.bonds, int).reshape(-1, 2) + sys.offsets[k]
+                            for k, m in enumerate(sys.molecules)])
+    return repartition_masses(masses, sys.elements, bonds, target)

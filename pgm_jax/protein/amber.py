@@ -7,6 +7,8 @@ solvent, ions) and this module turns it into pgm_jax molecules.
     # or: FlexibleTemplate.from_network(net, P, prot.spec) with a trained neural bonded model
     sim = FlexibleSimulation(asys.system(), asys.templates({0: tpl}), asys.positions, asys.box,
                              MDSettings(), dt=0.002, constraints="h-bonds", hmr=3.024)
+    # per-kind hydrogen masses
+    hmr = asys.hmr({"water": 4.0, "protein": 3.024, "ion": None})
 
 Molecules are the connected components of the bond graph; kind "water" (a 3-atom residue with a
 water name), "ion" (one atom), "protein" (anything with a peptide backbone) or "other".  pGM
@@ -60,6 +62,25 @@ class AmberSystem:
 
     def system_positions(self) -> np.ndarray:
         return self.positions[self.order]
+
+    KINDS = ("protein", "water", "ion", "other")
+
+    def hmr(self, masses: dict) -> list:
+        """Per-molecule hydrogen masses for FlexibleSimulation(hmr=...) from one mass (amu) per
+        molecule kind, e.g. {"water": 4.0, "protein": 3.024, "ion": None} (None: masses unchanged).
+        Every kind present with hydrogen atoms must be given."""
+        bad = set(masses) - set(self.KINDS)
+        if bad:
+            raise ValueError(f"unknown molecule kinds {sorted(bad)}; kinds are {self.KINDS}")
+        out = []
+        for k, m in enumerate(self.molecules):
+            if m.kind in masses:
+                out.append(None if masses[m.kind] is None else float(masses[m.kind]))
+            elif "H" in m.molecule.elements:
+                raise KeyError(f"no hydrogen mass for molecule kind {m.kind!r} (molecule {k}); give a mass or None")
+            else:
+                out.append(None)
+        return out
 
     def templates(self, flexible: dict | None = None) -> list:
         """One MD template per molecule: RigidTemplate for water and ions (geometry of the first
