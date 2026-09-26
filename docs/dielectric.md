@@ -241,6 +241,27 @@ permanent + induced 94 (95 / 92), charges + induced 99 (100 / 97). None is near 
 - The model is under-polar in the gas phase (1.46 D against 1.855 D): consistent with eps of about 34
   and with its hydration free energy (-4.91 +- 0.07 kcal/mol against -6.3; `docs/free_energy.md`).
 
+### Reproduction with the paper's own protocol, Amber only
+
+The paper's run settings are in its repository (`src/barostat_simulation.py`): pmemd-pgm, NPT
+298 K, Langevin, dt 1 fs, SHAKE, cut and ee_dsum_cut 9 A, ew_coeff 0.4, nfft 50 (512 waters),
+order 8, **vdwmeth = 0** (no long-range LJ correction; this explains the density difference above),
+dipole_scf_tol 1e-4 range; dipoles by sander with `dipole_print`. Reproduced with Amber programs
+only: pmemd.pgm.cuda sampling (4,096 waters = 2 x 2 x 2 of the 512 box, nfft 100, order 6 since the
+GPU code has no order 8; four runs of 0.2 ns + 3.2 ns, the first 100 ps of production dropped), and
+the system moment of sander (`pGM_compute_dipole`: charges + permanent + induced dipoles) from one
+sander single point per frame (every 2 ps; sander's trajectory mode cannot follow the NPT box with
+pGM: it re-sizes the PME grid and the induced dipoles become NaN), eps from the SI formula:
+
+| | this reproduction (Amber only) | pgm_jax analysis of the same frames | Wu et al. 2025 |
+|---|---|---|---|
+| density (g/cm^3) | 1.0035 +- 0.0001 | 1.0034 | 1.003 |
+| eps (SI formula, no eps_inf) | **32.1 +- 0.6** (5,800 frames) | 32.0 +- 0.4 | 84.3 |
+| mean molecular dipole (D) | | 2.124 | 2.413 |
+
+sander's per-frame system moments equal pgm_jax's to 1e-4 e A. The CPU pmemd.pgm version of the
+same protocol (64 runs of 512 waters, 0.1 ns + 0.3 ns each) is running.
+
 ## Limits
 
 - Charged molecules: M is the molecular dipole M_D (no ionic current), so for electrolytes eps
