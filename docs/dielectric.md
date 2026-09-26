@@ -192,6 +192,22 @@ Coulomb constant; `Model`, dense pGM) and <EPtot>/N from pmemd.
 | molecular dipole, gas phase (D) | 1.462 (experiment 1.855) | | |
 | eps (M_q + M_perm + M_ind, + eps_inf 1.794) | **34.3 +- 0.6** | **33.9 +- 0.7** | 84.3 |
 
+Cross-check of the dipoles against the pGM CPU codes (`~/ambers/pgm-larry`, `dipole_print=1`), same
+coordinates (512 waters, published parameters) and PME settings:
+
+- sander (`pGM_compute_dipole`: system moment = sum of q r + permanent dipoles + induced dipoles
+  over whole molecules, the quantity whose variance it prints for eps): (18.896334, -15.957502,
+  2.330521) e A; pgm_jax's M_q + M_perm + M_ind: (18.8963, -15.9575, 2.3306) e A.
+- pmemd.pgm (CPU; `fort.100`, per-water total moment, charges + permanent + induced dipoles):
+  pgm_jax's molecular dipoles agree to 1.4e-7 e A for every molecule that is whole in pmemd's image
+  coordinates (451 of 512; mean 2.10 D). pmemd sums image (wrapped) coordinates, so the 61 molecules
+  split across the box print meaningless moments (e.g. 27 e A instead of 0.44): that output must
+  not be used for molecules that cross the box boundary.
+- One molecule in vacuum (sander, ntb = 0): EEL -976.4185 kcal/mol and total dipole
+  (-0.0736, -0.0359, -0.2932) e A = 1.462 D, both as pgm_jax.
+
+So the dipole of the model, induced dipoles included, is the one the pGM CPU codes compute.
+
 Other definitions of M on the same pmemd frames (1 + fluctuation; errors 2 %): pGM charges only 236,
 charges + covalent dipoles 123, charges + induced dipoles 100, TIP3P's point charges (-0.834 / +0.417 e)
 40.3.
