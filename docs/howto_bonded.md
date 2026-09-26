@@ -52,8 +52,9 @@ print(fit.metrics(P, "test"))
 FlexibleTemplate.from_fit(model, P).save("runs/flex/methanol.flex")
 ```
 
-Only fits that use the MD engine's model can be exported: pGM with all pairs, no charge flux, no
-refitted charges and no learned pair scales (`FlexibleTemplate` checks this).
+Only fits that use the MD engine's model can be exported: pGM with all pairs, no refitted
+charges and no learned pair scales (`FlexibleTemplate` checks this). Charge flux
+(`BondedSettings(flux=1 | 2)`) runs in MD as fitted: `docs/charge_flux.md`.
 
 ## 3. Check it in MD
 

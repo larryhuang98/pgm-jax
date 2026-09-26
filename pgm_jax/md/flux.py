@@ -116,8 +116,9 @@ class ChargeFlux:
         if self.names and len(self.names) != nk:
             raise ValueError("one name per parameter key")
         self.names = tuple(self.names)
-        # gather tables: the map is written with gathers (its vjp, the force pull-back, then scatters;
-        # on a GPU this measured faster than scatter-adds forward or a hand-written gather pull-back)
+        # gather tables: the map is written with gathers and its jax.vjp is the force pull-back (on a
+        # GPU as fast as a scatter-add map at 10k atoms, faster at 1k, and faster than a hand-written
+        # gather-only pull-back or a per-atom formulation)
         n = self.n_atoms
         deg = np.bincount(self.bonds.reshape(-1), minlength=n) if nb else np.zeros(n, int)
         D = max(int(deg.max()) if n else 0, 1)

@@ -185,6 +185,18 @@ How it works:
   ~15 forward evaluations (30 ms at 12k atoms). Trajectories themselves are not differentiated
   (neighbour-list rebuilds, Monte Carlo moves and Langevin noise); for ensemble averages use
   reweighting, which needs only dU/dtheta per frame.
+- **Charge flux** (`md/flux.py`, `docs/charge_flux.md`): templates fitted with
+  `BondedSettings(flux=1 | 2)` run as fitted, with the bonded model's parameters and sign
+  conventions: each bond moves the charge s jb db between its atoms as it stretches, and its
+  covalent dipoles follow c = c0 + jc db (+ jc2 db^2). Forces add -phi . dq/dR - (dE/dc) . dc/dR:
+  one more row sum for the potential phi, the PME charge gradient, and one vector-Jacobian product
+  through the bond-local flux map (no autodiff through the solve). Barostat trial energies, the
+  virial, the cell dipole and the differentiable path (gradients reach jb, jc, jc2) take q(R), c(R)
+  at their own positions. Checked against the bonded model (1e-16) and finite differences (forces
+  3e-7, virial 1e-11, parameter gradients 2e-8). The flux terms cost 3 % per step at a fixed CG
+  count; with Bussi the fitted methanol needs 0.04-0.3 more CG iterations per step (+2-5 % in
+  all), with Langevin 0.3-1 (+5-10 %: per-atom noise jitters bond lengths and charges). Without
+  flux the compiled step is unchanged.
 - **Precision**: `mixed` (default) evaluates pair kernels, PME and CG vectors in float32 and keeps
   positions, energies and dot products in float64; `double` is float64 throughout. float32 matrix
   products are requested at full precision: by default NVIDIA GPUs use TF32 for them, which made
@@ -252,7 +264,8 @@ sim.run(200000, report=2000, prefix="meoh")        # log columns include temp_co
 
 `examples/fit_bonded_template.py` (fit + export), `examples/run_flexible_liquid.py` (box, NVT,
 NPT) and `examples/flex_methanol_check.py` (forces vs the gas-phase model, NVE, NPT). Only fits
-with the engine's model can be exported (pGM with all pairs, no flux, no refitted charges).
+with the engine's model can be exported (pGM with all pairs, no refitted charges); charge flux
+runs as fitted (`docs/charge_flux.md`).
 216 methanols (1,296 atoms), mixed precision, dt 0.5 fs: 52 ns/day on one GPU (NPT), density
 0.789 +- 0.002 g/cm^3 with GAFF LJ and pGM electrostatics (experiment 0.7866); NVE drift below
 0.005 kT/ns per degree of freedom (`paper/scripts/flex_methanol.py`).
@@ -433,6 +446,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/md/dipoles.py` | cell dipole M = M_q + M_perm + M_ind (`CellDipole`, `cell_dipole`), cell electronic polarizability, `DipoleRecorder` (M(t) sampled on the device into `prefix.dip`), `InducedDipoleFile` (per-atom induced dipoles, NetCDF), `read_dipoles` |
 | `pgm_jax/md/dielectric.py` | static dielectric constant (tin-foil fluctuation formula + eps_inf), jackknife block errors, running estimate, dipole correlation time, IR spectrum |
 | `pgm_jax/md/flexible.py` | flexible molecules in MD: `FlexibleTemplate` (bonded fit -> MD), `RigidTemplate` (water, ions by constraints), `FlexibleSimulation` (atoms, g-BAOAB with SHAKE / RATTLE, `constraints="h-bonds"`, `hmr`), `liquid_box` |
+| `pgm_jax/md/flux.py` | charge flux in MD: `ChargeFlux` (per-bond charge and covalent-dipole flux of fitted templates, or built directly; `charges(pos)` -> q(R), c(R)), `molecule_at` (charges frozen at a geometry for rigid molecules); `scripts/validate_flux.py`, `scripts/flux_md.py` (liquid, NVE, speed, gas phase) |
 | `pgm_jax/md/remd.py` | temperature replica exchange for both engines: `ReplicaExchange` (exchanges, statistics, round trips, outputs, checkpoints), `MDReplicas` (replicas batched with `jax.vmap`, or sequential), `geometric_ladder`, `read_exchange_log` |
 | `pgm_jax/protein/` | proteins: `residues` (bond orders, terminal keys), `library` (`ResidueLibrary`: pGM parameters by residue and atom name, JSON), `amber` (`load_amber`: tleap system -> pgm_jax molecules; `amber_template`: ff19SB-form bonded terms + CMAP; `AmberSystem.hmr` per-kind hydrogen masses, `select` / `position_restraints`), `pmemd` (`write_pgm_prmtop`: the engine's model as a pmemd-pgm prmtop; `pmemd_mdin`, `pmemd_grid`) |
 | `scripts/protein/` | `build_amber.py` (PDB or residue sequence -> solvated tleap topology), `bench_protein.py` (speed of a solvated protein; `--elec-cut`, `--hmr-water`, `--prod-ps`: stability and <U> with block errors), `write_pgm_prmtop.py` (pmemd-pgm prmtop + mdin), `check_pgm_prmtop.py` (single points and MD against pmemd-pgm), `elec_accuracy.py` (electrostatic error of real-space cutoffs), `remd_peptide.py` (replica exchange of a solvated peptide vs plain MD: acceptance, round trips, phi/psi populations, replica speed) |
