@@ -11,7 +11,6 @@ import numpy as np
 
 jax.config.update("jax_enable_x64", True)
 
-from pgm_jax import System  # noqa: E402
 from pgm_jax.md.forcefield import DSUM_TOL, PGMForceField, elec_cutoff_settings, ewald_beta_for  # noqa: E402
 from pgm_jax.md.neighbors import Neighbors  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
@@ -71,6 +70,22 @@ def test_split_rows_are_elec_at_elec_cutoff_plus_vdw_at_cutoff():
         assert np.allclose(r.induction.mu, re_.induction.mu, rtol=0, atol=1e-12 * float(jnp.abs(re_.induction.mu).max()))
         assert np.allclose(W, W_ref, rtol=0, atol=1e-10 * float(jnp.abs(W_ref).max()))
         assert abs(float(e - (ee + ev - ev0))) < 1e-10 * abs(float(ee))
+
+
+def test_elec_cutoff_longer_than_cutoff():
+    """elec_cutoff > cutoff: rows to elec_cutoff, van der Waals weights masked beyond the cutoff."""
+    sys, pos, H = small_box(2)
+    e_only, idx_e = _setup(sys, pos, H, settings(cutoff=RC_V, vdw="none"))
+    full, idx_v = _setup(sys, pos, H, settings(cutoff=RC_E))
+    full0, _ = _setup(sys, pos, H, settings(cutoff=RC_E, vdw="none"))
+    ff, idx = _setup(sys, pos, H, settings(cutoff=RC_E, elec_cutoff=RC_V))
+    assert not ff.split and ff.rc_pair == RC_V
+    r, re_, rv, rv0 = (jax.jit(f.compute)(pos, H, i, f.init_induction())
+                       for f, i in ((ff, idx), (e_only, idx_e), (full, idx_v), (full0, idx_v)))
+    F_ref = re_.forces + rv.forces - rv0.forces
+    assert np.allclose(r.forces, F_ref, rtol=0, atol=1e-10 * float(jnp.abs(F_ref).max()))
+    assert abs(float(r.energy["vdw"] - rv.energy["vdw"])) < 1e-10 * abs(float(rv.energy["vdw"]))
+    assert abs(float(r.energy["elec"] - re_.energy["elec"])) < 1e-10 * abs(float(re_.energy["elec"]))
 
 
 def test_split_rows_forces_and_virial_match_autodiff_and_finite_differences():

@@ -322,17 +322,41 @@ class PGMForceField:
         xi = self._displacements(off, k[:, :w], H)
         return tuple(xc.at[:, :w].set(jnp.where(sp, xic, xc[:, :w])) for xc, xic in zip(x, xi))
 
-    def _compact(self, mask, arrays, width):
-        """Move the entries of each row where `mask` to its front, in order, keeping `width` of them.
-        Returns the compacted arrays (N, width), their mask, and whether a row had more entries."""
-        N = self.n
-        slot = jnp.cumsum(mask, axis=1) - 1
-        count = slot[:, -1] + 1
-        tgt = jnp.where(mask & (slot < width), slot, width)
-        rows = jnp.broadcast_to(jnp.arange(N)[:, None], mask.shape)
-        out = tuple(jnp.zeros((N, width + 1), a.dtype).at[rows, tgt].set(a)[:, :width] for a in arrays)
-        within = jnp.arange(width)[None, :] < jnp.minimum(count, width)[:, None]
-        return out, within, jnp.max(count) > width
+    def _compact_parts(self, k, wv, masks, widths):
+        """Compact every row into consecutive parts: the entries where masks[j] go, in column order, to
+        part j (widths[j] columns).  One scatter of the partner indices places all parts (the slots
+        of two parts come from one scan, one count per 16 bits); the scatter of anything else over
+        the candidate rows is avoided: list entries have van der Waals weight 1, and the special
+        entries, which lead each part, take their weights from the small special block.  Returns,
+        per part, (k, within, weights, special-entry mask of the first min(S, width) columns), and
+        the overflow flag."""
+        N, ni, C = self.n, self.special.shape[1], k.shape[1]
+        if len(masks) == 1:
+            slots = [jnp.cumsum(masks[0].astype(jnp.int32), axis=1) - 1]
+        else:
+            if C >= 1 << 15:
+                raise ValueError(f"candidate rows of {C} entries: at most {(1 << 15) - 1} for the packed counters")
+            cs = jnp.cumsum(masks[0].astype(jnp.int32) + (masks[1].astype(jnp.int32) << 16), axis=1)
+            slots = [(cs & 0xFFFF) - 1, (cs >> 16) - 1]
+        starts = [int(o) for o in np.cumsum([0] + list(widths))]
+        tgt = jnp.full(k.shape, starts[-1], jnp.int32)                  # past the end: dropped
+        for m, sl, w, o in reversed(list(zip(masks, slots, widths, starts))):
+            tgt = jnp.where(m & (sl < w), o + sl, tgt)
+        rows = jnp.broadcast_to(jnp.arange(N, dtype=jnp.int32)[:, None], k.shape)
+        kk = jnp.zeros((N, starts[-1] + 1), k.dtype).at[rows, tgt].set(k)
+        parts, overflow = [], jnp.zeros((), bool)
+        for m, sl, w, o in zip(masks, slots, widths, starts):
+            count = sl[:, -1] + 1
+            within = jnp.arange(w)[None, :] < jnp.minimum(count, w)[:, None]
+            ws = min(ni, w)
+            sp = jnp.arange(ws)[None, :] < jnp.sum(m[:, :ni], axis=1)[:, None]
+            t = jnp.where(m[:, :ni] & (sl[:, :ni] < ws), sl[:, :ni], ws)
+            r = jnp.broadcast_to(jnp.arange(N, dtype=jnp.int32)[:, None], t.shape)
+            wsp = jnp.zeros((N, ws + 1), wv.dtype).at[r, t].set(wv[:, :ni])[:, :ws]
+            wp = jnp.concatenate([jnp.where(sp, wsp, 1.0), jnp.ones((N, w - ws), wv.dtype)], axis=1)
+            parts.append((kk[:, o:o + w], within, jnp.where(within, wp, 0.0), sp))
+            overflow = overflow | (jnp.max(count) > w)
+        return parts, overflow
 
     def _rows(self, pos, H, idx):
         """Rows = [special partners | candidates from the neighbour list], masked to the pair cutoff
@@ -357,12 +381,13 @@ class PGMForceField:
         if self.split:
             return self._split_rows(pos, p, Hc, k, x, r2, keep, wv)
         within = keep & (r2 < self.rc_pair ** 2)
-        if self.rc_v < self.rc_pair:                           # van der Waals cut before electrostatics
-            wv = jnp.where(r2 < self.rc_v ** 2, wv, 0.0)
         overflow = jnp.zeros((), bool)
         if self.mc is not None:
-            (k, wv), within, overflow = self._compact(within, (k, wv), self.mc)
+            ((k, within, wv, _),), overflow = self._compact_parts(k, wv, (within,), (self.mc,))
             x = self._displacements(p, k, Hc)                  # recompute on the compacted rows
+            r2 = x[0] * x[0] + x[1] * x[1] + x[2] * x[2]
+        if self.rc_v < self.rc_pair:                           # van der Waals cut before electrostatics
+            wv = jnp.where(r2 < self.rc_v ** 2, wv, 0.0)
         x = self._intra_exact(pos, Hc, k, x, cd)
         return k, x, within, jnp.where(within, wv, 0.0), overflow, None
 
@@ -371,10 +396,9 @@ class PGMForceField:
         inside elec_cutoff, with their van der Waals weights) and van der Waals rows (pairs between
         elec_cutoff and cutoff with a nonzero van der Waals weight), compacted to their own
         capacities (mc_e and mc - mc_e) into separate arrays, so that the CG streams only the
-        electrostatic ones.  Compaction keeps the column order, so each part starts with its special
-        partners: their weights and exact displacements come from the (small) special block, and a
-        single scatter of the partner indices places both parts.  Without a capacity (single
-        points) both parts span the candidate rows, masked."""
+        electrostatic ones (_compact_parts).  Compaction keeps the column order, so each part starts
+        with its special partners, whose exact displacements are then found by count.  Without a
+        capacity (single points) both parts span the candidate rows, masked."""
         N = self.n
         ni = self.special.shape[1]
         ein = keep & (r2 < self.rc_e ** 2)
@@ -387,34 +411,8 @@ class PGMForceField:
                     (k, xv, vin, jnp.where(vin, wv, 0.0)))
         if self.mc_e is None or not 0 <= self.mc_e <= self.mc:
             raise ValueError(f"split rows need 0 <= mc_e <= mc (got mc {self.mc}, mc_e {self.mc_e}); see size_rows")
-        C = k.shape[1]
-        if C >= 1 << 15:
-            raise ValueError(f"candidate rows of {C} entries: at most {(1 << 15) - 1} for the packed counters")
-        we, wt, mc = self.mc_e, self.mc - self.mc_e, self.mc
-        # slots of both parts from one scan: electrostatic count in the low 16 bits, van der Waals above
-        cs = jnp.cumsum(ein.astype(jnp.int32) + (vin.astype(jnp.int32) << 16), axis=1)
-        se, sv = (cs & 0xFFFF) - 1, (cs >> 16) - 1
-        ce, cv = se[:, -1] + 1, sv[:, -1] + 1
-        tgt = jnp.where(ein & (se < we), se, jnp.where(vin & (sv < wt), we + sv, mc))
-        rows = jnp.broadcast_to(jnp.arange(N, dtype=jnp.int32)[:, None], k.shape)
-        kk = jnp.zeros((N, mc + 1), k.dtype).at[rows, tgt].set(k)
-        ke, kv = kk[:, :we], kk[:, we:mc]
-        overflow = (jnp.max(ce) > we) | (jnp.max(cv) > wt)
-
-        def part(mask, slot, width, count):
-            """Mask, van der Waals weights and special-entry mask of one part (N, width)."""
-            within = jnp.arange(width)[None, :] < jnp.minimum(count, width)[:, None]
-            ws = min(ni, width)
-            nsp = jnp.sum(mask[:, :ni], axis=1)                    # special entries lead the part
-            sp = jnp.arange(ws)[None, :] < nsp[:, None]
-            t = jnp.where(mask[:, :ni] & (slot[:, :ni] < ws), slot[:, :ni], ws)
-            r = jnp.broadcast_to(jnp.arange(N, dtype=jnp.int32)[:, None], t.shape)
-            wsp = jnp.zeros((N, ws + 1), wv.dtype).at[r, t].set(wv[:, :ni])[:, :ws]
-            w = jnp.concatenate([jnp.where(sp, wsp, 1.0), jnp.ones((N, width - ws), wv.dtype)], axis=1)
-            return within, jnp.where(within, w, 0.0), sp
-
-        ein, wve, spe = part(ein, se, we, ce)
-        vin, wvv, spv = part(vin, sv, wt, cv)
+        ((ke, ein, wve, spe), (kv, vin, wvv, spv)), overflow = self._compact_parts(
+            k, wv, (ein, vin), (self.mc_e, self.mc - self.mc_e))
         xe = self._special_exact(pos, H, ke, self._displacements(p, ke, H), spe)
         xv = self._special_exact(pos, H, kv, self._displacements(p, kv, H), spv)
         return ke, xe, ein, wve, overflow, (kv, xv, vin, wvv)
