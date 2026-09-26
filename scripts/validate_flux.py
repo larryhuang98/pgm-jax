@@ -26,7 +26,6 @@ from pgm_jax.channels import ElecChannel
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
 from pgm_jax.md.flux import ChargeFlux, molecule_at
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
-from pgm_jax.model import Model
 from pgm_jax.system import System
 
 path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "runs/flux/methanol_flux2.flex")

@@ -3,8 +3,6 @@
 differentiable path against finite differences with the dipoles re-solved; the cell dipole with
 q(R); rigid molecules (constant shift); refusals (pmemd-pgm export, stray flux parameters);
 energy conservation."""
-from dataclasses import replace
-
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -211,9 +209,10 @@ def _no_flux_fit():
     return model, model.init_params()
 
 
-def test_flux_pullback_is_vjp():
-    """ChargeFlux.pullback (gathers only) is the vector-Jacobian product of the flux map, also with
-    molecules without flux (padding of the gather tables) and bonds across the box boundary."""
+def test_flux_map_tables():
+    """The gather tables of the flux map: molecules without flux (padding) keep their charges,
+    bonds across the box boundary are taken at the minimum image, and the map's vector-Jacobian
+    product (the force pull-back) matches central differences."""
     tpl, x = flux_template()
     ntpl = FlexibleTemplate.from_fit(*_no_flux_fit())
     sys_ = System([tpl.pgm, ntpl.pgm, tpl.pgm])
@@ -222,12 +221,19 @@ def test_flux_pullback_is_vjp():
     H = jnp.eye(3) * 1.2
     pos = jnp.asarray(np.concatenate([x + rng.normal(scale=0.004, size=x.shape) + s for s in ([0.0, 0, 0], [0.4, 0, 0], [1.17, 0.5, 0.5])]))
     Q, th = sys_.expand(), fl.theta()
-    phi, gc = jnp.asarray(rng.normal(size=sys_.n)), jnp.asarray(rng.normal(size=len(sys_.cov_i)))
-    (q, c), vjp = jax.vjp(lambda y: fl.charges(y, H, Q["q"], Q["cov"], th), pos)
-    assert np.allclose(fl.pullback(pos, H, th, phi, gc), vjp((phi, gc))[0], rtol=1e-12, atol=1e-12)
-    assert np.allclose(q[6:12], Q["q"][6:12], rtol=0, atol=0) and float(jnp.abs(q[12:] - Q["q"][12:]).max()) > 1e-3
+    f = lambda y: fl.charges(y, H, Q["q"], Q["cov"], th)                   # noqa: E731
+    q, c = f(pos)
+    assert np.array_equal(q[6:12], Q["q"][6:12]) and float(jnp.abs(q[12:] - Q["q"][12:]).max()) > 1e-3
+    assert np.array_equal(c[10:20], Q["cov"][10:20])
     y = pos.at[13].add(-H[0])                                                # an atom wrapped by one box vector
-    assert np.allclose(fl.charges(y, H, Q["q"], Q["cov"], th)[0], q, rtol=0, atol=1e-14)
+    assert np.allclose(f(y)[0], q, rtol=0, atol=1e-14)
+    phi, gc = jnp.asarray(rng.normal(size=sys_.n)), jnp.asarray(rng.normal(size=len(sys_.cov_i)))
+    g = jax.vjp(f, pos)[1]((phi, gc))[0]
+    L = lambda y: float(jnp.sum(phi * f(y)[0]) + jnp.sum(gc * f(y)[1]))    # noqa: E731
+    for a, k in [(0, 0), (1, 2), (5, 1), (13, 0), (17, 2)]:
+        d = jnp.zeros_like(pos).at[a, k].set(1e-6)
+        fd = (L(pos + d) - L(pos - d)) / 2e-6
+        assert abs(fd - float(g[a, k])) < 1e-7 * max(1.0, abs(fd)), (a, k, fd, float(g[a, k]))
 
 
 def test_flux_refusals_and_options():

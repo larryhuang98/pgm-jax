@@ -30,8 +30,7 @@ u_m the unit vector of covalent dipole m on atom i and dE/dd the dipole gradient
 anyway for its pull-back through the covalent frames.  The engine computes phi with one more row
 sum (like the field; XLA fuses it into the force pass), the reciprocal part from the same autodiff
 of the PME energy with the charges among the differentiated arguments, and pulls (phi, dE/dc)
-back through the bond-local map R -> (q, c) with ChargeFlux.pullback, its vector-Jacobian product
-written with gathers only (jax.vjp's scatter-adds cost 25-40 us per step on a GPU): no autodiff
+back through the bond-local map R -> (q, c) with one vector-Jacobian product: no autodiff
 through the solve or the rows.  The induction right-hand side uses q(R) and c(R) of the current
 geometry, and every other use of the charges evaluates them at its own positions: Monte Carlo
 barostat trial energies, the strain derivative (virial), the differentiable path (gradients with
@@ -117,7 +116,8 @@ class ChargeFlux:
         if self.names and len(self.names) != nk:
             raise ValueError("one name per parameter key")
         self.names = tuple(self.names)
-        # gather tables (the flux map and its pull-back use gathers only: no scatter kernels)
+        # gather tables: the map is written with gathers (its vjp, the force pull-back, then scatters;
+        # on a GPU this measured faster than scatter-adds forward or a hand-written gather pull-back)
         n = self.n_atoms
         deg = np.bincount(self.bonds.reshape(-1), minlength=n) if nb else np.zeros(n, int)
         D = max(int(deg.max()) if n else 0, 1)
@@ -133,14 +133,6 @@ class ChargeFlux:
         self._cb = np.where(has, self.cov_bond, nb).astype(np.int32)          # bond of each dipole (nb: none)
         self._ck = np.where(has, self.key[np.maximum(self.cov_bond, 0)] if nb else 0, 0).astype(np.int32)
         self._ch = has.astype(np.float64)
-        dc = np.bincount(self.cov_bond[has], minlength=nb) if nb else np.zeros(0, int)
-        Dc = max(int(dc.max()) if nb and len(dc) else 0, 1)
-        self._bcov = np.full((nb, Dc), len(self.cov_bond), np.int32)          # dipoles of each bond (padding)
-        fill = np.zeros(nb, int)
-        for m in np.nonzero(has)[0]:
-            b = self.cov_bond[m]
-            self._bcov[b, fill[b]] = m
-            fill[b] += 1
 
     # ------------------------------------------------------------------ evaluation
     @property
@@ -158,15 +150,10 @@ class ChargeFlux:
                              f"{[self.params[k].shape for k in bad]}")
         return {k: jnp.asarray(v, jnp.float64) for k, v in th.items()}
 
-    def _bond_geometry(self, pos, H):
-        """Unit vectors u (nb, 3) from the first to the second atom and deviations db (nb,) nm."""
-        v = min_image(pos[self.bonds[:, 1]] - pos[self.bonds[:, 0]], H)
-        r = jnp.sqrt(jnp.sum(v * v, axis=-1))
-        return v / r[:, None], r - self.b0
-
     def deviations(self, pos, H):
         """db (nb,) nm: bond lengths minus reference lengths (minimum image, molecules whole or not)."""
-        return self._bond_geometry(pos, H)[1]
+        v = min_image(pos[self.bonds[:, 1]] - pos[self.bonds[:, 0]], H)
+        return jnp.sqrt(jnp.sum(v * v, axis=-1)) - self.b0
 
     def charges(self, pos, H, q, cov, theta):
         """(q, cov) at the geometry pos: charges (N,) and covalent-dipole strengths (n_cov,) of the
@@ -182,24 +169,6 @@ class ChargeFlux:
                 dc = dc + theta["jc2"][self._ck] * d * d
             cov = cov + self._ch * dc
         return q, cov
-
-    def pullback(self, pos, H, theta, phi, gcov):
-        """sum_i phi_i dq_i/dR + sum_m gcov_m dc_m/dR (N, 3): the flux part of dE/dR for the
-        potential phi = dE/dq (N,) and gcov = dE/dc (n_cov,), i.e. the vector-Jacobian product of
-        `charges` with respect to pos, written with gathers only (autodiff would scatter-add).
-        dE/d(db_b) = s_b jb (phi_second - phi_first) + sum_{m on b} gcov_m (jc + 2 jc2 db_b), and
-        d(db_b)/dR is +u_b on the bond's second atom, -u_b on its first."""
-        u, db = self._bond_geometry(pos, H)
-        g = self.sign * theta["jb"][self.key] * (phi[self.bonds[:, 1]] - phi[self.bonds[:, 0]])
-        if self._n_cov_flux:
-            d = jnp.concatenate([db, jnp.zeros(1)])[self._cb]
-            w = theta["jc"][self._ck]
-            if "jc2" in theta:
-                w = w + 2.0 * theta["jc2"][self._ck] * d
-            w = jnp.concatenate([self._ch * w * gcov, jnp.zeros(1)])
-            g = g + jnp.sum(w[self._bcov], axis=1)
-        gu = jnp.concatenate([g[:, None] * u, jnp.zeros((1, 3))])
-        return jnp.sum(self._asgn[..., None] * gu[self._abond], axis=1)
 
     # ------------------------------------------------------------------ from fitted templates
     @classmethod
