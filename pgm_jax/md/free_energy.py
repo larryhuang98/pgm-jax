@@ -227,25 +227,28 @@ def ti(lambdas, means, sems=None) -> tuple:
 
 
 # ----------------------------------------------------------------------------- everything
-def estimate(samples, discard_ps: float = 0.0, gas=None, stride: int = 1) -> dict:
+def estimate(samples, discard_ps: float = 0.0, gas=None, stride: int = 1, end_ps: float | None = None) -> dict:
     """Free energy of switching the solute off (lambda = first window -> last window), by TI, BAR
     and MBAR, from the samples of alchemy.FreeEnergyRun (a dict or np.load(prefix_fe.npz)).
 
-    Per window, samples after discard_ps are subsampled with the statistical inefficiency of the
+    Per window, samples after discard_ps (and up to end_ps, if given) are subsampled with the statistical inefficiency of the
     energy difference to the neighbouring window ('dE', for BAR / MBAR; alchemlyb's choice) and of
-    dU/dlambda along the path (TI).  gas: optional dict with the gas-phase leg of a rigid solute,
-    {"delta_g": E_gas(0) - E_gas(1) (kJ/mol), "dudl": dE_gas/dlambda_elec at each window's
-    lambda_elec (kJ/mol)}; then the result also has the hydration (solvation) free energy
-    Delta G_hyd = Delta G_gas - Delta G_solv, and TI of the gas-subtracted integrand (the solute's
-    intramolecular electrostatics removed before the quadrature).  Energies in kJ/mol ('..._kcal':
-    kcal/mol)."""
+    dU/dlambda along the path (TI).  gas: optional gas-phase leg, {"delta_g": Delta G_gas(1 -> 0),
+    "dudl": <dE_gas/dlambda_elec> at each window's lambda_elec} in kJ/mol, optionally with
+    "delta_g_err" and "dudl_err"; delta_g and delta_g_err may be dicts by method ("ti", "bar",
+    "mbar") for a sampled gas phase (flexible solute: estimate() of its own run).  A rigid solute's
+    gas leg is exact (alchemy.GasPhaseLeg: E_gas(0) - E_gas(1), no error).  Then the result also
+    has the hydration (solvation) free energy Delta G_hyd = Delta G_gas - Delta G_solv (errors
+    added in quadrature) and TI of the gas-subtracted integrand (the solute's intramolecular
+    electrostatics removed before the quadrature).  Energies in kJ/mol ('..._kcal': kcal/mol)."""
     S = dict(samples)
     u = np.asarray(S["u"], float)
     dudl = np.asarray(S["dudl"], float)
     L = np.asarray(S["lambdas"], float)
     kT = float(S["kT"])
     t = np.asarray(S["time_ps"], float)
-    keep = np.nonzero(t > float(discard_ps) + 1e-9)[0][::max(int(stride), 1)]
+    last = np.inf if end_ps is None else float(end_ps) + 1e-9
+    keep = np.nonzero((t > float(discard_ps) + 1e-9) & (t <= last))[0][::max(int(stride), 1)]
     if len(keep) < 10:
         raise ValueError(f"only {len(keep)} samples after {discard_ps} ps")
     u, dudl = u[keep], dudl[keep]
@@ -306,19 +309,37 @@ def estimate(samples, discard_ps: float = 0.0, gas=None, stride: int = 1) -> dic
         out["ti_vdw"] = ti(L[s:], means[s:], sems[s:])[0]
     # ---- hydration free energy with the gas-phase leg
     if gas is not None:
-        dgg = float(gas["delta_g"])
-        out["gas"] = dgg
+        by = lambda v, m: float(v[m]) if isinstance(v, dict) else float(v)          # noqa: E731
+        out["gas"] = by(gas["delta_g"], "mbar")
         for m in ("ti", "bar", "mbar"):
-            out[f"dG_hyd_{m}"], out[f"dG_hyd_{m}_err"] = dgg - out[m], out[f"{m}_err"]
+            ge = by(gas.get("delta_g_err", 0.0), m)
+            out[f"dG_hyd_{m}"] = by(gas["delta_g"], m) - out[m]
+            out[f"dG_hyd_{m}_err"] = math.hypot(out[f"{m}_err"], ge)
         gd = np.asarray(gas["dudl"], float).reshape(K)
-        sub = means.copy()
+        gde = np.asarray(gas.get("dudl_err", np.zeros(K)), float).reshape(K)
+        sub, sube = means.copy(), sems.copy()
         sub[:, 0] -= gd
-        dgs, es = ti(L, sub, sems)
+        sube[:, 0] = np.hypot(sube[:, 0], gde)
+        dgs, es = ti(L, sub, sube)
         out["dG_hyd_ti_sub"], out["dG_hyd_ti_sub_err"] = -dgs, es
     for key in list(out):
         if key.startswith(("ti", "bar", "mbar", "dG_", "gas")) and isinstance(out[key], float):
             out[key + "_kcal"] = out[key] / KCAL
     return out
+
+
+def equilibration_times(samples) -> np.ndarray:
+    """Per window, the equilibration time (ps) that maximises the number of uncorrelated samples of
+    its energy difference to the neighbouring window (detect_equilibration): a check of discard_ps."""
+    u = np.asarray(samples["u"], float)
+    t = np.asarray(samples["time_ps"], float)
+    K = u.shape[1]
+    out = []
+    for k in range(K):
+        nb = k + 1 if k + 1 < K else k - 1
+        t0, _, _ = detect_equilibration(u[:, nb, k] - u[:, k, k], nskip=max(1, len(t) // 100))
+        out.append(t[t0] - t[0])
+    return np.array(out)
 
 
 def _overlap_min(u_kn, N_k, f) -> float:

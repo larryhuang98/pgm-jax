@@ -288,14 +288,149 @@ def test_refused_setups():
         Simulation(sysA, pos, H, settings(vdw="gvdw"), log=None, alchemy=Alchemy(sysA, 0))
     with pytest.raises(ValueError):
         Alchemy(sysA, 0, lam=(1.2, 0.0))
-    from pgm_jax.md.flexible import FlexibleIntegrator, FlexibleSimulation, RigidTemplate
-    fsim = FlexibleSimulation(sysA, [RigidTemplate(m, pos[sysA.atom_slice(k)]) for k, m in enumerate(sysA.molecules)],
-                              pos, H, settings(), log=None)
-    with pytest.raises(NotImplementedError, match="rigid-molecule engine"):
-        FlexibleIntegrator(fsim.ff, fsim.flex, fsim.nb, alchemy=Alchemy(sysA, 0))
     sim = Simulation(sysA, pos, H, settings(), log=None, params=P, alchemy=Alchemy(sysA, 0), ensemble="nve")
     with pytest.raises(ValueError, match="thermostat"):
         LambdaWindows(sim, standard_schedule(2, [0.0]))
+
+
+# ----------------------------------------------------------------------------- flexible solutes
+def flex_box():
+    """Flexible methanol (the class II template of test_flexible, scaled 1-4 LJ) at the centre of a
+    box of rigid waters (constraints), the waters within 0.25 nm of it removed."""
+    from pgm_jax.md.flexible import RigidTemplate
+    from test_flexible import template
+    tpl, xm = template()
+    pos, H, w = _water_box(4, 0.31)
+    L = H[0, 0]
+    xm = xm - xm.mean(0) + 0.5 * L
+    wat = water()
+    keep = []
+    for k in range(len(pos) // 3):
+        d = pos[3 * k:3 * k + 3, None, :] - xm[None]
+        d -= L * np.round(d / L)
+        if np.linalg.norm(d, axis=-1).min() > 0.25:
+            keep.append(k)
+    X = np.concatenate([xm] + [pos[3 * k:3 * k + 3] for k in keep])
+    rt = RigidTemplate(wat, w)
+    return tpl, System([tpl.pgm] + [wat] * len(keep)), [tpl] + [rt] * len(keep), X, H
+
+
+def intra_lj(tpl, Pa, Y):
+    """The template's intramolecular Lennard-Jones (weighted pairs) at positions Y (solute first)."""
+    i, j, w = tpl.lj_pairs()
+    r = np.linalg.norm(Y[j] - Y[i], axis=1)
+    rmin = np.asarray(Pa["lj_rmin_half"])[i] + np.asarray(Pa["lj_rmin_half"])[j]
+    eps = np.asarray(Pa["lj_sqrt_eps"])[i] * np.asarray(Pa["lj_sqrt_eps"])[j]
+    return float(np.sum(w * eps * ((rmin / r) ** 12 - 2 * (rmin / r) ** 6)))
+
+
+def test_flexible_solute_hamiltonian():
+    """A flexible solute in the flexible engine: lambda = (1, 1) is the original Hamiltonian (its
+    intramolecular 1-4 van der Waals moved out of the ordinary rows and back); at lambda = (0, 0)
+    the energy is the waters' alone plus the solute's bonded and intramolecular van der Waals energy,
+    and the waters feel the forces of the box without the solute."""
+    from pgm_jax.md.flexible import FlexibleSimulation
+    tpl, sys0, tpls, X, H = flex_box()
+    s = settings()
+    sysA, P = alchemical_system(sys0, 0)
+    alch = Alchemy(sysA, 0)
+    plain = FlexibleSimulation(sys0, tpls, X, H, s, log=None, constraints="h-bonds")
+    sim = FlexibleSimulation(sysA, tpls, X, H, s, log=None, params=P, alchemy=alch, constraints="h-bonds")
+    assert alch._intra is not None and len(alch._intra[0]) == 3            # the three scaled H-C-O-H pairs
+    assert abs(float(sim.state.epot) - float(plain.state.epot)) < 1e-9 * abs(float(plain.state.epot))
+    assert np.allclose(np.asarray(sim.state.dyn.force), np.asarray(plain.state.dyn.force), atol=1e-7)
+    assert abs(sim.pressure() - plain.pressure()) < 1e-6 * max(1.0, abs(plain.pressure()))
+    off = sim.integ.forces(sim.state.set(lam=jnp.zeros(2)), False)
+    Y = np.asarray(off.dyn.position)
+    env = FlexibleSimulation(System(sys0.molecules[1:]), tpls[1:], Y[6:], H, s, log=None, constraints="h-bonds")
+    ref = float(env.state.epot) + float(tpl.bonded_energy(jnp.asarray(Y[:6]))) + intra_lj(tpl, sysA.expand(P), Y)
+    assert abs(float(off.epot) - ref) < 1e-8 * abs(ref), (float(off.epot), ref)
+    assert np.allclose(np.asarray(off.dyn.force)[6:], np.asarray(env.state.dyn.force), atol=1e-6)
+
+
+def test_keep_intramolecular_rigid_equals_annihilation_plus_gas_leg():
+    """intramolecular="keep" on a rigid solute: U_keep(lambda) - U_annihilate(lambda) = E_gas(1) -
+    E_gas(lambda) (a constant of the configuration), and dU/dlambda_elec differs by dE_gas/dlambda."""
+    sim, ann, P, _ = alch_sim()
+    X, Hb, cand = frame(sim)
+    ff = sim.ff
+    keep = Alchemy(sim.sys, 0, intramolecular="keep")
+    keep.check(ff)
+    gas = GasPhaseLeg(ann, X[:3], "qpi")
+    for lam in ((1.0, 1.0), (0.6, 1.0), (0.0, 0.5)):
+        lam = jnp.asarray(lam)
+        ea, ind, _, _ = ann.energy(ff, X, Hb, cand, ff.init_induction(), P, lam)
+        ek, _, _, _ = keep.energy(ff, X, Hb, cand, ff.init_induction(), P, lam)
+        assert abs((float(ek) - float(ea)) - (gas.energy(1.0, P) - gas.energy(float(lam[0]), P))) < 1e-7
+        ga = np.asarray(ann.dudl(ff, X, Hb, cand, ind.mu, P, lam))
+        gk = np.asarray(keep.dudl(ff, X, Hb, cand, ind.mu, P, lam))
+        assert abs(gk[0] - (ga[0] - gas.dudl(float(lam[0]), P))) < 1e-6 and abs(gk[1] - ga[1]) < 1e-9
+
+
+def test_keep_intramolecular_flexible_solute():
+    """A flexible solute with intramolecular="keep": the original Hamiltonian at (1, 1); at (0, 0) the
+    waters' energy plus the solute's bonded, intramolecular van der Waals and whole gas-phase
+    electrostatic energy (the decoupled state is the gas-phase molecule); dU/dlambda against
+    finite differences with the dipoles re-solved."""
+    from pgm_jax.md.flexible import FlexibleSimulation
+    tpl, sys0, tpls, X, H = flex_box()
+    s = settings()
+    sysA, P = alchemical_system(sys0, 0)
+    alch = Alchemy(sysA, 0, intramolecular="keep")
+    plain = FlexibleSimulation(sys0, tpls, X, H, s, log=None, constraints="h-bonds")
+    sim = FlexibleSimulation(sysA, tpls, X, H, s, log=None, params=P, alchemy=alch, constraints="h-bonds")
+    assert abs(float(sim.state.epot) - float(plain.state.epot)) < 1e-9 * abs(float(plain.state.epot))
+    assert np.allclose(np.asarray(sim.state.dyn.force), np.asarray(plain.state.dyn.force), atol=1e-7)
+    off = sim.integ.forces(sim.state.set(lam=jnp.zeros(2)), False)
+    Y = np.asarray(off.dyn.position)
+    env = FlexibleSimulation(System(sys0.molecules[1:]), tpls[1:], Y[6:], H, s, log=None, constraints="h-bonds")
+    gas = GasPhaseLeg(alch, Y[:6], "qpi")
+    ref = float(env.state.epot) + float(tpl.bonded_energy(jnp.asarray(Y[:6]))) + intra_lj(tpl, sysA.expand(P), Y) \
+        + gas.energy(1.0, P)
+    assert abs(float(off.epot) - ref) < 1e-8 * abs(ref), (float(off.epot), ref)
+    ff = sim.ff
+    cand = sim.integ.nb.candidates(off.nbr, sim.flex.list_centers(jnp.asarray(Y)), off.box, jnp.asarray(Y))[0]
+    U = jax.jit(lambda l: alch.energy(ff, jnp.asarray(Y), off.box, cand, ff.init_induction(), P, l))
+    lam = jnp.asarray([0.5, 0.7])
+    _, ind, _, _ = U(lam)
+    g = np.asarray(alch.dudl(ff, jnp.asarray(Y), off.box, cand, ind.mu, P, lam))
+    h = 1e-4
+    for j in range(2):
+        d = jnp.zeros(2).at[j].set(h)
+        fd = (float(U(lam + d)[0]) - float(U(lam - d)[0])) / (2 * h)
+        assert abs(fd - g[j]) < 1e-6 * max(1.0, abs(g[j])), (j, fd, g[j])
+
+
+def test_flexible_windows_and_lone_solute_gas_leg():
+    """Batched windows on the flexible engine (= sequential; u_k(x_k) = beta U), and the gas-phase leg
+    of a flexible solute: the lone molecule in a 4.2 nm box (lone_solute) has the electrostatic
+    energy of GasPhaseLeg at every lambda_elec (bonded and intramolecular terms cancel in
+    E(lambda) - E(0))."""
+    from pgm_jax.md.alchemy import lone_solute
+    from pgm_jax.md.flexible import FlexibleSimulation
+    tpl, sys0, tpls, X, H = flex_box()
+    sysA, P = alchemical_system(sys0, 0)
+    sim = FlexibleSimulation(sysA, tpls, X, H, settings(dipole_tol=1e-9), dt=0.001, log=None, params=P,
+                             alchemy=Alchemy(sysA, 0), constraints="h-bonds", thermostat="bussi")
+    L = standard_schedule(2, [0.4, 0.0])
+    wb, ws = LambdaWindows(sim, L, seed=1), LambdaWindows(sim, L, batched=False, seed=1)
+    wb.advance(6)
+    ws.advance(6)
+    ub, gb, _ = wb.sample()
+    us, gs, _ = ws.sample()
+    assert np.allclose(ub, us, atol=1e-7) and np.allclose(gb, gs, atol=1e-6)
+    assert np.allclose(np.diag(ub), wb.potentials() / float(wb.integ.kT), atol=1e-7)
+    sub, x, Hg = lone_solute(sysA, 0, np.asarray(wb.state(0).dyn.position), 4.2)
+    sg = MDSettings(precision="double", cutoff=1.2, skin=0.0, ewald_beta=3.0, pme_grid=(64, 64, 64), pme_order=8,
+                    dipole_tol=1e-12, max_iter=200, peek=0.0, lj_lrc=False)
+    alch_g = Alchemy(sub, 0)
+    gsim = FlexibleSimulation(sub, [tpl], x, Hg, sg, log=None, params=P, alchemy=alch_g, ensemble="nve",
+                              neighbor_list="atom")
+    E = lambda le: float(gsim.integ.forces(gsim.state.set(lam=jnp.array([le, 1.0])), False).epot)   # noqa: E731
+    gas = GasPhaseLeg(alch_g, np.asarray(gsim.state.dyn.position), "qpi")
+    e0 = E(0.0)
+    for le in (1.0, 0.4):
+        assert abs((E(le) - e0) - (gas.energy(le, P) - gas.energy(0.0, P))) < 2e-3, le
 
 
 # ----------------------------------------------------------------------------- estimators

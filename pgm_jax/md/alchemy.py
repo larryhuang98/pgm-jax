@@ -21,14 +21,25 @@ What lambda does to each term (Alchemy)
   lambda_elec (annihilation of the solute's electrostatics, as the ele-lambda of AMOEBA free
   energies in Tinker: permanent multipoles and polarizabilities of the mutated atoms scaled,
   intramolecular terms included; Ren & Ponder, JCC 23, 1497 (2002) and JPC B 107, 5933 (2003);
-  Shi, Ren, Schnieders & Ponder, Methods Mol. Biol. 819, 215 (2012)):
+  Shi, Wu, Ponder & Ren, JCC 32, 967 (2011)):
       q_s     -> lambda_e q_s               (Gaussian charges)
       c_s     -> lambda_e c_s               (covalent-dipole strengths, i.e. permanent dipoles p_s)
       alpha_s -> alpha_s [eps + (1 - eps) lambda_e],  eps = alpha_floor (1e-8)
   Every electrostatic interaction of the solute is scaled: with the environment, with its own
   periodic images and inside the molecule (pGM couples every pair, and the solute's own induction).
   At lambda_e = 0 the solute carries no electrostatics; the gas-phase leg removes the same
-  intramolecular energy in vacuum (GasPhaseLeg: exact from one configuration for a rigid solute).
+  intramolecular energy in vacuum (GasPhaseLeg: exact from one configuration for a rigid solute;
+  a flexible solute's is sampled with the same engine: lone_solute).
+  intramolecular="keep" instead adds E_gas(x_s; lambda_e = 1) - E_gas(x_s; lambda_e), the solute's
+  electrostatics in vacuum (dense pGM of the lone solute at its current geometry, float64) at full
+  minus reduced coupling: the solute keeps its whole gas-phase intramolecular electrostatics at every
+  lambda and only its coupling to the environment and its periodic images is switched off, so the
+  decoupled state is the gas-phase molecule and Delta G_hyd = -Delta G_solv(1 -> 0), no separate
+  gas leg.  Flexible pGM solutes need it: their bonded terms were fitted together with every
+  intramolecular pair's electrostatics, and without them the molecule is held by its bonded terms
+  alone (methanol at lambda_e = 0 in vacuum blew apart within 14 steps of 2 fs).  For a rigid solute
+  the correction is a constant at each lambda and both modes give the same free energy; with it,
+  dU/dlambda_e is the gas-subtracted integrand, which TI integrates with a smaller quadrature error.
   The polarizability floor: the induced dipoles minimise |mu|^2 / (2 alpha) - mu.E + mu T mu / 2;
   the Jacobi-preconditioned operator of the CG is I - alpha^1/2 T alpha^1/2, whose coupling only
   shrinks with alpha_s, so the solve stays well posed as alpha_s -> 0, but alpha_s = 0 would put
@@ -45,7 +56,8 @@ What lambda does to each term (Alchemy)
   i.e. 4 eps lambda_v [1/y^2 - 1/y] with y = sc_alpha (1 - lambda_v) + (r / sigma)^6, sigma^6 =
   rmin^6 / 2, in Amber's rmin form: Lennard-Jones at lambda_v = 1, finite energy and force at r = 0
   for lambda_v < 1 (the force vanishes there: w depends on r^6).  Only solute-environment pairs
-  are soft (intramolecular van der Waals of the solute, zero for rigid molecules, is not touched);
+  are soft; the intramolecular van der Waals of a flexible solute (pairs >= lj_min_sep bonds
+  apart, scaled 1-4 pairs) is kept at full strength at every lambda, as its bonded terms;
   the long-range correction of those pairs is scaled by lambda_v (beyond the cutoff the soft core
   differs from lambda_v x LJ by (sc_alpha / 2)(1 - lambda_v)(rmin / rc)^6 < 1e-3 of the term).
   Van der Waals forms: "lj" and "none"; GVDW (finite at overlap, would need no soft core) is
@@ -55,7 +67,8 @@ Hamiltonian at lambda = (lambda_e, lambda_v): the ordinary force field (forcefie
 solute's parameters at lambda_e and its van der Waals parameters set to zero, so the ordinary pair
 rows never see a solute pair's van der Waals, plus the soft-core solute-environment term evaluated
 here in a dedicated small row set (each solute atom's candidates from the neighbour list, n_solute
-x C pairs, forces by autodiff).  No pair kernel of the engine changes, and without an alchemical
+x C pairs, forces by autodiff) and the solute's intramolecular van der Waals pairs (from the
+special-pair table of md/topology.py, unscaled).  No pair kernel of the engine changes, and without an alchemical
 region the engine runs exactly as before.  The solute's tied parameters must be its own
 (`alchemical_system` gives the molecule its own keys).  At lambda = (1, 1) the Hamiltonian is the
 original one (tests/test_alchemy.py: 1e-10 in float64).
@@ -73,17 +86,19 @@ bookkeeping they reuse).  Samples (`LambdaWindows.sample`, every `sample_every` 
   re-solved at lambda_e(k) (one CG from the configuration's own dipoles per distinct lambda_e; the
   van der Waals stage shares lambda_e = 0, so it adds one solve), E_sc is a small row sum;
   dU/dlambda (2,) at each window's own lambda, at its converged dipoles.
-Per-configuration constants (restraint energies, P V under NPT) cancel in every estimator and in
-the exchange criterion and are left out of u.
+u_n(x_n) is beta times the step's potential energy (restraints and bonded terms included); P V
+under NPT, a per-configuration constant, cancels in every estimator and in the exchange criterion
+and is left out.
 
 Hamiltonian replica exchange (FreeEnergyRun, exchange_every > 0): neighbouring windows try to swap
 configurations with the Metropolis test of remd.metropolis on the sampled u (no extra energy
 evaluation); an accepted swap re-evaluates forces and dipoles in the new Hamiltonian, books the
 energy change as heat and restarts the dipole predictor from the new dipoles.
 
-Limits: one solute molecule, rigid (the rigid-molecule engine, Simulation); a net-charged solute
-would need finite-size corrections (Rocklin et al., JCP 139, 184103 (2013)) and is refused;
-the cell dipole recorder does not scale the solute's charges (refused with an alchemical region).
+Engines: Simulation (rigid molecules) and FlexibleSimulation (a flexible solute, e.g. with X-H
+constraints, among rigid waters).  Limits: one solute molecule; a net-charged solute would need
+finite-size corrections (Rocklin et al., JCP 139, 184103 (2013)) and is refused; the cell dipole
+recorder does not scale the solute's charges (refused with an alchemical region).
 
 Units: nm, ps, kJ/mol, K, e."""
 from __future__ import annotations
@@ -160,8 +175,12 @@ class Alchemy:
     correction and van der Waals form are taken from the force field the first time the
     Hamiltonian is bound to one (`check`, called by the integrator)."""
 
-    def __init__(self, sys: System, solute: int, lam=(1.0, 1.0), sc_alpha: float = 0.5, alpha_floor: float = 1e-8):
+    def __init__(self, sys: System, solute: int, lam=(1.0, 1.0), sc_alpha: float = 0.5, alpha_floor: float = 1e-8,
+                 intramolecular: str = "annihilate"):
         k = int(solute)
+        if intramolecular not in ("annihilate", "keep"):
+            raise ValueError("intramolecular: 'annihilate' (with a gas-phase leg) or 'keep' (gas-phase correction)")
+        self.intramolecular = intramolecular
         if not 0 <= k < sys.nmol:
             raise ValueError(f"solute molecule {solute} out of range (0..{sys.nmol - 1})")
         if not sc_alpha > 0.0:
@@ -204,6 +223,8 @@ class Alchemy:
             raise NotImplementedError(f"the solute carries a net charge ({charge:+.4f} e): charged solutes need "
                                       "finite-size corrections of the periodic electrostatics, not implemented")
         self.bound = None                          # (vdw form, van der Waals cutoff, long-range correction)
+        self._intra = None                         # the solute's intramolecular van der Waals pairs (i, j, weight)
+        self._gas = None                           # gas-phase electrostatics of the solute ("keep")
 
     # ------------------------------------------------------------------ binding / checks
     @staticmethod
@@ -225,6 +246,22 @@ class Alchemy:
         if self.bound is not None and self.bound != b:
             raise ValueError(f"the alchemical region is bound to other settings {self.bound}, not {b}")
         self.bound = b
+        # intramolecular van der Waals pairs of the solute (flexible molecules: special pairs with a
+        # nonzero weight); the ordinary rows lose them with the solute's parameters, so they are
+        # evaluated here, unscaled
+        sp, w = np.asarray(ff.topology.special), np.asarray(ff.topology.special_w)
+        pairs = [(int(i), int(j), float(w[i, c])) for i in self.atoms_np for c, j in enumerate(sp[i])
+                 if i < j < self.sys.n and w[i, c] != 0.0]
+        if pairs and s.vdw != "none":
+            ii, jj, ww = (np.array(x) for x in zip(*pairs))
+            self._intra = (jnp.asarray(ii, jnp.int32), jnp.asarray(jj, jnp.int32), jnp.asarray(ww, jnp.float64))
+        else:
+            self._intra = None
+        if self.intramolecular == "keep" and self._gas is None:   # the solute alone in vacuum (dense pGM)
+            from ..channels import ElecChannel
+            from ..model import Model
+            sub, _ = self.sys.sub((self.solute,))
+            self._gas = Model([ElecChannel.level(s.elec)]).energy_fn(sub)
 
     @property
     def vdw(self) -> str:
@@ -236,7 +273,7 @@ class Alchemy:
         m = self.sys.molecules[self.solute]
         return (f"solute molecule {self.solute} ({m.name}, {m.n} atoms), lambda (elec, vdw) = "
                 f"({float(self.lam[0]):g}, {float(self.lam[1]):g}), soft core alpha {self.sc_alpha:g}, "
-                f"polarizability floor {self.alpha_floor:g}")
+                f"polarizability floor {self.alpha_floor:g}, intramolecular electrostatics: {self.intramolecular}")
 
     def _lam(self, lam):
         return self.lam if lam is None else jnp.asarray(lam, jnp.float64)
@@ -289,15 +326,55 @@ class Alchemy:
             e = e + lam_v * self._tail(P, H)
         return e
 
+    def intra_energy(self, pos, H, params):
+        """Intramolecular van der Waals of the solute (kJ/mol; flexible molecules: pairs at least
+        lj_min_sep bonds apart and scaled 1-4 pairs, with the weights of md/topology.py), unscaled by
+        lambda: the decoupling keeps it (zero for rigid molecules)."""
+        if self._intra is None:
+            return jnp.zeros((), jnp.float64)
+        i, j, w = self._intra
+        P = self.sys.expand(self.params0 if params is None else params)
+        x = min_image(pos[j] - pos[i], H)
+        r2 = jnp.sum(x * x, axis=-1)
+        rmin = jnp.asarray(P["lj_rmin_half"], jnp.float64)
+        se = jnp.asarray(P["lj_sqrt_eps"], jnp.float64)
+        s6 = ((rmin[i] + rmin[j]) ** 2 / r2) ** 3
+        return jnp.sum(jnp.where(r2 < self.bound[1] ** 2, w * se[i] * se[j] * (s6 * s6 - 2.0 * s6), 0.0))
+
+    def correction_energy(self, pos, params, lam_e):
+        """intramolecular="keep": E_gas(x_s; lambda_e = 1) - E_gas(x_s; lambda_e), the solute's
+        electrostatics in vacuum (dense pGM, float64) at full coupling minus at lambda_e, so that the
+        solute keeps its whole gas-phase intramolecular electrostatics at every lambda and only its
+        coupling to the environment (and to its periodic images) is switched off (kJ/mol; 0 when
+        annihilating)."""
+        if self.intramolecular != "keep":
+            return jnp.zeros((), jnp.float64)
+        if self._gas is None:
+            raise RuntimeError("Alchemy is not bound to a force field yet (Alchemy.check(ff))")
+        x = pos[self.atoms]
+        one = self._gas(x, self.params(params, jnp.ones(2)))["total"]
+        return one - self._gas(x, self.params(params, jnp.stack([jnp.asarray(lam_e, jnp.float64), 1.0])))["total"]
+
+    def extra_energy(self, pos, H, cand, params, lam):
+        """Everything the scaled ordinary force field leaves out: vdw_energy at lambda_vdw and the
+        gas-phase correction at lambda_elec."""
+        return self.vdw_energy(pos, H, cand, params, lam[1]) + self.correction_energy(pos, params, lam[0])
+
+    def vdw_energy(self, pos, H, cand, params, lam_v):
+        """All van der Waals of the solute (the ordinary rows see none of it): soft-core
+        solute-environment pairs and their long-range correction at lambda_vdw, plus its
+        intramolecular pairs."""
+        return self.softcore_energy(pos, H, cand, params, lam_v) + self.intra_energy(pos, H, params)
+
     # ------------------------------------------------------------------ engine interface
     def compute(self, ff, pos, H, cand, ind, params, lam):
         """forcefield.Result of the Hamiltonian at lam (None: self.lam): the ordinary force field at
         the scaled parameters plus the soft-core term (energy added to 'vdw' and 'total')."""
         lam = self._lam(lam)
         res = ff.compute(pos, H, cand, ind, self.params(params, lam))
-        if self.vdw == "none":
+        if self.vdw == "none" and self.intramolecular != "keep":
             return res
-        e, g = jax.value_and_grad(self.softcore_energy)(pos, H, cand, params, lam[1])
+        e, g = jax.value_and_grad(self.extra_energy)(pos, H, cand, params, lam)
         energy = dict(res.energy, vdw=res.energy["vdw"] + e, total=res.energy["total"] + e)
         return res._replace(energy=energy, forces=res.forces - g)
 
@@ -305,13 +382,13 @@ class Alchemy:
         """(energy, InductionState, CG iterations, overflow) as PGMForceField.energy, at lam."""
         lam = self._lam(lam)
         e, ind, it, ovf = ff.energy(pos, H, cand, ind, self.params(params, lam))
-        return e + self.softcore_energy(pos, H, cand, params, lam[1]), ind, it, ovf
+        return e + self.extra_energy(pos, H, cand, params, lam), ind, it, ovf
 
     def energy_fixed_mu(self, ff, pos, H, cand, mu, params, lam):
         """Total energy (kJ/mol) at lam with the induced dipoles held at mu; differentiable in lam."""
         lam = self._lam(lam)
         e, _ = ff.energy_fixed_mu(pos, H, mu, cand, ff._atoms(self.params(params, lam)))
-        return e + self.softcore_energy(pos, H, cand, params, lam[1])
+        return e + self.extra_energy(pos, H, cand, params, lam)
 
     def dudl(self, ff, pos, H, cand, mu, params, lam):
         """(dU/dlambda_elec, dU/dlambda_vdw) in kJ/mol at the converged dipoles mu (Hellmann-Feynman:
@@ -323,7 +400,7 @@ class Alchemy:
         with the tail impulse term of the soft-core long-range correction."""
         lam = self._lam(lam)
         W = ff.strain_derivative(pos, H, cand, mu, self.params(params, lam), molecular)
-        if self.vdw == "none":
+        if self.vdw == "none" and self.intramolecular != "keep":
             return W
         if molecular:
             w = ff.masses
@@ -333,7 +410,7 @@ class Alchemy:
         def e(eps):
             F = jnp.eye(3) + eps
             x = pos + ((com @ eps.T)[ff.mol] if molecular else pos @ eps.T)
-            return self.softcore_energy(x, H @ F.T, cand, params, lam[1])
+            return self.extra_energy(x, H @ F.T, cand, params, lam)
 
         W = W + jax.grad(e)(jnp.zeros((3, 3)))
         if self.bound[2]:
@@ -345,7 +422,7 @@ class Alchemy:
 # ----------------------------------------------------------------------------- gas-phase leg
 class GasPhaseLeg:
     """The solute alone in vacuum with the alchemical parameters at lambda_elec: the gas-phase leg
-    of the cycle.  E_gas(lambda_e) is the pGM energy of the isolated molecule (every pair, induced
+    of the cycle with intramolecular="annihilate" (with "keep" the leg is part of the Hamiltonian).  E_gas(lambda_e) is the pGM energy of the isolated molecule (every pair, induced
     dipoles by a dense solve: channels.ElecChannel, the kernels and Coulomb constant of the MD
     engine) at the solute's rigid geometry `xyz` (nm).  For a rigid solute the gas-phase energy
     does not depend on the configuration (only on orientation and position, which it is invariant
@@ -378,6 +455,21 @@ class GasPhaseLeg:
         return self.energy(0.0, params) - self.energy(1.0, params)
 
 
+def lone_solute(sys: System, solute: int, pos, box_nm: float = 4.0):
+    """(System, positions (nm), H) of the solute molecule alone, centred in a cubic box of box_nm:
+    the gas-phase leg of a flexible solute, sampled with the same engine at the lambda_elec windows
+    (FlexibleSimulation + LambdaWindows + FreeEnergyRun, as the solution leg).  The sub-system shares
+    sys's parameter table, so the same params and Alchemy(sub, 0) apply.  The periodic images of a
+    neutral molecule contribute ~1e-3 kJ/mol at 4 nm (tests); run it with MDSettings(lj_lrc=False)
+    (there is no continuum of other atoms), a PME grid for this box and an atom neighbour list
+    (neighbor_list="atom": a molecule list has no other molecule to list).  `pos`: positions of sys with
+    the solute whole."""
+    sub, idx = sys.sub((int(solute),))
+    x = np.asarray(pos, float)[idx]
+    x = x - x.mean(axis=0) + 0.5 * float(box_nm)
+    return sub, x, np.eye(3) * float(box_nm)
+
+
 # ----------------------------------------------------------------------------- lambda windows
 def _select(mask, a, b):
     """Stacked states: slot k from a where mask[k], else from b (the unbatched step counter from a)."""
@@ -388,9 +480,9 @@ def _select(mask, a, b):
 
 
 class LambdaWindows(MDReplicas):
-    """The lambda windows of one Simulation with an alchemical region, at one temperature: the
-    engine of FreeEnergyRun.  `lambdas` (K, 2) are the (lambda_elec, lambda_vdw) of the windows
-    (`standard_schedule`).  Every window starts from the current configuration of `sim` with
+    """The lambda windows of one Simulation or FlexibleSimulation with an alchemical region, at one
+    temperature: the engine of FreeEnergyRun.  `lambdas` (K, 2) are the (lambda_elec, lambda_vdw)
+    of the windows (`standard_schedule`).  Every window starts from the current configuration of `sim` with
     momenta drawn from its own random stream (`seed`) and forces at its own lambda.
 
     batched=True (NVT): the windows are one stacked state advanced by jax.vmap of the step (lambda
@@ -445,30 +537,37 @@ class LambdaWindows(MDReplicas):
         self._switch = jax.jit(jax.vmap(self._switch_one, in_axes=(ax,), out_axes=ax))
 
     # ------------------------------------------------------------------ samples
-    def _sample_one(self, st, lam_e, group, lam_v):
-        """For one configuration: U_k(x) (K,) up to a per-configuration constant, dU/dlambda at its own
-        lambda (2,), the largest CG iteration count, overflow."""
+    def _sample_one(self, st, lam_e, group, lam_v, lam_e_all):
+        """For one configuration: U_k(x) (K,), dU/dlambda at its own lambda (2,), the largest CG
+        iteration count, overflow."""
         integ, ff, alch = self.integ, self.sim.ff, self.alchemy
         params = integ.params
-        body = st.dyn.position
-        pos = self.sim.rigid.positions(body)
-        cand, ovf0 = integ.nb.candidates(st.nbr, body.center, st.box, pos)
+        if hasattr(integ, "flex"):                 # flexible engine: atoms, neighbour-list group centres
+            pos = st.dyn.position
+            centers = integ.flex.list_centers(pos)
+        else:                                      # rigid bodies
+            pos = self.sim.rigid.positions(st.dyn.position)
+            centers = st.dyn.position.center
+        cand, ovf0 = integ.nb.candidates(st.nbr, centers, st.box, pos)
 
         def e_ff(le):
             e, _, it, ovf = ff.energy(pos, st.box, cand, st.induction, alch.params(params, jnp.stack([le, 1.0])))
             return e, it, ovf
 
         E, it, ovf = jax.lax.map(e_ff, lam_e)
-        esc = jax.vmap(lambda lv: alch.softcore_energy(pos, st.box, cand, params, lv))(lam_v)
+        esc = jax.vmap(lambda le, lv: alch.extra_energy(pos, st.box, cand, params, jnp.stack([le, lv])))(lam_e_all, lam_v)
         g = alch.dudl(ff, pos, st.box, cand, st.induction.mu, params, st.lam)
-        return E[group] + esc, g, jnp.max(it), jnp.any(ovf) | ovf0
+        # lambda-independent terms (restraints, bonded energy of flexible molecules): the same in every
+        # window, kept so that u_n(x_n) = beta U of the step
+        const = integ._restraint_energy(pos, st.box) + (integ.flex.energy(pos) if hasattr(integ, "flex") else 0.0)
+        return E[group] + esc + const, g, jnp.max(it), jnp.any(ovf) | ovf0
 
     def _sampler(self):
         key = self._sizes()
         if key not in self._samplers:
             if self.batched:
                 from .remd import _axes
-                f = jax.vmap(self._sample_one, in_axes=(_axes(self.S), None, None, None))
+                f = jax.vmap(self._sample_one, in_axes=(_axes(self.S), None, None, None, None))
             else:
                 f = self._sample_one
             self._samplers = {key: jax.jit(f)}
@@ -476,10 +575,11 @@ class LambdaWindows(MDReplicas):
 
     def sample(self):
         """u (K, K): u[k, n] = beta U_k(x_n), the configuration of window n in the Hamiltonian of window
-        k (per-configuration constants dropped); dudl (K, 2): dU/dlambda (kJ/mol) of each window at its
-        own lambda; the largest CG iteration count of the re-solves."""
+        k (the potential energy of the step at k = n; P V left out under NPT); dudl (K, 2): dU/dlambda
+        (kJ/mol) of each window at its own lambda; the largest CG iteration count of the re-solves."""
         f = self._sampler()
-        args = (jnp.asarray(self.lam_e), jnp.asarray(self.group), jnp.asarray(self.lambdas[:, 1]))
+        args = (jnp.asarray(self.lam_e), jnp.asarray(self.group), jnp.asarray(self.lambdas[:, 1]),
+                jnp.asarray(self.lambdas[:, 0]))
         if self.batched:
             U, g, it, ovf = f(self.S, *args)
         else:

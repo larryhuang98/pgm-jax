@@ -340,8 +340,6 @@ class FlexibleIntegrator(Integrator):
         self.flex = flex
         self.cons = constraints if (constraints is not None and constraints.nc) else None
         super().__init__(ff, flex, neighbors, dt, **kw)
-        if self.alchemy is not None:
-            raise NotImplementedError("alchemical regions (alchemy.py) run in the rigid-molecule engine (Simulation) only")
         nc = self.cons.nc if self.cons is not None else 0
         self.dof = 3 * flex.n - nc - (3 if self.ensemble == "nve" else 0)
 
@@ -349,7 +347,10 @@ class FlexibleIntegrator(Integrator):
         centers = self.flex.list_centers(pos)
         nbr = self.nb.update(nbr, pos, centers, box, force_rebuild)
         cand, ovf = self.nb.candidates(nbr, centers, box, pos)
-        res = self.ff.compute(pos, box, cand, induction, self.params)
+        if self.alchemy is None:
+            res = self.ff.compute(pos, box, cand, induction, self.params)
+        else:                                      # Hamiltonian at the state's coupling lam (alchemy.py)
+            res = self.alchemy.compute(self.ff, pos, box, cand, induction, self.params, lam)
         e_in, g_in = jax.value_and_grad(self.flex.energy)(pos)
         energy = dict(res.energy)
         energy["total"] = res.energy["total"] + e_in
@@ -415,7 +416,7 @@ class FlexibleIntegrator(Integrator):
             dyn = self._drift(dyn, dt / 2)
             dyn, aux, heat = self._o_step(dyn, aux, heat, dt, self.thermostat_kT(st))
             dyn = self._drift(dyn, dt / 2)
-        F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr)
+        F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr, lam=st.lam)
         st = self._with_result(st.set(dyn=dyn, aux=aux, heat=heat), F, res, nbr)
         st = st.set(dyn=self._kick(st.dyn, dt / 2), step=st.step + 1)
         if self.ensemble == "npt":
@@ -435,7 +436,10 @@ class FlexibleIntegrator(Integrator):
         c_n = self.flex.list_centers(pos_n)
         nbr_n = self.nb.update(st.nbr, pos_n, c_n, Hn, True)
         cand, ovf0 = self.nb.candidates(nbr_n, c_n, Hn, pos_n)
-        e_n, ind_n, _, ovf = self.ff.energy(pos_n, Hn, cand, st.induction, self.params)
+        if self.alchemy is None:
+            e_n, ind_n, _, ovf = self.ff.energy(pos_n, Hn, cand, st.induction, self.params)
+        else:
+            e_n, ind_n, _, ovf = self.alchemy.energy(self.ff, pos_n, Hn, cand, st.induction, self.params, st.lam)
         e_n = e_n + self.flex.energy(pos_n) + self._restraint_energy(pos_n, Hn)
         ovf = ovf | ovf0
         kT = self.thermostat_kT(st)
@@ -445,7 +449,7 @@ class FlexibleIntegrator(Integrator):
 
         def acc(st):
             st = st.set(dyn=st.dyn.set(position=pos_n), box=Hn, induction=ind_n)
-            F, res, nbr = self._forces(pos_n, Hn, ind_n, nbr_n)
+            F, res, nbr = self._forces(pos_n, Hn, ind_n, nbr_n, lam=st.lam)
             return self._with_result(st, F, res, nbr)
 
         st = jax.lax.cond(accept, acc, lambda s: s, st)
@@ -487,7 +491,7 @@ class FlexibleSimulation(Simulation):
                  pressure: float = 1.0, barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None,
                  params=None, log=None, neighbor_list: str = "auto", r_margin: float = 0.05,
                  constraints: str = "none", hmr=None, max_single: int | None = None,
-                 thermostat="langevin", tau_t: float = 1.0, restraints=None):
+                 thermostat="langevin", tau_t: float = 1.0, restraints=None, alchemy=None):
         H = reduce_box(H_nm)
         check_box(H, settings.pair_cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
@@ -511,7 +515,7 @@ class FlexibleSimulation(Simulation):
         self.integ = FlexibleIntegrator(self.ff, self.flex, self.nb, dt, constraints=self.constraints,
                                         ensemble=ensemble, temperature=temperature, gamma=gamma, pressure=pressure,
                                         barostat_interval=barostat_interval, params=params,
-                                        thermostat=thermostat, tau_t=tau_t, restraints=restraints)
+                                        thermostat=thermostat, tau_t=tau_t, restraints=restraints, alchemy=alchemy)
         self.dt, self.ensemble, self.T0 = dt, ensemble, temperature
         mom = None if vel_nm_ps is None else self.flex.mass * jnp.asarray(vel_nm_ps)
         self.state = self.integ.init(pos0, H, jax.random.PRNGKey(seed), mom)
@@ -525,6 +529,8 @@ class FlexibleSimulation(Simulation):
                     f"{self.r_list:.3f} nm), dipole tol {settings.dipole_tol:g}, device {jax.devices()[0]}")
         if self.integ.restraints is not None:
             self._print(f"# restraints: {self.integ.restraints.describe()}")
+        if alchemy is not None:
+            self._print(f"# alchemical region: {alchemy.describe()}")
 
     def minimize(self, steps: int = 500, max_step: float = 0.01, ftol: float = 50.0, seed: int = 1) -> dict:
         """Steepest descent (adaptive step, at most max_step nm per atom, constraints kept by SHAKE)
@@ -606,8 +612,12 @@ class FlexibleSimulation(Simulation):
     def _pressure(self, st):
         pos = st.dyn.position
         c = self.flex.list_centers(pos)
-        W = self.ff.strain_derivative(pos, st.box, self.nb.candidates(st.nbr, c, st.box, pos)[0],
-                                      st.induction.mu, self.integ.params) + self.integ.restraint_strain(pos, st.box)
+        idx = self.nb.candidates(st.nbr, c, st.box, pos)[0]
+        if self.integ.alchemy is None:
+            W = self.ff.strain_derivative(pos, st.box, idx, st.induction.mu, self.integ.params)
+        else:
+            W = self.integ.alchemy.strain_derivative(self.ff, pos, st.box, idx, st.induction.mu, self.integ.params, st.lam)
+        W = W + self.integ.restraint_strain(pos, st.box)
         ke_t = self.integ.kinetic(st)[1]
         return (2.0 * ke_t - jnp.trace(W)) / (3.0 * volume(st.box)) * 16.605390671738466
 

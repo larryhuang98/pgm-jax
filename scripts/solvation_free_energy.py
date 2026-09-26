@@ -5,8 +5,10 @@
     python scripts/solvation_free_energy.py run --model pgm -o runs/fe/pgm --ns 2
     python scripts/solvation_free_energy.py run --model tip3p -o runs/fe/tip3p --ns 2       # TIP3P control
     python scripts/solvation_free_energy.py run --prmtop sys.prmtop --coords sys.rst7 --solute 0 -o runs/fe/x
+    python scripts/solvation_free_energy.py run --solute-template methanol.flex -o runs/fe/meoh    # flexible solute
     python scripts/solvation_free_energy.py analyze runs/fe/pgm_fe.npz --discard-ps 200
     python scripts/solvation_free_energy.py run ... --checkpoint runs/fe/pgm.fe.chk        # continue a run
+    python scripts/solvation_free_energy.py bench --model pgm --windows 1,4,19              # cost per window
 
 Protocol (`run`): NPT at full coupling (--npt-ps; Monte Carlo barostat, the alchemical Hamiltonian
 at lambda = (1, 1)), the box then scaled to the mean volume of the second half; all windows of
@@ -22,7 +24,15 @@ dipoles, radii and polarizabilities of Wu et al., JCTC 21, 3563 (2025), on TIP3P
 0.9572 A / 104.52 deg and TIP3P's Lennard-Jones); "pgm3p25" with the paper's geometry (0.9745 A,
 103.64 deg) and Lennard-Jones (sigma 3.18156 A, epsilon 0.14473 kcal/mol); "tip3p" the TIP3P
 point charges (q_O = -0.834 e; Gaussian radii 1e-4 nm, elec "q"), geometry and LJ of the box.
-The solute is the molecule --solute (0: the first water) with its own copy of the parameters."""
+The solute is the molecule --solute (0: the first water) with its own copy of the parameters.
+
+Flexible solutes (--solute-template, a FlexibleTemplate from pgm_jax.bonded, e.g. methanol): the
+molecule is put at the centre of the water box (waters within --clear nm of it removed) and the
+flexible engine runs everything (rigid waters by constraints, X-H bonds of the solute constrained,
+2 fs).  Its intramolecular electrostatics is kept at every lambda by the gas-phase correction
+(--intramolecular keep, the default for them): the decoupled state is the gas-phase molecule, so
+Delta G_hyd = -Delta G(1 -> 0) with no separate gas leg.  Rigid solutes default to annihilation with
+the exact gas-phase leg (--intramolecular annihilate); both modes give the same free energy."""
 from __future__ import annotations
 
 import argparse
@@ -79,7 +89,31 @@ def water_model(model: str):
     return mols, xyz, vel, box, elec
 
 
+def insert_solute(tpl, mols, xyz_nm, H, clear: float):
+    """The template's molecule at the centre of the box (its reference geometry), waters with an atom
+    within `clear` nm of it removed: (molecules, positions nm, templates) with the solute first."""
+    from pgm_jax.md.flexible import RigidTemplate
+    x = np.asarray(tpl.spec.ref_xyz, float)
+    x = x - x.mean(axis=0) + 0.5 * H.sum(axis=0)
+    Hinv = np.linalg.inv(H)
+    keep_m, keep_x, templates, rigid = [tpl.pgm], [x], [tpl], {}
+    off = 0
+    for m in mols:
+        y = xyz_nm[off:off + m.n]
+        off += m.n
+        d = y[:, None, :] - x[None, :, :]
+        d = d - np.round(d @ Hinv) @ H
+        if np.min(np.linalg.norm(d, axis=-1)) < clear:
+            continue
+        keep_m.append(m)
+        keep_x.append(y)
+        templates.append(rigid.setdefault(id(m), RigidTemplate(m, y)))
+    print(f"# solute {tpl.name} ({tpl.n} atoms) inserted, {len(mols) - len(keep_m) + 1} waters removed", flush=True)
+    return keep_m, np.concatenate(keep_x), templates
+
+
 def build(a):
+    templates = None
     if a.prmtop:
         mols = _dedupe(read_prmtop_pgm(a.prmtop, first_residue_only=False))
         xyz, vel, box = read_coordinates(a.coords)
@@ -88,30 +122,54 @@ def build(a):
         mols, xyz, vel, box, elec = water_model(a.model)
     if box is None:
         raise ValueError("coordinates have no periodic box")
+    H = box_from_cell(*box) * 0.1
+    xyz = xyz * 0.1
+    if getattr(a, "solute_template", None):
+        from pgm_jax.md.flexible import FlexibleTemplate
+        mols, xyz, templates = insert_solute(FlexibleTemplate.load(a.solute_template), mols, xyz, H, a.clear)
+        vel = None
+        if a.solute != 0:
+            raise ValueError("with --solute-template the solute is molecule 0")
     sys0 = System(mols)
     sysA, P = alchemical_system(sys0, a.solute)
     settings = MDSettings(cutoff=a.cut, skin=0.1, ewald_beta=a.ew_coeff, pme_grid=tuple(a.nfft), pme_order=a.order,
                           lj_lrc=True, dipole_tol=a.tol, precision=a.precision, elec=elec)
-    return sysA, P, xyz * 0.1, None if vel is None else vel * 0.1, box_from_cell(*box) * 0.1, settings, elec
+    return sysA, P, xyz, None if vel is None else vel * 0.1, H, settings, elec, templates
+
+
+def engine(sysA, templates, pos, H, **kw):
+    """Simulation (rigid molecules) or FlexibleSimulation (a flexible solute: X-H bonds constrained)."""
+    if templates is None:
+        return Simulation(sysA, pos, H, **kw)
+    from pgm_jax.md.flexible import FlexibleSimulation
+    return FlexibleSimulation(sysA, templates, pos, H, constraints="h-bonds", **kw)
 
 
 def scale_to_volume(sim, V):
-    """Positions (nm) of sim's current configuration with molecular centres scaled to volume V, and the box."""
+    """Positions (nm) of sim's current configuration with molecular centres scaled to volume V (the
+    barostat's molecular scaling), and the box."""
     st = sim.state
     s = (V / float(volume(st.box))) ** (1.0 / 3.0)
+    if hasattr(sim, "flex"):
+        pos = st.dyn.position
+        return np.asarray(pos + ((s - 1.0) * sim.flex.centers(pos))[sim.flex.mol]), np.asarray(st.box) * s
     body = st.dyn.position
     body = RigidBody(body.center * s, body.orientation)
     return np.asarray(sim.rigid.positions(body)), np.asarray(st.box) * s
 
 
 def cmd_run(a):
-    sysA, P, pos, vel, H, settings, elec = build(a)
-    alch = Alchemy(sysA, a.solute, sc_alpha=a.sc_alpha)
+    sysA, P, pos, vel, H, settings, elec, templates = build(a)
+    mode = a.intramolecular or ("keep" if templates is not None else "annihilate")
+    if templates is not None and mode != "keep":
+        raise ValueError("a flexible pGM solute needs --intramolecular keep: its bonded terms were fitted with its "
+                         "intramolecular electrostatics")
+    alch = Alchemy(sysA, a.solute, sc_alpha=a.sc_alpha, intramolecular=mode)
     kw = dict(settings=settings, dt=a.dt / 1000.0, temperature=a.temp, thermostat="bussi", tau_t=1.0, params=P,
               alchemy=alch, log=sys.stdout, seed=a.seed)
     lam = standard_schedule(a.n_elec, None if a.vdw is None else [float(x) for x in a.vdw.split(",")])
     if a.checkpoint is None and a.npt_ps > 0:
-        npt = Simulation(sysA, pos, H, ensemble="npt", pressure=1.0, barostat_interval=100, vel_nm_ps=vel, **kw)
+        npt = engine(sysA, templates, pos, H, ensemble="npt", pressure=1.0, barostat_interval=100, vel_nm_ps=vel, **kw)
         n = int(round(a.npt_ps / (a.dt / 1000.0)))
         rep = max(n // 20, 1)
         vols = []
@@ -124,16 +182,20 @@ def cmd_run(a):
         pos, H = scale_to_volume(npt, Vm)
         vel = npt.velocities_nm_ps()
         del npt
-    sim = Simulation(sysA, pos, H, ensemble="nvt", vel_nm_ps=vel, **kw)
-    X = sim.positions_nm()[sysA.atom_slice(a.solute)]
-    gas = GasPhaseLeg(alch, X, elec)
+    sim = engine(sysA, templates, pos, H, ensemble="nvt", vel_nm_ps=vel, **kw)
     meta = {"model": a.model if not a.prmtop else a.prmtop, "solute": a.solute, "elec": elec,
-            "gas_delta_g": gas.delta_g(P), "gas_e1": gas.energy(1.0, P),
-            "gas_dudl": [gas.dudl(le, P) for le in lam[:, 0]], "settings": dataclasses.asdict(settings),
-            "dt_fs": a.dt, "temperature": a.temp, "volume_nm3": float(volume(sim.state.box)),
-            "sc_alpha": a.sc_alpha, "alpha_floor": alch.alpha_floor}
-    print(f"# gas-phase leg: E_gas(1) = {meta['gas_e1']:.4f} kJ/mol, Delta G_gas(1 -> 0) = {meta['gas_delta_g']:.4f} kJ/mol",
-          flush=True)
+            "settings": dataclasses.asdict(settings), "dt_fs": a.dt, "temperature": a.temp,
+            "volume_nm3": float(volume(sim.state.box)), "sc_alpha": a.sc_alpha, "alpha_floor": alch.alpha_floor,
+            "intramolecular": mode}
+    if templates is not None:
+        meta["solute_template"] = os.path.abspath(a.solute_template)
+    if mode == "annihilate":                                  # rigid solute: exact gas-phase leg
+        gas = GasPhaseLeg(alch, sim.positions_nm()[sysA.atom_slice(a.solute)], elec)
+        meta.update(gas_delta_g=gas.delta_g(P), gas_e1=gas.energy(1.0, P), gas_dudl=[gas.dudl(le, P) for le in lam[:, 0]])
+        print(f"# gas-phase leg: E_gas(1) = {meta['gas_e1']:.4f} kJ/mol, Delta G_gas(1 -> 0) = "
+              f"{meta['gas_delta_g']:.4f} kJ/mol", flush=True)
+    else:                                                     # the gas-phase leg is in the Hamiltonian
+        meta.update(gas_delta_g=0.0, gas_dudl=[0.0] * len(lam))
     t0 = time.time()
     win = LambdaWindows(sim, lam, batched=not a.sequential, seed=a.seed + 1)
     to_steps = lambda ps: int(round(ps / (a.dt / 1000.0)))                      # noqa: E731
@@ -169,11 +231,75 @@ def report(d, discard_ps):
         print(f"  stages (MBAR): electrostatics {r['mbar_elec']:.3f} +- {r['mbar_elec_err']:.3f}, van der Waals "
               f"{r['mbar_vdw']:.3f} +- {r['mbar_vdw_err']:.3f} kJ/mol; TI {r['ti_elec']:.3f}, {r['ti_vdw']:.3f}")
     if gas is not None:
-        print(f"# gas-phase leg Delta G_gas(1 -> 0) = {r['gas']:.4f} kJ/mol; hydration free energy (kJ/mol | kcal/mol):")
+        print(f"# gas-phase leg Delta G_gas(1 -> 0) = {r['gas']:.4f} kJ/mol (MBAR); hydration free energy (kJ/mol | kcal/mol):")
         for m in ("ti", "ti_sub", "bar", "mbar"):
             v, e = r[f"dG_hyd_{m}"], r[f"dG_hyd_{m}_err"]
             print(f"  {m:6s} {v:10.3f} +- {e:.3f} | {k(v):9.3f} +- {k(e):.3f}")
+        t = np.asarray(d["time_ps"])
+        mid = 0.5 * (discard_ps + t[-1])
+        if np.sum((t > discard_ps) & (t <= mid)) >= 20:
+            h1 = fe.estimate(d, discard_ps=discard_ps, gas=gas, end_ps=mid)
+            h2 = fe.estimate(d, discard_ps=mid, gas=gas)
+            print(f"# halves ({discard_ps:g}-{mid:g} ps | {mid:g}-{t[-1]:g} ps), MBAR: "
+                  f"{k(h1['dG_hyd_mbar']):.3f} +- {k(h1['dG_hyd_mbar_err']):.3f} | "
+                  f"{k(h2['dG_hyd_mbar']):.3f} +- {k(h2['dG_hyd_mbar_err']):.3f} kcal/mol")
+    teq = fe.equilibration_times(d)
+    print(f"# equilibration detected (ps after the windows start): max {teq.max():.0f}, per window "
+          + " ".join(f"{x:.0f}" for x in teq))
     return r
+
+
+def cmd_bench(a):
+    """ms per step of plain MD, of one alchemical window, and per window of K batched windows (the
+    first K windows of the schedule, spread over it), and the cost of one sample of all windows."""
+    sysA, P, pos, vel, H, settings, elec, templates = build(a)
+    kw = dict(settings=settings, dt=a.dt / 1000.0, temperature=a.temp, thermostat="bussi", tau_t=1.0, params=P,
+              log=None, seed=a.seed, ensemble="nvt", vel_nm_ps=vel)
+    lam = standard_schedule(a.n_elec)
+    n = a.steps
+
+    def timed(f, reps=3):
+        f()
+        best = np.inf
+        for _ in range(reps):
+            t = time.time()
+            f()
+            best = min(best, time.time() - t)
+        return best
+
+    def md(sim):
+        def f():
+            sim._advance(n)
+            jax.block_until_ready(sim.state.epot)
+        return timed(f) / n * 1e3
+
+    plain = engine(sysA, templates, pos, H, **kw)                           # the same system, no alchemical region
+    out = {"atoms": sysA.n, "steps": n, "plain_ms_per_step": md(plain)}
+    del plain
+    mode = "keep" if templates else "annihilate"
+    sim = engine(sysA, templates, pos, H, alchemy=Alchemy(sysA, a.solute, intramolecular=mode), **kw)
+    out["alchemy_1_window_ms_per_step"] = md(sim)
+    for K in [int(x) for x in a.windows.split(",")]:
+        if K < 2:
+            continue
+        idx = np.unique(np.round(np.linspace(0, len(lam) - 1, K)).astype(int))
+        win = LambdaWindows(sim, lam[idx], batched=True, seed=1)
+
+        def f():
+            win.advance(n)
+            jax.block_until_ready(win.S.epot)
+        t = timed(f)
+        ts = timed(lambda: win.sample(), reps=2)
+        out[f"batched_{len(idx)}_ms_per_window_step"] = t / n / len(idx) * 1e3
+        out[f"batched_{len(idx)}_sample_ms"] = ts * 1e3
+        del win
+    for k, v in out.items():
+        print(f"{k:40s} {v:.4f}" if isinstance(v, float) else f"{k:40s} {v}")
+    per_day = lambda ms: a.dt * 1e-6 / (ms * 1e-3) * 86400.0                  # noqa: E731
+    print(f"# ns/day: plain MD {per_day(out['plain_ms_per_step']):.1f}, one alchemical window "
+          f"{per_day(out['alchemy_1_window_ms_per_step']):.1f}" + "".join(
+              f"; {k.split('_')[1]} batched windows {per_day(v * int(k.split('_')[1])):.1f} per window "
+              f"({per_day(v):.1f} aggregate)" for k, v in out.items() if k.endswith("window_step")))
 
 
 def main():
@@ -186,6 +312,10 @@ def main():
     r.add_argument("--coords")
     r.add_argument("--elec", default="qpi", help="electrostatics level for --prmtop")
     r.add_argument("--solute", type=int, default=0, help="molecule (residue) index of the solute")
+    r.add_argument("--solute-template", help="flexible solute (FlexibleTemplate file) inserted into the water box")
+    r.add_argument("--clear", type=float, default=0.25, help="nm: waters this close to the inserted solute are removed")
+    r.add_argument("--intramolecular", choices=["annihilate", "keep"],
+                   help="solute's intramolecular electrostatics (default: annihilate for rigid, keep for flexible)")
     r.add_argument("--ns", type=float, default=2.0, help="length of every window (ns)")
     r.add_argument("--npt-ps", type=float, default=100.0, help="NPT equilibration at full coupling (ps)")
     r.add_argument("--n-elec", type=int, default=8)
@@ -207,12 +337,23 @@ def main():
     r.add_argument("--sequential", action="store_true", help="windows one after the other (not batched)")
     r.add_argument("--seed", type=int, default=0)
     r.add_argument("--checkpoint", help="continue from prefix.fe.chk")
+    b = sub.add_parser("bench")
+    b.add_argument("--model", default="pgm", choices=["pgm", "pgm3p25", "tip3p"])
+    b.add_argument("--windows", default="1,4,8,19", help="numbers of batched windows")
+    b.add_argument("--steps", type=int, default=1000)
+    b.add_argument("--n-elec", type=int, default=8)
+    for x in r._actions:
+        if x.dest in ("prmtop", "coords", "elec", "solute", "dt", "temp", "tol", "cut", "ew_coeff", "nfft", "order",
+                      "precision", "seed", "solute_template", "clear"):
+            b._add_action(x)
     z = sub.add_parser("analyze")
     z.add_argument("npz")
     z.add_argument("--discard-ps", type=float, default=200.0)
     a = ap.parse_args()
     if a.cmd == "run":
         cmd_run(a)
+    elif a.cmd == "bench":
+        cmd_bench(a)
     else:
         report(fe.load(a.npz), a.discard_ps)
 
