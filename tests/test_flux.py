@@ -176,6 +176,10 @@ def test_flux_differentiable_path(box):
         dn = {**theta0, "flux": {**theta0["flux"], "jb": theta0["flux"]["jb"].at[j].add(-h)}}
         fd = (float(E(up)) - float(E(dn))) / (2 * h)
         assert abs(fd - float(gE[j])) < 1e-6 * max(1.0, abs(fd)), (j, fd, float(gE[j]))
+    # reweighting / liquid fits (scripts/fit_liquid.py): dU/dtheta at the converged dipoles, Hellmann-Feynman
+    mu = ff.compute(pos, H, idx, ff.init_induction(), theta0).induction.mu
+    gU = jax.grad(lambda th: ff.energy_fixed_mu(pos, H, mu, idx, ff._atoms(th))[0])(theta0)["flux"]["jb"]
+    assert np.allclose(gU, gE, rtol=1e-8, atol=1e-8), (gU, gE)
 
 
 def test_flux_cell_dipole_and_rigid_molecules(box):
@@ -207,6 +211,25 @@ def _no_flux_fit():
     return model, model.init_params()
 
 
+def test_flux_pullback_is_vjp():
+    """ChargeFlux.pullback (gathers only) is the vector-Jacobian product of the flux map, also with
+    molecules without flux (padding of the gather tables) and bonds across the box boundary."""
+    tpl, x = flux_template()
+    ntpl = FlexibleTemplate.from_fit(*_no_flux_fit())
+    sys_ = System([tpl.pgm, ntpl.pgm, tpl.pgm])
+    fl = ChargeFlux.from_templates(sys_, [tpl, ntpl, tpl])
+    rng = np.random.default_rng(4)
+    H = jnp.eye(3) * 1.2
+    pos = jnp.asarray(np.concatenate([x + rng.normal(scale=0.004, size=x.shape) + s for s in ([0.0, 0, 0], [0.4, 0, 0], [1.17, 0.5, 0.5])]))
+    Q, th = sys_.expand(), fl.theta()
+    phi, gc = jnp.asarray(rng.normal(size=sys_.n)), jnp.asarray(rng.normal(size=len(sys_.cov_i)))
+    (q, c), vjp = jax.vjp(lambda y: fl.charges(y, H, Q["q"], Q["cov"], th), pos)
+    assert np.allclose(fl.pullback(pos, H, th, phi, gc), vjp((phi, gc))[0], rtol=1e-12, atol=1e-12)
+    assert np.allclose(q[6:12], Q["q"][6:12], rtol=0, atol=0) and float(jnp.abs(q[12:] - Q["q"][12:]).max()) > 1e-3
+    y = pos.at[13].add(-H[0])                                                # an atom wrapped by one box vector
+    assert np.allclose(fl.charges(y, H, Q["q"], Q["cov"], th)[0], q, rtol=0, atol=1e-14)
+
+
 def test_flux_refusals_and_options():
     tpl, x = flux_template(order=1)
     fl = ChargeFlux.from_templates(System([tpl.pgm]), [tpl])
@@ -221,6 +244,8 @@ def test_flux_refusals_and_options():
     ff = PGMForceField(sys1, np.eye(3) * 3.0, tight())
     with pytest.raises(ValueError, match="no charge flux"):
         ff._atoms({**sys1.params0, "flux": {"jb": jnp.zeros(3), "jc": jnp.zeros(3)}})
+    with pytest.raises(ValueError, match="shapes"):
+        fl.theta({"flux": {"jb": jnp.zeros(2), "jc": jnp.zeros(3)}})
     with pytest.raises(ValueError):
         ChargeFlux([(0, 1)], [0.1], [0], [2.0], [], {"jb": [1.0], "jc": [0.0]}, 2)       # sign must be -1, 0, 1
     with pytest.raises(ValueError):

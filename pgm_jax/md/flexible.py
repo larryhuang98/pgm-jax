@@ -12,10 +12,10 @@ term of the intramolecular pairs follows the fitted model,
 through the special pairs of md/topology.py (inside the cutoff, as every other pair), so the
 extra energy of a flexible molecule is its bonded energy.  Templates fitted with charge flux
 (BondedSettings.flux) bring it along (md/flux.py: charges and covalent dipoles follow the bond
-lengths).  Large molecules are split into
-heavy-atom groups for the neighbour list.  Optional distance constraints (X-H bonds at their
-reference lengths; rigid templates always) are applied with SHAKE / RATTLE in g-BAOAB order
-(md/constraints.py); with hydrogen mass repartitioning (`hmr`) that allows 2 fs.
+lengths).  Large molecules are split into heavy-atom groups for the neighbour list.  Optional
+distance constraints (X-H bonds at their reference lengths; rigid templates always) are applied
+with SHAKE / RATTLE in g-BAOAB order (md/constraints.py); with hydrogen mass repartitioning
+(`hmr`) that allows 2 fs.
 
     tpl = FlexibleTemplate.from_fit(model, P)                 # after fitting pgm_jax.bonded
     tpl.save("methanol.flex")

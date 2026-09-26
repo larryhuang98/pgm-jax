@@ -13,11 +13,12 @@ Langevin 1/ps, barostat every 25 steps, MDSettings() defaults: mixed precision, 
 molecule (bonded + van der Waals + electrostatics), mean |molecular dipole| (charges, covalent and
 induced dipoles; md/dipoles.py) and the mean charge shift of the flux.  Writes
 runs/flux/<template>_liquid.json and the final state (<template>_liquid.npz).
-nve: NVE from that state, --nve_ps (50) ps mixed (dt 0.5 fs, tol 1e-5) and a fifth of it double
-(tol 1e-8); drift of E_tot in kT per ns per degree of freedom (linear fit).
-speed: NVT from that state (replicated n x n x n), ms per step and CG iterations per step of the
-template with its flux and of the same template with the flux switched off (the flux-free code
-path), alternating, so the only difference is the flux.
+nve: NVE from that state, --nve_ps (50) ps mixed (dt 0.5 fs, tol 1e-5) and --double_ps (a fifth
+of it) double (tol 1e-8); drift of E_tot in kT per ns per degree of freedom (linear fit).
+speed: NVT from that state (replicated n x n x n; --thermostat, --fixed_iter n: exactly n CG
+iterations per step, which isolates the cost of the flux terms from the iteration count), ms per
+step and CG iterations per step of the template with its flux and of the same template with the
+flux switched off (the flux-free code path), alternating, so the only difference is the flux.
 gas: the isolated molecule with the gas-phase model the template was fitted with (BondedModel:
 bonded terms, pGM with every pair, intramolecular van der Waals, the flux), 256 independent copies
 (vmap), BAOAB Langevin 5/ps, dt 0.5 fs, 20 ps + 100 ps sampled every 50 fs: <U_gas> and <|mu|>;
@@ -46,7 +47,10 @@ ap.add_argument("--equil_ps", type=float, default=100.0)
 ap.add_argument("--prod_ps", type=float, default=100.0)
 ap.add_argument("--replicate", type=int, default=1)
 ap.add_argument("--steps", type=int, default=4000)
-ap.add_argument("--nve_ps", type=float, default=50.0)
+ap.add_argument("--nve_ps", type=float, default=50.0, help="nve: mixed-precision run length (ps; 0: skip)")
+ap.add_argument("--double_ps", type=float, default=None, help="nve: double-precision run length (default nve_ps / 5)")
+ap.add_argument("--thermostat", default="langevin", help="speed: langevin (1/ps) | bussi (1 ps)")
+ap.add_argument("--fixed_iter", type=int, default=0, help="speed: exactly this many CG iterations per step")
 a = ap.parse_args()
 
 tpl = FlexibleTemplate.load(a.template)
@@ -119,8 +123,9 @@ elif a.cmd == "nve":
     N = len(z["pos"]) // tpl.n
     sys_ = System([tpl.pgm] * N)
     out = {"template": a.template, "flux": tpl.settings.get("flux", 0), "nve": []}
-    for label, prec, tol, ps in (("0.5 fs, mixed, tol 1e-5", "mixed", 1e-5, a.nve_ps),
-                                 ("0.5 fs, double, tol 1e-8", "double", 1e-8, a.nve_ps / 5)):
+    runs = (("0.5 fs, mixed, tol 1e-5", "mixed", 1e-5, a.nve_ps),
+            ("0.5 fs, double, tol 1e-8", "double", 1e-8, a.nve_ps / 5 if a.double_ps is None else a.double_ps))
+    for label, prec, tol, ps in [r for r in runs if r[3] > 0]:
         s = FlexibleSimulation(sys_, [tpl] * N, z["pos"], z["box"], MDSettings(precision=prec, dipole_tol=tol), dt=dt,
                                ensemble="nve", vel_nm_ps=z["vel"], log=None)
         every = int(round(0.1 / dt))
@@ -136,7 +141,7 @@ elif a.cmd == "nve":
              "time_ps": t.tolist(), "etot": E.tolist()}
         out["nve"].append(r)
         print(label, {k: v for k, v in r.items() if k not in ("time_ps", "etot")}, flush=True)
-    json.dump(out, open(stem + "_nve.json", "w"), indent=1)
+    json.dump(out, open(stem + f"_nve{'' if a.nve_ps > 0 else '_double'}.json", "w"), indent=1)
 
 elif a.cmd == "gas":
     model, P = tpl.model, jax.tree_util.tree_map(jnp.asarray, tpl.P)
@@ -203,8 +208,9 @@ else:
     res = {}
     sims = {}
     for label, t in (("flux", tpl), ("no flux", no_flux(tpl))):
-        sims[label] = FlexibleSimulation(sys_, [t] * N, pos, H, MDSettings(), dt=dt, ensemble="nvt", temperature=T,
-                                         gamma=1.0, vel_nm_ps=vel, log=None)
+        st = MDSettings() if not a.fixed_iter else MDSettings(dipole_tol=0.0, max_iter=a.fixed_iter)
+        sims[label] = FlexibleSimulation(sys_, [t] * N, pos, H, st, dt=dt, ensemble="nvt", temperature=T,
+                                         gamma=1.0, thermostat=a.thermostat, tau_t=1.0, vel_nm_ps=vel, log=None)
         sims[label]._advance(500)                           # compile
     for rnd in range(3):
         for label, sim in sims.items():
@@ -221,7 +227,8 @@ else:
                   "cg_per_step": float(np.mean([r["cg_per_step"] for r in v]))} for lab, v in res.items()}
     for lab in summ:
         summ[lab]["ns_per_day"] = dt * 86400.0 / (summ[lab]["ms_per_step"] * 1e-3) / 1000.0
-    out = {"template": a.template, "n_mol": N, "n_atoms": N * tpl.n, "rounds": res, "summary": summ,
+    out = {"template": a.template, "n_mol": N, "n_atoms": N * tpl.n, "thermostat": a.thermostat,
+           "fixed_iter": a.fixed_iter, "rounds": res, "summary": summ,
            "overhead": summ["flux"]["ms_per_step"] / summ["no flux"]["ms_per_step"] - 1.0, "device": str(jax.devices()[0])}
     print(json.dumps({k: v for k, v in out.items() if k != "rounds"}), flush=True)
-    json.dump(out, open(stem + f"_speed{k}.json", "w"), indent=1)
+    json.dump(out, open(stem + f"_speed{k}_{a.thermostat}{'_it%d' % a.fixed_iter if a.fixed_iter else ''}.json", "w"), indent=1)
