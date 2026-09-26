@@ -90,19 +90,20 @@ def bar(w_F, w_R, tol: float = 1e-12) -> tuple:
     M = math.log(nF / nR)
 
     def zero(df):
-        fF = expit(-(M + wF - df))
-        fR = expit(-(-M + wR + df))
-        return math.log(np.sum(fF)) - math.log(np.sum(fR)) if np.sum(fF) > 0 and np.sum(fR) > 0 else \
-            (-np.inf if np.sum(fF) == 0 else np.inf)
+        """log sum_F f(M + w_F - df) - log sum_R f(-M + w_R + df), f(x) = 1 / (1 + e^x): increasing in
+        df, zero at the BAR estimate (log space: no overflow for large works)."""
+        return logsumexp(-np.logaddexp(0.0, M + wF - df)) - logsumexp(-np.logaddexp(0.0, -M + wR + df))
 
-    # bracket from the exponential averages, widened until the sign changes
+    # bracket around the exponential-averaging estimates, widened until the sign changes
     lo = -(logsumexp(-wF) - math.log(nF))
     hi = logsumexp(-wR) - math.log(nR)
     lo, hi = min(lo, hi) - 1.0, max(lo, hi) + 1.0
     for _ in range(200):
-        if zero(lo) < 0.0 < zero(hi) or zero(lo) > 0.0 > zero(hi):
+        if zero(lo) < 0.0 < zero(hi):
             break
         lo, hi = lo - (hi - lo), hi + (hi - lo)
+    else:
+        raise RuntimeError("BAR: no bracket for the free-energy difference")
     df = brentq(zero, lo, hi, xtol=tol, rtol=4 * np.finfo(float).eps, maxiter=500)
     fF = expit(-(M + wF - df))
     fR = expit(-(-M + wR + df))

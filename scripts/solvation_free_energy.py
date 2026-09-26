@@ -9,6 +9,7 @@
     python scripts/solvation_free_energy.py analyze runs/fe/pgm_fe.npz --discard-ps 200
     python scripts/solvation_free_energy.py run ... --checkpoint runs/fe/pgm.fe.chk        # continue a run
     python scripts/solvation_free_energy.py bench --model pgm --windows 1,4,19              # cost per window
+    python scripts/solvation_free_energy.py finite-size --model pgm                          # PME / image check
 
 Protocol (`run`): NPT at full coupling (--npt-ps; Monte Carlo barostat, the alchemical Hamiltonian
 at lambda = (1, 1)), the box then scaled to the mean volume of the second half; all windows of
@@ -43,7 +44,6 @@ import sys
 import time
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 
 jax.config.update("jax_enable_x64", True)
@@ -215,14 +215,16 @@ def report(d, discard_ps):
     gas = {"delta_g": meta["gas_delta_g"], "dudl": meta["gas_dudl"]} if "gas_delta_g" in meta else None
     r = fe.estimate(d, discard_ps=discard_ps, gas=gas)
     k = lambda x: x / KCAL                                                    # noqa: E731
-    print(f"# {r['windows']} windows, {r['samples_per_window']} samples each after {discard_ps} ps; kT = {r['kT']:.4f} kJ/mol")
+    print(f"# {r['windows']} windows, {r['samples_per_window']} samples each after {discard_ps} ps; "
+          f"kT = {r['kT']:.4f} kJ/mol")
     print("# statistical inefficiency (dE):", " ".join(f"{g:.1f}" for g in r["g_dE"]))
     print("# statistical inefficiency (dU/dl):", " ".join(f"{g:.1f}" for g in r["g_dudl"]))
     print(f"# smallest neighbour overlap (MBAR): {r['overlap_min']:.3f}")
     print("#  window  lambda_e lambda_v   <dU/dl_e>      <dU/dl_v>     (kJ/mol)   MBAR step   BAR step")
     L = d["lambdas"]
     for i in range(r["windows"]):
-        st = "" if i == r["windows"] - 1 else f"{r['mbar_steps'][i]:10.3f} {r['bar_steps'][i]:10.3f} +- {r['bar_steps_err'][i]:.3f}"
+        st = "" if i == r["windows"] - 1 else \
+            f"{r['mbar_steps'][i]:10.3f} {r['bar_steps'][i]:10.3f} +- {r['bar_steps_err'][i]:.3f}"
         print(f"  {i:6d} {L[i, 0]:9.3f} {L[i, 1]:8.3f} {r['dudl_mean'][i][0]:12.3f} {r['dudl_mean'][i][1]:12.3f}   {st}")
     print("# Delta G of switching the solute off in solution (kJ/mol | kcal/mol):")
     for m in ("ti", "bar", "mbar"):
@@ -231,7 +233,8 @@ def report(d, discard_ps):
         print(f"  stages (MBAR): electrostatics {r['mbar_elec']:.3f} +- {r['mbar_elec_err']:.3f}, van der Waals "
               f"{r['mbar_vdw']:.3f} +- {r['mbar_vdw_err']:.3f} kJ/mol; TI {r['ti_elec']:.3f}, {r['ti_vdw']:.3f}")
     if gas is not None:
-        print(f"# gas-phase leg Delta G_gas(1 -> 0) = {r['gas']:.4f} kJ/mol (MBAR); hydration free energy (kJ/mol | kcal/mol):")
+        print(f"# gas-phase leg Delta G_gas(1 -> 0) = {r['gas']:.4f} kJ/mol; hydration free energy "
+              f"(kJ/mol | kcal/mol):")
         for m in ("ti", "ti_sub", "bar", "mbar"):
             v, e = r[f"dG_hyd_{m}"], r[f"dG_hyd_{m}_err"]
             print(f"  {m:6s} {v:10.3f} +- {e:.3f} | {k(v):9.3f} +- {k(e):.3f}")
@@ -302,6 +305,35 @@ def cmd_bench(a):
               f"({per_day(v):.1f} aggregate)" for k, v in out.items() if k.endswith("window_step")))
 
 
+def cmd_finite_size(a):
+    """The solute alone in the production box (its PME settings) at random positions and
+    orientations: [E_pbc(1) - E_pbc(0)] - [E_gas(1) - E_gas(0)] of switching its electrostatics off,
+    i.e. the periodic self-image energy plus the PME error of its intramolecular terms, which the
+    solution leg carries and the gas-phase leg does not (a rigid solute; its template geometry)."""
+    sysA, P, pos, vel, H, settings, elec, templates = build(a)
+    from pgm_jax.md.box import reduce_box
+    from pgm_jax.md.forcefield import PGMForceField
+    sub, idx = sysA.sub((a.solute,))
+    x0 = pos[idx] - pos[idx].mean(axis=0)
+    H = reduce_box(H)
+    alch = Alchemy(sub, 0)
+    gas = GasPhaseLeg(alch, x0, elec)
+    dg = gas.energy(1.0, P) - gas.energy(0.0, P)
+    ff = PGMForceField(sub, H, dataclasses.replace(settings, dipole_tol=min(settings.dipole_tol, 1e-7), max_iter=200))
+    alch.check(ff)
+    E = jax.jit(lambda x, i, le: alch.energy(ff, x, H, i, ff.init_induction(), P, (le, 1.0))[0])
+    rng = np.random.default_rng(a.seed)
+    d = []
+    for _ in range(a.placements):
+        R = np.linalg.qr(rng.normal(size=(3, 3)))[0]
+        x = x0 @ R.T + rng.uniform(size=3) @ H
+        i = ff.rows_for(x, H)
+        d.append(float(E(x, i, 1.0)) - float(E(x, i, 0.0)) - dg)
+    d = np.array(d)
+    print(f"# E_gas(1) - E_gas(0) = {dg:.4f} kJ/mol; periodic minus gas-phase: {d.mean():+.5f} kJ/mol "
+          f"(spread {d.std():.5f} over {len(d)} placements; {d.mean() / KCAL:+.5f} kcal/mol)")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -346,6 +378,12 @@ def main():
         if x.dest in ("prmtop", "coords", "elec", "solute", "dt", "temp", "tol", "cut", "ew_coeff", "nfft", "order",
                       "precision", "seed", "solute_template", "clear"):
             b._add_action(x)
+    fs = sub.add_parser("finite-size")
+    fs.add_argument("--model", default="pgm", choices=["pgm", "pgm3p25", "tip3p"])
+    fs.add_argument("--placements", type=int, default=40)
+    for x in r._actions:
+        if x.dest in ("prmtop", "coords", "elec", "solute", "tol", "cut", "ew_coeff", "nfft", "order", "precision", "seed"):
+            fs._add_action(x)
     z = sub.add_parser("analyze")
     z.add_argument("npz")
     z.add_argument("--discard-ps", type=float, default=200.0)
@@ -354,6 +392,8 @@ def main():
         cmd_run(a)
     elif a.cmd == "bench":
         cmd_bench(a)
+    elif a.cmd == "finite-size":
+        cmd_finite_size(a)
     else:
         report(fe.load(a.npz), a.discard_ps)
 

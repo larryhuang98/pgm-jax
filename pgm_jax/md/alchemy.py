@@ -105,7 +105,6 @@ from __future__ import annotations
 
 import dataclasses as _dc
 import json
-import math
 import pickle
 import sys as _sys
 import time
@@ -171,9 +170,12 @@ class Alchemy:
         sim = Simulation(sys, pos, H, settings, params=P, alchemy=alch, ensemble="nvt", thermostat="bussi")
 
     `lam` is the coupling (lambda_elec, lambda_vdw) of states whose MDState.lam is None (the
-    default single simulation); LambdaWindows gives each window its own.  The cutoff, long-range
-    correction and van der Waals form are taken from the force field the first time the
-    Hamiltonian is bound to one (`check`, called by the integrator)."""
+    default single simulation); LambdaWindows gives each window its own.  sc_alpha: soft-core
+    alpha; alpha_floor: eps of the polarizability scaling; intramolecular: "annihilate" (the
+    solute's intramolecular electrostatics goes with lambda_elec; gas-phase leg separately, e.g.
+    GasPhaseLeg) or "keep" (kept by the gas-phase correction; flexible pGM solutes).  The cutoff,
+    long-range correction, van der Waals form and electrostatics level are taken from the force
+    field the first time the Hamiltonian is bound to one (`check`, called by the integrator)."""
 
     def __init__(self, sys: System, solute: int, lam=(1.0, 1.0), sc_alpha: float = 0.5, alpha_floor: float = 1e-8,
                  intramolecular: str = "annihilate"):
@@ -205,7 +207,8 @@ class Alchemy:
             own = np.unique(sys.idx[qn][atoms])
             shared = np.intersect1d(own, sys.idx[qn][env])
             if shared.size:
-                raise ValueError(f"the solute shares its {qn} parameters ({', '.join(sys.table.keys[qn][i] for i in shared[:4])}) "
+                names = ", ".join(sys.table.keys[qn][i] for i in shared[:4])
+                raise ValueError(f"the solute shares its {qn} parameters ({names}) "
                                  f"with other molecules: build the system with alchemical_system(sys, {k})")
             m = np.zeros(len(sys.table.keys[qn]), bool)
             m[own] = True
@@ -422,7 +425,8 @@ class Alchemy:
 # ----------------------------------------------------------------------------- gas-phase leg
 class GasPhaseLeg:
     """The solute alone in vacuum with the alchemical parameters at lambda_elec: the gas-phase leg
-    of the cycle with intramolecular="annihilate" (with "keep" the leg is part of the Hamiltonian).  E_gas(lambda_e) is the pGM energy of the isolated molecule (every pair, induced
+    of the cycle with intramolecular="annihilate" (with "keep" the leg is part of the
+    Hamiltonian).  E_gas(lambda_e) is the pGM energy of the isolated molecule (every pair, induced
     dipoles by a dense solve: channels.ElecChannel, the kernels and Coulomb constant of the MD
     engine) at the solute's rigid geometry `xyz` (nm).  For a rigid solute the gas-phase energy
     does not depend on the configuration (only on orientation and position, which it is invariant

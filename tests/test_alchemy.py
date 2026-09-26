@@ -256,7 +256,8 @@ def test_gas_phase_leg_matches_a_lone_molecule_in_a_large_box():
     alch = Alchemy(sysA, 0)
     rng = np.random.default_rng(3)
     t = np.radians(104.52 / 2)
-    xyz = np.array([[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]])
+    xyz = np.array([[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0],
+                    [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]])
     xyz = xyz @ np.linalg.qr(rng.normal(size=(3, 3)))[0].T + 2.1
     H = np.eye(3) * 4.2
     s = MDSettings(precision="double", cutoff=1.2, skin=0.0, ewald_beta=3.0, pme_grid=(64, 64, 64), pme_order=8,
