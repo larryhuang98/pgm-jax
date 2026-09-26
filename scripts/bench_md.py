@@ -42,6 +42,7 @@ def main():
     ap.add_argument("--gamma", type=float, default=1.0)
     ap.add_argument("--thermostat", default="langevin", help="langevin | bussi | gle")
     ap.add_argument("--tau", type=float, default=1.0, help="Bussi time constant (ps)")
+    ap.add_argument("--hmr", type=float, default=None, help="hydrogen mass (amu), constraints engine only")
     ap.add_argument("--grid", type=int, default=48, help="PME points per replica along each lattice vector")
     ap.add_argument("--skin", type=float, default=0.1)
     ap.add_argument("--engine", default="rigid", help="rigid (rigid bodies) | constraints (atoms + SHAKE/RATTLE, "
@@ -67,7 +68,8 @@ def main():
         tpl = {id(m): RigidTemplate(m, pos[sys_.atom_slice(k)]) for k, m in enumerate(sys_.molecules)}
         sim = FlexibleSimulation(sys_, [tpl[id(m)] for m in sys_.molecules], pos, H * n, settings=st,
                                  ensemble=a.ensemble, temperature=298.0, gamma=a.gamma, barostat_interval=100,
-                                 dt=a.dt, log=sys.stdout, thermostat=a.thermostat, tau_t=a.tau)
+                                 dt=a.dt, log=sys.stdout, thermostat=a.thermostat, tau_t=a.tau, hmr=a.hmr)
+        print("# masses of the first molecule:", np.asarray(sim.flex.masses)[:3], flush=True)
     sim._advance(1000)                                          # compile + warm up
     t0 = time.time()
     done = 0

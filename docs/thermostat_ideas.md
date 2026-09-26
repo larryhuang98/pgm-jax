@@ -243,6 +243,48 @@ the proteins. "GLE" is `GLE.band()`: peak 3/ps at 20 rad/ps, width 30, floor 0.1
 - **Combined with the cutoff lever.** Ubiquitin at 2 fs with Bussi, a 0.7 nm cutoff /
   beta 5.14 / 0.062 nm grid, and tol 1e-4: 63.4 ns/day, against 34.2 with the Langevin defaults.
 
+## 3f. Past the thermostat: the fast motions set the SCF cost, so change masses and time step
+
+**Why no thermostat can beat NVE here.** The predictor error has two parts.
+- The bath part: the thermostat noise. Bussi already removes it.
+- The deterministic part: dt^4 times the 4th time derivative of mu along the trajectory. This is
+  set by the fast modes (water librations), roughly dt^4 w^4 times a thermal amplitude.
+
+A canonical thermostat can change neither the mode frequencies (masses and forces set them) nor
+their thermal amplitudes (kT per mode). What can change are w, through the masses, and dt. The
+canonical configurational distribution does not depend on the masses, so both are legitimate for
+equilibrium properties.
+
+pGM water, 4096 molecules, Bussi, tol 1e-5 (`runs/langevin/dtcheck.py`: 20 ps equilibration,
+60 ps production; `scripts/bench_md.py --hmr`):
+
+| dt | H mass (amu) | <U> per molecule (kJ/mol) | H~ drift (kT/ns/dof) | CG | ns/day (12k atoms) |
+|---|---|---|---|---|---|
+| 1 fs | 1.008 | -4130.729 +- 0.023 (reference) | +0.0009 | 4.00 | 46 |
+| 1 fs | 4.0 | -4130.713 +- 0.025 | -0.0001 | 3.01 | |
+| 2 fs | 1.008 | -4130.762 +- 0.019 | +0.0035 | 6.00 | 80 |
+| 2 fs | 4.0 | -4130.739 +- 0.023 | +0.0012 | 4.57 | 88 |
+| 4 fs | 4.0 | -4130.770 +- 0.019 | +0.0022 | 6.63 | 159 |
+| 5 fs | 4.0 | -4130.736 +- 0.014 | +0.0019 | 7.02 | 185 |
+
+- Heavier water hydrogens (taken from the oxygen) slow the librations. The predictor is then
+  more accurate at every dt, so dt can grow with fewer extra CG iterations.
+- At 4-5 fs, <U> stays within 0.04 kJ/mol of the 1 fs reference, and the H~ drift is smaller
+  than at 2 fs with physical masses.
+- The kinetic temperature estimator reads 2-4 K low at 4-5 fs. This is the kinetic
+  discretization of the integrator; the configurational temperature is right, since <U> agrees.
+- Throughput: 80 -> 185 ns/day, 2.3x.
+- Ubiquitin (HMR 3.024 already on protein and water, Bussi): 2 fs 36.1, 3 fs 47.8, 4 fs
+  56.9 ns/day, stable for 14 ps.
+- Cost: dynamics slow down, rotations most. Kinetic observables need physical masses (or a
+  correction). Equilibrium observables do not.
+- Next: per-kind hydrogen masses (water 4.0, protein 3.024: a CH3 carbon cannot give 3 x 3 amu),
+  protein validation at 4 fs, and multiple time stepping. For MTS the literature on AMOEBA
+  reports:
+  - BAOAB-RESPA1: 10 fs outer step with HMR, up to 7x, diffusion -8 % (Lagardere et al. 2019).
+  - SIN(R): outer steps up to 100 fs with canonical configurations (Margul & Tuckerman 2016).
+  There, the thermostat is what makes the large step possible.
+
 ## 4. Prior art (literature search 2026-09-25; "not found" means not found, not proven new)
 
 | idea | status |
