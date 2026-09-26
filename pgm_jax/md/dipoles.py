@@ -8,7 +8,8 @@ Cell dipole (e nm; 1 D = units.DEBYE_E_NM = 0.020819434 e nm):
     M_ind  = sum_i mu_i                           induced dipoles, converged at the same positions
 
 A Gaussian charge or dipole density has the dipole moment of the point multipole at its centre, so M
-is the dipole moment of the model's charge density.  The terms follow the electrostatics level
+is the dipole moment of the model's charge density.  With charge flux (md/flux.py) the charges and
+covalent dipoles are those of the current geometry.  The terms follow the electrostatics level
 (MDSettings.elec): no permanent dipoles for "q" / "qi", no induced dipoles for "q" / "qp".
 
 Conventions
@@ -88,13 +89,13 @@ class CellDipole:
         self.w = jnp.asarray(m / mmol[np.asarray(sys.mol)])             # centre-of-mass weights within a molecule
 
     def molecular_charges(self, params=None) -> np.ndarray:
-        """Net charge of every molecule (e)."""
+        """Net charge of every molecule (e; charge flux keeps it)."""
         q = np.asarray(self.ff._atoms(params)["q"])
         return np.bincount(np.asarray(self.ff.sys.mol), weights=q, minlength=self.nmol)
 
     def _parts(self, pos, H, mu, params):
         pos, H = jnp.asarray(pos, jnp.float64), jnp.asarray(H, jnp.float64)
-        P = self.ff._atoms(params)
+        P = self.ff.charges_at(pos, H, self.ff._atoms(params))            # charge flux: q, c of this geometry
         com = jax.ops.segment_sum(self.w[:, None] * pos, self.mol, self.nmol)
         qr = P["q"][:, None] * (pos - com[self.mol])
         p = self.ff.perm_dipoles(pos, H, P["cov"])

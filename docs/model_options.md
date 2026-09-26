@@ -11,6 +11,7 @@ checked.
 | Quadrupoles `quadrupoles` | covalent Gaussian quadrupoles (in the code, off by default; not in MD yet) | off |
 | Van der Waals `vdw` | `"lj"` Lennard-Jones · `"gvdw"` Gaussian-density vdW (`gvdw_rep` `"gauss"` / `"slater"`) · `"none"` | `"lj"` |
 | Bonded sets `families` | `T.SETS["amber"]` Amber/GAFF forms · `T.SETS["explore"]` class II and our families · `T.SETS["nn"]` neural bonded terms | explore |
+| Charge flux `flux` | `1` bond charge flux + covalent-dipole flux c0 + jc db · `2` + jc2 db² | 0 (off) |
 
 Where the options apply:
 
@@ -20,6 +21,7 @@ Where the options apply:
 | quadrupoles | yes | no | yes (+ ESP) | no (rejected with an error) |
 | `vdw` = LJ / GVDW | yes (`LJChannel`, `GVDWChannel`) | yes | yes | yes (+ tail correction, virial) |
 | bonded sets | – | – | yes | yes (fitted templates; the NN set frozen) |
+| charge flux | – | – | yes (`BondedSettings.flux`) | yes (fitted templates, `md/flux.py`; `docs/charge_flux.md`) |
 
 A flexible template carries the settings it was fitted with; `FlexibleSimulation` refuses MD
 settings that differ (`FlexibleTemplate.check_settings`).
