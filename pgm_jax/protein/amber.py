@@ -7,6 +7,9 @@ solvent, ions) and this module turns it into pgm_jax molecules.
     # or: FlexibleTemplate.from_network(net, P, prot.spec) with a trained neural bonded model
     sim = FlexibleSimulation(asys.system(), asys.templates({0: tpl}), asys.positions, asys.box,
                              MDSettings(), dt=0.002, constraints="h-bonds", hmr=3.024)
+    # per-kind hydrogen masses; positional restraints on the backbone at the current positions
+    hmr = asys.hmr({"water": 4.0, "protein": 3.024, "ion": None})
+    rs = asys.position_restraints(418.4, "backbone", sim.positions_nm(), sim.state.box)
 
 Molecules are the connected components of the bond graph; kind "water" (a 3-atom residue with a
 water name), "ion" (one atom), "protein" (anything with a peptide backbone) or "other".  pGM
@@ -60,6 +63,73 @@ class AmberSystem:
 
     def system_positions(self) -> np.ndarray:
         return self.positions[self.order]
+
+    KINDS = ("protein", "water", "ion", "other")
+    BACKBONE = ("N", "CA", "C", "O")
+
+    def hmr(self, masses: dict) -> list:
+        """Per-molecule hydrogen masses for FlexibleSimulation(hmr=...) from one mass (amu) per
+        molecule kind, e.g. {"water": 4.0, "protein": 3.024, "ion": None} (None: masses unchanged).
+        Every kind present with hydrogen atoms must be given."""
+        bad = set(masses) - set(self.KINDS)
+        if bad:
+            raise ValueError(f"unknown molecule kinds {sorted(bad)}; kinds are {self.KINDS}")
+        out = []
+        for k, m in enumerate(self.molecules):
+            if m.kind in masses:
+                out.append(None if masses[m.kind] is None else float(masses[m.kind]))
+            elif "H" in m.molecule.elements:
+                raise KeyError(f"no hydrogen mass for molecule kind {m.kind!r} (molecule {k}); give a mass or None")
+            else:
+                out.append(None)
+        return out
+
+    def _local_selection(self, m: LoadedMolecule, selection) -> np.ndarray:
+        el = m.molecule.elements
+        if isinstance(selection, str):
+            if selection == "heavy":
+                return np.array([a for a in range(m.n) if el[a] != "H"], int)
+            names = {"backbone": self.BACKBONE, "ca": ("CA",)}.get(selection)
+            if names is None:
+                raise ValueError("selection: 'heavy' | 'backbone' | 'ca' | a collection of atom names")
+        else:
+            names = tuple(selection)
+        return np.array([a for a in range(m.n) if m.atom_names[a] in names], int)
+
+    def select(self, selection="heavy", kinds=("protein",)) -> np.ndarray:
+        """System atom indices (the order of system() / system_positions()) of the selected atoms
+        of the molecules of the given kinds: "heavy" (every non-hydrogen atom), "backbone" (N, CA,
+        C, O by Amber atom name; ACE / NME caps included), "ca", or a collection of atom names."""
+        out, off = [], 0
+        for m in self.molecules:
+            if m.kind in kinds:
+                out.append(off + self._local_selection(m, selection))
+            off += m.n
+        return np.concatenate(out) if out else np.zeros(0, int)
+
+    def position_restraints(self, k: float, selection="heavy", positions=None, box=None, r0: float = 0.0,
+                            scaling: str = "com", kinds=("protein",)):
+        """Positional restraints (md/restraints.py) holding the selected atoms (see `select`) of each
+        molecule of the given kinds at `positions` (system order, nm; default the loaded
+        coordinates, e.g. sim.positions_nm() after minimisation) with box `box` (default the
+        loaded box, e.g. sim.state.box).  One PositionRestraint per molecule; with scaling "com"
+        (default) its reference centroid is mass-weighted, so under NPT the reference moves with
+        the molecule.  k in kJ/mol/nm^2 with Amber's E = k d^2 (1 kcal/mol/A^2 = 418.4)."""
+        from ..md.restraints import PositionRestraint, Restraints
+        pos = self.system_positions() if positions is None else np.asarray(positions, float)
+        H = self.box if box is None else np.asarray(box, float)
+        terms, off = [], 0
+        for m in self.molecules:
+            if m.kind in kinds:
+                loc = self._local_selection(m, selection)
+                if len(loc):
+                    idx = off + loc
+                    terms.append(PositionRestraint(idx, pos[idx], k, r0=r0, scaling=scaling, box=H,
+                                                   weights=np.asarray(m.molecule.masses, float)[loc]))
+            off += m.n
+        if not terms:
+            raise ValueError(f"no atoms selected ({selection!r} in {kinds})")
+        return Restraints(terms)
 
     def templates(self, flexible: dict | None = None) -> list:
         """One MD template per molecule: RigidTemplate for water and ions (geometry of the first

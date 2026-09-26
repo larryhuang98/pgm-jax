@@ -14,6 +14,9 @@
         barostat = 2, OpenMM MonteCarloBarostat): centres of mass and box are scaled,
         orientations and momenta are kept, acceptance on dE + P dV - N kT ln(V'/V); the
         maximum volume change adapts to 25-75 % acceptance.
+Restraints (restraints.py, `restraints=`) add their energy to the potential energy and their
+atomic forces to the force-field forces before these are mapped to the bodies; the barostat's trial
+energy includes them at the scaled positions and box.
 
 Units: nm, ps, amu, kJ/mol, K."""
 from __future__ import annotations
@@ -25,6 +28,7 @@ import numpy as np
 from ._jaxmd import dataclasses, rigid_body, simulate, space
 from .box import volume
 from .forcefield import InductionState, PGMForceField
+from .restraints import as_restraints
 from .rigid import RigidBody, RigidMolecules
 from .thermostats import Thermostat, make_thermostat
 
@@ -78,7 +82,7 @@ class Integrator:
     def __init__(self, ff: PGMForceField, rigid: RigidMolecules, neighbors, dt: float = 0.001,
                  ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0,
                  pressure: float = 1.0, barostat_interval: int = 100, params=None,
-                 thermostat: str | Thermostat = "langevin", tau_t: float = 1.0):
+                 thermostat: str | Thermostat = "langevin", tau_t: float = 1.0, restraints=None):
         ensemble = ensemble.lower()
         if ensemble not in ("nve", "nvt", "npt"):
             raise ValueError("ensemble must be nve, nvt or npt")
@@ -93,6 +97,9 @@ class Integrator:
         self.shift = space.free()[1]
         self.nmol = rigid.nmol
         self.dof = 6 * rigid.nmol - rigid.dof_correction - (3 if ensemble == "nve" else 0)
+        self.restraints = as_restraints(restraints)
+        if self.restraints is not None:
+            self.restraints.check(rigid.sys.n)
         self.compile()
 
     def compile(self):
@@ -106,8 +113,24 @@ class Integrator:
         nbr = self.nb.update(nbr, pos, body.center, box, force_rebuild)
         cand, ovf = self.nb.candidates(nbr, body.center, box, pos)
         res = self.ff.compute(pos, box, cand, induction, self.params)
-        res = res._replace(overflow=res.overflow | ovf)
+        res = self._add_restraints(res._replace(overflow=res.overflow | ovf), pos, box)
         return self.rigid.forces(body, res.forces), res, nbr
+
+    def _add_restraints(self, res, pos, box):
+        """Restraint energy and atomic forces added to a force-field result."""
+        if self.restraints is None:
+            return res
+        e, g = jax.value_and_grad(self.restraints.energy)(pos, box)
+        return res._replace(energy=dict(res.energy, total=res.energy["total"] + e), forces=res.forces - g)
+
+    def _restraint_energy(self, pos, box):
+        return 0.0 if self.restraints is None else self.restraints.energy(pos, box)
+
+    def restraint_strain(self, pos, box):
+        """dE_restraint / d eps (3, 3) under molecular scaling (for the pressure)."""
+        if self.restraints is None:
+            return jnp.zeros((3, 3))
+        return self.restraints.strain_derivative(pos, box, self.ff.mol, self.ff.masses, self.nmol)
 
     def _with_result(self, st: MDState, F, res, nbr) -> MDState:
         return st.set(dyn=st.dyn.set(force=F), nbr=nbr, induction=res.induction, epot=res.energy["total"],
@@ -208,6 +231,7 @@ class Integrator:
         nbr_n = self.nb.update(st.nbr, pos_n, body_n.center, Hn, True)
         cand, ovf0 = self.nb.candidates(nbr_n, body_n.center, Hn, pos_n)
         e_n, ind_n, _, ovf = self.ff.energy(pos_n, Hn, cand, st.induction, self.params)
+        e_n = e_n + self._restraint_energy(pos_n, Hn)
         ovf = ovf | ovf0
         w = (e_n - st.epot) + self.pressure * dV - self.nmol * self.kT * jnp.log(jnp.maximum(Vn, 1e-12) / V)
         accept = (Vn > 0) & (jnp.log(jax.random.uniform(k2, dtype=jnp.float64)) < -w / self.kT)

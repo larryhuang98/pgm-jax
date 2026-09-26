@@ -40,7 +40,7 @@ import numpy as np
 from ..system import System
 from ._jaxmd import simulate
 from .box import check_box, inv3, reduce_box, volume
-from .constraints import Constraints, repartition_masses
+from .constraints import Constraints, hmr_masses
 from .forcefield import MDSettings, PGMForceField
 from .integrate import KB, Dynamics, Integrator, MDState, upgrade_state
 from .neighbors import AtomNeighbors, MoleculeNeighbors
@@ -351,7 +351,7 @@ class FlexibleIntegrator(Integrator):
         e_in, g_in = jax.value_and_grad(self.flex.energy)(pos)
         energy = dict(res.energy)
         energy["total"] = res.energy["total"] + e_in
-        res = res._replace(energy=energy, overflow=res.overflow | ovf)
+        res = self._add_restraints(res._replace(energy=energy, overflow=res.overflow | ovf), pos, box)
         return res.forces - g_in, res, nbr
 
     def init(self, pos, box, key, momentum=None) -> MDState:
@@ -434,7 +434,7 @@ class FlexibleIntegrator(Integrator):
         nbr_n = self.nb.update(st.nbr, pos_n, c_n, Hn, True)
         cand, ovf0 = self.nb.candidates(nbr_n, c_n, Hn, pos_n)
         e_n, ind_n, _, ovf = self.ff.energy(pos_n, Hn, cand, st.induction, self.params)
-        e_n = e_n + self.flex.energy(pos_n)
+        e_n = e_n + self.flex.energy(pos_n) + self._restraint_energy(pos_n, Hn)
         ovf = ovf | ovf0
         w = (e_n - st.epot) + self.pressure * dV - self.nmol * self.kT * jnp.log(jnp.maximum(Vn, 1e-12) / V)
         accept = (Vn > 0) & (jnp.log(jax.random.uniform(k2, dtype=jnp.float64)) < -w / self.kT)
@@ -475,14 +475,16 @@ class FlexibleSimulation(Simulation):
     """Simulation driver for flexible molecules (same reporting, trajectories and checkpoints as
     `Simulation`); `templates[k]` (FlexibleTemplate or RigidTemplate) belongs to `sys.molecules[k]`.
     constraints: "none" | "h-bonds" (X-H bonds of the flexible templates; rigid templates are
-    always constrained); hmr: hydrogen mass (amu) for mass repartitioning, or None."""
+    always constrained); hmr: hydrogen mass (amu) for mass repartitioning (the mass comes from the
+    bonded heavy atom), None, or one value (or None) per molecule, e.g. AmberSystem.hmr({"water":
+    4.0, "protein": 3.024}) (constraints.hmr_masses); restraints: md/restraints.py."""
 
     def __init__(self, sys: System, templates, pos_nm, H_nm, settings: MDSettings = MDSettings(),
                  dt: float = 0.0005, ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0,
                  pressure: float = 1.0, barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None,
                  params=None, log=None, neighbor_list: str = "auto", r_margin: float = 0.05,
-                 constraints: str = "none", hmr: float | None = None, max_single: int | None = None,
-                 thermostat="langevin", tau_t: float = 1.0):
+                 constraints: str = "none", hmr=None, max_single: int | None = None,
+                 thermostat="langevin", tau_t: float = 1.0, restraints=None):
         H = reduce_box(H_nm)
         check_box(H, settings.pair_cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
@@ -492,11 +494,7 @@ class FlexibleSimulation(Simulation):
         rules = {id(t): t.md_rule(constraints) for t in uniq}
         kw = {} if max_single is None else {"max_single": max_single}
         self.topology = MDTopology.build(sys, [rules[id(t)] for t in templates], **kw)
-        masses = np.asarray(sys.masses, float)
-        if hmr is not None:
-            bonds = np.concatenate([np.asarray(m.bonds, int).reshape(-1, 2) + sys.offsets[k]
-                                    for k, m in enumerate(sys.molecules)])
-            masses = repartition_masses(masses, sys.elements, bonds, hmr)
+        masses = hmr_masses(sys, hmr)
         self.flex = FlexibleMolecules(sys, pos_nm, H, templates, self.topology, masses)
         self.rigid = self.flex                                   # wrap() / positions() used by the base driver
         self.ff = PGMForceField(sys, H, settings, topology=self.topology)
@@ -510,7 +508,7 @@ class FlexibleSimulation(Simulation):
         self.integ = FlexibleIntegrator(self.ff, self.flex, self.nb, dt, constraints=self.constraints,
                                         ensemble=ensemble, temperature=temperature, gamma=gamma, pressure=pressure,
                                         barostat_interval=barostat_interval, params=params,
-                                        thermostat=thermostat, tau_t=tau_t)
+                                        thermostat=thermostat, tau_t=tau_t, restraints=restraints)
         self.dt, self.ensemble, self.T0 = dt, ensemble, temperature
         mom = None if vel_nm_ps is None else self.flex.mass * jnp.asarray(vel_nm_ps)
         self.state = self.integ.init(pos0, H, jax.random.PRNGKey(seed), mom)
@@ -522,6 +520,8 @@ class FlexibleSimulation(Simulation):
                     f"dt {dt * 1000:g} fs, {settings.precision} precision, PME grid {self.ff.pme.K} order "
                     f"{settings.pme_order}, {settings.describe_cutoffs()}, {self.nb.kind} neighbour list (group radius "
                     f"{self.r_list:.3f} nm), dipole tol {settings.dipole_tol:g}, device {jax.devices()[0]}")
+        if self.integ.restraints is not None:
+            self._print(f"# restraints: {self.integ.restraints.describe()}")
 
     def minimize(self, steps: int = 500, max_step: float = 0.01, ftol: float = 50.0, seed: int = 1) -> dict:
         """Steepest descent (adaptive step, at most max_step nm per atom, constraints kept by SHAKE)
@@ -604,7 +604,7 @@ class FlexibleSimulation(Simulation):
         pos = st.dyn.position
         c = self.flex.list_centers(pos)
         W = self.ff.strain_derivative(pos, st.box, self.nb.candidates(st.nbr, c, st.box, pos)[0],
-                                      st.induction.mu, self.integ.params)
+                                      st.induction.mu, self.integ.params) + self.integ.restraint_strain(pos, st.box)
         ke_t = self.integ.kinetic(st)[1]
         return (2.0 * ke_t - jnp.trace(W)) / (3.0 * volume(st.box)) * 16.605390671738466
 
