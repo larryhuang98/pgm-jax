@@ -241,7 +241,8 @@ volume has drifted by more than 10 % or when a block keeps overflowing (then the
 Hydrogen mass repartitioning (`hmr=`) takes one hydrogen mass for every molecule or one value
 (or None) per molecule; for tleap systems `AmberSystem.hmr({"water": 4.0, "protein": 3.024,
 "ion": None})` gives the list. Water tolerates 4 amu hydrogens (its oxygen keeps 10 amu), a
-protein CH3 carbon does not (3 amu left), so the two get different masses.
+protein CH3 carbon does not (3 amu left), so the two get different masses. Ubiquitin with
+3.024 amu hydrogens runs stably at 4 fs, 1.6x the speed of 2 fs (`docs/protein_ff.md`).
 
 ## Fitting to liquid properties
 

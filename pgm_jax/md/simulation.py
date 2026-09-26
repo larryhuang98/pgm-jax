@@ -114,7 +114,8 @@ class Simulation:
 
     def set_restraints(self, restraints):
         """Replace the restraints (md/restraints.py; None removes them), e.g. to release positional
-        restraints in stages: recompiles the step and recomputes the forces of the current state."""
+        restraints in stages: recompiles the step and recomputes the forces of the current state.
+        epot and econs jump by the change of the restraint energy (the work of the switch)."""
         from .restraints import as_restraints
         r = as_restraints(restraints)
         if r is not None:

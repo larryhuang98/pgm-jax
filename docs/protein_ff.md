@@ -57,8 +57,8 @@ tpl = amber_template(asys.molecules[k], "runs/protein/ubq.prmtop")          # ff
 # or, with a trained network:  net, P = NNBonded.load("nnb.pkl")
 #                              tpl = FlexibleTemplate.from_network(net, P, asys.molecules[k].spec, lj14_scale=0.5)
 sim = FlexibleSimulation(asys.system(), asys.templates({k: tpl}), asys.system_positions(), asys.box,
-                         MDSettings(dipole_tol=1e-4), dt=0.002, ensemble="npt",
-                         constraints="h-bonds", hmr=3.024,
+                         MDSettings(dipole_tol=1e-4), dt=0.002, ensemble="npt",   # 4 fs: see below
+                         constraints="h-bonds", hmr=3.024,     # or asys.hmr({"water": 4.0, "protein": 3.024})
                          thermostat="bussi", tau_t=1.0)   # fastest with pGM (docs/thermostat_ideas.md)
 sim.minimize(300)            # after minimization, equilibrate with thermostat="langevin" (faster warm-up)
 sim.run(500000, report=5000, traj=5000, prefix="ubq")
@@ -83,7 +83,9 @@ sim.set_restraints(DihedralRestraint([[c0, n1, ca1, c1]], harmonic(np.radians(-6
 Under NPT the reference of a "com" restraint moves with the molecule's scaled centre, which is
 what the molecular Monte Carlo barostat does to the protein; "fractional" scales every reference
 point with the box, "none" keeps it fixed. Restraints are not stored in checkpoints: pass them
-again when continuing.
+again when continuing. Cost on ubiquitin (2 fs, NVT, 4.9 ms/step): 603 heavy-atom positional
+restraints are within the timing noise (0.1 ms); adding 144 distance and dihedral restraints and a
+centre-of-mass restraint costs 5 %.
 
 ## Training the neural bonded model for proteins
 
@@ -129,6 +131,8 @@ print(rw.n_eff(th))                                                      # resam
 | Rigid water by constraints vs rigid bodies | same energy (1e-8 relative); the rigid-body engine is unchanged (2.05 ms/step, 12k atoms) |
 | SHAKE / RATTLE | exact to 1e-12; 4096 waters: 0.042 ms per SHAKE |
 | Peptide + water, X-H constraints + HMR, 2 fs; solvated ACE-ALA-SER-NME | stable (tests) |
+| Ubiquitin, HMR 3.024 (protein) / 3.024 or 4.0 (water), Bussi, 4 fs, 420 ps | stable (SHAKE 2e-14, econs drift < 1e-4 kT/ns/dof); <U> +83 +- 25 kJ/mol above 1 fs (about 1 K) |
+| Restraints (positional, distance, angle, dihedral, centre-of-mass distance) | forces and strain derivative = finite differences (float64); NVE with restraints conserves the energy in both engines (`tests/test_restraints.py`) |
 
 Benchmark: `python scripts/protein/bench_protein.py sys.prmtop sys.inpcrd [--library lib.json] [--tol 1e-4]`.
 
@@ -208,6 +212,51 @@ constraints --grid 36`): 12k atoms 2.14 ms/step, 41k 11.9, 98k 35.0, with 6-7 CG
 - **Rejected:** fp16 / bf16 storage of the rows (1.7x faster matvec at 98k, but 5e-4 / 3e-3
   relative matvec error), recomputing the kernels on the fly in XLA (no gain), spatial sorting
   of the molecules (no gain).
+
+### Time step and hydrogen masses per molecule kind (ubiquitin)
+
+`FlexibleSimulation(hmr=asys.hmr({"water": 4.0, "protein": 3.024, "ion": None}))` gives water
+hydrogens 4.0 amu (oxygen 10.0) and protein hydrogens 3.024 (a CH3 carbon keeps 5.96 amu; at
+4.0 it would keep 3.0). Ubiquitin, 15,955 atoms (4,908 waters), NVT 298 K, Bussi tau 1 ps, X-H
+constraints, rigid water, dipole tol 1e-5, mixed precision, placeholder electrostatics. Every run
+starts from one structure (minimised, 100 ps at 2 fs, 820 ps at 4 fs), re-equilibrates 20 ps and
+samples 400 ps every 0.5 ps:
+`bench_protein.py ubq.prmtop ubq.inpcrd --coords equil.rst7 --minimize 0 --thermostat bussi
+--equil-ps 20 --prod-ps 400 --dt ... [--hmr-water 4.0]`. dU = <U> - <U>(1 fs), errors from 10
+block averages of 40 ps; econs drift in kT/ns per degree of freedom; ns/day from 2000 unsampled
+steps. The largest constraint error was 2.5e-14 in every run.
+
+| dt | H mass protein / water (amu) | ns/day | CG iterations | <T> (K) | econs drift | dU (kJ/mol) |
+|---|---|---|---|---|---|---|
+| 1 fs | 3.024 / 3.024 | 21.9 | 8.52 | 297.3 | -0.0000 | 0 +- 16 |
+| 2 fs | 3.024 / 3.024 | 35.3 | 12.83 | 296.8 | -0.0000 | -9 +- 26 |
+| 4 fs | 3.024 / 3.024 | 56.3 | 16.70 | 293.8 | -0.0000 | +83 +- 25 |
+| 4 fs | 3.024 / 4.0 | 56.3 | 16.71 | 293.9 | +0.0001 | +93 +- 24 |
+| 5 fs | 3.024 / 3.024 | 68.7 | 18.17 | 291.1 | +0.057 | +170 +- 24 |
+| 5 fs | 3.024 / 4.0 | 68.2 | 18.19 | 291.1 | +0.086 | +185 +- 18 |
+
+- **4 fs is stable and 1.6x faster than 2 fs.** Over 420 ps per run (and the 820 ps of
+  equilibration), the constraints hold to 1e-14, the temperature fluctuates as at 1 fs, and
+  econs drifts no more than at 1-2 fs.
+- **Its configurational error is small.** <U> lies 80-95 kJ/mol above the 1 fs value, 0.02 kJ/mol
+  per water. With d<U>/dT = var(U) / (k_B T^2) = 85 kJ/mol/K, that is about 1 K of configurational
+  temperature. 2 fs cannot be told apart from 1 fs. The kinetic temperature reads 0.7 K low at
+  1 fs, 4 K low at 4 fs and 7 K low at 5 fs: the discretisation of the kinetic estimator, as in
+  pure water.
+- **The water hydrogen mass changes nothing measurable here.** 4.0 instead of 3.024 gives the same
+  CG iterations, speed, drift and <U> at 2, 4 and 5 fs. In pure pGM water, heavier hydrogens do
+  cut the CG count (docs/thermostat_ideas.md 3f). In the protein box the protein atoms
+  presumably set it: the convergence test takes the largest residual, and aromatic and charged
+  side chains converge slowest (above).
+- **5 fs drifts.** econs gains 0.04-0.09 kT/ns/dof (replicates with either water mass) and <U>
+  rises by 170-230 kJ/mol.
+- **Replicate.** A first set of 200 ps runs from a start equilibrated for only 120 ps gave the
+  same picture: 4 fs +86 / +114 kJ/mol (water 3.024 / 4.0), 5 fs +227 / +210 (drift 0.073 /
+  0.041), 2 fs with water 4.0 +26 +- 32.
+- **In short.** For equilibrium sampling of this protein, 4 fs with 3.024 amu hydrogens is the
+  fastest stable setting. Per-kind masses are for systems where one mass does not fit all: a
+  uniform 4.0 would strip CH3 carbons to 3 amu, while water-dominated systems gain from 4.0
+  (pure water: 4-5 fs).
 
 ## Open items
 

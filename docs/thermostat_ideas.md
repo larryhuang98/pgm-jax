@@ -278,9 +278,12 @@ pGM water, 4096 molecules, Bussi, tol 1e-5 (`runs/langevin/dtcheck.py`: 20 ps eq
   56.9 ns/day, stable for 14 ps.
 - Cost: dynamics slow down, rotations most. Kinetic observables need physical masses (or a
   correction). Equilibrium observables do not.
-- Next: per-kind hydrogen masses (water 4.0, protein 3.024: a CH3 carbon cannot give 3 x 3 amu),
-  protein validation at 4 fs, and multiple time stepping. For MTS the literature on AMOEBA
-  reports:
+- Per-kind hydrogen masses (`AmberSystem.hmr`: water 4.0, protein 3.024, since a CH3 carbon
+  cannot give 3 x 3 amu) and the protein at 4-5 fs: docs/protein_ff.md. Ubiquitin runs stably
+  at 4 fs, 1.6x the speed of 2 fs, with <U> 0.02 kJ/mol per water (about 1 K) above 1 fs; 5 fs
+  drifts. Water hydrogens at 4.0 instead of 3.024 change nothing there, presumably because the
+  protein atoms set the CG count.
+- Next: multiple time stepping. For MTS the literature on AMOEBA reports:
   - BAOAB-RESPA1: 10 fs outer step with HMR, up to 7x, diffusion -8 % (Lagardere et al. 2019).
   - SIN(R): outer steps up to 100 fs with canonical configurations (Margul & Tuckerman 2016).
   There, the thermostat is what makes the large step possible.
