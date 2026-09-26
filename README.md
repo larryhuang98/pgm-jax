@@ -174,6 +174,24 @@ How it works:
   IR spectrum. 512 pGM waters (the box above), 15 ns: eps = 31.0 +- 0.4 (both engines agree;
   TIP3P control 104 +- 3, literature 89-104); why this is far below the published 84 of
   pGM3P-25 and experiment's 78.4: `docs/dielectric.md`.
+- **Alchemical free energies** (`md/alchemy.py`, `md/free_energy.py`, `docs/free_energy.md`,
+  `scripts/solvation_free_energy.py`): hydration / solvation free energies of a small molecule,
+  rigid (`Simulation`) or flexible (`FlexibleSimulation`). lambda_elec switches off the solute's
+  electrostatics (charges, covalent dipoles and polarizabilities scaled, as AMOEBA's ele-lambda in
+  Tinker; a polarizability floor of 1e-8 keeps the induction solve regular; its intramolecular
+  electrostatics annihilated with an exact gas-phase leg, or kept by a gas-phase correction, which
+  flexible pGM molecules need), lambda_vdw decouples its Lennard-Jones with a Beutler soft core
+  evaluated in a small dedicated row set. The Hamiltonian is the engine's with the solute's
+  parameters at lambda, so no pair kernel changes and runs without an alchemical region are
+  bit-identical. lambda is a traced state variable (`MDState.lam`): all windows are one vmapped
+  state on the GPU, with Hamiltonian replica exchange between neighbours, sampled for TI, BAR and
+  MBAR (implemented here, with decorrelation and error estimates; dU/dlambda by Hellmann-Feynman at
+  the converged dipoles). Water in water, 512 waters, 19 windows: TIP3P -6.12 +- 0.05 kcal/mol
+  (literature about -6.1), the pGM water of the box above -4.45 +- 0.05 and pGM3P-25 with its
+  published geometry and Lennard-Jones -4.91 +- 0.07 (experiment -6.3; MBAR, BAR and
+  gas-subtracted TI agree within 0.1); a flexible methanol in pGM water -2.65 +- 0.07 (held rigid
+  -2.36 +- 0.09; experiment -5.11). 19 windows x 2 ns of pGM water take 2.2 h of one GPU (batching
+  doubles the throughput).
 - **Differentiable forces and dipoles** (`MDSettings(differentiable=True)`): `compute()` returns
   energy, forces and induced dipoles that `jax.grad` / `jax.vjp` can differentiate with respect to
   the parameters, positions and box, e.g. for force or dipole matching. The dipole solve is
@@ -434,6 +452,9 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/md/dielectric.py` | static dielectric constant (tin-foil fluctuation formula + eps_inf), jackknife block errors, running estimate, dipole correlation time, IR spectrum |
 | `pgm_jax/md/flexible.py` | flexible molecules in MD: `FlexibleTemplate` (bonded fit -> MD), `RigidTemplate` (water, ions by constraints), `FlexibleSimulation` (atoms, g-BAOAB with SHAKE / RATTLE, `constraints="h-bonds"`, `hmr`), `liquid_box` |
 | `pgm_jax/md/remd.py` | temperature replica exchange for both engines: `ReplicaExchange` (exchanges, statistics, round trips, outputs, checkpoints), `MDReplicas` (replicas batched with `jax.vmap`, or sequential), `geometric_ladder`, `read_exchange_log` |
+| `pgm_jax/md/alchemy.py` | alchemical free energies: `Alchemy` (lambda Hamiltonian of one solute: annihilated electrostatics with a polarizability floor, soft-core van der Waals rows), `alchemical_system`, `LambdaWindows` (windows batched with `jax.vmap`), `FreeEnergyRun` (samples of u_k(x_n) and dU/dlambda, Hamiltonian replica exchange, outputs, checkpoints), `GasPhaseLeg`, `standard_schedule` |
+| `pgm_jax/md/free_energy.py` | estimators: MBAR (covariance), BAR, TI along a lambda path, statistical inefficiency, equilibration detection, `estimate` (hydration free energy from `FreeEnergyRun` samples) |
+| `scripts/solvation_free_energy.py` | hydration free energy of a rigid molecule: `run` (NPT at full coupling, batched windows, exchange), `analyze` (TI / BAR / MBAR, halves, equilibration), `bench` (cost per window) |
 | `pgm_jax/protein/` | proteins: `residues` (bond orders, terminal keys), `library` (`ResidueLibrary`: pGM parameters by residue and atom name, JSON), `amber` (`load_amber`: tleap system -> pgm_jax molecules; `amber_template`: ff19SB-form bonded terms + CMAP; `AmberSystem.hmr` per-kind hydrogen masses, `select` / `position_restraints`), `pmemd` (`write_pgm_prmtop`: the engine's model as a pmemd-pgm prmtop; `pmemd_mdin`, `pmemd_grid`) |
 | `scripts/protein/` | `build_amber.py` (PDB or residue sequence -> solvated tleap topology), `bench_protein.py` (speed of a solvated protein; `--elec-cut`, `--hmr-water`, `--prod-ps`: stability and <U> with block errors), `write_pgm_prmtop.py` (pmemd-pgm prmtop + mdin), `check_pgm_prmtop.py` (single points and MD against pmemd-pgm), `elec_accuracy.py` (electrostatic error of real-space cutoffs), `remd_peptide.py` (replica exchange of a solvated peptide vs plain MD: acceptance, round trips, phi/psi populations, replica speed) |
 | `pgm_jax/ensemble.py` | `Reweighting`: ensemble averages, n_eff and parameter gradients from saved frames; Karplus J couplings, phi/psi regions |
@@ -515,8 +536,8 @@ Conventions worth knowing:
 - GVDW per atom type (geometric A and C6, arithmetic b) generalises pmemd-pgm's single global
   set for LJ-bearing pairs; identical for pGM3P water.
 - The gas-phase induction solve is dense (3n × 3n): fine up to a few thousand atoms.
-- Replica exchange: temperature ladders only (the criterion and driver take any reduced energies,
-  but per-replica Hamiltonians are not implemented); batched replicas are NVT only (NPT runs the
+- Replica exchange: temperature ladders, and Hamiltonian exchange between the lambda windows of
+  an alchemical region (`alchemy.py`; other per-replica Hamiltonians are not implemented); batched replicas are NVT only (NPT runs the
   replicas sequentially); under vmap JAX-MD's neighbour-list update runs its rebuild branch every
   step (included in the speeds above).
 - `PeriodicModel` uses plain Ewald with a neighbour list and k-vectors built once (for
