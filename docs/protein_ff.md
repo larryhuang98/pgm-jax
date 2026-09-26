@@ -105,6 +105,9 @@ What is written (details in `protein/pmemd.py`):
 - **Rigid water**: the SHAKE / SETTLE lengths are the RigidTemplate distances. A template takes
   the geometry of the first water, which in tleap's boxes differs from TIP3P's 0.9572 / 1.5136 A
   by up to 3e-4 A. **Masses**: `hmr` as in `FlexibleSimulation`.
+- **Water with extra points** (TIP4P-Ew, OPC, TIP5P): `load_amber` reads them as rigid water with
+  virtual sites (`docs/virtual_sites.md`) and the engine runs them, but `write_pgm_prmtop` refuses
+  them: pmemd.pgm.cuda's pGM force path does not spread extra-point forces.
 
 Single points: pmemd-pgm on the written file against the engine at the same coordinates
 (float64, dipole tolerance 1e-9; cut 9 A, Ewald coefficient 0.4 A^-1, PME spacing <= 0.8 A, order

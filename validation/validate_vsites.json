@@ -1,0 +1,254 @@
+{
+ "sander_single_point": {
+  "EELEC_sander": -6748.3452,
+  "EELEC_pgm_jax": -6748.345252229381,
+  "EELEC_diff": -5.2229381253710017e-05,
+  "VDWAALS_sander": 1060.8288,
+  "VDWAALS_pgm_jax": 1060.8288373518924,
+  "VDWAALS_diff": 3.7351892387960106e-05,
+  "BOND_sander": 0.0,
+  "intramolecular_coulomb_kcal": -180019.30975312373,
+  "force_rms_diff_kcal_A": 8.662875660714812e-05,
+  "force_max_diff_kcal_A": 0.0003111657345939989,
+  "force_rms_kcal_A": 18.67310897332359,
+  "molecule_force_rms_diff_kcal_A": 1.8142492983707455e-06,
+  "molecule_torque_rms_diff_kcal": 1.1827926124550945e-06,
+  "sander_ep_force_max": 0.0,
+  "ep_position_max_diff_A": 9.964843705745352e-07,
+  "real_position_max_diff_A": 9.529541031838562e-07,
+  "settings": "PME 64^3 order 8, ew_coeff 0.4 A^-1, eedmeth 3 (exact erfc), netfrc 0, cut 9 A, vdwmeth 1, float64"
+ },
+ "nve_mixed": {
+  "rigid_dt1fs": {
+   "drift_kT_per_ns_per_dof": -8.130419362540612e-05,
+   "etot_std_kJ": 0.30790402684444507,
+   "T_mean": 295.6343891883085,
+   "ps": 50.0,
+   "wall_s": 28.078449726104736
+  },
+  "rigid_dt2fs": {
+   "drift_kT_per_ns_per_dof": 0.0005595313045755868,
+   "etot_std_kJ": 0.8663271742431896,
+   "T_mean": 295.74703871707936,
+   "ps": 50.0,
+   "wall_s": 20.868586778640747
+  },
+  "constraints_dt1fs": {
+   "drift_kT_per_ns_per_dof": -5.150084580306885e-05,
+   "etot_std_kJ": 0.30681516227477074,
+   "T_mean": 294.92459377447153,
+   "ps": 50.0,
+   "wall_s": 24.557555675506592
+  },
+  "constraints_dt2fs": {
+   "drift_kT_per_ns_per_dof": -0.0007330801764592389,
+   "etot_std_kJ": 0.9478090033333011,
+   "T_mean": 294.18522105286155,
+   "ps": 50.0,
+   "wall_s": 17.26143980026245
+  }
+ },
+ "pgm_sites_fd": {
+  "waters": 64,
+  "sites_per_water": 3,
+  "force_fd_max_rel_err": 1.7162029467904583e-07,
+  "force_fd_components": 36,
+  "strain_fd_max_rel_err": 5.995901961366238e-07,
+  "mu_at_alpha0_max": 0.0,
+  "mu_M_site_rms": 0.0024174683560404414,
+  "energy_kJ": -31463.44576337461,
+  "cg_iterations": 16
+ },
+ "npt_298K": {
+  "horn2004": {
+   "T_K": 297.7,
+   "density": 0.9954,
+   "density_err": 0.0003,
+   "U_kcal_512": -5687.4,
+   "U_err_kcal_512": 1.9,
+   "dHvap_kcal": 10.583,
+   "source": "Horn et al., J. Chem. Phys. 120, 9665 (2004), Table V, T_bath = 298.0 K"
+  },
+  "intramolecular_coulomb_kJ_per_molecule": -1471.0953857648951,
+  "constraints": {
+   "ns": 3.999,
+   "density": 0.99488202475,
+   "density_err": 0.0005118013270704141,
+   "U_kJ_per_molecule": -46.52047985756533,
+   "U_err": 0.015158511895634231,
+   "U_kcal_per_molecule": -11.118661533834924,
+   "U_err_kcal": 0.003622971294367646,
+   "T_mean": 295.57557673674995,
+   "ns_per_day_last": 361.80718,
+   "dHvap_uncorrected_kcal": 11.710848402909889
+  },
+  "constraints_1fs": {
+   "ns": 2.999,
+   "density": 0.994197515,
+   "density_err": 0.000527092981599716,
+   "U_kJ_per_molecule": -46.50849282763677,
+   "U_err": 0.011218476845035678,
+   "U_kcal_per_molecule": -11.115796564922746,
+   "U_err_kcal": 0.0026812803166911276,
+   "T_mean": 297.1847717163334,
+   "ns_per_day_last": 187.956334,
+   "dHvap_uncorrected_kcal": 11.707983433997711
+  },
+  "rigid": {
+   "ns": 3.999,
+   "density": 0.9950494790000001,
+   "density_err": 0.00042164208993169703,
+   "U_kJ_per_molecule": -46.52380309352284,
+   "U_err": 0.015761704163350307,
+   "U_kcal_per_molecule": -11.119455806291308,
+   "U_err_kcal": 0.0037671377063456754,
+   "T_mean": 295.48862103875,
+   "ns_per_day_last": 405.690066,
+   "dHvap_uncorrected_kcal": 11.711642675366273
+  },
+  "rigid_1fs": {
+   "ns": 2.999,
+   "density": 0.9940738943333333,
+   "density_err": 0.0003883236201589412,
+   "U_kJ_per_molecule": -46.507181291415414,
+   "U_err": 0.012094245456347963,
+   "U_kcal_per_molecule": -11.11548310024269,
+   "U_err_kcal": 0.002890594038324083,
+   "T_mean": 297.1924327333333,
+   "ns_per_day_last": 205.509436,
+   "dHvap_uncorrected_kcal": 11.707669969317655
+  }
+ },
+ "bench_512_waters": {
+  "tip4pew (4 sites, 1 virtual) | rigid": {
+   "ms_per_step": 0.35304729938507085,
+   "ns_per_day": 489.45283054417587,
+   "atoms": 2048
+  },
+  "tip4pew (4 sites, 1 virtual) | constraints": {
+   "ms_per_step": 0.41607866287231443,
+   "ns_per_day": 415.3060837273182,
+   "atoms": 2048
+  },
+  "3-site control (M charge on O) | rigid": {
+   "ms_per_step": 0.3295919179916382,
+   "ns_per_day": 524.2847004652098,
+   "atoms": 1536
+  },
+  "3-site control (M charge on O) | constraints": {
+   "ms_per_step": 0.31430389881134035,
+   "ns_per_day": 549.786371258864,
+   "atoms": 1536
+  },
+  "place alone": {
+   "ms_per_call": 0.014805316925048828
+  },
+  "spread alone": {
+   "ms_per_call": 0.0292360782623291
+  }
+ },
+ "bench_4096_waters": {
+  "tip4pew (4 sites, 1 virtual) | rigid": {
+   "ms_per_step": 1.0654734611511232,
+   "ns_per_day": 162.18142103071176,
+   "atoms": 16384
+  },
+  "tip4pew (4 sites, 1 virtual) | constraints": {
+   "ms_per_step": 1.1295279502868651,
+   "ns_per_day": 152.98426210357536,
+   "atoms": 16384
+  },
+  "3-site control (M charge on O) | rigid": {
+   "ms_per_step": 0.7629577159881592,
+   "ns_per_day": 226.48699446756993,
+   "atoms": 12288
+  },
+  "3-site control (M charge on O) | constraints": {
+   "ms_per_step": 0.780147933959961,
+   "ns_per_day": 221.49645275977687,
+   "atoms": 12288
+  },
+  "place alone": {
+   "ms_per_call": 0.014999628067016602
+  },
+  "spread alone": {
+   "ms_per_call": 0.031455039978027344
+  }
+ },
+ "no_sites_bitwise": {
+  "mixed_pos": true,
+  "mixed_mu": true,
+  "mixed_epot": true,
+  "double_pos": true,
+  "double_mu": true,
+  "double_epot": true,
+  "flex_pos": true
+ },
+ "no_sites_speed_4096_pgm_waters": {
+  "command": "scripts/bench_md.py --replicate 2 --steps 5000 [--engine constraints --dt 0.002]; base = f3c3632 (git archive)",
+  "cons_base_1": {
+   "ms_per_step": 2.24,
+   "ns_per_day": 77.1
+  },
+  "cons_base_2": {
+   "ms_per_step": 2.229,
+   "ns_per_day": 77.5
+  },
+  "cons_base_3": {
+   "ms_per_step": 2.149,
+   "ns_per_day": 80.4
+  },
+  "cons_base_4": {
+   "ms_per_step": 2.275,
+   "ns_per_day": 75.9
+  },
+  "cons_branch_1": {
+   "ms_per_step": 2.166,
+   "ns_per_day": 79.8
+  },
+  "cons_branch_2": {
+   "ms_per_step": 2.179,
+   "ns_per_day": 79.3
+  },
+  "cons_branch_3": {
+   "ms_per_step": 2.288,
+   "ns_per_day": 75.5
+  },
+  "cons_branch_4": {
+   "ms_per_step": 2.283,
+   "ns_per_day": 75.7
+  },
+  "rigid_base_1": {
+   "ms_per_step": 2.0,
+   "ns_per_day": 43.2
+  },
+  "rigid_base_2": {
+   "ms_per_step": 1.985,
+   "ns_per_day": 43.5
+  },
+  "rigid_base_3": {
+   "ms_per_step": 1.964,
+   "ns_per_day": 44.0
+  },
+  "rigid_base_4": {
+   "ms_per_step": 2.0,
+   "ns_per_day": 43.2
+  },
+  "rigid_branch_1": {
+   "ms_per_step": 1.958,
+   "ns_per_day": 44.1
+  },
+  "rigid_branch_2": {
+   "ms_per_step": 2.001,
+   "ns_per_day": 43.2
+  },
+  "rigid_branch_3": {
+   "ms_per_step": 1.967,
+   "ns_per_day": 43.9
+  },
+  "rigid_branch_4": {
+   "ms_per_step": 1.973,
+   "ns_per_day": 43.8
+  }
+ }
+}

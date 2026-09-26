@@ -184,7 +184,9 @@ How it works:
   extra points (type EP) are read from prmtops (`read_prmtop_pgm` / `Simulation.from_amber` with
   `charges="amber"` for classical point-charge topologies, and `load_amber`: TIP4P-Ew, OPC, TIP5P
   water). Atoms with alpha = 0 keep mu = 0 (no 0/0). TIP4P-Ew against sander: EELEC and VDWAALS to
-  print precision, per-molecule forces and torques to 2e-6 kcal/mol/A; NPT at 298 K: DENSITY_LINE
+  print precision, per-molecule forces and torques to 2e-6 kcal/mol/A; NPT at 298 K / 1 atm, both
+  engines: density 0.9941-0.9950 g/cm^3, <U> -11.115 to -11.119 kcal/mol per molecule (Horn et al.
+  2004: 0.9954, -11.108). The flexible engine's placement and spreading cost about 0.05 ms per step.
 - **Differentiable forces and dipoles** (`MDSettings(differentiable=True)`): `compute()` returns
   energy, forces and induced dipoles that `jax.grad` / `jax.vjp` can differentiate with respect to
   the parameters, positions and box, e.g. for force or dipole matching. The dipole solve is

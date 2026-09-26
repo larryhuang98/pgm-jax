@@ -386,6 +386,19 @@ def bench(a):
             key = f"{label} | {engine}"
             out[key] = {"ms_per_step": ms, "ns_per_day": 0.002 * 86400.0 / ms, "atoms": S.n}
             print(key, out[key], flush=True)
+            del sim
+    # the site machinery alone: placement and force spreading, 1000 of each in one compiled loop
+    vs = VirtualSites.of(sys4)
+    Pj, Hj = jnp.asarray(pos4), jnp.asarray(H)
+    F = jnp.asarray(np.random.default_rng(0).normal(size=pos4.shape))
+    for name, fn in (("place", lambda x: vs.place(x, Hj)), ("spread", lambda x: vs.spread(x, Hj, F))):
+        loop = jax.jit(lambda x: jax.lax.fori_loop(0, 1000, lambda i, y: y + 1e-12 * fn(y), x))
+        jax.block_until_ready(loop(Pj))
+        t0 = time.time()
+        jax.block_until_ready(loop(Pj))
+        ms = (time.time() - t0) * 1000.0 / 1000                          # 1000 calls
+        out[f"{name} alone"] = {"ms_per_call": ms}
+        print(name, f"{ms:.4f} ms per call", flush=True)
     update_json(f"bench_{sys4.nmol}_waters", out)
 
 

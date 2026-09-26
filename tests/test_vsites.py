@@ -447,3 +447,29 @@ def test_load_amber_protein_in_tip4pew():
     assert np.abs(np.linalg.norm(X[sim.vsites.site] - X[sim.vsites.host], axis=1) - 0.0125).max() < 1e-12
     with pytest.raises(NotImplementedError, match="virtual sites"):
         write_pgm_prmtop(asys, "/nonexistent/x.prmtop", tpls)
+
+
+def test_replica_exchange_with_sites():
+    """TIP4P-Ew by constraints with the GLE thermostat in the batched (vmap) and sequential replica
+    engines: the same trajectories; site momenta and thermostat auxiliaries stay 0, sites placed."""
+    from pgm_jax.md.forcefield import ewald_beta_for
+    from pgm_jax.md.remd import ReplicaExchange
+    sys, pos, H = _tip4pew_ideal()
+    s = MDSettings(elec="q", cutoff=0.65, skin=0.05, ewald_beta=ewald_beta_for(0.65), pme_spacing=0.06,
+                   precision="double")
+    sim = FlexibleSimulation(sys, [RigidTemplate(sys.molecules[0], pos[:4])] * sys.nmol, pos, H, s, dt=0.002,
+                             temperature=300.0, thermostat="gle", log=None, seed=1)
+    T = np.array([300.0, 330.0])
+    runs = {}
+    for batched in (True, False):
+        rex = ReplicaExchange(sim, T, exchange_every=10, batched=batched, seed=5, log=None)
+        for _ in range(3):
+            rex.replicas.advance(10)
+            rex.exchange()
+        runs[batched] = rex
+    for k in range(2):
+        a, b = runs[True].replicas.state(k), runs[False].replicas.state(k)
+        assert np.abs(np.asarray(a.dyn.position) - np.asarray(b.dyn.position)).max() < 1e-9
+        assert np.all(np.asarray(a.dyn.momentum)[3::4] == 0.0) and np.all(np.asarray(a.aux)[:, 3::4] == 0.0)
+        X = np.asarray(a.dyn.position).reshape(-1, 4, 3)
+        assert np.abs(np.linalg.norm(X[:, 3] - X[:, 0], axis=1) - 0.0125).max() < 1e-12

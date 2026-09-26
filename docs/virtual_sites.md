@@ -21,6 +21,11 @@ tip4pew = Molecule("T4E", ["O", "H", "H", "EP"], ["OW", "HW", "HW", "EP"],
                    lj_rmin_half=[0.1776, 0, 0, 0], lj_sqrt_eps=[0.8252, 0, 0, 0],   # R* (nm), sqrt(kJ/mol)
                    vsites=[VirtualSite.tip4p(3, 0, 1, 2, d_om=0.0125)])          # (1 - 2a, a, a) average
 VirtualSites.of(System([tip4pew] * 512)).place(pos, H)      # positions with every site rebuilt
+sim = Simulation(System([tip4pew] * 512), pos, H, MDSettings(elec="q"), ensemble="npt", dt=0.002)
+
+# or from tleap (source leaprc.water.tip4pew): extra points become "amber" sites
+sim = Simulation.from_amber("tip4pew.prmtop", "tip4pew.rst7", charges="amber", settings=MDSettings(elec="q"))
+asys = load_amber("protein_opc.prmtop", "protein_opc.inpcrd")   # water with extra points: RigidTemplate + site
 ```
 
 | Kind | Constructor | Position (d_k = mi(r_k - r_host), host = first parent) |
@@ -69,12 +74,13 @@ massless points.
 **Flexible molecules** (`FlexibleSimulation`, g-BAOAB with SHAKE / RATTLE): sites are not
 integrated. They have no momentum and are excluded from the constraints, the thermostat (their
 noise is masked), the kinetic energy, the degrees of freedom (3 per real atom minus the
-constraints) and hydrogen mass repartitioning (massless atoms neither give nor take mass). After
-every position update (after SHAKE) the sites are rebuilt; the forces are spread to the parents
-before every momentum update. The integrator keeps unit placeholder masses on the sites, whose
-momenta are held at zero. Without sites the integrator is the one before sites existed
-(bitwise). `RigidTemplate` holds up to three real atoms plus sites (constrained TIP4P-Ew,
-TIP5P, OPC); `FlexibleTemplate`s may carry sites if their bonded terms do not involve them.
+constraints) and hydrogen mass repartitioning (massless atoms neither give nor take mass). The
+integrator keeps unit placeholder masses on the sites, whose momenta stay zero, so the drifts of
+the g-BAOAB step do not move them; they are rebuilt once per step, after the last drift (after
+SHAKE) and before the forces, and the forces are spread to the parents before every momentum
+update. Without sites the integrator is the one before sites existed, bit for bit.
+`RigidTemplate` holds up to three real atoms plus sites (constrained TIP4P-Ew, TIP5P, OPC);
+`FlexibleTemplate`s may carry sites if their bonded terms do not involve them.
 
 **Pair topology** (`md/topology.py`): a site is part of its host. It shares the host's
 neighbour-list group, takes the host's graph distances for the van der Waals weights (so it is
@@ -96,7 +102,10 @@ sites are the rigid-body velocities (rigid engine) or zero (flexible engine).
   are evaluated as 0 there, so there is no 0/0 in values or gradients. The derivative with respect
   to an alpha that is exactly 0 is returned as 0 (the one-sided derivative -|E|^2 / 2 of a
   vanishing polarizability is not). The result equals the limit alpha -> 0 (tested). pmemd-pgm
-  treats alpha <= 1e-6 A^3 as non-polarizable; the engine uses exactly 0.
+  treats alpha <= 1e-6 A^3 as non-polarizable; the engine uses exactly 0. The mask is decided
+  when the force field is built (`PGMForceField.alpha_mask`: some alpha of the system's parameter
+  table is 0), so that systems without such atoms run the plain division, bit for bit as before;
+  parameters passed later with new zeros need a force field built from a table that has them.
 - **Covalent dipoles** (p_i += c unit(r_j - r_i)) may have a site as i or j. Their gradient
   reaches the site's position and is spread with the site forces. The two points must not
   coincide (checked at setup).
@@ -142,7 +151,86 @@ TIP4P-Ew (Horn et al., J. Chem. Phys. 120, 9665 (2004)): 512 waters from tleap
 (`leaprc.water.tip4pew`, 24.88 A lattice box), Amber's SHAKE geometry (0.9572 / 1.5136 A), EP at
 0.125 A, point charges (elec "q"), 9 A cutoff with the LJ tail correction.
 
-VALIDATION_TABLES
+**Single point against sander** (AmberTools 25; float64; PME 64^3 order 8, ew_coeff 0.4 A^-1, exact
+erfc (`eedmeth=3`), `netfrc=0`, 9 A, `vdwmeth=1`; an equilibrated frame; `validate_vsites.py sander`,
+`compare`). The engine's energy includes each molecule's intramolecular Coulomb energy (-351.6
+kcal/mol per water with point charges; pGM has no exclusions), which is subtracted with its forces;
+its electrostatics are rescaled to sander's Coulomb constant (18.2223^2).
+
+| Quantity | sander | pgm_jax | Difference |
+|---|---|---|---|
+| EELEC (kcal/mol) | -6748.3452 | -6748.34525 | 5e-5 (sander prints 1e-4) |
+| VDWAALS (kcal/mol) | 1060.8288 | 1060.82884 | 4e-5 |
+| Extra-point positions (sander's own placement) | | | 1.0e-6 A (float32 trajectory precision) |
+| Force and torque on every molecule (RMS) | | | 1.8e-6 kcal/mol/A, 1.2e-6 kcal/mol (float32 force file; RMS atomic force 18.7) |
+| Atomic forces (RMS, max) | | | 8.7e-5, 3.1e-4 kcal/mol/A: internal components only (orient_frc vs transposed Jacobian, above) |
+
+**Energy conservation** (NVE, mixed precision, 50 ps from the equilibrated box, drift of E_tot per
+degree of freedom; `validate_vsites.py nve`):
+
+| Engine | dt 1 fs | dt 2 fs |
+|---|---|---|
+| Rigid bodies (`Simulation`) | -8.1e-5 kT/ns | 5.6e-4 kT/ns |
+| Atoms + SHAKE / RATTLE + placed site (`FlexibleSimulation`, `RigidTemplate`) | -5.2e-5 kT/ns | -7.3e-4 kT/ns |
+
+**Liquid at 298 K, 1 atm** (NPT, Bussi 1 ps, Monte Carlo barostat every 100 steps, mixed
+precision, 0.2 ns equilibration first; errors: standard error of 10 block means; `validate_vsites.py
+npt`, `analyse`). <U> is the intermolecular potential energy per molecule (with the LJ tail). Horn
+et al. (Table V, 512 waters, Ewald, LJ switched between 9.0 and 9.5 A plus the tail, velocity Verlet
+1 fs, T_internal 297.7 K for a 298 K bath): density 0.9954 +- 0.0003 g/cm^3, <U> = -5687.4 kcal/mol
+for 512 waters = -11.108 kcal/mol (-46.477 kJ/mol) per molecule, uncertainty of the total below 1.9
+kcal/mol (0.004 per molecule).
+
+| Run | T_kin (K) | Density (g/cm^3) | <U> (kcal/mol) | <U> (kJ/mol) | ns/day |
+|---|---|---|---|---|---|
+| Horn et al. 2004 | 297.7 | 0.9954 +- 0.0003 | -11.108 +- 0.004 | -46.48 | |
+| Rigid bodies, 1 fs, 3 ns | 297.2 | 0.9941 +- 0.0004 | -11.115 +- 0.003 | -46.51 +- 0.01 | 206 |
+| Constraints + site, 1 fs, 3 ns | 297.2 | 0.9942 +- 0.0005 | -11.116 +- 0.003 | -46.51 +- 0.01 | 188 |
+| Rigid bodies, 2 fs, 4 ns | 295.5 | 0.9950 +- 0.0004 | -11.119 +- 0.004 | -46.52 +- 0.02 | 406 |
+| Constraints + site, 2 fs, 4 ns | 295.6 | 0.9949 +- 0.0005 | -11.119 +- 0.004 | -46.52 +- 0.02 | 362 |
+
+The two engines agree with each other within their errors. At 2 fs the kinetic temperature of
+BAOAB is 2.5 K below the bath (an O(dt^2) property of the momenta; configurations are sampled more
+accurately: <U> agrees with the 1 fs runs). Against Horn et al. the density is 0.04-0.13 % lower and
+<U> 0.007-0.011 kcal/mol (0.1 %) lower, 1-2.6 combined standard errors: the size expected from the
+different treatment of the cutoff (a hard 9 A cutoff with Amber's tail correction here, a 9.0-9.5 A
+switch of the LJ and a molecule-based taper of the real-space Ewald sum there) and of temperature
+and pressure control.
+
+**pGM with sites** (`validate_vsites.py pgm`; `tests/test_vsites.py`): 64 pGM waters in a periodic box,
+each with a charged, polarizable Gaussian M site (a covalent dipole from the oxygen to it), two
+charged, non-polarizable out-of-plane lone pairs and non-polarizable hydrogens; float64, dipoles
+re-solved to 1e-12 at every displaced point. Spread forces against central differences of the
+energy of the real atoms: largest relative error 1.7e-7 (36 components); molecular strain derivative
+(all nine components): 6.0e-7; induced dipoles of the alpha = 0 atoms and sites exactly 0. The tests
+cover every kind, the Amber frames, the topology, both engines (rigid and constrained TIP4P-Ew give
+the same energies and body forces to 1e-9 and the same NVE trajectories), flexible methanol with a
+site of every kind (Langevin, X-H constraints, HMR, NVE), replica exchange (batched and sequential),
+and a peptide in TIP4P-Ew water from tleap through `load_amber`.
+
+**Speed** (one RTX PRO 6000 Blackwell; mixed precision, NVT Bussi, dt 2 fs, 9 A, PME 0.08 nm order 6;
+`validate_vsites.py bench`). The control is the same water without its site (the M charge on the
+oxygen): the difference is the cost of one more interaction site per molecule plus, in the flexible
+engine, the placement and spreading.
+
+| Waters (atoms with / without the site) | Engine | TIP4P-Ew | Control (no site) |
+|---|---|---|---|
+| 512 (2,048 / 1,536) | rigid bodies | 0.353 ms/step (489 ns/day) | 0.330 ms/step (524 ns/day) |
+| 512 | constraints + placed site | 0.416 (415) | 0.314 (550) |
+| 4,096 (16,384 / 12,288) | rigid bodies | 1.065 (162) | 0.763 (226) |
+| 4,096 | constraints + placed site | 1.130 (153) | 0.780 (221) |
+
+In the rigid engine the site costs what one more interaction site costs (7 % at 512 waters, 40 %
+at 4,096, where the atom pairs, 16 per pair of waters instead of 9, dominate). The flexible engine
+adds the placement and the spreading: 0.015 and 0.030 ms per call on their own (both sizes: a few
+small kernels, launch-bound), about 0.05 ms per step in the MD step (15 % at 512 waters, 6 % at
+4,096).
+
+Without sites nothing changes: the code path is the previous one, and the results are bitwise
+those of the commit before this feature (`validate_vsites.py identical`, CPU: rigid NPT in mixed and
+double precision, constrained NVT); `scripts/bench_md.py --replicate 2` (4,096 pGM waters, four runs
+each, alternating with the previous code): rigid 1.975 ms/step (before: 1.987), constraints at 2 fs
+2.229 ms/step (before: 2.223); the run-to-run spread is 3 %.
 
 ## Limitations
 
