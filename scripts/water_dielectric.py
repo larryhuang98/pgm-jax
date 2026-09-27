@@ -77,8 +77,10 @@ def main():
     ap.add_argument("--tol", type=float, default=1e-5)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--checkpoint", help="continue from this .chk (appends to the outputs)")
+    ap.add_argument("--prmtop", default=TOP, help="pGM water prmtop (--model pgm/tip3p; default: the pGM3P box)")
+    ap.add_argument("--coords", default=RST, help="restart matching --prmtop")
     a = ap.parse_args()
-    mols = _dedupe(read_prmtop_pgm(TOP, first_residue_only=False))
+    mols = _dedupe(read_prmtop_pgm(a.prmtop, first_residue_only=False))
     elec = "qpi"
     if a.model == "tip3p":
         if any(list(m.elements) != ["O", "H", "H"] for m in mols):
@@ -87,7 +89,7 @@ def main():
                                           cov=[]) for m in mols}
         mols = [tip[id(m)] for m in mols]
         elec = "q"
-    xyz, vel, box = read_coordinates(RST)
+    xyz, vel, box = read_coordinates(a.coords)
     if a.model == "pgm3p25":
         xyz = paper_geometry(xyz, 0.9745, 103.64, [list(m.elements) for m in mols])
         sig, eps = 3.18156, 0.14473                              # A, kcal/mol (A = 622716.4, B = 600.41)
@@ -99,7 +101,7 @@ def main():
     n = a.replicate
     shifts = [i * H[0] + j * H[1] + k * H[2] for i in range(n) for j in range(n) for k in range(n)]
     pos = np.concatenate([xyz * 0.1 + s for s in shifts])
-    v = np.concatenate([vel * 0.1] * len(shifts))
+    v = None if vel is None else np.concatenate([vel * 0.1] * len(shifts))
     sys_ = System(mols * len(shifts))
     st = MDSettings(cutoff=0.9, skin=0.1, ewald_beta=4.0, pme_grid=(48 * n,) * 3, pme_order=6, lj_lrc=True,
                     dipole_tol=a.tol, precision="mixed", elec=elec)
