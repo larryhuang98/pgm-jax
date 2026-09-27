@@ -259,6 +259,24 @@ pGM: it re-sizes the PME grid and the induced dipoles become NaN), eps from the 
 | eps (SI formula, no eps_inf) | **32.1 +- 0.6** (5,800 frames) | 32.0 +- 0.4 | 84.3 |
 | mean molecular dipole (D) | | 2.124 | 2.413 |
 
+Thermostat dependence (same protocol, 4,096 waters, pmemd.pgm.cuda, one run of 0.1 + 3 ns each unless
+noted, first 100 ps dropped; eps from the cell dipole with the model's induced dipoles, SI formula;
+D of oxygen from the unwrapped trajectory, no finite-size correction):
+
+| thermostat | eps | D (1e-9 m^2/s) | density | <T> (K) |
+|---|---|---|---|---|
+| Langevin 1/ps (4 runs, above) | 32.1 +- 0.6 | 2.15 | 1.0035 | 297.96 |
+| Langevin 100/ps (the repository's default) | 35.4 +- 3.0 | 0.18 | 1.0034 | 297.74 |
+| Langevin 0.01/ps (almost NVE) | 32.3 +- 1.7 | 2.45 | 1.0036 | 297.81 |
+| Berendsen, tautp 1 ps | 33.1 +- 1.0 | 2.47 | 1.0034 | 298.04 |
+| Bussi (ntt = 11), tautp 1 ps | 32.1 +- 1.2 (first 1 ns) | | 1.0033 | 297.5 |
+| Wu et al. 2025 | 84.3 | 2.457 | 1.003 | |
+
+The thermostat changes the dynamics (diffusion by a factor 14; the published D matches the weak
+couplings), not eps. pmemd.pgm.cuda with ntt = 11 turned NaN after about 1 ns (as noted for its GPU
+predictor before); sander with pGM and the Monte Carlo barostat (barostat = 2) turns NaN within a few
+hundred steps, after an accepted volume move.
+
 sander's per-frame system moments equal pgm_jax's to 1e-4 e A. The CPU pmemd.pgm version of the
 same protocol (64 runs of 512 waters, 0.1 ns + 0.3 ns each) is running.
 
