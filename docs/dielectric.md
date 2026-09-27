@@ -277,6 +277,13 @@ couplings), not eps. pmemd.pgm.cuda with ntt = 11 turned NaN after about 1 ns (a
 predictor before); sander with pGM and the Monte Carlo barostat (barostat = 2) turns NaN within a few
 hundred steps, after an accepted volume move.
 
+Control with the same pipeline: TIP3P (the 512-water box's own TIP3P topology without the pGM
+sections), CPU pmemd (amber25), the paper's mdin without pGM (nfft 50, order 8, vdwmeth 0), 64 runs of
+0.1 + 1 ns, M = sum q r, SI formula: **eps = 97.3 +- 0.8**, density 0.9786 (TIP3P literature about 94-104).
+The standard pmemd.cuda (pgm-larry-install and kamd25 builds) cannot run this topology: NVE from 0 K
+gains 80,000 kcal/mol in 0.75 ps, as if the rigid-water constraints were not applied; CPU pmemd and
+sander are stable on the same files, and pmemd.pgm.cuda keeps the pGM water rigid (checked on the frames).
+
 sander's per-frame system moments equal pgm_jax's to 1e-4 e A. The CPU pmemd.pgm version of the
 same protocol (64 runs of 512 waters, 0.1 ns + 0.3 ns each) is running.
 
