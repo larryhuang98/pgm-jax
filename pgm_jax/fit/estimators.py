@@ -24,6 +24,9 @@ Observables (name: estimator, unit):
   liquid_dipole   <mean |molecular dipole|>                               D
   rdf             <g(r)> per bin (frames.RDFSpec)
   volume, energy  <V> (nm^3), <U>/N (kJ/mol)
+  alpha_p         (<V H> - <V><H>) / (kB T^2 <V>), H = U + pV              1/K     (NPT; temperature derivative)
+  kappa_t         (<V^2> - <V>^2) / (kB T <V>)                            1/bar   (NPT)
+                  (their theta-gradients include the third cumulants, through the reweighted averages)
   gas_dipole, gas_polarizability, gas_energy: GasPhase (one rigid molecule, exact gradients)   D, A^3, kJ/mol
 Errors: the frames are cut into contiguous blocks; the jackknife over blocks (leave one out,
 full estimator) gives the covariance of all observables of a run, and of their Jacobians."""
@@ -39,15 +42,18 @@ from ..units import DEBYE_E_NM, KE
 KB = 0.0083144626181532          # kJ/mol/K
 KCAL = 4.184
 G_CM3 = 1.66053906660e-3         # amu/nm^3 -> g/cm^3
-LIQUID = ("density", "hvap", "eps", "liquid_dipole", "rdf", "volume", "energy", "eps_fluct", "eps_inf")
+BAR_KJ = 16.605390671738466      # bar per kJ/mol/nm^3
+LIQUID = ("density", "hvap", "eps", "liquid_dipole", "rdf", "volume", "energy", "eps_fluct", "eps_inf", "alpha_p",
+          "kappa_t")
 GAS = ("gas_dipole", "gas_polarizability", "gas_energy")
 
 
 class LiquidSamples:
     """Per-frame data of one run at theta0: `frames` from FrameAnalyzer.analyze (grad=True)."""
 
-    def __init__(self, frames: dict, T: float, n_mol: int, mass: float, nblocks: int = 10):
+    def __init__(self, frames: dict, T: float, n_mol: int, mass: float, nblocks: int = 10, pressure_bar: float = 1.0):
         self.T, self.beta, self.N, self.mass = float(T), 1.0 / (KB * float(T)), int(n_mol), float(mass)
+        self.p = float(pressure_bar) / BAR_KJ
         f = {k: np.asarray(v) for k, v in frames.items()}
         self.F = len(f["U"])
         V = f["V"]
@@ -61,6 +67,10 @@ class LiquidSamples:
         g["M2"] = 2.0 * np.einsum("fc,fcn->fn", f["M"], f["dM"])
         v["aV"], g["aV"] = f["alpha"] / V, f["dalpha"] / V[:, None]
         v["D"], g["D"] = f["D"], f["dD"]
+        Hh = f["U"] + self.p * V                                    # enthalpy (configurational part)
+        v["H"], g["H"] = Hh, f["dU"]
+        v["VH"], g["VH"] = V * Hh, V[:, None] * f["dU"]
+        v["V2"], g["V2"] = V * V, np.zeros((self.F, n))
         if "rdf" in f:
             v["rdf"], g["rdf"] = f["rdf"], np.zeros(f["rdf"].shape + (n,))
         self.v = {k: jnp.asarray(x) for k, x in v.items()}
@@ -98,7 +108,8 @@ class LiquidSamples:
         w = np.exp(lw)
         V = np.asarray(new["V"])
         vals = {"U": new["U"], "V": V, "rho": self.mass / V * G_CM3, "M": new["M"], "M2": np.sum(new["M"] ** 2, 1),
-                "aV": new["alpha"] / V, "D": new["D"]}
+                "aV": new["alpha"] / V, "D": new["D"], "H": new["U"] + self.p * V, "VH": V * (new["U"] + self.p * V),
+                "V2": V * V}
         if "rdf" in new:
             vals["rdf"] = new["rdf"]
         return {k: jnp.asarray(np.tensordot(w, np.asarray(x), axes=(0, 0))) for k, x in vals.items()}, float(1.0 / np.sum(w * w))
@@ -127,6 +138,10 @@ class LiquidSamples:
             return avg["D"] / DEBYE_E_NM
         if name == "rdf":
             return avg["rdf"]
+        if name == "alpha_p":                                        # thermal expansion (1/K), NPT
+            return (avg["VH"] - avg["V"] * avg["H"]) / (KB * self.T ** 2 * avg["V"])
+        if name == "kappa_t":                                        # isothermal compressibility (1/bar), NPT
+            return (avg["V2"] - avg["V"] ** 2) / (kT * avg["V"]) / BAR_KJ
         raise KeyError(f"unknown liquid observable {name!r}")
 
     def blocks_weights(self):

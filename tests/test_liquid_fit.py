@@ -301,3 +301,25 @@ def test_rdf_histogram_matches_numpy():
     V = abs(np.linalg.det(Hn))
     g = cnt * V / (len(o) * (len(o) - 1) / 2) / (4 / 3 * np.pi * (edges[1:] ** 3 - edges[:-1] ** 3))
     assert np.allclose(out["rdf"], g, atol=1e-9)
+
+
+def test_thermal_expansion_and_compressibility_gradients():
+    fr, s = _synthetic_samples()
+    obj = Objective([Target("alpha_p", None, fit=False), Target("kappa_t", None, fit=False)],
+                    ParameterSpace(_space_table(), [Param("q"), Param("cov"), Param("alpha")]))
+    est = obj.estimate(s, np.zeros(3))
+    beta, kT, p = s.beta, KB * s.T, 1.0 / 16.605390671738466
+    V, U, dU = fr["V"], fr["U"], fr["dU"]
+    Hh = U + p * V
+    m = lambda a: a.mean(0)
+    cov = lambda a: m((a - m(a))[:, None] * (dU - m(dU)))
+    a_p = (m(V * Hh) - m(V) * m(Hh)) / (KB * s.T ** 2 * m(V))
+    k_t = (m(V * V) - m(V) ** 2) / (kT * m(V)) / 16.605390671738466
+    dVH = m(V[:, None] * dU) - beta * cov(V * Hh)
+    dV = -beta * cov(V)
+    dH = m(dU) - beta * cov(Hh)
+    da = (dVH - dV * m(Hh) - m(V) * dH) / (KB * s.T ** 2 * m(V)) - a_p * dV / m(V)
+    dV2 = -beta * cov(V * V)
+    dk = ((dV2 - 2 * m(V) * dV) / (kT * m(V)) - (m(V * V) - m(V) ** 2) / (kT * m(V) ** 2) * dV) / 16.605390671738466
+    assert np.isclose(est.y[0], a_p) and np.isclose(est.y[1], k_t)
+    assert np.allclose(est.J[0], da, rtol=1e-8) and np.allclose(est.J[1], dk, rtol=1e-8)
