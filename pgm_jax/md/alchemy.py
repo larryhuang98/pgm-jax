@@ -571,7 +571,9 @@ class LambdaWindows(MDReplicas):
         return E[group] + esc + const, g, jnp.max(it), jnp.any(ovf) | ovf0
 
     def _sampler(self):
-        key = self._sizes()
+        # the stacked state's structure too: a loaded checkpoint or a resize can change the neighbour
+        # list's static layout at the same row capacities
+        key = (self._sizes(), jax.tree_util.tree_structure(self.S) if self.batched else None)
         if key not in self._samplers:
             if self.batched:
                 from .remd import _axes
@@ -664,8 +666,9 @@ class FreeEnergyRun:
     windows, samples, statistics, random state; `load`) and prefix_Lkk.rst7."""
 
     def __init__(self, windows: LambdaWindows, sample_every: int = 500, exchange_every: int = 0, seed: int = 0,
-                 log=_sys.stdout, meta: dict | None = None):
+                 log=_sys.stdout, meta: dict | None = None, param_grad=None):
         self.windows = windows
+        self.param_grad = param_grad
         self.n = windows.n
         self.sample_every, self.exchange_every = int(sample_every), int(exchange_every)
         if self.sample_every < 1:
@@ -678,6 +681,11 @@ class FreeEnergyRun:
         self.log = log
         self.meta = dict(meta or {})
         self.samples = {k: [] for k in ("u", "dudl", "step", "time_ps", "replica", "epot", "cg")}
+        if param_grad is not None:                 # parameter gradients of the end states (fe_grad.py)
+            if param_grad.windows is not windows:
+                raise ValueError("param_grad was built for other windows")
+            self.samples["dudp"] = []
+            self.meta.update(param_grad.meta())
         mode = "batched" if windows.batched else "sequential"
         self._print(f"# lambda windows: {self.n} ({mode}), T = {windows.temperatures[0]:.2f} K, samples every "
                     f"{self.sample_every} steps ({self.sample_every * windows.dt:g} ps), "
@@ -699,6 +707,8 @@ class FreeEnergyRun:
         self.samples["replica"].append(self.stats.replica.copy())
         self.samples["epot"].append(w.potentials())
         self.samples["cg"].append(it)
+        if self.param_grad is not None:
+            self.samples["dudp"].append(self.param_grad.sample())
         return u
 
     def _exchange(self, u):
@@ -780,7 +790,8 @@ class FreeEnergyRun:
                 "replica": np.array(S["replica"], int).reshape(-1, K), "epot": np.array(S["epot"], float).reshape(-1, K),
                 "cg": np.array(S["cg"], int), "lambdas": w.lambdas.copy(), "kT": float(w.integ.kT),
                 "temperature": float(w.temperatures[0]), "dt": w.dt, "sample_every": self.sample_every,
-                "meta": json.dumps(self.meta)}
+                "meta": json.dumps(self.meta)} | ({"dudp": np.array(S["dudp"], float).reshape(len(S["u"]), -1, K, len(
+                    self.meta["dudp_names"]))} if S.get("dudp") is not None and "dudp_names" in self.meta else {})
 
     def save(self, prefix: str):
         np.savez(f"{prefix}_fe.npz", **self.arrays())
@@ -797,9 +808,41 @@ class FreeEnergyRun:
             d = pickle.load(fh)
         if d.get("format") != FORMAT:
             raise ValueError(f"{path}: not a {FORMAT!r} checkpoint")
+        if self.param_grad is not None and "dudp" not in d["samples"] and d["samples"]["u"]:
+            raise ValueError(f"{path}: its samples have no parameter gradients (continue without param_grad, "
+                             "or start new samples with load_windows)")
         self.windows.load_state_dict(d["windows"])
         self.step = int(d["step"])
         self.rng.bit_generator.state = d["rng"]
         self.stats = ExchangeStatistics.from_dict(d["stats"])
         self.samples = d["samples"]
+        if self.param_grad is not None:
+            self.samples.setdefault("dudp", [])
         self.meta.update(d.get("meta", {}))
+        if self.param_grad is not None:
+            self.meta.update(self.param_grad.meta())
+
+    def load_windows(self, path: str):
+        """Start from the window configurations of a checkpoint written by `save` (e.g. equilibrated at
+        other parameters) with no samples, step 0 and time 0: its samples, statistics and random state
+        are not taken over."""
+        with open(path, "rb") as fh:
+            d = pickle.load(fh)
+        if d.get("format") != FORMAT:
+            raise ValueError(f"{path}: not a {FORMAT!r} checkpoint")
+        wd = dict(d["windows"])
+        L, mine = np.asarray(wd["lambdas"], float), self.windows.lambdas
+        if L.shape != mine.shape or not np.allclose(L, mine):              # windows matched by lambda
+            pick = []
+            for lam in mine:
+                j = np.nonzero(np.all(np.abs(L - lam) < 1e-12, axis=1))[0]
+                if not len(j):
+                    raise ValueError(f"{path}: no window at lambda {lam.tolist()}")
+                pick.append(int(j[0]))
+            wd.update(lambdas=mine.copy(), temperatures=np.asarray(wd["temperatures"])[pick],
+                      states=[wd["states"][j] for j in pick])
+        self.windows.load_state_dict(wd)
+        self.windows.time_ps = 0.0
+        self.step = 0
+        self.stats = ExchangeStatistics(self.n)
+        self.samples = {k: [] for k in self.samples}
