@@ -182,14 +182,14 @@ def save_blocks(path, blocks, extra):
     np.savez(path, **out)
 
 
-def sample(name, ns, seed, frame_ps=0.5, blocks=10):
+def sample(name, ns, seed, frame_ps=0.5, blocks=10, equil_ps=100.0):
     """NPT production (Langevin 1/ps, MC barostat every 0.1 ps) after 100 ps of equilibration with
     the configuration's own settings: per frame density, U, temperatures; per block the histograms."""
     x, v, H = load_eq()
     s = sim_for(name, x, H, seed=seed)
     dt = s.dt
     every = int(round(frame_ps / dt))                                   # dt in ps
-    s._advance(int(round(100.0 / dt)) // every * every)                 # 100 ps equilibration
+    s._advance(int(round(equil_ps / dt)) // every * every)              # equilibration with its own settings
     idx = atoms_of(template())
     per = int(round(ns * 1000.0 / frame_ps)) // blocks
     rec = {k: [] for k in ("density", "epot", "temp", "temp_half", "temp_com", "temp_internal", "shake_err", "rattle_err",
@@ -211,13 +211,13 @@ def sample(name, ns, seed, frame_ps=0.5, blocks=10):
         B.append(acc)
         print(name, b, np.mean(rec["density"][-per:]), np.mean(rec["epot"][-per:]) / N, np.mean(rec["temp"][-per:]),
               flush=True)
-    wall = time.time() - w0
-    steps = int(s.state.step) - n0
-    meta = {"name": name, "config": CONFIGS[name], "ns": ns, "seed": seed, "dof": s.integ.dof,
-            "ms_per_step": 1e3 * wall / steps, "ns_per_day": steps * dt * 1e-3 / (wall / 86400.0),
-            "cg_per_step": (float(s.state.cg_total) - c0) / steps, "device": str(jax.devices()[0])}
-    save_blocks(os.path.join(OUT, f"sample_{name}.npz"), B,
-                {**{k: np.array(v) for k, v in rec.items()}, "meta": json.dumps(meta)})
+        wall = time.time() - w0
+        steps = int(s.state.step) - n0
+        meta = {"name": name, "config": CONFIGS[name], "ns": (b + 1) * per * frame_ps * 1e-3, "seed": seed,
+                "dof": s.integ.dof, "ms_per_step": 1e3 * wall / steps, "ns_per_day": steps * dt * 1e-3 / (wall / 86400.0),
+                "cg_per_step": (float(s.state.cg_total) - c0) / steps, "device": str(jax.devices()[0])}
+        save_blocks(os.path.join(OUT, f"sample_{name}" + (f"_s{seed}" if seed else "") + ".npz"), B,     # after every block
+                    {**{k: np.array(v) for k, v in rec.items()}, "meta": json.dumps(meta)})
     print(meta)
 
 
@@ -226,16 +226,44 @@ def block_stats(x, blocks=10):
     return float(b.mean(0)), float(b.std(0, ddof=1) / np.sqrt(len(b)))
 
 
+def _load_runs(path):
+    """One npz, or several (a list, or a path with *): blocks and per-frame series concatenated."""
+    import glob
+    files = path if isinstance(path, (list, tuple)) else sorted(glob.glob(path))
+    files = [f for f in files if os.path.exists(f)]
+    if not files:
+        return None
+    ds = [np.load(f) for f in files]
+    if len(ds) == 1:
+        return ds[0]
+    out = {}
+    for k in ds[0].files:
+        if k.endswith("_edges"):
+            out[k] = ds[0][k]
+        elif k == "meta":
+            metas = [json.loads(str(d["meta"])) for d in ds]
+            m = dict(metas[0])
+            m["runs"] = len(ds)
+            for q in ("ns_per_day", "cg_per_step", "ms_per_step"):
+                if q in m:
+                    m[q] = float(np.mean([x[q] for x in metas]))
+            m["ns"] = float(sum(x.get("ns", 0) for x in metas))
+            out[k] = json.dumps(m)
+        else:
+            out[k] = np.concatenate([d[k] for d in ds])
+    return type("Runs", (), {"files": list(out), "__getitem__": lambda self, k: out[k]})()
+
+
 def compare_rows(paths, names, nmol, out):
     """Means with block standard errors; distributions as block-averaged histograms and their
     largest deviation from the first run's in units of the combined error.  Prints a table,
     writes `out` (json) and the distributions (npz next to it)."""
     rows = {}
     for path, name in zip(paths, names):
-        if not os.path.exists(path):
+        d = _load_runs(path)
+        if d is None:
             print("missing", path)
             continue
-        d = np.load(path)
         r = {"meta": json.loads(str(d["meta"]))}
         for k in ("density", "temp", "temp_half", "temp_com", "temp_internal", "press"):
             if k in d.files:
@@ -347,6 +375,30 @@ def peptide(ps=10.0):
         json.dump(out, open(path, "w"), indent=1)
 
 
+def speed(names, ps=10.0):
+    """ns/day of production-like runs (NVT, Bussi 0.5 ps, mixed precision, tol 1e-5; no output
+    between blocks of 1 ps) from the equilibrated state, after 2 ps of warm-up and compilation."""
+    x, v, H = load_eq()
+    path = os.path.join(OUT, f"speed_{str(jax.devices()[0]).replace(':', '')}.json")
+    res = json.load(open(path)) if os.path.exists(path) else {}
+    for name in names:
+        s = sim_for(name, x, H, ensemble="nvt", thermostat="bussi")
+        dt = s.dt
+        blk = int(round(1.0 / dt))
+        s._advance(2 * blk)
+        jax.block_until_ready(s.state.epot)
+        n0, c0, w0 = int(s.state.step), float(s.state.cg_total), time.time()
+        for _ in range(int(round(ps))):
+            s._advance(blk)
+        jax.block_until_ready(s.state.epot)
+        wall = time.time() - w0
+        n = int(s.state.step) - n0
+        res[name] = {"config": CONFIGS[name], "ms_per_step": 1e3 * wall / n, "ns_per_day": n * dt * 1e-3 / (wall / 86400.0),
+                     "cg_per_step": (float(s.state.cg_total) - c0) / n, "device": str(jax.devices()[0])}
+        print(name, json.dumps(res[name]), flush=True)
+        json.dump(res, open(path, "w"), indent=1)
+
+
 def nve_table(prec):
     """Markdown table of the NVE runs (nve_<prec>_<config>.json)."""
     rows = []
@@ -364,29 +416,38 @@ def nve_table(prec):
 
 
 def analyze(names):
-    compare_rows([os.path.join(OUT, f"sample_{n}.npz") for n in names], names, N, os.path.join(OUT, "analysis.json"))
+    """Rows: sample_<name>.npz, or the independent runs sample_<name>_s*.npz together."""
+    paths = []
+    for n in names:
+        one = os.path.join(OUT, f"sample_{n}.npz")
+        paths.append(one if os.path.exists(one) else os.path.join(OUT, f"sample_{n}_s*.npz"))
+    compare_rows(paths, names, N, os.path.join(OUT, "analysis.json"))
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=("equil", "nve", "nve-table", "sample", "analyze", "peptide"))
+    ap.add_argument("mode", choices=("equil", "nve", "nve-table", "sample", "analyze", "peptide", "speed"))
     ap.add_argument("names", nargs="*")
     ap.add_argument("--prec", default="mixed")
     ap.add_argument("--ps", type=float, default=20.0)
     ap.add_argument("--ns", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--equil-ps", type=float, default=100.0)
+    ap.add_argument("--blocks", type=int, default=10)
     a = ap.parse_args()
     os.makedirs(OUT, exist_ok=True)
     if a.mode == "equil":
         equil()
     elif a.mode == "nve":
         nve(a.prec, a.names or list(CONFIGS), a.ps)
+    elif a.mode == "speed":
+        speed(a.names or ["none-0.5", "hb-1", "hb-2", "hmr-3", "ab-2", "ab-hmr-4"], a.ps)
     elif a.mode == "peptide":
         peptide(a.ps)
     elif a.mode == "nve-table":
         nve_table(a.prec)
     elif a.mode == "sample":
         for n in a.names:
-            sample(n, a.ns, a.seed)
+            sample(n, a.ns, a.seed, equil_ps=a.equil_ps, blocks=a.blocks)
     else:
         analyze(a.names or ["hb-0.5", "none-0.5", "hb-1", "hb-2", "hmr-4", "ab-2"])

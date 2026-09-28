@@ -94,31 +94,34 @@ def prep(p, kind):
     json.dump(out, open(os.path.join(p.wd, "single_point.json"), "w"), indent=1)
 
 
-def pmemd(p, run, kind, ns, equil_ps=50.0):
+def pmemd(p, run, kind, ns, equil_ps=50.0, dt_fs=2.0, tag="pm"):
     from check_pgm_prmtop import run_pmemd
     asys = load_amber(p.prm0, p.crd0, electrostatics="placeholder")
     st = settings(asys.box)
-    wd = os.path.join(p.wd, f"pm{run}")
+    wd = os.path.join(p.wd, f"{tag}{run}")
+    dt = dt_fs * 1e-3
     seed = 1000 + 17 * run
     heat = pmemd_mdin(st, asys.box, nstlim=20000, dt=0.0005, temperature=T0, tempi=0.0, ntpr=2000, ntwr=20000, ig=seed)
     run_pmemd(kind, os.path.join(wd, "heat"), p.prm, p.minrst, heat)
-    n_eq = int(round(equil_ps / 0.002))
-    eq = pmemd_mdin(st, asys.box, nstlim=n_eq, dt=0.002, temperature=T0, irest=1, ntpr=1000, ntwr=n_eq, ig=seed + 1)
+    n_eq = int(round(equil_ps / dt))
+    eq = pmemd_mdin(st, asys.box, nstlim=n_eq, dt=dt, temperature=T0, irest=1, ntpr=1000, ntwr=n_eq, ig=seed + 1)
     run_pmemd(kind, os.path.join(wd, "equil"), p.prm, os.path.join(wd, "heat/restrt"), eq)
-    n = int(round(ns * 1000.0 / 0.002))
-    prod = pmemd_mdin(st, asys.box, nstlim=n, dt=0.002, temperature=T0, irest=1, ntpr=250, ntwx=250, ntwr=n, ig=seed + 2)
+    n = int(round(ns * 1000.0 / dt))                                     # ns -> steps (dt in ps)
+    every = int(round(0.5 / dt))                                        # a frame every 0.5 ps
+    prod = pmemd_mdin(st, asys.box, nstlim=n, dt=dt, temperature=T0, irest=1, ntpr=every, ntwx=every, ntwr=n, ig=seed + 2)
     secs = run_pmemd(kind, os.path.join(wd, "prod"), p.prm, os.path.join(wd, "equil/restrt"), prod)
-    json.dump({"prod_seconds": secs, "steps": n}, open(os.path.join(wd, "prod/wall.json"), "w"))
+    json.dump({"prod_seconds": secs, "steps": n, "dt": dt}, open(os.path.join(wd, "prod/wall.json"), "w"))
 
 
-def pmemd_hist(p):
+def pmemd_hist(p, tag="pm"):
     """Histograms and energies of every finished pmemd run (one block per run)."""
     from pgm_jax.md.io import read_trajectory
     asys = load_amber(p.prm0, p.crd0, electrostatics="placeholder")
     idx = atoms_of(asys.molecules[0].atom_names)
     nmol = len(asys.molecules)
     B, ep, T, nsday = [], [], [], []
-    for d in sorted(glob.glob(os.path.join(p.wd, "pm*/prod"))):
+    runs = [d for d in glob.glob(os.path.join(p.wd, f"{tag}*")) if re.fullmatch(tag + r"\d+", os.path.basename(d))]
+    for d in sorted(os.path.join(r, "prod") for r in runs):
         if not os.path.exists(os.path.join(d, "wall.json")):
             continue
         X, box, _ = read_trajectory(os.path.join(d, "mdcrd"))
@@ -132,11 +135,11 @@ def pmemd_hist(p):
         ep.append(np.array([float(e) for _, _, e in steps]) * KCAL)
         T.append(np.array([float(t) for _, t, _ in steps]))
         w = json.load(open(os.path.join(d, "wall.json")))
-        nsday.append(w["steps"] * 0.002e-3 / (w["prod_seconds"] / 86400.0))
+        nsday.append(w["steps"] * w.get("dt", 0.002) * 1e-3 / (w["prod_seconds"] / 86400.0))
     n = min(len(e) for e in ep)
     meta = {"runs": len(B), "frames": int(sum(a["frames"] for a in B)), "ns_per_day": float(np.mean(nsday)),
             "note": "pmemd.pgm, SHAKE ntc=ntf=2"}
-    save_blocks(os.path.join(p.wd, "pmemd.npz"), B, {"epot": np.concatenate([e[:n] for e in ep]),
+    save_blocks(os.path.join(p.wd, "pmemd.npz" if tag == "pm" else f"{tag}.npz"), B, {"epot": np.concatenate([e[:n] for e in ep]),
                                                       "temp": np.concatenate([t[:n] for t in T]), "meta": json.dumps(meta)})
 
 
@@ -202,9 +205,12 @@ def merge(p, tag):
 
 def analyze(p, tags):
     asys = load_amber(p.prm0, p.crd0, electrostatics="placeholder")
-    pmemd_hist(p)
     for t in tags:
-        if t != "pmemd":
+        if t == "pmemd":
+            pmemd_hist(p)
+        elif t.startswith("pm"):                                  # e.g. pm1fs: pmemd runs pm1fs0, pm1fs1, ...
+            pmemd_hist(p, t)
+        else:
             merge(p, t)
     compare_rows([os.path.join(p.wd, f"{t}.npz") for t in tags], tags, nmol=len(asys.molecules),
                  out=os.path.join(p.wd, "compare.json"))
@@ -227,7 +233,7 @@ if __name__ == "__main__":
     if a.mode == "prep":
         prep(p, a.kind)
     elif a.mode == "pmemd":
-        pmemd(p, a.run, a.kind, a.ns)
+        pmemd(p, a.run, a.kind, a.ns, dt_fs=a.dt, tag=a.tag if a.tag != "engine" else "pm")
     elif a.mode == "engine":
         engine_md(p, a.run, a.ns, hmr=a.hmr, dt_fs=a.dt, tag=a.tag, cons=a.constraints)
     else:

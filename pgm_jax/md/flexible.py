@@ -360,7 +360,7 @@ class FlexibleIntegrator(Integrator):
     step; GLE auxiliaries are projected too); NPT adds the Monte Carlo barostat with molecular
     scaling (centres of mass scaled, molecules translated rigidly, which keeps the constraints).
     Degrees of freedom: 3 per real atom minus one per constraint, minus 3 when the total momentum
-    is conserved (NVE, Bussi; the net momentum is then removed at the start)."""
+    is conserved (NVE, Bussi; drawn momenta then have no net momentum, given ones are kept)."""
 
     def __init__(self, ff: PGMForceField, flex: FlexibleMolecules, neighbors, dt: float = 0.0005,
                  constraints: Constraints | None = None, **kw):
@@ -414,7 +414,7 @@ class FlexibleIntegrator(Integrator):
         else:
             p = jnp.asarray(momentum, jnp.float64)
             dyn = dyn.set(momentum=p if self.vsites is None else p * self.flex.real)
-        if self.momentum_conserved:                        # the 3 centre-of-mass dof carry no energy
+        if self.momentum_conserved and momentum is None:   # drawn momenta: the 3 centre-of-mass dof carry no energy
             m = self.flex.masses[:, None]
             dyn = dyn.set(momentum=dyn.momentum - m * jnp.sum(dyn.momentum, 0) / jnp.sum(m))
         if self.cons is not None:
