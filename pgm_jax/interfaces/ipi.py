@@ -18,8 +18,9 @@ or from Python:
     client.run()                               # until i-PI sends EXIT
 
 The engine is built on the first structure (i-PI's positions and cell).  Atoms must be in the
-system's order.  Virial: i-PI expects sum_i r_i (x) f_i = -dE/d eps (engine stress mode "atomic" by
-default).  Extras (JSON, i-PI <extras>): cell dipole (e Bohr), CG iterations."""
+system's order.  Virial: i-PI expects sum_i r_i (x) f_i = -dE/d eps: the engine's atomic virial for flexible templates
+(the default there).  Extras (JSON; i-PI's `dipole` property and <extras> output): the cell dipole M_q + M_perm + M_ind
+(e Bohr) and the CG iterations of the dipole solve."""
 from __future__ import annotations
 
 import argparse
@@ -117,7 +118,7 @@ class IPIClient:
         F = res.forces * (BOHR_NM / HARTREE_KJMOL)
         W = res.virial if (self.virial and res.virial is not None) else np.zeros((3, 3))
         vir = -0.5 * (W + W.T) / HARTREE_KJMOL
-        extras = {"cg_iterations": int(res.iterations)}
+        extras = {"cg_iterations": int(res.iterations), "dipole": (res.dipole / BOHR_NM).tolist()}
         self.stats["t_engine"] += time.perf_counter() - t0
         self.stats["structures"] += 1
         return E, np.ascontiguousarray(F, np.float64), np.ascontiguousarray(vir, np.float64), extras
@@ -232,7 +233,8 @@ def main(argv=None):
     p.add_argument("--port", type=int, default=31415)
     p.add_argument("--unix", action="store_true")
     p.add_argument("--slots", type=int, default=1, help="induced-dipole histories (beads sent one by one)")
-    p.add_argument("--stress", default="atomic", choices=("atomic", "molecular"))
+    p.add_argument("--stress", default=None, choices=("atomic", "molecular"),
+                   help="virial: atomic (default with --template) or molecular (default for the rigid-molecule model)")
     p.add_argument("--precision", choices=("mixed", "double"))
     p.add_argument("--settings", help="MDSettings as JSON, e.g. '{\"dipole_tol\": 1e-5, \"cutoff\": 0.9}'")
     p.add_argument("--no-virial", action="store_true")

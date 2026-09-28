@@ -12,8 +12,8 @@ everything that is expensive to rebuild on the device between calls:
   * the induced dipoles and their predictor history (InductionState), so successive MD steps start
     the CG from the extrapolated dipoles exactly as the native integrator does.  Several `slots`
     keep separate histories for interleaved configurations (i-PI sends the P beads of a ring polymer
-    to one client one after the other): each call picks the slot whose last configuration is
-    closest.  A configuration far from the slot's last one (a jump larger than `jump` nm, e.g. a
+    to one client one after the other): the first calls fill the slots in turn, later calls pick the
+    slot whose last configuration is closest (or the slot named by the caller: i-PI batches).  A configuration far from the slot's last one (a jump larger than `jump` nm, e.g. a
     new structure) restarts that slot's predictor.
 
 Per call the host sends positions (float64) and the cell and receives one packed float64 array
@@ -33,8 +33,10 @@ back.
 Virial W = dE/d eps (3 x 3, kJ/mol) at the converged dipoles (the energy is variational in them):
   stress="atomic"     every atom scaled with the box (x -> (1 + eps) x), the derivative external
                       codes expect for flexible molecules (ASE stress = W / V, i-PI virial = -W);
+                      the default with flexible templates;
   stress="molecular"  molecular centres of mass scaled, molecules translated rigidly (the native
-                      pressure; for rigid molecules held by constraints).
+                      pressure; for rigid molecules held by constraints, whose atomic virial would
+                      miss the constraint forces); the default for the rigid-molecule model.
 Both include, with MDSettings.lj_lrc, the long-range correction's impulse term, exactly as
 Simulation.pressure(): W = PGMForceField.strain_derivative (+ the bonded terms for "atomic").
 
@@ -173,11 +175,13 @@ class PGMEngine:
     (None: the system's values).  Virtual sites and alchemical regions are not supported here."""
 
     def __init__(self, sys: System, pos, H, settings: MDSettings = MDSettings(), templates=None, params=None,
-                 stress: str = "atomic", slots: int = 1, r_margin: float = 0.05, neighbor_list: str = "auto",
+                 stress: str | None = None, slots: int = 1, r_margin: float = 0.05, neighbor_list: str = "auto",
                  jump: float = 0.05, restraints=None):
         from ..md.vsites import VirtualSites
         if VirtualSites.of(sys) is not None:
             raise NotImplementedError("virtual sites are not supported by the external-code interfaces yet")
+        if stress is None:                      # rigid-molecule model: molecular virial (as the native pressure)
+            stress = "molecular" if templates is None else "atomic"
         if stress not in ("atomic", "molecular"):
             raise ValueError("stress must be 'atomic' or 'molecular'")
         H0, Q = standard_cell(H)
@@ -372,17 +376,15 @@ class PGMEngine:
 
     # ------------------------------------------------------------------ host side
     def _slot_for(self, x) -> _Slot:
-        """The slot whose last configuration is closest to x (largest displacement); an unused slot
-        when every used one is further than `jump`."""
+        """An unused slot while there is one (the first calls of interleaved configurations fill the
+        slots in turn), then the slot whose last configuration is closest to x."""
         if len(self.slots) == 1:
             return self.slots[0]
-        used = [s for s in self.slots if s.x is not None]
-        free = [s for s in self.slots if s.x is None]
-        if not used:
-            return free[0]
-        d = [float(np.max(np.abs(s.x - x))) for s in used]
-        k = int(np.argmin(d))
-        return free[0] if (d[k] > self.jump and free) else used[k]
+        for s in self.slots:
+            if s.x is None:
+                return s
+        d = [float(np.max(np.abs(s.x - x))) for s in self.slots]
+        return self.slots[int(np.argmin(d))]
 
     def reset(self):
         """Forget the dipole histories (the next call starts every slot from scratch)."""

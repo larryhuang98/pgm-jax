@@ -31,3 +31,14 @@ Running log so the work can be resumed.
 - 01:40 start; env checks; engine + ASE calculator written.
 - engine vs native ff.compute: E identical, F 1e-12, W 1e-12; rotated general cell + atoms wrapped
   one by one: E 4e-12, F 1e-11.
+- Slurm: jobs without --mem get the whole node's memory (MIN_MEMORY 0) and queue behind each
+  other; with `--mem=8G` (runs/cpu_long.sh MEM=..., or sbatch -p cpu-short ... --mem=8G) they start
+  at once on the partly used nodes.
+- CPU (24 cores) ASE validation, 512 waters: double single point identical to native (E 2e-16
+  relative, F 4e-10, mu 2e-15); NVE 4 ps drift native -0.004, ASE -0.0007 kT/ns/dof; E0 equal to
+  1e-6 kJ/mol; native 20.4 ms/step, ASE 30.9 (engine 25.2).  Pressure factor bug in the script fixed.
+  Native Langevin NVT came out at 290 K (6 ps; check on GPU with 20 ps).
+- i-PI smoke test (32 flexible methanols, double): P=1, P=4 batched, P=4 serial with 4 slots run;
+  step-0 potential = engine energy (1e-8, i-PI's output digits); batched and serial give identical
+  series (same seed).
+- stress default: "molecular" for the rigid-molecule model, "atomic" with templates.
