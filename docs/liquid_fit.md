@@ -27,8 +27,15 @@ Targets are `name=value:sigma[:weight]` (a bare name is evaluated and propagated
 `sigma` is the tolerance the fit may leave (experimental or model error); `rdf=FILE:sigma:weight`
 takes a reference g(r). Parameters are global scale factors theta = ln s on the prmtop's table
 (`q`, `cov`, `alpha`, `radius`, `lj_r`, `lj_eps`: the Bayesian optimisation's scale_q, scale_p,
-scale_pol, scale_rad and the LJ R*, epsilon scales); in Python, `Param(quantity, "scale" | "shift",
-keys=[...])` acts on individual tying keys (per-type values).
+scale_pol, scale_rad and the LJ R*, epsilon scales), or per tying key: `alpha@OW,alpha@HW` (one scale per
+atom type); in Python, `Param(quantity, "scale" | "shift", keys=[...])` also gives additive per-key
+values. `--prior` sets the Gaussian prior width on each ln s (regularisation toward the prmtop's values,
+or `--prior-center`), `--radius` the initial trust radius in units of the prior widths, `--exact k`
+the exact-reweighting prediction on every k-th frame, `--fixed` a measurement at fixed theta in
+resumable segments, `--max-minutes` the time budget of one (GPU) job. Outputs: `prefix.json` (every
+iteration: observables, errors and their covariance, Jacobian and its errors, the check of the previous
+prediction, step, predictions, C_theta, posterior covariance, propagated errors, bootstrap),
+`prefix_frames*.npz` (per-frame data, for re-analysis), `prefix_state.npz`, `prefix.log`.
 
 ```python
 from pgm_jax.fit import FrameAnalyzer, GasPhase, LiquidSamples, Objective, ParameterSpace, RDFSpec, Target
@@ -125,6 +132,10 @@ gradients, (g- + 4 g0 + g+)/6. Errors: jackknife over blocks (replicas for the b
 | alpha_p (1/K) | 2.1e-3 / 1.5e-3 / 1.3e-3 | -0.014 +- 0.002 | -0.006 +- 0.010 | -0.7 | +0.4 |
 | kappa_t (1/bar) | 2.2e-4 / 1.5e-4 / 1.3e-4 | -0.0017 +- 0.0002 | -0.0009 +- 0.0007 | -1.2 | -0.5 |
 
+O-O g(r) (reweighting-only gradient, d<g>/dtheta = -beta cov(g, dU/dtheta)), same 512-water runs, 56 bins of
+0.01 nm from 0.245 to 0.8 nm: rms z 1.01, 93 % of the bins within |z| < 2 (max 2.9), correlation of the
+finite-difference and fluctuation slopes over the bins 0.989 (g(0.275 nm) 2.139, 2.190, 2.237 at ln s_q = -0.03, 0, +0.03).
+
 64 base waters (cutoff 0.45 nm, Ewald 6 /nm, PME 20^3; a toy box for statistics), NVT, 16 batched
 replicas per point, delta = 0.08 (eps 51 -> 78 -> 123: strongly nonlinear):
 
@@ -176,7 +187,24 @@ own values (density 0.97633, Hvap 6.81193, eps 73.26 from a 2 ns reference run, 
 reference's statistical errors; gas dipole 1.85807 D, polarizability 1.98364 A^3, tolerance 0.001),
 prior width 1 (negligible), trust radius 0.1:
 
-RECOVERY_TABLE
+| iter | ln s_q | ln s_pol | ln s_R | ln s_eps | density | Hvap | eps | gas dipole | gas pol | liquid dipole | chi2 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | +0.0200 | -0.0500 | +0.0100 | +0.1000 | 0.9737(11) | 7.503(3) | 85.0(16) | 1.9875 | 1.8993 | 2.673 | 50717.6 |
+| 1 | +0.0009 | +0.0005 | -0.0090 | +0.1820 | 0.9750(10) | 6.828(3) | 73.0(12) | 1.8603 | 1.9844 | 2.538 | 23.3 |
+| 2 | -0.0001 | -0.0000 | -0.0084 | +0.1567 | 0.9774(9) | 6.820(3) | 75.0(17) | 1.8578 | 1.9836 | 2.535 | 5.1 |
+| 3 | +0.0000 | +0.0000 | +0.0020 | -0.0408 | 0.9766(14) | 6.811(3) | 74.2(22) | 1.8582 | 1.9837 | 2.538 | 0.2 |
+| fitted (next theta) | +0.0001 +- 0.0004 | +0.0000 +- 0.0006 | +0.0028 +- 0.0139 | -0.057 +- 0.258 | 0.9767 (pred.) | 6.8115 | 74.0 | 1.8582 | 1.9837 | 2.538 +- 0.004 | |
+
+The trust radius (0.1, then 0.2) limited the first step; after it every prediction was confirmed by the
+next run (z <= 1.9 for the liquid observables, trust ratios 1.00, 0.79, 1.00). The fitted parameters
+recover the truth (0, 0, 0, 0) within the posterior errors (z = 0.15, 0.04, 0.20, -0.22; Mahalanobis
+distance 0.9 for 4 parameters). The gas-phase targets fix q and alpha to 1e-4; R* and the LJ well depth
+are nearly degenerate for density + Hvap + eps (correlation -0.99 of their errors): the fit moves
+along that valley (iterations 1-2 at ln s_eps = +0.18, +0.16, within 1.7 sigma) and C_theta says so.
+Propagated to the unfitted liquid dipole: +- 0.004 D (measured 2.535-2.538 at iterations 1-3, true 2.537).
+Before the trust-region damping used the prior metric (Levenberg) instead of Marquardt's diag(J^T J), a
+first attempt with q and cov both free (nearly degenerate: both set the molecular dipole) stepped into
+the flat LJ direction; that run was stopped and the damping fixed.
 
 **(d) Demonstration: the base pGM water toward experiment** (preliminary; 512 waters, NPT, 2 ns per
 iteration; six global scale factors q, cov, alpha, radius, R*, eps; prior width 0.3 on each ln s,

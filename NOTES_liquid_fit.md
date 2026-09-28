@@ -58,3 +58,5 @@
 - rec512b iter 1: all targets within ~1-4 sigma; next theta (-0.0001, 0.0000, -0.0084, 0.157), posterior sd
   (0.0003, 0.0006, 0.0050, 0.097), corr(R*, eps) -0.996; Mahalanobis 8.5 (chi2_4 95 % = 9.5).
 - full suite (cluster CPU, 07:05 code): 221 passed in 41 min.
+- 10:05 rec512b done (4 iterations x 2 ns): chi2 50718 -> 23 -> 5.1 -> 0.2; fitted (0.0001, 0.0000, 0.0028, -0.057)
+  +- (0.0004, 0.0006, 0.014, 0.26) posterior; Mahalanobis 0.9.  RDF FD (512): 56 bins, rms z 1.01.
