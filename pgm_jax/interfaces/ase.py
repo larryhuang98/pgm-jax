@@ -42,7 +42,8 @@ class PGMCalculator(Calculator):
         self._res = None
 
     def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
-        super().calculate(atoms, properties, system_changes)
+        if atoms is not None:                    # Calculator.calculate: self.atoms = atoms.copy(), but without
+            self.atoms = _light_copy(atoms)      # deep-copying the constraints (most of ASE's cost per step)
         a = self.atoms
         if len(a) != self.engine.n:
             raise ValueError(f"the engine has {self.engine.n} atoms, the Atoms object {len(a)}")
@@ -85,6 +86,13 @@ class PGMCalculator(Calculator):
 
 
 # ----------------------------------------------------------------------------- helpers
+def _light_copy(atoms):
+    """atoms.copy() without the constraints (enough for the calculator's change checks)."""
+    new = atoms.__class__(cell=atoms.cell, pbc=atoms.pbc, info=atoms.info, celldisp=atoms._celldisp.copy())
+    new.arrays = {k: v.copy() for k, v in atoms.arrays.items()}
+    return new
+
+
 def atoms_from_system(sys, pos_nm, H_nm=None) -> Atoms:
     """ase.Atoms for a pgm_jax System: element symbols, the system's masses (amu), positions
     (Angstrom) and, with H_nm (rows = lattice vectors), the cell with pbc."""
@@ -107,16 +115,29 @@ class FixRigidMolecules(FixConstraint):
     configuration) or one list per block."""
 
     def __init__(self, blocks, bondlengths=None, tolerance: float = 1e-13, maxiter: int = 100):
-        self.blocks = [np.asarray(b, int).reshape(-1, 2) for b in blocks if len(b)]
-        self.bondlengths = None if bondlengths is None else [np.asarray(d, float) for d in bondlengths]
+        # molecules grouped by their number of constraints: {c: (M, c, 2) atom pairs} (a few arrays, so
+        # that ASE's deep copies of the constraints stay cheap)
+        groups, lengths = {}, {}
+        for k, b in enumerate(blocks):
+            b = np.asarray(b, int).reshape(-1, 2)
+            if len(b):
+                groups.setdefault(len(b), []).append(b)
+                if bondlengths is not None:
+                    lengths.setdefault(len(b), []).append(np.asarray(bondlengths[k], float))
+        self.pairs = {c: np.array(v) for c, v in groups.items()}
+        self.bondlengths = None if bondlengths is None else {c: np.array(v) for c, v in lengths.items()}
         self.tolerance, self.maxiter = float(tolerance), int(maxiter)
         self._groups = None
 
+    @property
+    def blocks(self):
+        return [b for c in sorted(self.pairs) for b in self.pairs[c]]
+
     def get_removed_dof(self, atoms):
-        return int(sum(len(b) for b in self.blocks))
+        return int(sum(v.shape[0] * v.shape[1] for v in self.pairs.values()))
 
     def get_indices(self):
-        return np.unique(np.concatenate([b.ravel() for b in self.blocks])) if self.blocks else np.zeros(0, int)
+        return np.unique(np.concatenate([v.ravel() for v in self.pairs.values()])) if self.pairs else np.zeros(0, int)
 
     def todict(self):
         return {"name": "FixRigidMolecules", "kwargs": {"blocks": [b.tolist() for b in self.blocks],
@@ -136,17 +157,12 @@ class FixRigidMolecules(FixConstraint):
     def _setup(self, atoms):
         if self.bondlengths is None:
             x = atoms.positions
-            self.bondlengths = [np.linalg.norm(self._mic(x[b[:, 0]] - x[b[:, 1]], atoms.cell, atoms.pbc), axis=1)
-                                for b in self.blocks]
+            self.bondlengths = {c: np.linalg.norm(self._mic(x[P[..., 0]] - x[P[..., 1]], atoms.cell, atoms.pbc), axis=-1)
+                                for c, P in self.pairs.items()}
         m = atoms.get_masses()
-        groups = {}
-        for b, d in zip(self.blocks, self.bondlengths):
-            groups.setdefault(len(b), ([], []))
-            groups[len(b)][0].append(b)
-            groups[len(b)][1].append(d)
         self._groups = []
-        for c, (bs, ds) in groups.items():
-            P = np.array(bs)                                   # (M, c, 2)
+        for c, P in self.pairs.items():                        # P: (M, c, 2)
+            ds = self.bondlengths[c]
             a, b = P[..., 0], P[..., 1]
             # C_kl = e(a_k, l) / m_a_k - e(b_k, l) / m_b_k,  e(i, l) = [i == a_l] - [i == b_l]
             e = lambda i: (i[:, :, None] == a[:, None, :]).astype(float) - (i[:, :, None] == b[:, None, :])

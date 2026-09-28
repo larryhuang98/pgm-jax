@@ -160,9 +160,16 @@ def test_compute_batch_matches_single_structures():
             assert np.abs(r.forces - q.forces).max() < 1e-7
             assert np.abs(r.virial - q.virial).max() < 1e-7
             assert np.abs(r.dipole - q.dipole).max() < 1e-9
-        out2 = eng.compute_batch(X[::-1] + 1e-4, H)           # next step, beads in another order (as i-PI may)
-        assert all(abs(a.energy - b.energy) < 1.0 for a, b in zip(out2, out[::-1]))
-        assert eng.stats.get("batches", 0) == 2 and eng.stats.get("permuted", 0) == 1 and eng.stats["resets"] == 0
+        # i-PI: beads in another order, partial batches padded with copies of the last structure
+        Y = X + 2e-4
+        part = eng.compute_batch(np.stack([Y[3], Y[1], Y[1]]), H)
+        assert len(part) == 3 and part[1].energy == part[2].energy
+        full = eng.compute_batch(Y[::-1] + 1e-4, H)
+        for r, x in zip(full + part[:2], list(Y[::-1] + 1e-4) + [Y[3], Y[1]]):
+            q = PGMEngine(sysm, pos, H, s).compute(x, H)
+            assert abs(r.energy - q.energy) < 1e-9 * abs(q.energy)
+        st = eng.stats
+        assert st["batches"] == 3 and st["calls"] == 10 and st["slot_evaluations"] == 12 and st["resets"] == 0
         assert eng._nbb.kind == ("molecule" if chunk is None else "atom")
 
 

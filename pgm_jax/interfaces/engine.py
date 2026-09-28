@@ -122,9 +122,9 @@ def _bond_tree(sys: System, bonds_of=None):
 def match_previous(X, prev):
     """perm with prev[perm[k]] the previous structure closest to X[k] (a one-to-one assignment
     minimising the summed squared displacements: i-PI does not keep the order of the beads in its
-    batches).  X, prev: (B, N, 3)."""
+    batches).  X: (n, N, 3), prev: (P, N, 3), n <= P."""
     B = X.shape[0]
-    a, b = X.reshape(B, -1), prev.reshape(B, -1)
+    a, b = X.reshape(B, -1), prev.reshape(prev.shape[0], -1)
     C = np.sum(a * a, 1)[:, None] + np.sum(b * b, 1)[None, :] - 2.0 * a @ b.T
     try:
         from scipy.optimize import linear_sum_assignment
@@ -163,7 +163,10 @@ class EngineResult:
     @property
     def dipole_components(self) -> np.ndarray:
         """(3, 3) e nm: rows M_q (charges, molecules whole, about their centres of mass), M_perm
-        (covalent dipoles), M_ind (induced dipoles); md/dipoles.py conventions."""
+        (covalent dipoles), M_ind (induced dipoles); md/dipoles.py conventions.  Computed in the
+        engine call (engine.with_dipole) or on first access."""
+        if "dip" not in self._dev:
+            self._dev["dip"] = self._dev.pop("dip_fn")()
         return self._rot_vec(self._dev["dip"])
 
     @property
@@ -216,6 +219,7 @@ class PGMEngine:
         pos = np.asarray(pos, float) if Q is None else np.asarray(pos, float) @ Q
         self.sys, self.settings, self.params = sys, settings, params
         self.stress_mode, self.jump, self.bead_margin = stress, float(jump), float(bead_margin)
+        self.with_dipole = False           # cell dipole inside every call (i-PI extras); else on first access
         self.n = sys.n
         self.masses = np.asarray(sys.masses, float)
         self.flex = None
@@ -345,7 +349,7 @@ class PGMEngine:
             return MoleculeNeighbors.fits(H, s.pair_cutoff, s.skin, self.r_list)
         return self.nb.rlist <= max_cutoff(H)
 
-    def _eval(self, x, H, ind, nbr, virial: bool):
+    def _eval(self, x, H, ind, nbr, virial: bool, dipole: bool = True):
         x = self._whole(x, H)
         c = self._centers(x)
         nbr = self.nb.update(nbr, x, c, H)
@@ -366,10 +370,15 @@ class PGMEngine:
                           res.iterations.astype(jnp.float64), res.residual.astype(jnp.float64),
                           (res.overflow | ovf).astype(jnp.float64), nbr.error.code.astype(jnp.float64), ext])
         packed = jnp.concatenate([head, F.reshape(-1)])
-        dev = {"mu": res.induction.mu, "dip": self._celldip.components(x, H, res.induction.mu, self.params)}
+        dev = {"mu": res.induction.mu}
+        if dipole:
+            dev["dip"] = self._celldip.components(x, H, res.induction.mu, self.params)
         if virial:
             dev["W"] = self._virial(x, H, cand, res.induction.mu, gb)
         return packed, res.induction, nbr, dev
+
+    def _dipole_only(self, x, H, mu):
+        return self._celldip.components(self._whole(x, H), H, mu, self.params)
 
     def _virial(self, x, H, cand, mu, gb):
         molecular = self.stress_mode == "molecular"
@@ -392,7 +401,8 @@ class PGMEngine:
         return jax.grad(e)(jnp.zeros((3, 3)))
 
     def _compile(self):
-        self._fn = jax.jit(self._eval, static_argnames=("virial",))
+        self._fn = jax.jit(self._eval, static_argnames=("virial", "dipole"))
+        self._dip_fn = jax.jit(self._dipole_only)
         self._vir_fn = jax.jit(self._virial_only)
 
     def _virial_only(self, x, H, ind, nbr):
@@ -408,6 +418,9 @@ class PGMEngine:
         """Largest displacement between two configurations (nm), each atom by its minimum image:
         drivers may wrap atoms or molecules back into the cell between calls."""
         d = b - a
+        m = float(np.max(np.abs(d)))
+        if m < 0.25 * float(np.min(np.diag(H))):             # no lattice jump possible: the common case
+            return m
         f = d @ np.linalg.inv(H)
         return float(np.max(np.abs(d - np.round(f) @ H)))
 
@@ -469,7 +482,8 @@ class PGMEngine:
                 xw = self._whole_c(xd, Hd)
                 slot.nbr = self.nb.allocate(xw, self._centers(xw), Hd)
             ind = self.ff.init_induction() if slot.ind is None else slot.ind
-            packed, ind_new, nbr_new, dev = self._fn(xd, Hd, ind, slot.nbr, virial=bool(virial))
+            packed, ind_new, nbr_new, dev = self._fn(xd, Hd, ind, slot.nbr, virial=bool(virial),
+                                                     dipole=bool(self.with_dipole))
             out = np.asarray(packed)
             ovf, code, ext = bool(out[7]), int(out[8]), float(out[9])
             nb_bad = bool(code & _LIST_ERRORS)             # = nb.failed(nbr_new), without another transfer
@@ -507,6 +521,9 @@ class PGMEngine:
         if Q is not None:
             F = F @ Q.T
         self._last = (xd, Hd, slot)
+        if "dip" not in dev:
+            mu = dev["mu"]
+            dev["dip_fn"] = lambda: self._dip_fn(xd, Hd, mu)
         self.stats["calls"] += 1
         self.stats["cg"] += int(out[5])
         self.stats["time"] += time.perf_counter() - t0
@@ -542,7 +559,7 @@ class PGMEngine:
         d = min_image(com - com[0][None], H)
         return Xw + (com[0][None] + d - com)[:, self._mol]
 
-    def _eval_batch(self, X, H, ind, nbr, virial: bool, chunk):
+    def _eval_batch(self, X, H, ind, nbr, present, virial: bool, chunk, dipole: bool = True):
         X = self._whole_batch(X, H)
         qc = jnp.mean(X, 0)
         c = self._centers(qc)
@@ -565,7 +582,9 @@ class PGMEngine:
             head = jnp.stack([E + eb + er, res.energy["elec"], res.energy["vdw"], eb, er,
                               res.iterations.astype(jnp.float64), res.residual.astype(jnp.float64),
                               (res.overflow | ovf).astype(jnp.float64)])
-            dev = {"mu": res.induction.mu, "dip": self._celldip.components(xk, H, res.induction.mu, params)}
+            dev = {"mu": res.induction.mu}
+            if dipole:
+                dev["dip"] = self._celldip.components(xk, H, res.induction.mu, params)
             if virial:
                 dev["W"] = self._virial(xk, H, cand, res.induction.mu, gb)
             return jnp.concatenate([head, F.reshape(-1)]), res.induction, dev
@@ -590,6 +609,8 @@ class PGMEngine:
         ref = c[self._group] if nb.kind == "molecule" else qc
         ext = jnp.max(jnp.sqrt(jnp.sum((X - ref[None]) ** 2, axis=-1)))
         flags = jnp.stack([nbr.error.code.astype(jnp.float64), ext])
+        keep = lambda new, old: jnp.where(present.reshape((B,) + (1,) * (new.ndim - 1)), new, old)   # noqa: E731
+        ind_new = jax.tree_util.tree_map(keep, ind_new.set(count=None), ind.set(count=None)).set(count=ind_new.count)
         return packed, flags, ind_new, nbr, dev
 
     def _batch_setup(self, B, X, H):
@@ -615,53 +636,78 @@ class PGMEngine:
             self._nbb.cap = max(self._nbb.size(nbr, c, jnp.asarray(H), Xw[k], 1.2) for k in range(B))
         ind0 = self.ff.init_induction()
         ind = jax.tree_util.tree_map(lambda a: jnp.broadcast_to(a, (B,) + jnp.shape(a)), ind0.set(count=None))
-        self._bstate = {"B": B, "ind": ind.set(count=ind0.count), "nbr": nbr, "H": np.asarray(H).copy(),
-                        "vol": float(np.linalg.det(H)), "x": None}
-        self._bfn = jax.jit(self._eval_batch, static_argnames=("virial", "chunk"))
+        self._bstate = {"P": B, "ind": ind.set(count=ind0.count), "nbr": nbr, "H": np.asarray(H).copy(),
+                        "vol": float(np.linalg.det(H)), "x": np.asarray(X, float), "filled": 0,
+                        "seen": np.zeros(B, bool)}
+        self._bfn = jax.jit(self._eval_batch, static_argnames=("virial", "chunk", "dipole"))
         return True
 
     def compute_batch(self, positions, cell, virial: bool = False, chunk="auto") -> list:
-        """Structures that share one cell and are close to each other (the beads of a ring polymer,
-        i-PI's batched requests) in one vmapped call: positions (B, N, 3) nm.  Each keeps its own
-        induced-dipole history; one neighbour list of the batch mean (radius + bead_margin) serves
-        all.  chunk: structures per vmapped chunk ("auto": 8 when that divides B > 8).  Falls back
-        to one compute() per structure (slots) when the batch cannot share a list.  Returns a list
-        of EngineResult."""
+        """Structures that share one cell and stay close to each other (the beads of a ring polymer:
+        i-PI's batched requests) in one vmapped call; positions (B, N, 3) nm.
+
+        The engine keeps P = B (first batch) slots, each with its own induced-dipole history and
+        last configuration; one neighbour list of the slots' mean (radius + bead_margin) serves them
+        all.  Every batch is matched to the slots: exact duplicates (i-PI pads partial batches with
+        copies of the last structure) are evaluated once, the distinct structures are assigned
+        one-to-one to the slots with the closest last configurations (i-PI does not keep the order
+        of the beads), and the vmapped call runs over all P slots, the slots not in this batch at
+        their last configuration with their state left unchanged.  chunk: slots per vmapped chunk
+        ("auto": 8 when that divides P > 8).  Falls back to one compute() per structure when the
+        slots cannot share a list.  Returns one EngineResult per input structure."""
         X = np.array(positions, float)
         B = X.shape[0]
         cell = np.asarray(cell, float)
-        if chunk == "auto":
-            chunk = 8 if (B > 8 and B % 8 == 0) else None
         H, Q = standard_cell(cell)
         if Q is not None:
             X = X @ Q
         check_box(H, self.settings.pair_cutoff + self.settings.skin)
-        st = getattr(self, "_bstate", None)
+        keys, uniq, where = {}, [], []
+        for k in range(B):                                   # exact duplicates: i-PI's padding
+            key = X[k].tobytes()
+            if key not in keys:
+                keys[key] = len(uniq)
+                uniq.append(k)
+            where.append(keys[key])
+        U = X[uniq]
+        n = len(U)
         if getattr(self, "_whole_batch_c", None) is None:
             self._whole_batch_c = jax.jit(self._whole_batch)
-        if (st is None or st["B"] != B or abs(float(np.linalg.det(H)) / st["vol"] - 1.0) > 0.10) and \
-                not self._batch_setup(B, X, H):
-            return [self.compute(X[k] if Q is None else X[k] @ Q.T, cell, virial, slot=k % len(self.slots))
-                    for k in range(B)]
-        st = self._bstate
-        if st["x"] is not None:
-            perm = match_previous(X, st["x"])                # each structure with its own dipole history
-            if np.any(perm != np.arange(B)):
-                idx = jnp.asarray(perm)
-                ind = st["ind"]
-                st["ind"] = jax.tree_util.tree_map(lambda a: a[idx], ind.set(count=None)).set(count=ind.count)
-                self.stats["permuted"] = self.stats.get("permuted", 0) + 1
-            if self._displacement(st["x"][perm], X, H) > self.jump:
-                ind0 = self.ff.init_induction()
-                st["ind"] = jax.tree_util.tree_map(lambda a: jnp.broadcast_to(a, (B,) + jnp.shape(a)),
-                                                   ind0.set(count=None)).set(count=ind0.count)
-                self.stats["resets"] += 1
+        st = getattr(self, "_bstate", None)
+        if st is None or n > st["P"] or abs(float(np.linalg.det(H)) / st["vol"] - 1.0) > 0.10:
+            P = max(B, n) if st is None else max(st["P"], n)
+            full0 = np.stack([U[k % n] for k in range(P)])
+            if not self._batch_setup(P, full0, H):
+                back = (lambda y: y) if Q is None else (lambda y: y @ Q.T)
+                return [self.compute(back(X[k]), cell, virial, slot=k % len(self.slots)) for k in range(B)]
+            st = self._bstate
+            st["x"] = full0
+        P = st["P"]
+        if chunk == "auto":
+            chunk = 8 if (P > 8 and P % 8 == 0) else None
+        if st["filled"] < P and st["filled"] + n <= P:       # first batches: fill the slots in order
+            slot_of = np.arange(st["filled"], st["filled"] + n)
+            st["filled"] += n
+        else:
+            slot_of = match_previous(U, st["x"])
+            st["filled"] = P
+        full = st["x"].copy()
+        full[slot_of] = U
+        present = np.zeros(P, bool)
+        present[slot_of] = True
+        if st["seen"].all() and self._displacement(st["x"][slot_of], U, H) > self.jump:
+            ind0 = self.ff.init_induction()                  # a new configuration: restart the predictors
+            st["ind"] = jax.tree_util.tree_map(lambda a: jnp.broadcast_to(a, (P,) + jnp.shape(a)),
+                                               ind0.set(count=None)).set(count=ind0.count)
+            self.stats["resets"] += 1
+        st["seen"] |= present
         t0 = time.perf_counter()
-        Xd, Hd = jnp.asarray(X), jnp.asarray(H)
+        Xd, Hd, md = jnp.asarray(full), jnp.asarray(H), jnp.asarray(present)
         for attempt in range(8):
-            packed, flags, ind_new, nbr_new, dev = self._bfn(Xd, Hd, st["ind"], st["nbr"], virial=bool(virial), chunk=chunk)
+            packed, flags, ind_new, nbr_new, dev = self._bfn(Xd, Hd, st["ind"], st["nbr"], md, virial=bool(virial),
+                                                             chunk=chunk, dipole=bool(self.with_dipole))
             out, fl = np.asarray(packed), np.asarray(flags)
-            ovf = bool(np.any(out[:, 7]))
+            ovf = bool(np.any(out[present, 7]))
             nb_bad = bool(int(fl[0]) & _LIST_ERRORS)
             far = float(fl[1]) > self._bfar
             if not (ovf or nb_bad or far):
@@ -669,21 +715,24 @@ class PGMEngine:
             self.stats["repeats"] += 1
             if far:
                 self.bead_margin *= 1.5
-                if not self._batch_setup(B, X, H):
+                keep = (st["ind"], st["filled"], st["seen"])
+                if not self._batch_setup(P, full, H):
                     self._bstate = None
-                    return [self.compute(X[k] if Q is None else X[k] @ Q.T, cell, virial, slot=k % len(self.slots))
-                            for k in range(B)]
+                    back = (lambda y: y) if Q is None else (lambda y: y @ Q.T)
+                    return [self.compute(back(X[k]), cell, virial, slot=k % len(self.slots)) for k in range(B)]
+                st = self._bstate
+                st["ind"], st["filled"], st["seen"], st["x"] = keep[0], keep[1], keep[2], full
             else:
                 Xw = self._whole_batch_c(Xd, Hd)
                 old = self.ff.capacity
-                c = self._centers(jnp.mean(Xw, 0))
-                nbr = self._nbb.allocate(jnp.mean(Xw, 0), c, Hd) if nb_bad else st["nbr"]
+                qc = jnp.mean(Xw, 0)
+                c = self._centers(qc)
+                nbr = self._nbb.allocate(qc, c, Hd) if nb_bad else st["nbr"]
                 if self._nbb.kind == "molecule":
-                    self._nbb.cap = max(self._nbb.size(nbr, c, Hd, Xw[k], 1.3) for k in range(B))
-                cands = [self._nbb.candidates(nbr, c, Hd, Xw[k])[0] for k in range(B)]
+                    self._nbb.cap = max(self._nbb.size(nbr, c, Hd, Xw[k], 1.3) for k in range(P))
                 caps = []
-                for k in range(B):
-                    self.ff.size_rows(Xw[k], Hd, cands[k], 1.3)
+                for k in range(P):
+                    self.ff.size_rows(Xw[k], Hd, self._nbb.candidates(nbr, c, Hd, Xw[k])[0], 1.3)
                     caps.append(self.ff.capacity)
                 self.ff.fit_rows(caps)
                 if ovf:
@@ -692,26 +741,30 @@ class PGMEngine:
                 self._compile()
                 for sl in self.slots:
                     sl.nbr = None
-                self._bfn = jax.jit(self._eval_batch, static_argnames=("virial", "chunk"))
-            st = self._bstate
+                self._bfn = jax.jit(self._eval_batch, static_argnames=("virial", "chunk", "dipole"))
         else:
             raise RuntimeError("neighbour list / row capacity keeps overflowing (batch)")
-        st["ind"], st["nbr"], st["x"] = ind_new, nbr_new, X
-        n = self.n
-        res = []
-        for k in range(B):
-            F = out[k, 8:8 + 3 * n].reshape(n, 3)
+        st["ind"], st["nbr"], st["x"] = ind_new, nbr_new, full
+        nat = self.n
+        res_u = []
+        for j in range(n):
+            k = int(slot_of[j])
+            F = out[k, 8:8 + 3 * nat].reshape(nat, 3)
             if Q is not None:
                 F = F @ Q.T
             dk = {key: v[k] for key, v in dev.items()}
-            res.append(EngineResult(float(out[k, 0]), F, {"elec": float(out[k, 1]), "vdw": float(out[k, 2]),
-                                                          "bonded": float(out[k, 3]), "restraint": float(out[k, 4])},
-                                    int(out[k, 5]), dk, Q))
+            if "dip" not in dk:
+                xk, mk = Xd[k], dk["mu"]
+                dk["dip_fn"] = (lambda xk=xk, mk=mk: self._dip_fn(xk, Hd, mk))
+            res_u.append(EngineResult(float(out[k, 0]), F, {"elec": float(out[k, 1]), "vdw": float(out[k, 2]),
+                                                            "bonded": float(out[k, 3]), "restraint": float(out[k, 4])},
+                                      int(out[k, 5]), dk, Q))
             self.stats["cg"] += int(out[k, 5])
-        self.stats["calls"] += B
+        self.stats["calls"] += n
         self.stats["batches"] = self.stats.get("batches", 0) + 1
+        self.stats["slot_evaluations"] = self.stats.get("slot_evaluations", 0) + P
         self.stats["time"] += time.perf_counter() - t0
-        return res
+        return [res_u[where[k]] for k in range(B)]
 
     def describe(self) -> str:
         s = self.settings

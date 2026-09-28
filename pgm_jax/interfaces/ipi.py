@@ -54,12 +54,13 @@ class IPIClient:
 
     def __init__(self, engine, address: str = "localhost", port: int = 31415, unix: bool = False,
                  sockets_prefix: str = "/tmp/ipi_", virial: bool = True, verbose: bool = False, log=sys.stdout,
-                 vmap_beads: bool = True):
+                 vmap_beads: bool = True, dipole: bool = True):
         self._engine = None if callable(engine) and not hasattr(engine, "compute") else engine
         self._factory = engine if self._engine is None else None
         self.address, self.port, self.unix, self.prefix = address, int(port), bool(unix), sockets_prefix
         self.virial, self.verbose, self.log = bool(virial), verbose, log
         self.vmap_beads = bool(vmap_beads)            # batches of structures with one cell: one vmapped call
+        self.dipole = bool(dipole)                    # cell dipole in the extras of every structure
         self.batch = 1
         self.stats = {"structures": 0, "requests": 0, "t_engine": 0.0, "t_total": 0.0}
 
@@ -126,13 +127,17 @@ class IPIClient:
             cell = np.asarray(h, float).T * BOHR_NM
             self._engine = self._factory(np.asarray(pos_bohr, float).reshape(-1, 3) * BOHR_NM, cell)
             self._print(f"# {self._engine.describe()}" if hasattr(self._engine, "describe") else "# engine ready")
+        if self.dipole and hasattr(self._engine, "with_dipole"):
+            self._engine.with_dipole = True             # the cell dipole in the same call (extras every step)
 
     def _convert(self, res):
         E = res.energy / HARTREE_KJMOL
         F = res.forces * (BOHR_NM / HARTREE_KJMOL)
         W = res.virial if (self.virial and res.virial is not None) else np.zeros((3, 3))
         vir = -0.5 * (W + W.T) / HARTREE_KJMOL
-        extras = {"cg_iterations": int(res.iterations), "dipole": (res.dipole / BOHR_NM).tolist()}
+        extras = {"cg_iterations": int(res.iterations)}
+        if self.dipole:
+            extras["dipole"] = (res.dipole / BOHR_NM).tolist()
         return E, np.ascontiguousarray(F, np.float64), np.ascontiguousarray(vir, np.float64), extras
 
     def _evaluate_batch(self, cells, pos_bohr):
@@ -269,12 +274,13 @@ def main(argv=None):
     p.add_argument("--settings", help="MDSettings as JSON, e.g. '{\"dipole_tol\": 1e-5, \"cutoff\": 0.9}'")
     p.add_argument("--no-virial", action="store_true")
     p.add_argument("--no-vmap", action="store_true", help="evaluate the structures of a batch one by one")
+    p.add_argument("--no-dipole", action="store_true", help="no cell dipole in the extras")
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args(argv)
     if not (args.prmtop or args.template):
         p.error("--prmtop or --template is required")
     client = IPIClient(_engine_factory(args), args.address, args.port, args.unix, virial=not args.no_virial,
-                       verbose=args.verbose, vmap_beads=not args.no_vmap)
+                       verbose=args.verbose, vmap_beads=not args.no_vmap, dipole=not args.no_dipole)
     st = client.run()
     eng = client.engine
     if eng is not None and hasattr(eng, "stats"):

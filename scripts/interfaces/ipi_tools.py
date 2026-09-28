@@ -47,7 +47,8 @@ def write_xyz(path, symbols, pos_nm, H_nm):
 def write_input(workdir, symbols, pos_nm, H_nm, masses, *, nbeads=1, steps=1000, dt_fs=0.5, T=298.0,
                 ensemble="nvt", thermostat="pile_g", tau_fs=100.0, address="pgmjax", stride=10,
                 batch_size=1, seed=31415, extra_props=(), traj_stride=0, velocities=None, pile_lambda=None,
-                pressure=None, barostat_tau_fs=200.0, velocity_units="atomic_unit"):
+                pressure=None, barostat_tau_fs=200.0, velocity_units="atomic_unit", splitting=None,
+                nm_propagator=None):
     """init.xyz + input.xml for i-PI (unix socket `address`).  velocities: (N, 3) in velocity_units
     (i-PI's units; atomic units by default) or None (thermal at T)."""
     os.makedirs(workdir, exist_ok=True)
@@ -74,6 +75,8 @@ def write_input(workdir, symbols, pos_nm, H_nm, masses, *, nbeads=1, steps=1000,
     traj = (f'<trajectory filename="pos" stride="{traj_stride}" format="xyz" cell_units="angstrom"> x_centroid{{angstrom}} </trajectory>'
             if traj_stride else "")
     batch = f"<batch_size> {batch_size} </batch_size>" if batch_size > 1 else ""
+    split = f' splitting="{splitting}"' if splitting else ""
+    nm = f'<normal_modes propagator="{nm_propagator}"/>' if nm_propagator else ""
     xml = f"""<simulation verbosity="low" safe_stride="100000">
   <output prefix="sim">
     <properties stride="{stride}" filename="out"> [ {", ".join(props)} ] </properties>
@@ -93,8 +96,9 @@ def write_input(workdir, symbols, pos_nm, H_nm, masses, *, nbeads=1, steps=1000,
       <masses mode="manual" units="dalton"> {mass} </masses>
     </initialize>
     <forces><force forcefield="pgm"/></forces>
+    {nm}
     <motion mode="dynamics">
-      <dynamics mode="{ensemble}">
+      <dynamics mode="{ensemble}"{split}>
         <timestep units="femtosecond"> {dt_fs} </timestep>
         {thermo}
         {baro}

@@ -189,11 +189,11 @@ def cmd_pimd(args):
     n = len(pos) // 3
     sysm, tpls = System([tpl.pgm] * n), [tpl] * n
     P, steps, rep = args.beads, args.steps, 20
-    wd = os.path.join(WORK, f"pimd{P}{'b' if args.batch else 's'}")
+    wd = os.path.join(WORK, f"pimd{P}{'b' if args.batch else 's'}_{steps}_{args.splitting}_{args.propagator}")
     symbols = [e for m in sysm.molecules for e in m.elements]
     T.write_input(wd, symbols, pos, H, sysm.masses, nbeads=P, steps=steps, dt_fs=0.25, ensemble="nvt",
                   thermostat="pile_g", tau_fs=100.0, stride=rep, address=f"pgmval_p{P}",
-                  batch_size=P if args.batch else 1, seed=11,
+                  batch_size=P if args.batch else 1, seed=11, splitting=args.splitting, nm_propagator=args.propagator,
                   extra_props=("kinetic_cv(H)", "kinetic_cv(O)", "kinetic_td(H)"))
     client, st, props, wall = T.run(wd, f"pgmval_p{P}", client_factory(sysm, tpls, s, P, f"pgmval_p{P}",
                                                                         vmap=bool(args.vmap)))
@@ -206,6 +206,7 @@ def cmd_pimd(args):
     eng = client.engine
     blocks = np.array_split(np.asarray(U), 5)
     out = {"beads": P, "batch": bool(args.batch), "vmap": bool(args.vmap), "steps": steps, "equil_ps": args.equil_ps,
+           "splitting": args.splitting or "obabo", "propagator": args.propagator or "exact",
            "epot_blocks": [float(np.mean(b)) for b in blocks],
            "ke_H_cv_meV": [float(np.mean(keH)), be(keH)], "ke_O_cv_meV": [float(np.mean(keO)), be(keO)],
            "epot_bead_mean": [float(np.mean(U)), be(U)], "T": float(np.mean(props["temperature"][eq:])),
@@ -217,7 +218,8 @@ def cmd_pimd(args):
         with open(ref) as fh:
             r = json.load(fh)
         out["native"] = {k: r[k] for k in ("ke_H_cv_meV", "ke_O_cv_meV", "epot", "ms_per_step", "ps", "cg_mean") if k in r}
-    save(f"pimd{P}{'_batch' if args.batch else '_serial'}{'_vmap' if args.vmap and args.batch else ''}_{steps}", out)
+    save(f"pimd{P}{'_batch' if args.batch else '_serial'}{'_vmap' if args.vmap and args.batch else ''}_{steps}"
+         f"{'_' + args.splitting if args.splitting else ''}{'_' + args.propagator if args.propagator else ''}", out)
     print(json.dumps(client.engine.stats), flush=True)
 
 
@@ -233,6 +235,8 @@ def main():
     ap.add_argument("--beads", type=int, default=8)
     ap.add_argument("--batch", type=int, default=1)
     ap.add_argument("--vmap", type=int, default=1, help="batched beads in one vmapped engine call")
+    ap.add_argument("--splitting", default=None, help="i-PI splitting: obabo (i-PI default) | baoab (as the native PIMD)")
+    ap.add_argument("--propagator", default=None, help="i-PI free ring-polymer propagator: exact | cayley (native default)")
     ap.add_argument("--equil-ps", type=float, default=0.5)
     ap.add_argument("--work", default=WORK, help="i-PI run directories")
     ap.add_argument("--out", default=OUT)
