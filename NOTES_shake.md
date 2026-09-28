@@ -74,3 +74,4 @@ Running log so the work can be resumed.
 - Full suite: 215 passed, 2 failed in test_vsites (my changes): NVE with given momenta no longer
   has its net momentum removed (only drawn momenta), and the Bussi dof expectation in
   test_load_amber_protein_in_tip4pew is -3. Fixed; docs/shake.md, README written.
+- 15:43 full suite on ca7a8ea: 217 passed (44 min, 32 cores). Done.
