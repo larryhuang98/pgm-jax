@@ -16,20 +16,20 @@ which removes the zero-field bias of a finite run (<M>_0 is zero only on average
 
 The statistical error.  The mean of M . e over a run of length T with integrated correlation time
 tau_M has the variance 2 tau_M <dM_e^2> / T, and <dM_e^2> = (eps - eps_inf) eps0 V kB T (the
-fluctuation formula), so the error of eps - 1 from a +-E pair of total length 2T is
+fluctuation formula), so the error of eps from a +-E pair (each replica T long) is
 
-    sigma_FF = sqrt((eps - eps_inf) kB T / (eps0 V)) / |E| x sqrt(tau_M / T),
+    sigma_pair = sqrt((eps - eps_inf) kB T / (eps0 V)) / |E| x sqrt(tau_M / T),
 
 against sigma_fluct = (eps - eps_inf) sqrt(2 tau_M / (3 T')) from the fluctuations of a zero-field run
-of length T'.  At equal cost (T' = 2T) their ratio is sigma_FF / sigma_fluct = sqrt(3 kB T / ((eps -
-eps_inf) eps0 V)) / (2|E|)... the finite-field estimate wins by the ratio of the induced mean dipole
-to the thermal fluctuation of M, which grows with |E| and with sqrt(V); `analyse` reports both
-measured errors and the predicted ones.
+of length T'.  At equal cost (T' = 2T) the ratio of the variances, i.e. the cost ratio at equal
+error, is (<M.e> / sd(M_e))^2 / 3: the induced mean dipole must exceed the thermal fluctuation of M,
+which favours large fields (up to dielectric saturation) and large boxes.  `analyse` reports the
+measured errors, and `predicted_errors` these estimates.
 
     sim = Simulation(sys, pos, H, settings, ensemble="nvt", thermostat="bussi", efield=(0, 0, 0))
     rep = FieldReplicas(sim, [(0, 0, 0.1), (0, 0, -0.1), (0, 0, 0.2), (0, 0, -0.2), (0, 0, 0)])
     rep.run(nsteps, every=25, prefix="ff")          # prefix.ffd: M of every replica every 25 steps
-    table = analyse(read_series("ff.ffd"), skip_ps=50)
+    table = analyse(*read_series("ff.ffd"), skip_ps=50)
 
 Units: V/nm, e nm, nm^3, K."""
 from __future__ import annotations
@@ -306,8 +306,7 @@ def saturation_fit(pairs):
 def predicted_errors(eps: float, eps_inf: float, V: float, T: float, E: float, tau_ps: float, run_ps: float) -> dict:
     """Statistical errors expected for eps from a +-E pair (each replica run_ps long) and from the
     fluctuations of a zero-field run of the same total length (2 run_ps), for a Gaussian M with
-    integrated correlation time tau_ps:
-      sigma_FF = EPS_FACTOR / (V E) x sqrt(var(M_e) x 2 tau / T_pair) / sqrt(2)... (see module docstring)."""
+    integrated correlation time tau_ps (module docstring), and their cost ratio at equal error."""
     var_Me = (eps - eps_inf) * EPS0 * V * 1e-27 * KB_SI * T / (E_CHARGE * 1e-9) ** 2      # (e nm)^2, one component
     s_mean = np.sqrt(var_Me * 2 * tau_ps / run_ps)                                          # error of <M_e> of one run
     s_ff = EPS_FACTOR / (V * E) * s_mean / np.sqrt(2)                                        # the +-E combination
