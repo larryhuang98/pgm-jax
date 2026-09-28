@@ -211,7 +211,28 @@ iteration; six global scale factors q, cov, alpha, radius, R*, eps; prior width 
 i.e. regularised toward the base model; targets density 0.997 +- 0.002, Hvap 10.52 +- 0.05 kcal/mol,
 eps 78.4 +- 1.5, gas dipole 1.855 +- 0.01 D, gas polarizability 1.47 +- 0.01 A^3):
 
-DEMO_TABLE
+| iter | ln s_q | ln s_cov | ln s_pol | ln s_rad | ln s_R | ln s_eps | density | Hvap | eps | gas dipole | gas pol | liquid dipole | chi2 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | +0.0000 | +0.0000 | +0.0000 | +0.0000 | +0.0000 | +0.0000 | 0.9763(11) | 6.812(3) | 73.3(15) | 1.8581 | 1.9836 | 2.537 | 8204.8 |
+| 1 | +0.0113 | -0.0184 | -0.1973 | -0.0481 | +0.0170 | +0.2191 | 1.0009(5) | 8.324(3) | 89.4(28) | 2.0027 | 1.6496 | 2.657 | 2478.2 |
+| 2 | +0.0723 | -0.0497 | -0.2805 | -0.1961 | +0.0958 | -0.0041 | 0.9218(5) | 9.298(5) | 59.7(40) | 1.7771 | 1.4823 | 2.489 | 1987.7 |
+| 3 | +0.0688 | -0.0452 | -0.2900 | -0.1819 | +0.0841 | -0.1526 | 0.9905(7) | 10.486(6) | 74.5(35) | 1.8409 | 1.4749 | 2.609 | 13.3 |
+| 4 | +0.0415 | -0.1270 | -0.2926 | -0.1847 | +0.0760 | -0.0623 | 0.9966(6) | 10.491(5) | 80.7(48) | 1.8525 | 1.4706 | 2.623 | 0.7 |
+
+Scale factors at iteration 4: q x1.042, cov x0.881, alpha x0.746, radius x0.831, R* x1.079, LJ eps x0.940
+(the Bayesian-optimisation pGM3P-25 scaled alpha by 0.771 and radii by 0.750). All five targets are met
+within their tolerances (chi2 0.65 for five targets; eps 80.7 +- 4.8 at 2 ns), with the liquid
+dipole at 2.62 D (base 2.54, pGM3P-25 2.12). The path: iteration 1 (radius 1) cut the chi2 by 3x;
+iteration 2 overshot (density 0.92) after the trust radius had grown to 2, and its ratio 0.20 shrank
+the radius; iterations 3-4 then converged. Along the way the linear predictions were poor for the
+large early steps (eps predicted 113.6, measured 89.4) and within the errors for the small late ones
+(iteration 4: density 0.9971 predicted, 0.9966 measured; eps 76.2 predicted, 80.7 +- 4.8 measured);
+reweighting (n_eff 1-3 of 4000 frames for the early steps) only helped for the last ones.
+Sampling errors of the parameters at iteration 4: ln s_q 0.029, ln s_cov 0.105, ln s_pol 0.0024,
+ln s_rad 0.008, ln s_R 0.003, ln s_eps 0.056: charges and covalent dipoles are nearly degenerate
+(both make the molecular dipole), and so are R* and eps; the polarizability, radius and R* scales are
+well determined. Each iteration is one GPU job of about 17 minutes.
+
 
 ## Speed
 
