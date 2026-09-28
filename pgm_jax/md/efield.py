@@ -41,11 +41,15 @@ with a field and charged molecules is refused; run those NVT.  NVT at the zero-f
 recommended protocol for the dielectric constant (electrostriction at 0.1 V/nm is ~1e-4 in density).
 
 Time-dependent field.  E(t) = E0 cos(w t + phi), with E0 a state variable (MDState.efield, V/nm)
-and w, phi static (ExternalField).  The Hamiltonian depends on time: dH/dt = -dE/dt . M.  The driver
-evaluates the forces of step n+1 at t_{n+1} = (n+1) dt; the switch of the field from E(t_n) to
-E(t_{n+1}) at the positions of step n+1 changes the energy by -(E_{n+1} - E_n) . M_{n+1}, which is
-booked in MDState.heat, so that econs = E_tot + |aux|^2/2 - heat stays conserved (up to O(dt^2)), as
-with a thermostat.
+and w, phi static (ExternalField).  The Hamiltonian depends on time, dH/dt = dH/dt|_x = -dE/dt . M
+(Hellmann-Feynman: the induced dipoles minimise H at every t).  The driver evaluates the forces of
+step n+1 at t_{n+1} = (n+1) dt.  That is velocity Verlet in the phase space extended by (t, p_t),
+H_ext = H(x, p, t) + p_t, with t drifting like x and p_t kicked by -dH/dt|_x in the half kicks;
+H_ext is its conserved (shadow) energy.  So the energy supplied by the field is booked in
+MDState.heat by the trapezoid (dt/2) (dH/dt|_n + dH/dt|_{n+1}) with the dipoles of both steps, and
+econs = E_tot + |aux|^2/2 - heat stays conserved to O(dt^2), as with a thermostat.  (The right-end
+rule -(E_{n+1} - E_n) . M_{n+1} would be off by (dE . alpha_cell . dE)/2 per step, a systematic drift
+at resonance.)
 
 Constant electric displacement (kind="D"; Stengel, Spaldin & Vanderbilt, Nat. Phys. 5, 304 (2009);
 Zhang & Sprik, PRB 93, 144201 (2016)).  Instead of E the displacement D is held fixed; with tin-foil
@@ -124,6 +128,20 @@ class ExternalField:
     def value(self, E0, t):
         """The field (V/nm) at time t (ps) for the amplitude E0 (the state's)."""
         return jnp.asarray(E0, jnp.float64) * self.modulation(t)
+
+    def rate(self, E0, t):
+        """dE/dt (V/nm/ps) at time t."""
+        if not self.time_dependent:
+            return jnp.zeros(3)
+        return -self.omega * jnp.asarray(E0, jnp.float64) * jnp.sin(self.omega * t + self.phase)
+
+    def dHdt(self, E0, t, M, V):
+        """Explicit time derivative of the Hamiltonian (kJ/mol/ps) at fixed nuclei: -dE/dt . M for a
+        constant field; V eps0 E(M) . d(D/eps0)/dt for constant displacement."""
+        r = self.rate(E0, t)
+        if self.kind == "E":
+            return field_energy(r, M)
+        return KE * V / (4.0 * jnp.pi) * VNM_TO_INTERNAL ** 2 * jnp.dot(self.value(E0, t) - EPS_FACTOR * M / V, r)
 
     def energy(self, value, M, V):
         """Energy (kJ/mol) of the field term for the field (or D/eps0) `value` (V/nm), the dipole M

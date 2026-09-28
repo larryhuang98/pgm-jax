@@ -22,3 +22,13 @@
 - CPU, 3 replicas of 512 p25 waters, 32 cores: 0.91 ns/day per replica (GPU needed for production)
 - flexible-engine NVE test in the tiny box: drift dominated by LJ truncation at 0.6 nm (same with/without field);
   tests use vdw="none" for the drift checks
+- validate_efield gas: dmu vs alpha_mol E 1e-14 rel, energy exact, FD forces 3e-5 (h 1e-5); box1: one water in
+  L = 2..6 nm boxes: (alpha_box - alpha_gas)/alpha_gas * V = 0.006 nm^3 (image field ~1/V)
+- NVE 512 p25 (mixed, 1 fs, 20 ps after 10 ps NVT): drift no field 0.0002, 0.1 V/nm 0.0022 (noise; econs rms 0.25),
+  0.5 V/nm 0.0005 kT/ns/dof (T rises 293 -> 318 K: orientation releases 466 kJ/mol)
+- E(t): first version booked -(E1-E0).M1: 0.5 V/nm at 200 cm^-1 heated to 600 K, econs drift 1.28 kT/ns/dof (2 % of
+  the absorbed 10^4 kJ/mol; systematic dE.alpha.dE/2 per step). Trapezoid of dH/dt (extended-phase-space VV):
+  0.2 V/nm, 1062 kJ/mol absorbed in 20 ps, econs drift -0.0012 kT/ns/dof, rms 0.29 kJ/mol
+- GPU gpu-2-1: p25 10 replicas (+-0.02, 0.05, 0.1, 0.2, 2 x 0) 1 ns: 42.0 ns/day per replica, 420 aggregate (2 fs)
+  quick awk means (50 ps skipped): eps(+-0.02) 35.6, (0.05) 34.7, (0.1) 33.0, (0.2) 33.3
+- CPU (32 cores): TIP3P 2 replicas 2.9 ns/day each

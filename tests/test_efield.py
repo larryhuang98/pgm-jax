@@ -361,3 +361,22 @@ def test_nve_conserves_energy_at_constant_displacement():
     assert abs(o["Emac_z"] - (2.0 - EF.EPS_FACTOR * o["Mz"] / V)) < 1e-9
     ke_scale = 0.5 * sim.integ.dof * KB * 298
     assert np.std(e) < 2e-4 * ke_scale and abs(e[-1] - e[0]) < 4e-4 * ke_scale, (np.std(e), e[-1] - e[0])
+
+
+def test_field_replicas_batched_run_and_analysis(tmp_path):
+    from pgm_jax.md.finite_field import FieldReplicas, analyse, read_series
+    sys, pos, H = small_box(13, nm=0)
+    sim = Simulation(sys, pos, H, settings=settings(cutoff=0.6, dipole_tol=1e-6), dt=0.001, ensemble="nvt",
+                     thermostat="bussi", log=None, efield=(0.0, 0.0, 0.0))
+    rep = FieldReplicas(sim, [(0.0, 0.0, 0.5), (0.0, 0.0, -0.5), (0.0, 0.0, 0.0)], seed=1)
+    rep.run(40, every=10, prefix=str(tmp_path / "ff"), report=20)
+    meta, d = read_series(str(tmp_path / "ff.ffd"))
+    assert d["M"].shape == (4, 3, 3) and np.allclose(meta["fields"][1], [0, 0, -0.5])
+    for k in range(3):                                   # the recorded M is the cell dipole of each replica
+        st = rep.state(k)
+        p = sim.rigid.positions(st.dyn.position)
+        M = np.asarray(CellDipole(sim.ff).components(p, st.box, st.induction.mu)).sum(0)
+        assert np.allclose(d["M"][-1, k], M, atol=1e-6), (d["M"][-1, k], M)
+        assert np.allclose(np.asarray(st.efield), meta["fields"][k])
+    res = analyse(meta, d, skip_ps=0.0, nblocks=2)
+    assert len(res["pairs"]) == 1 and len(res["zero"]) == 1 and len(res["single"]) == 2

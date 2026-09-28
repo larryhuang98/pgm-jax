@@ -161,13 +161,15 @@ class Integrator:
         return (v, st.fshift) if self.efield.kind == "E" else (v, st.fshift, "D")
 
     def _book_field(self, old: MDState, new: MDState) -> MDState:
-        """Explicit time dependence of the field: the switch E(t_n) -> E(t_n+1) at the new positions
-        changes the energy by -(E_n+1 - E_n) . M_n+1, booked as heat (econs stays conserved)."""
+        """Explicit time dependence of the field: the energy it supplies over the step, the trapezoid
+        (dt/2) (dH/dt|_n + dH/dt|_n+1) with dH/dt = -dE/dt . M (efield.py), is booked as heat, so
+        that econs stays conserved (the shadow energy of the time-extended velocity Verlet)."""
         if self.efield is None or not self.efield.time_dependent:
             return new
-        V = volume(new.box)
-        w = (self.efield.energy(self.field_at(new, new.step)[0], new.fdip, V)
-             - self.efield.energy(self.field_at(old, old.step)[0], new.fdip, V))
+        f = self.efield
+        t0, t1 = old.step * self.dt, new.step * self.dt
+        w = 0.5 * (t1 - t0) * (f.dHdt(old.efield, t0, old.fdip, volume(old.box))
+                               + f.dHdt(new.efield, t1, new.fdip, volume(new.box)))
         return new.set(heat=new.heat + w)
 
     def _forces(self, body, box, induction, nbr, force_rebuild=False, lam=None, field=None):

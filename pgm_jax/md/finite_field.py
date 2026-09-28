@@ -64,6 +64,9 @@ class FieldReplicas(MDReplicas):
                              "evaluated every step); equilibrate the density first")
         if getattr(integ, "mts", None) is not None:
             raise ValueError("field replicas with multiple time stepping are not supported")
+        if integ.field_charged:
+            raise NotImplementedError("field replicas of systems with charged molecules: the batched driver does not "
+                                      "book the itinerant dipole of re-wrapped ions (use Simulation with efield=)")
         F = np.asarray(fields, float).reshape(-1, 3)
         self.sim, self.integ, self.batched = sim, integ, True
         self.fields = F
@@ -168,7 +171,7 @@ def read_series(paths) -> tuple[dict, dict]:
                 k = k.strip()
                 if not eq:
                     continue
-                if k.startswith("field_"):
+                if k.startswith("field_") and k[6:].isdigit():
                     fields[int(k[6:])] = [float(x) for x in v.split()]
                 else:
                     try:

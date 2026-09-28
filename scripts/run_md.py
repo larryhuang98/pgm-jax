@@ -12,6 +12,9 @@ NetCDF trajectory), <out>.rst7 (Amber NetCDF restart), <out>.chk (complete check
 scripts/dielectric.py); with --induced N, <out>.mu.nc (per-atom induced dipoles).
 Multiple time stepping (docs/mts.md): --mts N makes --dt the outer step, with the short-range forces
 N times per outer step (--nsteps, --report, ... count outer steps).
+External electric field (docs/efield.md): --efield Ex Ey Ez (V/nm), optionally --efield-freq
+(cm^-1; E(t) = E0 cos(w t)); --displacement Dx Dy Dz for constant D (D/eps0 in V/nm).  The log then
+has the columns efield, field_energy and the cell dipole Mx My Mz (e nm).
 """
 from __future__ import annotations
 
@@ -27,6 +30,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pgm_jax.md.forcefield import DSUM_TOL, MDSettings, ewald_beta_for  # noqa: E402
 from pgm_jax.md.mts import add_mts_arguments, mts_from_args  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
+
+
+def field_from_args(a):
+    from pgm_jax.md.efield import ExternalField, displacement
+    if a.efield is not None and a.displacement is not None:
+        raise SystemExit("--efield and --displacement are exclusive")
+    if a.efield is not None:
+        return ExternalField.from_wavenumber(a.efield, a.efield_freq)
+    if a.displacement is not None:
+        return displacement(a.displacement, 2 * 3.141592653589793 * 0.0299792458 * a.efield_freq)
+    return None
 
 
 def main(argv=None):
@@ -79,6 +93,9 @@ def main(argv=None):
     ap.add_argument("--pressure", action="store_true", help="also report the virial pressure")
     ap.add_argument("--dipoles", type=int, default=0, help="steps between cell-dipole samples (<out>.dip; 0: none)")
     ap.add_argument("--induced", type=int, default=0, help="steps between per-atom induced dipole frames (<out>.mu.nc)")
+    ap.add_argument("--efield", type=float, nargs=3, help="uniform external field E0 (V/nm)")
+    ap.add_argument("--efield-freq", type=float, default=0.0, help="cm^-1: E(t) = E0 cos(2 pi c nu t) (0: static)")
+    ap.add_argument("--displacement", type=float, nargs=3, help="constant electric displacement D/eps0 (V/nm)")
     add_mts_arguments(ap, "--dt")
     a = ap.parse_args(argv)
     if a.ew_coeff is None:
@@ -96,7 +113,7 @@ def main(argv=None):
                                 dt=a.dt / 1000, ensemble=a.ensemble, temperature=a.temp, gamma=a.gamma,
                                 thermostat=a.thermostat, tau_t=a.tautp,
                                 pressure=a.press, barostat_interval=a.barostat_interval, seed=a.seed,
-                                mts=mts_from_args(a))
+                                mts=mts_from_args(a), efield=field_from_args(a))
     if a.checkpoint:
         sim.load(a.checkpoint)
     sim.run(a.nsteps, report=a.report, traj=a.traj, restart=a.restart, prefix=a.out,
