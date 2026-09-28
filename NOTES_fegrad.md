@@ -39,3 +39,7 @@
 - tests_print.log: HF rel errors 1e-12..5e-10; reweighting identities 5e-8..1e-5; lone solute 3.7e-5
   relative (PME/image), error bars 1e-3 of 2e4; harmonic: end -0.6983 +- 0.0072, mbar -0.7040 +- 0.0062
   (exact -0.7), error bar / spread 0.98, 0.93; value 0.8075 +- 0.0054 (exact 0.8047), 0.97.
+- B done (wr097/100/103, 0.4 ns x 19 windows): G = -5.717 +- 0.058 / -4.453 +- 0.084 / -3.542 +- 0.099;
+  d/dln s_rmin = 39.7 / 37.1 / 33.0; outer FD 36.3 +- 1.9 vs g(1) 37.1 +- 0.5 (z -0.4). checkB pending (CPU queue).
+- C1 me100 (flexible methanol keep, 0.4 ns): G = -2.741 +- 0.094 (production -2.65 +- 0.07); d/dln s_charge
+  -10.145 +- 0.125. C2 (chain2.sh) at s = 1.2335 (Newton step to -5.11). D (chain3.sh): methanol rmin 0.95, 1.05.
