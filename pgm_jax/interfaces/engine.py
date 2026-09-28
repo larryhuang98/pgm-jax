@@ -1,0 +1,531 @@
+"""pGM energies, forces, virials and dipoles for external MD codes: one jitted call per configuration.
+
+External drivers (ASE, i-PI, OpenMM; pgm_jax/interfaces/) hand over positions and a cell and want
+the energy and forces back; they integrate the equations of motion themselves.  `PGMEngine` keeps
+everything that is expensive to rebuild on the device between calls:
+
+  * the jitted force field of the MD engine (PGMForceField: smooth PME, pair rows, pmemd-pgm's
+    induction solver with the mu4 predictor) plus, for flexible molecules, their bonded terms
+    (FlexibleTemplate, as FlexibleSimulation), charge flux and the intramolecular van der Waals;
+  * the neighbour list (molecular-centre list of the MD engine, or an atom list for small boxes),
+    updated inside the jitted call (JAX-MD rebuilds it when something moved more than skin/2);
+  * the induced dipoles and their predictor history (InductionState), so successive MD steps start
+    the CG from the extrapolated dipoles exactly as the native integrator does.  Several `slots`
+    keep separate histories for interleaved configurations (i-PI sends the P beads of a ring polymer
+    to one client one after the other): each call picks the slot whose last configuration is
+    closest.  A configuration far from the slot's last one (a jump larger than `jump` nm, e.g. a
+    new structure) restarts that slot's predictor.
+
+Per call the host sends positions (float64) and the cell and receives one packed float64 array
+(energy terms, forces, flags); induced dipoles, the cell dipole and the virial stay on the device
+until asked for.  Overflows of the row or list capacities, a box that changed by more than 10 % in
+volume, or an atom further from its list-group centre than the list radius are detected after the
+call; the engine then resizes or rebuilds and repeats the call (never silent), as the native driver
+does with its blocks.
+
+Positions may come wrapped atom by atom (ASE, OpenMM) or never wrapped (i-PI): inside the call each
+molecule is made whole along its bond tree (pointer doubling, O(N log depth)) and whole molecules
+are shifted into the primary cell by their centres of mass.  Energies and forces do not depend on
+either.  Cells may be any right-handed cell: a general cell (ASE) is rotated to the reduced lower
+triangular form of the engine (a along x, b in the xy plane), and forces and virials are rotated
+back.
+
+Virial W = dE/d eps (3 x 3, kJ/mol) at the converged dipoles (the energy is variational in them):
+  stress="atomic"     every atom scaled with the box (x -> (1 + eps) x), the derivative external
+                      codes expect for flexible molecules (ASE stress = W / V, i-PI virial = -W);
+  stress="molecular"  molecular centres of mass scaled, molecules translated rigidly (the native
+                      pressure; for rigid molecules held by constraints).
+Both include, with MDSettings.lj_lrc, the long-range correction's impulse term, exactly as
+Simulation.pressure(): W = PGMForceField.strain_derivative (+ the bonded terms for "atomic").
+
+Units: nm, kJ/mol, kJ/mol/nm, e nm, amu (conversions in the driver modules)."""
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import dataclass, field
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+from ..system import System
+from ..md.box import check_box, max_cutoff, min_image, reduce_box, volume, inv3
+from ..md.forcefield import MDSettings, PGMForceField
+from ..md.neighbors import AtomNeighbors, MoleculeNeighbors
+from ..md.topology import MDTopology
+
+__all__ = ["PGMEngine", "GasPhaseEngine", "EngineResult", "standard_cell"]
+
+
+# ----------------------------------------------------------------------------- cells
+def standard_cell(cell):
+    """(H, Q) for a right-handed cell (rows are lattice vectors, nm): H = reduce_box(cell @ Q) is
+    lower triangular and reduced, Q a rotation (Q = I when the cell is already lower triangular).
+    Positions map as x -> x @ Q, forces back as f -> f @ Q.T, a virial W -> Q W Q.T."""
+    C = np.asarray(cell, float)
+    if not np.all(np.isfinite(C)) or abs(np.linalg.det(C)) < 1e-12:
+        raise ValueError("the cell must be periodic in three dimensions (non-singular)")
+    if np.linalg.det(C) < 0:
+        raise ValueError("left-handed cell: reorder the lattice vectors")
+    if np.all(np.abs(np.triu(C, 1)) <= 1e-12 * np.abs(C).max()) and np.all(np.diag(C) > 0):
+        return reduce_box(np.tril(C)), None
+    Qr, Rr = np.linalg.qr(C.T)                         # C = Rr^T Qr^T  ->  C Qr = Rr^T (lower triangular)
+    s = np.sign(np.diag(Rr))
+    Qr = Qr * s[None, :]                               # positive diagonal; det(Qr) = +1 for a right-handed cell
+    L = C @ Qr
+    return reduce_box(np.tril(L)), Qr
+
+
+def _bond_tree(sys: System, bonds_of=None):
+    """Parent of every atom along a spanning tree of its molecule's bond graph (roots: the first atom
+    of each molecule; atoms not connected to it hang from the root) and the tree depth."""
+    N = sys.n
+    parent = np.arange(N)
+    depth = 0
+    for k, m in enumerate(sys.molecules):
+        off = int(sys.offsets[k])
+        bonds = bonds_of(k) if bonds_of is not None else list(getattr(m, "bonds", []) or [])
+        nbr = [[] for _ in range(m.n)]
+        for i, j in bonds:
+            nbr[int(i)].append(int(j)); nbr[int(j)].append(int(i))
+        seen = np.zeros(m.n, bool)
+        d = np.zeros(m.n, int)
+        for root in range(m.n):                        # BFS from atom 0, then any unreached atom
+            if seen[root]:
+                continue
+            seen[root] = True
+            if root != 0:
+                parent[off + root] = off               # disconnected: hang from the molecule's first atom
+                d[root] = 1
+            queue = [root]
+            while queue:
+                a = queue.pop(0)
+                for b in nbr[a]:
+                    if not seen[b]:
+                        seen[b] = True
+                        parent[off + b] = off + a
+                        d[b] = d[a] + 1
+                        queue.append(b)
+        depth = max(depth, int(d.max()) if m.n else 0)
+    return parent, depth
+
+
+@dataclass
+class EngineResult:
+    """One evaluation, host arrays in engine units (kJ/mol, kJ/mol/nm), in the caller's frame."""
+    energy: float
+    forces: np.ndarray
+    terms: dict                                        # elec, vdw, bonded (kJ/mol)
+    iterations: int                                    # CG iterations of the dipole solve
+    _dev: dict = field(default_factory=dict, repr=False)   # device arrays: mu, dipole parts, virial
+    _Q: np.ndarray | None = None
+
+    def _rot_vec(self, v):
+        v = np.asarray(v, float)
+        return v if self._Q is None else v @ self._Q.T
+
+    @property
+    def induced_dipoles(self) -> np.ndarray:
+        """(N, 3) e nm, the converged induced dipoles."""
+        return self._rot_vec(self._dev["mu"])
+
+    @property
+    def dipole_components(self) -> np.ndarray:
+        """(3, 3) e nm: rows M_q (charges, molecules whole, about their centres of mass), M_perm
+        (covalent dipoles), M_ind (induced dipoles); md/dipoles.py conventions."""
+        return self._rot_vec(self._dev["dip"])
+
+    @property
+    def dipole(self) -> np.ndarray:
+        """Total dipole of the cell (e nm), M_q + M_perm + M_ind."""
+        return self.dipole_components.sum(0)
+
+    @property
+    def virial(self) -> np.ndarray | None:
+        """dE/d eps (3, 3) kJ/mol, or None when not computed."""
+        if "W" not in self._dev:
+            return None
+        W = np.asarray(self._dev["W"], float)
+        return W if self._Q is None else self._Q @ W @ self._Q.T
+
+
+class _Slot:
+    def __init__(self):
+        self.x = None          # last positions (host, standard frame)
+        self.ind = None        # InductionState (device)
+        self.nbr = None        # neighbour list (device)
+
+
+class PGMEngine:
+    """Periodic pGM (+ Lennard-Jones / GVDW, + bonded terms of flexible templates) for external
+    drivers.  Build it like a native simulation:
+
+        eng = PGMEngine(system, pos_nm, H_nm, MDSettings(...))                # rigid-molecule model
+        eng = PGMEngine(system, pos_nm, H_nm, settings, templates=[tpl] * n)  # flexible molecules
+        eng = PGMEngine.from_amber("water.prmtop", "water.rst7", settings=...)
+        res = eng.compute(pos_nm, cell_nm, virial=True)     # EngineResult (kJ/mol, kJ/mol/nm)
+
+    templates=None gives the model of the rigid-molecule engine (Simulation): pGM with every pair,
+    no intramolecular van der Waals, no bonded terms; the external code must then hold the
+    molecules rigid (ASE FixBondLengths, OpenMM constraints).  With templates (FlexibleTemplate /
+    RigidTemplate, one per molecule) the model is FlexibleSimulation's.  params: parameter pytree
+    (None: the system's values).  Virtual sites and alchemical regions are not supported here."""
+
+    def __init__(self, sys: System, pos, H, settings: MDSettings = MDSettings(), templates=None, params=None,
+                 stress: str = "atomic", slots: int = 1, r_margin: float = 0.05, neighbor_list: str = "auto",
+                 jump: float = 0.05, restraints=None):
+        from ..md.vsites import VirtualSites
+        if VirtualSites.of(sys) is not None:
+            raise NotImplementedError("virtual sites are not supported by the external-code interfaces yet")
+        if stress not in ("atomic", "molecular"):
+            raise ValueError("stress must be 'atomic' or 'molecular'")
+        H0, Q = standard_cell(H)
+        pos = np.asarray(pos, float) if Q is None else np.asarray(pos, float) @ Q
+        self.sys, self.settings, self.params = sys, settings, params
+        self.stress_mode, self.jump = stress, float(jump)
+        self.n = sys.n
+        self.masses = np.asarray(sys.masses, float)
+        self.flex = None
+        if templates is None:
+            self.topology = MDTopology.rigid(sys)
+            self.ff = PGMForceField(sys, H0, settings, topology=self.topology)
+            bonds_of = None
+        else:
+            from ..md.flexible import FlexibleMolecules
+            from ..md.flux import ChargeFlux
+            templates = list(templates)
+            uniq = {id(t): t for t in templates}.values()
+            for tpl in uniq:
+                tpl.check_settings(settings)
+            rules = {id(t): t.md_rule("none") for t in uniq}
+            self.topology = MDTopology.build(sys, [rules[id(t)] for t in templates])
+            self.flex = FlexibleMolecules(sys, pos, H0, templates, self.topology, self.masses)
+            self.ff = PGMForceField(sys, H0, settings, topology=self.topology,
+                                    flux=ChargeFlux.from_templates(sys, templates))
+            self.ff.masses = jnp.asarray(self.masses)
+            tb = [t.terms.mols[t.index].top.bonds if t.has_bonded else sys.molecules[k].bonds
+                  for k, t in enumerate(templates)]
+            bonds_of = lambda k: tb[k]
+        from ..md.restraints import as_restraints
+        self.restraints = as_restraints(restraints)
+        if self.restraints is not None:
+            self.restraints.check(sys.n)
+        parent, depth = _bond_tree(sys, bonds_of)
+        self._parent = jnp.asarray(parent)
+        self._nhop = max(1, int(math.ceil(math.log2(depth + 1)))) if depth > 0 else 0
+        self._mol = jnp.asarray(sys.mol)
+        self._nmol = sys.nmol
+        mm = np.bincount(np.asarray(sys.mol), weights=self.masses, minlength=sys.nmol)
+        self._wmol = jnp.asarray(self.masses / mm[np.asarray(sys.mol)])
+        self._group = jnp.asarray(self.topology.group)
+        self._ngroup = int(self.topology.n_group)
+        mg = np.bincount(np.asarray(self.topology.group), weights=self.masses, minlength=self._ngroup)
+        self._wgroup = jnp.asarray(self.masses / mg[np.asarray(self.topology.group)])
+        from ..md.dipoles import CellDipole
+        self._celldip = CellDipole(self.ff)
+        # whole molecules at the start: list radius and sizes
+        x0 = np.asarray(self._whole_jit()(jnp.asarray(pos), jnp.asarray(H0)))
+        self.initial_positions, self.initial_box = x0, H0      # standard frame (OpenMM's box form)
+        self.r_margin = float(r_margin)
+        self.r_list = self.topology.group_radius(x0, self.masses) + self.r_margin
+        self._nb_mode = neighbor_list
+        self._make_neighbors(H0)
+        self._size(x0, H0)
+        self.slots = [_Slot() for _ in range(max(1, int(slots)))]
+        self.stats = {"calls": 0, "repeats": 0, "rebuilds": 0, "cg": 0, "resets": 0, "time": 0.0}
+        self._compile()
+
+    # ------------------------------------------------------------------ constructors
+    @classmethod
+    def from_amber(cls, prmtop: str, coords: str, charges: str = "pgm", **kw) -> "PGMEngine":
+        """Rigid-molecule model from a pGM prmtop and coordinates (as Simulation.from_amber)."""
+        from ..md.io import box_from_cell, read_coordinates
+        from ..md.simulation import _dedupe
+        from ..param import read_prmtop_pgm
+        mols = _dedupe(read_prmtop_pgm(prmtop, first_residue_only=False, charges=charges))
+        sys = System(mols)
+        xyz, _, box = read_coordinates(coords)
+        if box is None:
+            raise ValueError("coordinates have no periodic box")
+        return cls(sys, xyz * 0.1, box_from_cell(*box) * 0.1, **kw)
+
+    @classmethod
+    def from_simulation(cls, sim, **kw) -> "PGMEngine":
+        """The model of a native Simulation / FlexibleSimulation at its current state (same system,
+        settings, parameters and templates; restraints included)."""
+        templates = kw.pop("templates", None)
+        if templates is None and hasattr(sim, "flex"):
+            raise ValueError("FlexibleSimulation: pass its templates, PGMEngine.from_simulation(sim, templates=...)")
+        kw.setdefault("params", sim.integ.params)
+        kw.setdefault("restraints", sim.integ.restraints)
+        return cls(sim.sys, sim.positions_nm(), np.asarray(sim.state.box), sim.settings, templates=templates, **kw)
+
+    # ------------------------------------------------------------------ neighbour lists
+    def _make_neighbors(self, H):
+        s = self.settings
+        mode = self._nb_mode
+        if mode == "auto":
+            mode = "molecule" if MoleculeNeighbors.fits(H, s.pair_cutoff, s.skin, self.r_list) else "atom"
+        if mode == "molecule":
+            self.nb = MoleculeNeighbors(self.topology.group, self._ngroup, self.r_list, H, s.pair_cutoff, s.skin)
+        else:
+            self.nb = AtomNeighbors(self.n, H, s.pair_cutoff, s.skin)
+        self._nb_volume = float(np.linalg.det(np.asarray(H)))
+
+    def _centers(self, x):
+        return jax.ops.segment_sum(self._wgroup[:, None] * x, self._group, self._ngroup)
+
+    def _size(self, x, H, factor: float = 1.2, nbr=None):
+        x, H = jnp.asarray(x), jnp.asarray(H)
+        c = self._centers(x)
+        nbr = self.nb.allocate(x, c, H) if nbr is None else nbr
+        if self.nb.kind == "molecule":
+            self.nb.size(nbr, c, H, x, factor)
+        idx = self.nb.candidates(nbr, c, H, x)[0]
+        self.ff.size_rows(x, H, idx, factor)
+        return nbr
+
+    # ------------------------------------------------------------------ jitted pieces
+    def _whole(self, x, H):
+        """Molecules made whole along their bond trees, then shifted by lattice vectors so that
+        their centres of mass lie in the primary cell."""
+        if self._nhop:
+            s = min_image(x - x[self._parent], H)
+            a = self._parent
+            for _ in range(self._nhop + 1):
+                s = s + s[a]
+                a = a[a]
+            x = x[a] + s
+        com = jax.ops.segment_sum(self._wmol[:, None] * x, self._mol, self._nmol)
+        hi = jax.lax.Precision.HIGHEST
+        f = jnp.matmul(com, inv3(H), precision=hi)
+        return x - jnp.matmul(jnp.floor(f), H, precision=hi)[self._mol]
+
+    def _whole_jit(self):
+        if getattr(self, "_whole_c", None) is None:
+            self._whole_c = jax.jit(self._whole)
+        return self._whole_c
+
+    def _list_fits(self, H) -> bool:
+        s = self.settings
+        if self.nb.kind == "molecule":
+            return MoleculeNeighbors.fits(H, s.pair_cutoff, s.skin, self.r_list)
+        return self.nb.rlist <= max_cutoff(H)
+
+    def _eval(self, x, H, ind, nbr, virial: bool):
+        x = self._whole(x, H)
+        c = self._centers(x)
+        nbr = self.nb.update(nbr, x, c, H)
+        cand, ovf = self.nb.candidates(nbr, c, H, x)
+        res = self.ff.compute(x, H, cand, ind, self.params)
+        E, F = res.energy["total"], res.forces
+        eb = jnp.zeros((), jnp.float64)
+        gb = None
+        if self.flex is not None:
+            eb, gb = jax.value_and_grad(self.flex.energy)(x)
+            F = F - gb
+        er = jnp.zeros((), jnp.float64)
+        if self.restraints is not None:
+            er, gr = jax.value_and_grad(self.restraints.energy)(x, H)
+            F = F - gr
+        ext = jnp.max(jnp.sqrt(jnp.sum((x - c[self._group]) ** 2, axis=1)))
+        head = jnp.stack([E + eb + er, res.energy["elec"], res.energy["vdw"], eb, er,
+                          res.iterations.astype(jnp.float64), res.residual.astype(jnp.float64),
+                          (res.overflow | ovf).astype(jnp.float64), nbr.error.code.astype(jnp.float64), ext])
+        packed = jnp.concatenate([head, F.reshape(-1)])
+        dev = {"mu": res.induction.mu, "dip": self._celldip.components(x, H, res.induction.mu, self.params)}
+        if virial:
+            dev["W"] = self._virial(x, H, cand, res.induction.mu, gb)
+        return packed, res.induction, nbr, dev
+
+    def _virial(self, x, H, cand, mu, gb):
+        molecular = self.stress_mode == "molecular"
+        W = self.ff.strain_derivative(x, H, cand, mu, self.params, molecular=molecular)
+        # the force field assumes a lower-triangular box: strains with eps_ab, a < b (and the
+        # diagonal) keep H @ (1 + eps)^T lower triangular and are differentiated exactly; the energy
+        # is rotation invariant, so W is symmetric and its lower triangle is the transposed upper one
+        W = jnp.triu(W) + jnp.triu(W, 1).T
+        if gb is not None and not molecular:
+            W = W + gb.T @ x                           # bonded energy under x -> x (1 + eps)^T: sum_i g_i (x) x_i
+        if self.restraints is not None:
+            W = W + (self.restraints.strain_derivative(x, H, self.ff.mol, self.ff.masses, self._nmol) if molecular
+                     else self._restraint_strain_atomic(x, H))
+        return W
+
+    def _restraint_strain_atomic(self, x, H):
+        def e(eps):
+            F = jnp.eye(3) + eps
+            return self.restraints.energy(x @ F.T, H @ F.T)
+        return jax.grad(e)(jnp.zeros((3, 3)))
+
+    def _compile(self):
+        self._fn = jax.jit(self._eval, static_argnames=("virial",))
+        self._vir_fn = jax.jit(self._virial_only)
+
+    def _virial_only(self, x, H, ind, nbr):
+        x = self._whole(x, H)
+        c = self._centers(x)
+        cand, _ = self.nb.candidates(nbr, c, H, x)
+        gb = jax.grad(self.flex.energy)(x) if self.flex is not None else None
+        return self._virial(x, H, cand, ind.mu, gb)
+
+    # ------------------------------------------------------------------ host side
+    def _slot_for(self, x) -> _Slot:
+        """The slot whose last configuration is closest to x (largest displacement); an unused slot
+        when every used one is further than `jump`."""
+        if len(self.slots) == 1:
+            return self.slots[0]
+        used = [s for s in self.slots if s.x is not None]
+        free = [s for s in self.slots if s.x is None]
+        if not used:
+            return free[0]
+        d = [float(np.max(np.abs(s.x - x))) for s in used]
+        k = int(np.argmin(d))
+        return free[0] if (d[k] > self.jump and free) else used[k]
+
+    def reset(self):
+        """Forget the dipole histories (the next call starts every slot from scratch)."""
+        for s in self.slots:
+            s.x = s.ind = s.nbr = None
+
+    def compute(self, pos, cell, virial: bool = False, slot: int | None = None) -> EngineResult:
+        """Energy and forces (and the virial if asked) at positions pos (N, 3) nm and cell (3, 3)
+        nm, rows = lattice vectors; any right-handed cell, atoms wrapped or not.  slot: the
+        induced-dipole history to use (default: the closest one)."""
+        t0 = time.perf_counter()
+        H, Q = standard_cell(cell)
+        x = np.asarray(pos, float)
+        if x.shape != (self.n, 3):
+            raise ValueError(f"expected positions of shape ({self.n}, 3), got {x.shape}")
+        if Q is not None:
+            x = x @ Q
+        check_box(H, self.settings.pair_cutoff + self.settings.skin)
+        slot = self._slot_for(x) if slot is None else self.slots[int(slot)]
+        if slot.x is not None and float(np.max(np.abs(slot.x - x))) > self.jump:
+            slot.ind = None                              # new configuration: restart the predictor
+            self.stats["resets"] += 1
+        if abs(float(np.linalg.det(H)) / self._nb_volume - 1.0) > 0.10 or not self._list_fits(H):
+            self._rebuild(x, H)
+        xd, Hd = jnp.asarray(x), jnp.asarray(H)
+        for attempt in range(8):
+            if slot.nbr is None:
+                xw = self._whole_c(xd, Hd)
+                slot.nbr = self.nb.allocate(xw, self._centers(xw), Hd)
+            ind = self.ff.init_induction() if slot.ind is None else slot.ind
+            packed, ind_new, nbr_new, dev = self._fn(xd, Hd, ind, slot.nbr, virial=bool(virial))
+            out = np.asarray(packed)
+            ovf, code, ext = bool(out[7]), int(out[8]), float(out[9])
+            nb_bad = self.nb.failed(nbr_new)
+            far = self.nb.kind == "molecule" and ext > self.r_list
+            if not (ovf or nb_bad or far) and np.isfinite(out[0]):
+                break
+            if not np.isfinite(out[0]) and not (ovf or nb_bad or far):
+                raise FloatingPointError("pGM energy is not finite")
+            self.stats["repeats"] += 1
+            if far:
+                self.r_margin = max(2.0 * self.r_margin, ext - self.r_list + self.r_margin + 0.02)
+                self._rebuild(x, H)
+            else:
+                old = (self.ff.capacity, getattr(self.nb, "cap", None))
+                xw = self._whole_c(xd, Hd)
+                try:
+                    nbr = self._size(xw, Hd, 1.3, None if nb_bad else slot.nbr)
+                except ValueError:
+                    self._rebuild(x, H)
+                    continue
+                if ovf:
+                    self.ff.grow_rows(old[0])
+                    if getattr(self.nb, "cap", None) is not None and old[1] is not None:
+                        self.nb.cap = max(self.nb.cap, old[1] + 4)
+                for s in self.slots:
+                    s.nbr = None
+                slot.nbr = nbr
+                self._compile()
+        else:
+            raise RuntimeError("neighbour list / row capacity keeps overflowing")
+        slot.x, slot.ind, slot.nbr = x, ind_new, nbr_new
+        n = self.n
+        E = float(out[0])
+        F = out[10:10 + 3 * n].reshape(n, 3)
+        if Q is not None:
+            F = F @ Q.T
+        self._last = (xd, Hd, slot)
+        self.stats["calls"] += 1
+        self.stats["cg"] += int(out[5])
+        self.stats["time"] += time.perf_counter() - t0
+        return EngineResult(E, F, {"elec": float(out[1]), "vdw": float(out[2]), "bonded": float(out[3]),
+                                   "restraint": float(out[4])}, int(out[5]), dev, Q)
+
+    def virial_of_last(self, res: EngineResult) -> np.ndarray:
+        """The virial (kJ/mol, caller's frame) of the last computed configuration without a new
+        dipole solve (e.g. when a driver asks for the stress after the forces)."""
+        xd, Hd, slot = self._last
+        res._dev["W"] = self._vir_fn(xd, Hd, slot.ind, slot.nbr)
+        return res.virial
+
+    def _rebuild(self, x, H):
+        """New neighbour-list object for box H (large volume change, list radius exceeded)."""
+        self.stats["rebuilds"] += 1
+        xw = np.asarray(self._whole_jit()(jnp.asarray(x), jnp.asarray(H)))
+        self.r_list = max(self.r_list, self.topology.group_radius(xw, self.masses) + self.r_margin)
+        self._make_neighbors(H)
+        nbr = self._size(xw, H)
+        for s in self.slots:
+            s.nbr = None
+        self._compile()
+        return nbr
+
+    def describe(self) -> str:
+        s = self.settings
+        return (f"pgm_jax engine: {self.sys.nmol} molecules, {self.n} atoms, "
+                f"{'flexible templates' if self.flex is not None else 'rigid-molecule model'}, "
+                f"{s.precision} precision, PME grid {self.ff.pme.K} order {s.pme_order}, {s.describe_cutoffs()}, "
+                f"{self.nb.kind} neighbour list, dipole tol {s.dipole_tol:g}, {len(self.slots)} dipole slot(s), "
+                f"stress {self.stress_mode}, device {jax.devices()[0]}")
+
+
+# ----------------------------------------------------------------------------- gas phase
+class GasPhaseEngine:
+    """Gas-phase pGM (pgm_jax.Model: every pair, dense induction solve) for external drivers:
+    energy, forces, induced dipoles and the total dipole of a cluster or molecule, no cell.
+
+        eng = GasPhaseEngine(Model([ElecChannel(), LJChannel()]), system, params=None)
+        res = eng.compute(pos_nm)"""
+
+    def __init__(self, model, sys: System, params=None):
+        self.model, self.sys, self.params, self.n = model, sys, params, sys.n
+        chans = model.build(sys)
+
+        def f(pos, params):
+            out, aux = {}, {}
+            for ch in chans:
+                e, a = ch.energy(pos, sys, params)
+                out.update(e)
+                if isinstance(a, dict):
+                    aux.update(a)
+            total = sum(out.values())
+            return total, (out, aux)
+
+        def run(pos, params):
+            (E, (terms, aux)), g = jax.value_and_grad(f, has_aux=True)(pos, params)
+            P = sys.expand(params)
+            mu = aux.get("mu", jnp.zeros((sys.n, 3)))
+            p = aux.get("p", jnp.zeros((sys.n, 3)))
+            com = jnp.sum(jnp.asarray(sys.masses)[:, None] * pos, 0) / jnp.sum(jnp.asarray(sys.masses))
+            dip = jnp.stack([jnp.sum(P["q"][:, None] * (pos - com), 0), jnp.sum(p, 0), jnp.sum(mu, 0)])
+            return E, -g, terms, mu, dip
+
+        self._fn = jax.jit(run)
+        self.stats = {"calls": 0, "time": 0.0}
+
+    def compute(self, pos, cell=None, virial: bool = False) -> EngineResult:
+        if virial:
+            raise ValueError("no virial in the gas phase")
+        t0 = time.perf_counter()
+        E, F, terms, mu, dip = self._fn(jnp.asarray(pos, jnp.float64), self.params)
+        F = np.asarray(F)
+        res = EngineResult(float(E), F, {k: float(v) for k, v in terms.items()}, 0, {"mu": mu, "dip": dip}, None)
+        self.stats["calls"] += 1
+        self.stats["time"] += time.perf_counter() - t0
+        return res
