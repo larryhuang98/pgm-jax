@@ -169,7 +169,7 @@ def test_compute_batch_matches_single_structures():
             q = PGMEngine(sysm, pos, H, s).compute(x, H)
             assert abs(r.energy - q.energy) < 1e-9 * abs(q.energy)
         st = eng.stats
-        assert st["batches"] == 3 and st["calls"] == 10 and st["slot_evaluations"] == 12 and st["resets"] == 0
+        assert st["batches"] == 3 and st["calls"] == 10 and st["slot_evaluations"] == 10 and st["resets"] == 0
         assert eng._nbb.kind == ("molecule" if chunk is None else "atom")
 
 

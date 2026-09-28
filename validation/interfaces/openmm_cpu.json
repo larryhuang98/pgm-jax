@@ -1,0 +1,56 @@
+{
+ "device": "cpu:0",
+ "openmm": "8.6.1",
+ "platforms": [
+  "CPU"
+ ],
+ "single_point_double": {
+  "CPU": {
+   "E_openmm": -2115058.9913431294,
+   "E_native": -2115058.991343129,
+   "dE": -4.656612873077393e-10,
+   "F_maxdiff": 2.8671820473391563e-10,
+   "F_rms": 1494.8339294880573
+  }
+ },
+ "nve_native": {
+  "drift_kT_per_ns_per_dof": 0.0020637035521072844,
+  "std_kJmol": 0.22246535706757792,
+  "ms_per_step": 40.34645153135061
+ },
+ "nve_openmm_CPU": {
+  "drift_kT_per_ns_per_dof": -0.0008313729187547577,
+  "std_kJmol": 0.26320814707555235,
+  "ms_per_step": 46.69096641466022,
+  "engine_ms_per_call": 44.06806921383532,
+  "pythonforce_ms_per_call": 44.24399117653323,
+  "state_to_numpy_ms": 0.12574777154639216,
+  "calls_per_step": 1.01,
+  "cg_per_call": 4.171980198019802,
+  "dof": 3069
+ },
+ "nvt": {
+  "platform": "CPU",
+  "T_native": 294.26286954772183,
+  "T_native_err": 1.6457208830992514,
+  "T_openmm": 298.6595598677093,
+  "T_openmm_err": 1.483865876790299,
+  "U_native_per_mol": -4130.896205810358,
+  "U_native_err": 0.10736397183885404,
+  "U_openmm_per_mol": -4130.710566564764,
+  "U_openmm_err": 0.05372287482468955,
+  "ms_per_step": 53.57748939618468
+ },
+ "npt": {
+  "platform": "CPU",
+  "rho_native": 1.0179242760170244,
+  "rho_native_err": 0.003302489705052498,
+  "rho_openmm": 1.019726956341205,
+  "rho_openmm_err": 0.002674875012692177,
+  "ms_per_step": 73.18957504580418,
+  "ps": 30.0,
+  "engine_rebuilds": 0,
+  "engine_repeats": 0,
+  "calls_per_step": 1.08
+ }
+}

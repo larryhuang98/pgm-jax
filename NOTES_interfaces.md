@@ -66,3 +66,17 @@ Running log so the work can be resumed.
   wrong).  Fixed: one-to-one assignment to previous structures (match_previous), and
   PGMEngine.compute_batch: all beads in one vmapped call (shared list of the centroid + bead margin,
   molecule or atom list; stacked histories with a shared predictor counter; chunks).
+- 07:15 GPU batch 3: bench x1 (1536 atoms): native 0.70 ms, engine 1.01 (CG 4.0), ASE 4.2, OpenMM-CPU
+  1.53; x2 (12288): native 1.90, engine 3.08, ASE 20.4 (deepcopy of the constraint list in
+  atoms.copy(): fixed with a light copy + constraint arrays), OpenMM 3.49.  Jump test now uses the
+  minimum image (the native driver's wrapping had reset the predictor: CG 7.2 -> 4.0).
+  i-PI PIMD P=8, 10 ps, vmapped beads (first batch logic): KE_H 119.28+-0.03 (native 118.89+-0.10),
+  KE_O 51.15+-0.03 (51.15+-0.06), <V> -2084885+-35 (native -2085188+-43); 22 ms/step (engine 1.5 ms
+  per bead); 17 % of i-PI's batches are partial (padded with copies), 38 % resets.  i-PI's default
+  splitting is OBABO (native BAOAB + Cayley): rerun with splitting="baoab", propagator="cayley".
+- compute_batch rewritten: dedupe padding copies, rectangular assignment of the distinct structures
+  to P slots, vmapped call over all P slots with absent slots kept (masked state update).
+- CPU i-PI (16 cores): engine 105 ms per call vs native 54 ms per step (i-PI's polling thread, latency
+  1e-4 s, competes with XLA's threads; cancelled the CPU PIMD run: 2 s/step).
+- Native rigid-body Langevin (gamma 1/ps) came out 290-297 K in the 6-20 ps runs of these scripts
+  (ASE / OpenMM Langevin 297-299 K); not investigated (outside this feature).

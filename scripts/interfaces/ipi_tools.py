@@ -48,13 +48,13 @@ def write_input(workdir, symbols, pos_nm, H_nm, masses, *, nbeads=1, steps=1000,
                 ensemble="nvt", thermostat="pile_g", tau_fs=100.0, address="pgmjax", stride=10,
                 batch_size=1, seed=31415, extra_props=(), traj_stride=0, velocities=None, pile_lambda=None,
                 pressure=None, barostat_tau_fs=200.0, velocity_units="atomic_unit", splitting=None,
-                nm_propagator=None):
+                nm_propagator=None, pressure_output=True):
     """init.xyz + input.xml for i-PI (unix socket `address`).  velocities: (N, 3) in velocity_units
     (i-PI's units; atomic units by default) or None (thermal at T)."""
     os.makedirs(workdir, exist_ok=True)
     write_xyz(os.path.join(workdir, "init.xyz"), symbols, pos_nm, H_nm)
     props = ["step", "time{picosecond}", "conserved", "temperature{kelvin}", "potential", "kinetic_md",
-             "kinetic_cv", "pressure_cv{bar}", "volume"] + list(extra_props)          # energies: Hartree
+             "kinetic_cv"] + (["pressure_cv{bar}"] if pressure_output else []) + ["volume"] + list(extra_props)
     mass = "[ " + ", ".join(f"{m:.6f}" for m in masses) + " ]"
     vel = f'<velocities mode="thermal" units="kelvin"> {T} </velocities>'
     if velocities is not None:

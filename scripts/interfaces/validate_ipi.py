@@ -107,9 +107,9 @@ def cmd_start(args):
     print(sim.observables())
 
 
-def client_factory(sysm, tpls, s, slots, address, stress="atomic", vmap=True):
+def client_factory(sysm, tpls, s, slots, address, stress="atomic", vmap=True, virial=True):
     return lambda: IPIClient(lambda p, c: PGMEngine(sysm, p, c, s, templates=tpls, slots=slots, stress=stress),
-                             address, unix=True, log=None, vmap_beads=vmap)
+                             address, unix=True, log=None, vmap_beads=vmap, virial=virial)
 
 
 def cmd_nve(args):
@@ -130,14 +130,16 @@ def cmd_nve(args):
     wd = os.path.join(WORK, "nve")
     symbols = [e for m in sysm.molecules for e in m.elements]
     T.write_input(wd, symbols, pos, H, sysm.masses, nbeads=1, steps=steps, dt_fs=0.25, ensemble="nve", stride=rep,
-                  address="pgmval_nve", velocities=vel / (BOHR_NM / ATU_PS), velocity_units="atomic_unit")
-    client, st, props, wall = T.run(wd, "pgmval_nve", client_factory(sysm, tpls, s, 1, "pgmval_nve"))
+                  address="pgmval_nve", velocities=vel / (BOHR_NM / ATU_PS), velocity_units="atomic_unit",
+                  pressure_output=not args.no_virial)
+    client, st, props, wall = T.run(wd, "pgmval_nve", client_factory(sysm, tpls, s, 1, "pgmval_nve",
+                                                                     virial=not args.no_virial))
     Ui, Ei = props["potential"], props["conserved"]
     m = min(len(Ui), len(U))
     dof = 3 * sysm.n - 3
     slope = lambda tt, ee: float(np.polyfit(np.asarray(tt) / 1000.0, ee, 1)[0] / (KB * 298.0) / dof)
     ti = props["time"]
-    save("nve", {"steps": steps, "dt_fs": 0.25, "precision": args.precision, "dipole_tol": args.tol,
+    save("nve" + ("_novirial" if args.no_virial else ""), {"steps": steps, "virial": not args.no_virial, "dt_fs": 0.25, "precision": args.precision, "dipole_tol": args.tol,
                  "U_diff_first": [float(Ui[k] - U[k]) for k in range(0, min(m, 6))],
                  "U_maxdiff_first_100_steps": float(np.max(np.abs(Ui[:6] - np.asarray(U[:6])))),
                  "U_rel_maxdiff_all": float(np.max(np.abs(Ui[:m] - np.asarray(U[:m]))) / abs(U[0])),
@@ -194,9 +196,9 @@ def cmd_pimd(args):
     T.write_input(wd, symbols, pos, H, sysm.masses, nbeads=P, steps=steps, dt_fs=0.25, ensemble="nvt",
                   thermostat="pile_g", tau_fs=100.0, stride=rep, address=f"pgmval_p{P}",
                   batch_size=P if args.batch else 1, seed=11, splitting=args.splitting, nm_propagator=args.propagator,
-                  extra_props=("kinetic_cv(H)", "kinetic_cv(O)", "kinetic_td(H)"))
+                  extra_props=("kinetic_cv(H)", "kinetic_cv(O)", "kinetic_td(H)"), pressure_output=not args.no_virial)
     client, st, props, wall = T.run(wd, f"pgmval_p{P}", client_factory(sysm, tpls, s, P, f"pgmval_p{P}",
-                                                                        vmap=bool(args.vmap)))
+                                                                        vmap=bool(args.vmap), virial=not args.no_virial))
     nH, nO = 2 * n, n
     eq = int(round(args.equil_ps / (0.00025 * rep)))
     keH = props["kinetic_cv(H)"][eq:] / nH * T.KJMOL_MEV
@@ -206,7 +208,7 @@ def cmd_pimd(args):
     eng = client.engine
     blocks = np.array_split(np.asarray(U), 5)
     out = {"beads": P, "batch": bool(args.batch), "vmap": bool(args.vmap), "steps": steps, "equil_ps": args.equil_ps,
-           "splitting": args.splitting or "obabo", "propagator": args.propagator or "exact",
+           "splitting": args.splitting or "obabo", "propagator": args.propagator or "exact", "virial": not args.no_virial,
            "epot_blocks": [float(np.mean(b)) for b in blocks],
            "ke_H_cv_meV": [float(np.mean(keH)), be(keH)], "ke_O_cv_meV": [float(np.mean(keO)), be(keO)],
            "epot_bead_mean": [float(np.mean(U)), be(U)], "T": float(np.mean(props["temperature"][eq:])),
@@ -219,7 +221,8 @@ def cmd_pimd(args):
             r = json.load(fh)
         out["native"] = {k: r[k] for k in ("ke_H_cv_meV", "ke_O_cv_meV", "epot", "ms_per_step", "ps", "cg_mean") if k in r}
     save(f"pimd{P}{'_batch' if args.batch else '_serial'}{'_vmap' if args.vmap and args.batch else ''}_{steps}"
-         f"{'_' + args.splitting if args.splitting else ''}{'_' + args.propagator if args.propagator else ''}", out)
+         f"{'_' + args.splitting if args.splitting else ''}{'_' + args.propagator if args.propagator else ''}"
+         f"{'_novirial' if args.no_virial else ''}", out)
     print(json.dumps(client.engine.stats), flush=True)
 
 
@@ -235,6 +238,7 @@ def main():
     ap.add_argument("--beads", type=int, default=8)
     ap.add_argument("--batch", type=int, default=1)
     ap.add_argument("--vmap", type=int, default=1, help="batched beads in one vmapped engine call")
+    ap.add_argument("--no-virial", action="store_true", help="no virial (and no pressure output): timing runs")
     ap.add_argument("--splitting", default=None, help="i-PI splitting: obabo (i-PI default) | baoab (as the native PIMD)")
     ap.add_argument("--propagator", default=None, help="i-PI free ring-polymer propagator: exact | cayley (native default)")
     ap.add_argument("--equil-ps", type=float, default=0.5)

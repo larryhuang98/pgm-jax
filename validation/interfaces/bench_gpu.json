@@ -1,0 +1,32 @@
+{
+ "device": "cuda:0",
+ "steps": 2000,
+ "x1": {
+  "atoms": 1536,
+  "native_ms": 0.7296478854841553,
+  "engine_ms": 1.0146792081650347,
+  "engine_cg_per_call": 4.0,
+  "engine_virial_ms": 2.4284899681806564,
+  "ase_ms": 3.333586558001116,
+  "ase_engine_ms": 1.5718566558207385,
+  "ase_constraints_ms": 0.5464712507091463,
+  "openmm_CPU_ms": 1.499696930986829,
+  "openmm_CPU_engine_ms": 0.9208843308537231,
+  "openmm_CPU_state_ms": 0.02296905991129138,
+  "openmm_CUDA": "No compatible CUDA device is available"
+ },
+ "x2": {
+  "atoms": 12288,
+  "native_ms": 1.8888387909973972,
+  "engine_ms": 2.901077340124175,
+  "engine_cg_per_call": 4.0,
+  "engine_virial_ms": 8.31875233608298,
+  "ase_ms": 12.253284097998403,
+  "ase_engine_ms": 2.7226352145080455,
+  "ase_constraints_ms": 3.6011439020512626,
+  "openmm_CPU_ms": 3.1916765000205487,
+  "openmm_CPU_engine_ms": 2.170505795939979,
+  "openmm_CPU_state_ms": 0.03265928900144719,
+  "openmm_CUDA": "No compatible CUDA device is available"
+ }
+}
