@@ -428,8 +428,10 @@ class PGMBeads:
     the largest allowed distance of a bead atom from its centroid).  contract = P' < P: ring-polymer
     contraction of the intermolecular part (module docstring)."""
 
-    def __init__(self, sim, nbeads: int, contract: int | None = None, bead_margin: float = 0.06):
+    def __init__(self, sim, nbeads: int, contract: int | None = None, bead_margin: float = 0.06,
+                 bead_chunk: int | None = None):
         integ = sim.integ
+        self.chunk = None if not bead_chunk else int(bead_chunk)
         if getattr(integ, "cons", None) is not None:
             raise ValueError("path integrals need flexible molecules without constraints (constraints='none', "
                              "no RigidTemplate)")
@@ -552,6 +554,31 @@ class PGMBeads:
     def _ind_axes(self, ind):
         return jax.tree_util.tree_map(lambda _: 0, _nocount(ind))
 
+    def _over_beads(self, fn, x, ind, n_out: int, k_ind: int):
+        """fn(x_k, ind_k) -> n_out outputs (output k_ind an InductionState) for every force bead:
+        jax.vmap over all of them, or with `bead_chunk` a lax.map over chunks of vmapped beads (less
+        memory traffic per kernel for many beads).  The predictor step counter stays unbatched."""
+        ax = self._ind_axes(ind)
+        out_ax = tuple(ax if i == k_ind else 0 for i in range(n_out))
+        nf = x.shape[0]
+        c = self.chunk
+        if c is None or c >= nf or nf % c:
+            return jax.vmap(fn, in_axes=(0, ax), out_axes=out_ax)(x, ind)
+        count = ind.count
+        split = lambda a: a.reshape((nf // c, c) + a.shape[1:])                     # noqa: E731
+        xs = split(x)
+        inds = jax.tree_util.tree_map(split, _nocount(ind))
+        vf = jax.vmap(fn, in_axes=(0, ax), out_axes=out_ax)
+
+        def body(args):
+            xc, ic = args
+            out = vf(xc, ic.set(count=count))
+            return tuple(o.set(count=None) if i == k_ind else o for i, o in enumerate(out)), out[k_ind].count
+        out, counts = jax.lax.map(body, (xs, inds))
+        merge = lambda a: a.reshape((nf,) + a.shape[2:])                            # noqa: E731
+        return tuple(jax.tree_util.tree_map(merge, o).set(count=counts[0]) if i == k_ind else merge(o)
+                     for i, o in enumerate(out))
+
     def compute(self, q, box, e: PGMBeadState):
         qc = jnp.mean(q, 0)
         c = self._centers(qc)
@@ -565,9 +592,7 @@ class PGMBeads:
             return (res.energy["total"], res.energy["elec"], res.energy["vdw"], res.forces, res.induction,
                     res.iterations, res.residual, res.overflow | ovf)
 
-        ax = self._ind_axes(e.induction)
-        E, El, Ev, F, ind, it, err, ovf = jax.vmap(one, in_axes=(0, ax), out_axes=(0, 0, 0, 0, ax, 0, 0, 0))(
-            x, e.induction)
+        E, El, Ev, F, ind, it, err, ovf = self._over_beads(one, x, e.induction, 8, 4)
         ref_vg = jax.vmap(jax.value_and_grad(self.reference))
         if self.Pc is None:
             eb, gb = ref_vg(q)                                # bonded terms on every bead
@@ -614,8 +639,7 @@ class PGMBeads:
             E, ind, it, ovf2 = ff.energy(xk, box, cand, ind, params)
             return E, ind, ovf | ovf2
 
-        ax = self._ind_axes(e.induction)
-        E, ind, ovf = jax.vmap(one, in_axes=(0, ax), out_axes=(0, ax, 0))(x, e.induction)
+        E, ind, ovf = self._over_beads(one, x, e.induction, 3, 1)
         ref = jax.vmap(self.reference)
         if self.Pc is None:
             U = jnp.sum(E) + jnp.sum(ref(q))
@@ -663,9 +687,10 @@ class PIMDSimulation:
     def __init__(self, sim, beads: int = 32, mode: str = "pimd", thermostat: str = "pile-l", tau0: float = 0.2,
                  lam: float | None = None, propagator: str = "cayley", contract: int | None = None,
                  bead_margin: float = 0.06, seed: int = 0, dt: float | None = None, spread: bool = True,
-                 ensemble: str = "nvt", pressure: float = 1.0, barostat_interval: int = 100, log=sys.stdout):
+                 ensemble: str = "nvt", pressure: float = 1.0, barostat_interval: int = 100,
+                 bead_chunk: int | None = None, log=sys.stdout):
         self.sim, self.log = sim, log
-        self.engine = PGMBeads(sim, beads, contract, bead_margin)
+        self.engine = PGMBeads(sim, beads, contract, bead_margin, bead_chunk)
         self.P = int(beads)
         self.dt = float(sim.dt if dt is None else dt)
         self.T0 = float(sim.T0)

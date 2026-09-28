@@ -26,6 +26,10 @@ D = 0.5 * M * W0 ** 2 / A ** 2                    # kJ/mol: harmonic force const
 KS = M * WS ** 2
 CASES = [(8, None), (8, 1), (8, 3), (32, None), (32, 1), (32, 5)]
 DT, NEQ, NSAMP, EVERY = 0.00005, 20000, 3000, 50
+if os.environ.get("PIMD_DT_FS"):                     # time-step check: only the P = 32 full case
+    f = 0.05 / float(os.environ["PIMD_DT_FS"])
+    DT, NEQ, EVERY, CASES = DT / f, int(NEQ * f), int(round(EVERY * f)), [(32, None)]
+TAG = os.environ.get("PIMD_TAG", "")
 
 
 def v_stiff_np(x):
@@ -126,9 +130,9 @@ if __name__ == "__main__":
     which = sys.argv[1]
     os.makedirs(OUT, exist_ok=True)
     res = run_openmm() if which == "openmm" else run_pgmjax()
-    with open(os.path.join(OUT, f"anharmonic_{which}.json"), "w") as fh:
+    with open(os.path.join(OUT, f"anharmonic_{which}{TAG}.json"), "w") as fh:
         json.dump({"T": T, "N": N, "mass": M, "dt_ps": DT, "cases": res}, fh, indent=1)
-    other = os.path.join(OUT, f"anharmonic_{'openmm' if which != 'openmm' else 'pgmjax'}.json")
+    other = os.path.join(OUT, f"anharmonic_{'openmm' if which != 'openmm' else 'pgmjax'}{TAG}.json")
     if os.path.exists(other):
         o = json.load(open(other))["cases"]
         print("comparison (value +- error, pgm_jax - OpenMM in units of the combined error):")

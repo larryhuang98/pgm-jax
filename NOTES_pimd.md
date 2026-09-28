@@ -33,3 +33,11 @@
 - OpenMM RPMDIntegrator comparison (scripts/pimd_openmm.py): P=8 full / c1 / c3 agree within ~1-2 sd.
 - CPU water: classical (P=1) 1.38 ns/day at 0.5 fs, 48 cores; P=32 contracted to 1: 90 ms/step.
   P=32->1 KE_H ~152 meV; CG 3.2/step with centroid contraction vs ~7 with bead evaluations.
+- 22:30 full suite (before barostat test): 219 passed (34 min, 32 cores).
+- CPU P=32 contracted to centroid, 512 waters, 298 K, NVT at 0.9887 g/cm3, 10 ps: KE_H 152.6+-0.1 meV (cv),
+  152.1+-0.3 (prim); KE_O 53.1; p -799+-53 bar (classical flexible -876+-50); dipole 2.083 D (classical
+  2.044); g_OO peak 3.24 (classical 3.32) at 2.76 A.  CG 3.2/step.
+- econs under PILE drifts (~0.01 kJ/mol/ps per bead dof): Langevin on the stiff internal modes
+  randomizes the BAOAB splitting error; not a conservation diagnostic (use RPMD NVE).
+- OpenMM comparison, 6 cases x 4 observables: all within 2.2 sd (chi2/dof 1.7); dt check submitted.
+- GPU campaign script runs/pimd/campaign.sh waits for the pathenv driver on gpu-2-0 to finish.

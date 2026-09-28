@@ -215,6 +215,18 @@ def test_pgm_beads_match_single_evaluations():
     assert abs(U - float(st.upot)) < 1e-8 * abs(U)
 
 
+def test_bead_chunks_match_vmap():
+    """Beads evaluated in lax.map chunks of vmapped beads = all beads vmapped at once."""
+    sim = _sim()
+    a = PIMDSimulation(sim, beads=4, log=None, seed=5)
+    b = PIMDSimulation(sim, beads=4, log=None, seed=5, bead_chunk=2)
+    assert np.allclose(a.state.f, b.state.f, atol=1e-9) and abs(float(a.state.upot - b.state.upot)) < 1e-8
+    a._advance(20)
+    b._advance(20)
+    assert np.allclose(a.state.q, b.state.q, atol=1e-9)
+    assert int(a.state.eng.induction.count) == int(b.state.eng.induction.count) == 21
+
+
 def test_contraction_forces_and_identity():
     sim = _sim()
     P = 4

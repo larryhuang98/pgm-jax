@@ -16,6 +16,7 @@ box's restart (from the rigid model's NPT)."""
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import sys
@@ -120,7 +121,8 @@ def run(a):
             sim.run(int(round(a.classical_ps / (a.dt * 1e-3))), report=1000, prefix=a.prefix + "_classical")
     pi = PIMDSimulation(sim, beads=a.beads, mode=a.mode, thermostat=a.thermostat, tau0=a.tau0, lam=a.lam,
                         propagator=a.propagator, contract=a.contract or None, bead_margin=a.bead_margin,
-                        seed=a.seed, ensemble=a.ensemble, pressure=a.press, barostat_interval=a.barostat_interval)
+                        seed=a.seed, ensemble=a.ensemble, pressure=a.press, barostat_interval=a.barostat_interval,
+                        bead_chunk=a.bead_chunk or None)
     if a.load:
         pi.load(a.load)
         pi.state = pi.state.set(heat=jnp.zeros(()), step=jnp.zeros((), jnp.int32))
@@ -208,18 +210,20 @@ def bench(a):
     sim = build(a, log=None)
     sim.minimize(100)
     for P in a.beads:
-        for c in a.contract:
+        for c, ch in itertools.product(a.contract, a.chunk):
             pi = PIMDSimulation(sim, beads=P, contract=c or None, thermostat=a.thermostat, tau0=a.tau0, log=None,
-                                bead_margin=a.bead_margin)
+                                bead_margin=a.bead_margin, bead_chunk=ch or None)
             pi._advance(a.warm)
             jax.block_until_ready(pi.state.q)
+            cg0 = float(pi.state.eng.cg_total)
             t0 = time.time()
             pi._advance(a.steps)
             jax.block_until_ready(pi.state.q)
             el = time.time() - t0
             o = pi.observables()
-            r = {"beads": P, "contract": c, "ms_per_step": el / a.steps * 1e3,
-                 "ns_per_day": a.steps * a.dt * 1e-6 / el * 86400.0, "cg_mean_block": None,
+            r = {"beads": P, "contract": c, "chunk": ch, "dt_fs": a.dt, "ms_per_step": el / a.steps * 1e3,
+                 "ns_per_day": a.steps * a.dt * 1e-6 / el * 86400.0,
+                 "cg_per_step": (float(pi.state.eng.cg_total) - cg0) / a.steps,
                  "temp_K": o["temp_K"], "ke_H_cv_meV": o["ke_H_cv_meV"], "device": str(jax.devices()[0])}
             print(json.dumps(r), flush=True)
             out.append(r)
@@ -247,6 +251,7 @@ def main():
         r.add_argument("--tau0", type=float, default=0.1)
         r.add_argument("--bead-margin", type=float, default=0.06)
         r.add_argument("--seed", type=int, default=0)
+        r.add_argument("--bead-chunk", type=int, default=0)
     r = sub.choices["run"]
     r.add_argument("--beads", type=int, default=32)
     r.add_argument("--contract", type=int, default=0)
@@ -268,6 +273,7 @@ def main():
     b = sub.choices["bench"]
     b.add_argument("--beads", type=int, nargs="+", default=[8, 32])
     b.add_argument("--contract", type=int, nargs="+", default=[0])
+    b.add_argument("--chunk", type=int, nargs="+", default=[0], help="beads per vmapped chunk (0: all)")
     b.add_argument("--steps", type=int, default=400)
     b.add_argument("--warm", type=int, default=100)
     b.add_argument("--out", default=None)
