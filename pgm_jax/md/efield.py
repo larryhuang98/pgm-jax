@@ -61,7 +61,7 @@ so the macroscopic field E(M) acting on every charge and dipole follows the pola
 units F = D - 4 pi M / V).  Forces are q_i E(M), torques as for a constant field, and the induction
 equations gain the all-to-all term (4 pi / V) sum_j mu_j (the operator stays symmetric positive
 definite).  D is given as D/eps0 in V/nm (the field that would act at zero polarization);
-D = 0 is the open-circuit ("vacuum slab") electrostatics of a uniformly polarized sample.  The
+D = 0 is open circuit in every direction (the full depolarising field -P/eps0).  The
 dielectric constant is eps = D / (eps0 <E>) = (D/eps0) / (D/eps0 - <M.e> / (eps0 V)).  M must be
 continuous in time: charged molecules use the itinerant (unwrapped) dipole, as above.  U_D depends
 on V, and the molecular virial includes it (autodiff of the energy with respect to the strain).

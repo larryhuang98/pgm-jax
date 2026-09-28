@@ -1,0 +1,42 @@
+{
+ "no field": {
+  "ms_per_step": 0.768641471862793,
+  "ns_per_day": 224.81222562870747,
+  "cg_mean": 6.000166666666667
+ },
+ "static E 0.1 V/nm": {
+  "ms_per_step": 0.8124448776245118,
+  "ns_per_day": 212.6913526801299,
+  "cg_mean": 6.002
+ },
+ "E(t) 0.1 V/nm, 200 cm^-1": {
+  "ms_per_step": 0.8201435565948486,
+  "ns_per_day": 210.69482118160846,
+  "cg_mean": 6.001166666666666
+ },
+ "constant D/eps0 3 V/nm": {
+  "ms_per_step": 0.877759599685669,
+  "ns_per_day": 196.8648364106536,
+  "cg_mean": 6.0008333333333335
+ },
+ "replicas 1": {
+  "ms_per_step": 1.0054205417633055,
+  "ns_per_day_per_replica": 171.86838026697123,
+  "aggregate_ns_per_day": 171.86838026697123
+ },
+ "replicas 2": {
+  "ms_per_step": 1.0957531452178955,
+  "ns_per_day_per_replica": 157.69975268073537,
+  "aggregate_ns_per_day": 315.39950536147074
+ },
+ "replicas 4": {
+  "ms_per_step": 1.5131567001342772,
+  "ns_per_day_per_replica": 114.19835102647716,
+  "aggregate_ns_per_day": 456.7934041059086
+ },
+ "replicas 10": {
+  "ms_per_step": 3.884628200531006,
+  "ns_per_day_per_replica": 44.483021560822536,
+  "aggregate_ns_per_day": 444.8302156082254
+ }
+}

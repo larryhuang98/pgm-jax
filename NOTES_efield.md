@@ -12,10 +12,10 @@
 - [x] md/finite_field.py: FieldReplicas (batched +-E copies, MDReplicas engine), read_series, analyse
 - [x] scripts/finite_field.py run / analyse; scripts/validate_efield.py gas / box1 / nve
 - [x] tests/test_efield.py
-- [ ] validation runs: p25 / tip3p / base finite field (GPU gpu-2-1), NVE (CPU)
-- [ ] docs/efield.md, README bullets
-- [ ] optional constant D
-- [ ] full test suite
+- [x] validation runs: p25 / tip3p / base finite field (GPU gpu-2-1), NVE (CPU), OpenMM TIP3P, constant D
+- [x] docs/efield.md, README bullets
+- [x] optional constant D
+- [x] full test suite (232 passed)
 
 ## Log
 - densities for NVT: p25 1.010 (pgm_jax NPT, docs/dielectric.md), base 0.983 (epsp/base/jax logs), tip3p 0.986 (docs)
@@ -48,3 +48,15 @@
 - full suite: 230 passed (35 min, 32 cores); zero-field identity with master: bitwise (efield_identical.py)
 - GPU lock on gpu-2-1 is contended by the iel agent (their jobs ~70 min); remaining work bundled in runs/gpu_all.sh
   (tip3p +1 ns, p25 constant D +-3.3/6.6 0.5 ns, speed, tip3p +-0.2 at 1 fs)
+- tip3p after 2 ns: pairs 0.02 101.1+-4.3, 0.05 93.7+-1.7, 0.1 88.1+-0.5, 0.2 72.2+-0.2; fit<=0.1 96.8+-2.0
+  (c 871+-210); zero copies 99.1+-3.2, 100.3+-2.8. 1 fs +-0.2: 71.8+-0.3 (OpenMM 71.3+-0.2)
+- p25 constant D (+-3.3, +-6.6; 0.45 ns): 34.6+-0.8, 32.4+-0.5; <E> 0.095, 0.205 V/nm; tau_M 0.3 ps
+- GPU speed (validate_efield speed): none 0.755 ms/step, static 0.913, E(t) 0.916, D 0.951; alternating repeat
+  0.806 vs 0.909; forces() 0.528 vs 0.664 ms. HLO (CPU): +8 fusions, +4 reduces -> after merging the M sums and
+  computing M once: +4, +2. New GPU measurement queued (runs/gpu_chain9.sh)
+- after merging the M sums: GPU alternating none/static 0.803/0.808 ms/step (+0.6 %), forces() 0.557/0.578 ms;
+  sequential validate_efield speed: 0.769 / 0.812 / 0.820 (E(t)) / 0.878 (D); FieldReplicas x4 457 ns/day aggregate
+- OpenMM TIP3P +-0.05 (1.95 ns): 95.9+-1.7 (pgm_jax 93.7+-1.7)
+- full suite after all changes: 232 passed (32 min, 32 cores)
+- DONE. Not done: absorption spectra from E(t) vs the IR spectrum; NPT at constant D not run; D-mode CG sum in float64
+  (+14 % per step) could be made cheaper
