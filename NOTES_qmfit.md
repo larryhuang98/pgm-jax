@@ -22,3 +22,18 @@ Running log so the work can be resumed.
   fnocc from the CCSD(T) job broke the following MP2 jobs).
 - Production QM: 844 records (757 dimers incl. 458 pairs of clusters), 10 workers x 16 threads,
   cpu-short, out ~/project/qmdata/water.
+- QM done (~1.5 h wall, 12 workers x 16 threads, cpu-long after vacating cpu-short: cpu_run.sh jobs of
+  the other agents ask for the whole node memory, so any job of mine there blocked them).
+  3350 tasks, 274 core-hours (CCSD(T)/aTZ 202, MP2 43, MBE 18, grad 7, SAPT0 4).
+  Monomer props job crashed in production (psi4 array variables); rerun separately
+  (~/project/qmdata/mono_test) and copied as results_m0.jsonl. CCSD/aTZ: 1.868 D, 1.439 A^3.
+- Water dimer minimum (rigid p25 monomers at the MP2/aDZ Smith Cs geometry): E.ref -5.085 kcal/mol.
+- Baselines: p25 test E_int RMSE 1.50 (MAE 0.63), base 2.61 (0.92); p25 3-body/MP2 ratio 0.6-0.76,
+  base 0.26-0.45 (large radii damp induction); p25 gas dipole 1.46 D (QM 1.87).
+- final fits: runs/qmfit/final.sh -> runs/qmfit/*.json, data/qm/fits/*.json; report shows test E_int,
+  components, 3-body, dimer, Smith relative energies, hexamer order, forces, monomer.
+- Fits (runs/qmfit/final.sh, combo.sh, probe.sh; reports copied to validation/qmfit/): see
+  docs/qmfit.md table. Recommended: all_total (LJ, pmemd compatible; test RMSE 0.75, hexamer order
+  right) and rec_gvdw (GVDW O+H; test 0.57, 3-body 0.18, forces 0.49; cage 0.27 below prism).
+  LJ fits with SAPT weights push the O LJ to R* 0.3 nm / eps ~1e-3 (not recommended).
+- tests/test_qmfit.py: 8 passed (2.7 min, 8 cores). Full suite: runs/qmfit/fullsuite.log.

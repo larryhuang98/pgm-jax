@@ -209,3 +209,19 @@ def test_fit_recovers_synthetic_target_exactly(setup):
     ev = evaluate(cm, data, pm.params(jnp.asarray(res.x)))
     rows = error_table(ev)
     assert all(r["RMSE"] < 1e-5 for r in rows)
+
+
+def test_committed_fit_reproduces_its_report():
+    """data/qm/fits/all_total.json (LJ water fitted to the set) gives the dimer energy of its report."""
+    fitp, datap = os.path.join(ROOT, "data/qm/fits/all_total.json"), os.path.join(ROOT, "data/qm/water_qm.json")
+    if not (os.path.exists(fitp) and os.path.exists(datap)):
+        pytest.skip("fit or data set not present")
+    from pgm_jax.param import load_molecule
+    w = load_molecule(fitp)
+    cm = ClusterModel(w)
+    d = QMSet.load(datap).select(lambda r: r["id"] in ("smith/Cs_open", "water27/H2O6"))
+    ev = evaluate(cm, d, cm.table.initial())
+    e = dict(zip(ev["ids"], ev["total"]))
+    assert e["smith/Cs_open"] == pytest.approx(-4.926, abs=2e-3)
+    assert e["water27/H2O6"] == pytest.approx(-42.94, abs=1e-2)
+    assert abs(float(np.sum(w.q))) < 1e-10

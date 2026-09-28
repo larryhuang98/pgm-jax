@@ -29,7 +29,7 @@ import jax.numpy as jnp  # noqa: E402
 
 from pgm_jax.param import read_prmtop_pgm, save_molecule  # noqa: E402
 from pgm_jax.qmfit import (ANG, DEBYE, KCAL, ClusterModel, FitWeights, ParamMap, QMFit, QMSet, error_table,  # noqa: E402
-                           evaluate, format_table, label, rigid_minimize, rigid_water, superpose_monomers)
+                           Prepared, evaluate, format_table, label, rigid_minimize, rigid_water, superpose_monomers)
 from pgm_jax.vdw import PGM3P_GVDW, set_gvdw  # noqa: E402
 
 MODELS = {"p25": ("/home8/larry/project/epsp/p25_512.prmtop", (0.9745, 103.64)),
@@ -137,12 +137,62 @@ def report(cm, W, P, data, name, extra=None):
         out["nb3_ratio"] = {s: float(np.sum([a for a, _ in v]) / np.sum([b for _, b in v])) for s, v in rat.items()}
         print("3-body energy, model / MP2 (sums over the clusters of each set):",
               {s: round(v, 3) for s, v in out["nb3_ratio"].items()})
+    # rigid-body forces (liquid pairs with MP2/aTZ gradients)
+    prep = Prepared(d, cm)
+    if prep.force_recs:
+        out["forces"] = {}
+        for n, (ks, F, T) in prep.forces(P).items():
+            _, _, Fq, Tq = prep.force_recs[n]
+            dF = np.asarray(F - Fq) / (KCAL / ANG)
+            dT = np.asarray(T - Tq) / KCAL
+            fq = np.asarray(Fq) / (KCAL / ANG)
+            tk = np.repeat(test[ks], n)                              # rows are (record, molecule)
+            for tag, mk in (("train", ~tk), ("test", tk)):
+                if mk.any():
+                    out["forces"][tag] = {"N": int(mk.sum()) // n, "F_RMSE": float(np.sqrt(np.mean(dF[mk] ** 2))),
+                                          "F_rms_ref": float(np.sqrt(np.mean(fq[mk] ** 2))),
+                                          "T_RMSE": float(np.sqrt(np.mean(dT[mk] ** 2)))}
+        print("rigid-body forces vs CP MP2/aTZ (kcal/mol/A; torques kcal/mol):",
+              {k: {kk: round(vv, 3) for kk, vv in v.items()} for k, v in out["forces"].items()})
     mu = float(np.linalg.norm(cm.monomer_dipole(P)) / DEBYE)
     al = float(cm.monomer_polarizability(P) / ANG ** 3)
     out["monomer"] = {"dipole_D": mu, "polarizability_A3": al, "qm": {k: data.monomer.get(k) for k in ("dipole_D", "polarizability_A3")}}
     print(f"monomer: dipole {mu:.4f} D (QM {data.monomer.get('dipole_D')}), polarizability {al:.4f} A^3 (QM {data.monomer.get('polarizability_A3')})")
     out.update(extra or {})
     return out
+
+
+def summary(names):
+    """Compact comparison of reports runs/qmfit/<name>.json (baseline.json holds p25 and base)."""
+    reps = {}
+    base = os.path.join(ROOT, "runs/qmfit/baseline.json")
+    if os.path.exists(base):
+        for r in json.load(open(base)):
+            reps[r["name"]] = r
+    for n in names:
+        p = os.path.join(ROOT, f"runs/qmfit/{n}.json")
+        if os.path.exists(p):
+            reps[n] = json.load(open(p))
+    def get(r, grp, q, key="RMSE"):
+        for row in r["table"]:
+            if row["group"] == grp and row["quantity"] == q:
+                return row[key]
+        return float("nan")
+    hdr = (f"{'model':16s} {'Eint tr':>8s} {'Eint te':>8s} {'MAE te':>7s} {'elst te':>8s} {'ind te':>7s} {'ex+di te':>8s} "
+           f"{'3b te':>6s} {'3b W27':>8s} {'dimer':>7s} {'dim min':>7s} {'hex order':>10s} {'mu D':>6s} {'a A3':>6s} {'F te':>6s}")
+    lines = [hdr]
+    for n, r in reps.items():
+        hx = r.get("hexamers_order_model", [])
+        ok = "ok" if hx == ["prism", "cage", "book", "cyclic"] else "/".join(h[:2] for h in hx)
+        rat = r.get("nb3_ratio", {})
+        lines.append(f"{n:16s} {get(r, 'train (all)', 'E_int'):8.3f} {get(r, 'test (all)', 'E_int'):8.3f} "
+                     f"{get(r, 'test (all)', 'E_int', 'MAE'):7.3f} {get(r, 'test (all)', 'elst'):8.3f} {get(r, 'test (all)', 'ind'):7.3f} "
+                     f"{get(r, 'test (all)', 'exch+disp'):8.3f} {get(r, 'test (all)', '3-body'):6.3f} "
+                     f"{rat.get('water27', float('nan')):8.3f} {r['dimer']['E_at_ref_min']:7.3f} "
+                     f"{r['dimer']['model_min']:7.3f} {ok:>10s} {r['monomer']['dipole_D']:6.3f} {r['monomer']['polarizability_A3']:6.3f} "
+                     f"{r.get('forces', {}).get('test', {}).get('F_RMSE', float('nan')):6.3f}")
+    print("\n".join(lines))
+    return lines
 
 
 def parse_free(s):
@@ -158,6 +208,9 @@ def main(a):
     data = QMSet.load(os.path.join(ROOT, a.data))
     data = data.select(lambda r: np.isfinite(label(r, "E.ref")))
     os.makedirs(os.path.join(ROOT, "runs/qmfit"), exist_ok=True)
+    if a.mode == "summary":
+        summary(a.name.split(","))
+        return
     if a.mode == "baseline":
         res = []
         for name in ("p25", "base"):
@@ -187,6 +240,8 @@ def main(a):
     mol.lj_rmin_half, mol.lj_sqrt_eps = np.asarray(Pa["lj_rmin_half"]), np.asarray(Pa["lj_sqrt_eps"])
     mol.gvdw_sqrt_a, mol.gvdw_sqrt_c6, mol.gvdw_b = (np.asarray(Pa[k]) for k in ("gvdw_sqrt_a", "gvdw_sqrt_c6", "gvdw_b"))
     mol.cov = [(i, j, float(c)) for (i, j, _), c in zip(mol.cov, np.asarray(Pa["cov"]))]
+    if a.vdw == "gvdw":                                   # the fitted model has no Lennard-Jones
+        mol.lj_rmin_half, mol.lj_sqrt_eps = np.zeros(mol.n), np.zeros(mol.n)
     os.makedirs(os.path.join(ROOT, "data/qm/fits"), exist_ok=True)
     save_molecule(mol, os.path.join(ROOT, f"data/qm/fits/{a.name}.json"))
     out = report(cm, W, P, data, a.name, {"params": named, "free": free, "weights": w.__dict__, "vdw": a.vdw,
@@ -198,7 +253,7 @@ DEFAULT_FREE = "q=all;cov=all;radius=all;alpha=all;lj_rmin_half=OW;lj_sqrt_eps=O
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["baseline", "fit"])
+    ap.add_argument("mode", choices=["baseline", "fit", "summary"])
     ap.add_argument("name", nargs="?", default="fit")
     ap.add_argument("--data", default="data/qm/water_qm.json")
     ap.add_argument("--start", default="p25")
