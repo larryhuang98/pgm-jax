@@ -147,8 +147,9 @@ class Simulation:
         if self.integ.efield is None:
             raise ValueError("the simulation has no external field: create it with efield=ExternalField(...)")
         E0 = jnp.asarray(np.asarray(E0, float).reshape(3), jnp.float64)
-        st = self.state
-        self.state = self.integ.forces(st.set(efield=E0), False).set(induction=st.induction)
+        new = self.integ.forces(self.state.set(efield=E0), False)
+        # the dipoles jump with the field: restart the predictor from the new solution
+        self.state = new.set(induction=new.induction.set(count=jnp.zeros_like(new.induction.count)))
 
     def restraint_energies(self) -> dict:
         """Restraint energy by kind (kJ/mol) at the current state ({} without restraints)."""
