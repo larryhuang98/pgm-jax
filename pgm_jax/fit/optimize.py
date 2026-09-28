@@ -190,7 +190,10 @@ class Objective:
         Pinv = np.diag(1.0 / self.prior_sigma ** 2)
         A = Jw.T @ Jw + Pinv
         g = Jw.T @ c + Pinv @ (th - self.prior_center)
-        D = np.diag(np.diag(A))
+        # damping in the metric of the trust region (|d / sigma_prior|): the exact solution of the
+        # trust-region subproblem is d(lambda) = -(A + lambda Sigma_prior^-1)^-1 g (More-Sorensen); a
+        # Marquardt diag(A) damping would push the step into the directions of small curvature
+        D = Pinv
         size = lambda d: float(np.linalg.norm(d / self.prior_sigma))
         x = -np.linalg.solve(A, g)
         if size(x) <= radius:

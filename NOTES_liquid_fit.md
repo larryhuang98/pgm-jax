@@ -33,3 +33,19 @@
   runs/gpu_queue2.sh (recovery rec512: start (0.03,-0.10,0.06,0.15) in (q,cov,alpha,lj_eps), targets = base values).
 - CPU: v64_{m,c,p}: 16 replicas x 64 waters NVT, q -0.08/0/+0.08 (params q,alpha,lj_eps), 12 x 50 ps segments;
   demo216 (NPT 216 waters, cutoff 0.7) queued.
+- 06:00-07:10 results:
+  * demo512 iter 3 (q 1.071, cov 0.956, pol 0.748, rad 0.834, R* 1.088, eps 0.859): rho 0.9905, Hvap 10.486,
+    eps 74.5(35), gas mu 1.841, gas pol 1.475, liquid mu 2.609 D; chi2 13.3.
+  * FD 512 NPT (4 ns each): s_q -0.08: rho 0.761 eps 33.9; -0.03: rho 0.912 eps 57.0(7); +0.03: rho 1.031 eps 92.9(10).
+    d eps/d ln s_q gradient: 381(81) at -0.03, 603(217) at +0.03 (noisy: relative error grows ~sqrt(N) at fixed time).
+  * 64 waters, 16 NVT replicas, q -/+0.08: at 2 fs (CPU) the fluctuation terms of energy, dipole, eps_inf are ~4 %
+    smaller than FD (z ~ 3); at 1 fs (GPU) they agree (z 0.1-0.9): integrator bias at 2 fs.  eps: FD 427(8) vs
+    Simpson 393(17), z 1.8 (8 segments).
+  * tau_M ~ 1 ps for base water (fast), but a small slow tail: jackknife with 10 blocks of 30 ps underestimates the
+    eps error of single 300 ps replicas (3.1 vs spread 5.0) -> conservative jackknife (max with half the blocks).
+  * gpu_run.sh lock race: several of my waiters -> double starts (rc=1).  Now one master queue (runs/gpu_master.sh).
+  * Local analysis in the Cowork VM (jax 0.6 CPU) of frames copied from the cluster (CPU queue saturated).
+- 07:50 correction: with more segments (7/12/9) the 2 fs CPU FD (64 waters) agrees too (energy z -0.5, hvap +0.6,
+  eps +0.7, eps_inf -0.4, dipole +0.7; --skip 1: all |z| < 0.9).  The early z ~ 3 came from 2-4 segments
+  (equilibration transient after the 40 ps start / chance); no evidence of a 2 fs bias.
+- gpu_master2.sh: fd512_c -> rec512 -> one demo job -> w64 to 24 segments -> demo; then gpu_queue6.sh (x64, 2 fs GPU).

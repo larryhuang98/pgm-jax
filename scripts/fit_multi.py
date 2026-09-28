@@ -26,7 +26,7 @@ jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np  # noqa: E402
 
-from pgm_jax.fit import GasPhase, Objective, ParameterSpace, RDFSpec, Target  # noqa: E402
+from pgm_jax.fit import GasPhase, Objective, Param, ParameterSpace, RDFSpec, Target  # noqa: E402
 from pgm_jax.fit.liquid import LiquidFit  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, elec_cutoff_settings  # noqa: E402
 from pgm_jax.md.io import box_from_cell, read_coordinates  # noqa: E402
@@ -71,7 +71,9 @@ def add_arguments(ap):
     ap.add_argument("--model", default="base", choices=list(MODELS))
     ap.add_argument("--prmtop", help="pGM prmtop (overrides --model)")
     ap.add_argument("--coords", help="restart matching --prmtop")
-    ap.add_argument("--params", default="q,cov,alpha,radius,lj_r,lj_eps", help="global scale factors (ln s)")
+    ap.add_argument("--params", default="q,cov,alpha,radius,lj_r,lj_eps",
+                    help="scale factors (ln s): a quantity (every entry) or quantity@key1+key2 (those tying keys, "
+                         "e.g. alpha@OW,alpha@HW for per-type polarizabilities)")
     ap.add_argument("--start", default="", help="initial ln scales, one per parameter")
     ap.add_argument("--prior", type=float, default=0.1, help="prior width of every ln scale (regularisation)")
     ap.add_argument("--prior-center", default="", help="prior centre (default 0: the prmtop's values)")
@@ -121,8 +123,11 @@ def setup(a):
         mols = [mols[0]] * (len(xyz) // mols[0].n)
     sys_ = System(mols)
     pos, H = xyz * 0.1, box_from_cell(*box) * 0.1
-    names = [s for s in a.params.split(",") if s]
-    space = ParameterSpace.scales(sys_.table, names, prior_sigma=a.prior)
+    plist = []
+    for item in [s for s in a.params.split(",") if s]:          # quantity or quantity@key1+key2 (per tying key)
+        q, _, keys = item.partition("@")
+        plist.append(Param(q, "scale", keys=keys.split("+") if keys else None))
+    space = ParameterSpace(sys_.table, plist, prior_sigma=a.prior)
     theta0 = np.array([float(x) for x in a.start.split(",")]) if a.start else np.zeros(space.n)
     center = np.array([float(x) for x in a.prior_center.split(",")]) if a.prior_center else None
     types = set(sys_.types)
