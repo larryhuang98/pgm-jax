@@ -551,7 +551,7 @@ class _MTSMixin:
         ind = st.induction
         if self.anchor:
             ind = ind.set(hist=ind.hist + m.mu[None])
-        F, res, nbr = self._forces(st.dyn.position, st.box, ind, st.nbr)
+        F, res, nbr = self._forces(st.dyn.position, st.box, ind, st.nbr, field=self.field_at(st, st.step + 1))
         if self.anchor:
             ri = res.induction
             res = res._replace(induction=ri.set(hist=ri.hist - m.mu[None]))

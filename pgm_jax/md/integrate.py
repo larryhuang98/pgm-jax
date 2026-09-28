@@ -20,6 +20,11 @@ energy includes them at the scaled positions and box.
 An alchemical region (alchemy.py, `alchemy=`) makes the Hamiltonian depend on the state's coupling
 MDState.lam = (lambda_elec, lambda_vdw), a traced value like kT, so lambda windows share one
 compiled step (batched with jax.vmap); without one the step is unchanged.
+An external electric field (efield.py, `efield=`: an ExternalField or three numbers in V/nm) adds
+-E(t) . M to the potential energy and q E to the forces, and enters the induction equations.  Its
+amplitude is the state variable MDState.efield (V/nm; Simulation.set_field changes it without
+recompiling), modulated by cos(omega t + phase) for a time-dependent field, whose explicit time
+dependence is booked in MDState.heat.  Without a field the step is unchanged.
 
 Units: nm, ps, amu, kJ/mol, K."""
 from __future__ import annotations
@@ -31,6 +36,7 @@ import numpy as np
 from ._jaxmd import dataclasses, rigid_body, simulate, space
 from .box import volume
 from .forcefield import InductionState, PGMForceField
+from .efield import as_field
 from .restraints import as_restraints
 from .rigid import RigidBody, RigidMolecules
 from .thermostats import Thermostat, make_thermostat
@@ -73,6 +79,9 @@ class MDState:
     lam: jnp.ndarray = None           # (2,) alchemical coupling (lambda_elec, lambda_vdw) of the state (alchemy.py:
                                       # lambda windows share one compiled step); None: the Alchemy's default
     mts: object = None                # multiple time stepping: forces of each level, short-range list (mts.MTSState)
+    efield: jnp.ndarray = None        # (3,) V/nm amplitude of the external field (efield.py); None: no field
+    fshift: jnp.ndarray = None        # (3,) e nm dipole of the re-wrapped charged molecules (itinerant charges)
+    fdip: jnp.ndarray = None          # (3,) e nm M of the last force evaluation (the dipole the field acts on)
 
 
 def upgrade_state(st: MDState, aux) -> MDState:
@@ -86,13 +95,26 @@ def upgrade_state(st: MDState, aux) -> MDState:
     return st
 
 
+def field_state(st: MDState, field) -> MDState:
+    """The external-field fields of a state for an integrator with `field` (an ExternalField or
+    None): amplitude (kept if the state has one), offset and dipole, or all None without a field."""
+    if field is None:
+        return st.set(efield=None, fshift=None, fdip=None)
+    z = jnp.zeros(3, jnp.float64)
+    E = getattr(st, "efield", None)
+    return st.set(efield=jnp.asarray(field.E0, jnp.float64) if E is None else jnp.asarray(E, jnp.float64),
+                  fshift=z if getattr(st, "fshift", None) is None else st.fshift,
+                  fdip=z if getattr(st, "fdip", None) is None else st.fdip)
+
+
 class Integrator:
     keep_geometry = False             # ask the force field for its row geometry (multiple time stepping, mts.py)
 
     def __init__(self, ff: PGMForceField, rigid: RigidMolecules, neighbors, dt: float = 0.001,
                  ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0,
                  pressure: float = 1.0, barostat_interval: int = 100, params=None,
-                 thermostat: str | Thermostat = "langevin", tau_t: float = 1.0, restraints=None, alchemy=None):
+                 thermostat: str | Thermostat = "langevin", tau_t: float = 1.0, restraints=None, alchemy=None,
+                 efield=None):
         ensemble = ensemble.lower()
         if ensemble not in ("nve", "nvt", "npt"):
             raise ValueError("ensemble must be nve, nvt or npt")
@@ -113,6 +135,16 @@ class Integrator:
         self.alchemy = alchemy                     # alchemy.Alchemy or None (then every hook below is inactive)
         if alchemy is not None:
             alchemy.check(ff)
+        self.efield = as_field(efield)             # efield.ExternalField or None (then the step is unchanged)
+        if self.efield is not None:
+            if alchemy is not None:
+                raise NotImplementedError("an external field with an alchemical region (the field would act on the "
+                                          "unscaled solute charges)")
+            Q = np.bincount(np.asarray(ff.sys.mol), weights=np.asarray(ff._atoms(params)["q"]), minlength=ff.sys.nmol)
+            self.field_charged = bool(np.any(np.abs(Q) > 1e-6))
+            if ensemble == "npt" and self.field_charged:
+                raise NotImplementedError("NPT with an external field and charged molecules: the field energy of the "
+                                          "ions is not invariant under the barostat's scaling (md/efield.py); run NVT")
         self.compile()
 
     def compile(self):
@@ -121,12 +153,30 @@ class Integrator:
         self.forces = jax.jit(self._state_forces)
 
     # --------------------------------------------------------------------- forces
-    def _forces(self, body, box, induction, nbr, force_rebuild=False, lam=None):
+    def field_at(self, st: MDState, step):
+        """(E (3,) V/nm at time step * dt, dipole offset) for the force field, or None without a field."""
+        if self.efield is None:
+            return None
+        v = self.efield.value(st.efield, step * self.dt)
+        return (v, st.fshift) if self.efield.kind == "E" else (v, st.fshift, "D")
+
+    def _book_field(self, old: MDState, new: MDState) -> MDState:
+        """Explicit time dependence of the field: the switch E(t_n) -> E(t_n+1) at the new positions
+        changes the energy by -(E_n+1 - E_n) . M_n+1, booked as heat (econs stays conserved)."""
+        if self.efield is None or not self.efield.time_dependent:
+            return new
+        V = volume(new.box)
+        w = (self.efield.energy(self.field_at(new, new.step)[0], new.fdip, V)
+             - self.efield.energy(self.field_at(old, old.step)[0], new.fdip, V))
+        return new.set(heat=new.heat + w)
+
+    def _forces(self, body, box, induction, nbr, force_rebuild=False, lam=None, field=None):
         pos = self.rigid.positions(body)
         nbr = self.nb.update(nbr, pos, body.center, box, force_rebuild)
         cand, ovf = self.nb.candidates(nbr, body.center, box, pos)
         if self.alchemy is None:
-            res = self.ff.compute(pos, box, cand, induction, self.params, keep_geometry=self.keep_geometry)
+            res = self.ff.compute(pos, box, cand, induction, self.params, keep_geometry=self.keep_geometry,
+                                  efield=field)
         else:                                      # Hamiltonian at the state's coupling lam
             res = self.alchemy.compute(self.ff, pos, box, cand, induction, self.params, lam)
         res = self._add_restraints(res._replace(overflow=res.overflow | ovf), pos, box)
@@ -149,10 +199,11 @@ class Integrator:
         return self.restraints.strain_derivative(pos, box, self.ff.mol, self.ff.masses, self.nmol)
 
     def _with_result(self, st: MDState, F, res, nbr) -> MDState:
-        return st.set(dyn=st.dyn.set(force=F), nbr=nbr, induction=res.induction, epot=res.energy["total"],
-                      elec=res.energy["elec"], vdw=res.energy["vdw"], iters=res.iterations,
-                      max_iters=jnp.maximum(st.max_iters, res.iterations), resid=jnp.maximum(st.resid, res.residual),
-                      overflow=st.overflow | res.overflow, cg_total=st.cg_total + res.iterations)
+        st = st.set(dyn=st.dyn.set(force=F), nbr=nbr, induction=res.induction, epot=res.energy["total"],
+                    elec=res.energy["elec"], vdw=res.energy["vdw"], iters=res.iterations,
+                    max_iters=jnp.maximum(st.max_iters, res.iterations), resid=jnp.maximum(st.resid, res.residual),
+                    overflow=st.overflow | res.overflow, cg_total=st.cg_total + res.iterations)
+        return st if res.dipole is None else st.set(fdip=res.dipole)
 
     def check_block(self, st: MDState) -> None:
         """Host-side check of a finished block of steps, before the driver's overflow handling (a
@@ -160,7 +211,8 @@ class Integrator:
         return None
 
     def _state_forces(self, st: MDState, force_rebuild=True) -> MDState:
-        F, res, nbr = self._forces(st.dyn.position, st.box, st.induction, st.nbr, force_rebuild, lam=st.lam)
+        F, res, nbr = self._forces(st.dyn.position, st.box, st.induction, st.nbr, force_rebuild, lam=st.lam,
+                                   field=self.field_at(st, st.step))
         return self._with_result(st, F, res, nbr)
 
     # --------------------------------------------------------------------- setup
@@ -182,7 +234,7 @@ class Integrator:
                      iters=zi, max_iters=zi, resid=z, step=zi, mc=jnp.zeros(4, jnp.int32),
                      mc_dv=jnp.asarray(0.01 * float(volume(box)), jnp.float64), overflow=jnp.zeros((), bool),
                      aux=aux, heat=z, cg_total=z)
-        return self.forces(st, False)
+        return self.forces(field_state(st, self.efield), False)
 
     # --------------------------------------------------------------------- thermostat
     def _scaled(self, dyn: Dynamics):
@@ -236,7 +288,8 @@ class Integrator:
             dyn = simulate.position_step(dyn, self.shift, dt / 2)
             dyn, aux, heat = self._o_step(dyn, aux, heat, dt, self.thermostat_kT(st))
             dyn = simulate.position_step(dyn, self.shift, dt / 2)
-        F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr, lam=st.lam)
+        F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr, lam=st.lam,
+                                   field=self.field_at(st, st.step + 1))
         st = self._with_result(st.set(dyn=dyn, aux=aux, heat=heat), F, res, nbr)
         st = st.set(dyn=simulate.momentum_step(st.dyn, dt / 2), step=st.step + 1)
         if self.ensemble == "npt":
@@ -256,8 +309,9 @@ class Integrator:
         pos_n = self.rigid.positions(body_n)
         nbr_n = self.nb.update(st.nbr, pos_n, body_n.center, Hn, True)
         cand, ovf0 = self.nb.candidates(nbr_n, body_n.center, Hn, pos_n)
+        field = self.field_at(st, st.step)
         if self.alchemy is None:
-            e_n, ind_n, _, ovf = self.ff.energy(pos_n, Hn, cand, st.induction, self.params)
+            e_n, ind_n, _, ovf = self.ff.energy(pos_n, Hn, cand, st.induction, self.params, efield=field)
         else:
             e_n, ind_n, _, ovf = self.alchemy.energy(self.ff, pos_n, Hn, cand, st.induction, self.params, st.lam)
         e_n = e_n + self._restraint_energy(pos_n, Hn)
@@ -269,7 +323,7 @@ class Integrator:
 
         def acc(st):
             st = st.set(dyn=st.dyn.set(position=body_n), box=Hn, induction=ind_n)
-            F, res, nbr = self._forces(body_n, Hn, ind_n, nbr_n, lam=st.lam)
+            F, res, nbr = self._forces(body_n, Hn, ind_n, nbr_n, lam=st.lam, field=field)
             return self._with_result(st, F, res, nbr)
 
         st = jax.lax.cond(accept, acc, lambda s: s, st)
@@ -283,7 +337,7 @@ class Integrator:
 
     def _run(self, st: MDState, n) -> MDState:
         st = st.set(max_iters=jnp.zeros((), jnp.int32), resid=jnp.zeros((), jnp.float64), overflow=jnp.zeros((), bool))
-        return jax.lax.fori_loop(0, n, lambda _, s: self._step(s), st)
+        return jax.lax.fori_loop(0, n, lambda _, s: self._book_field(s, self._step(s)), st)
 
     # --------------------------------------------------------------------- observables
     def kinetic(self, st: MDState):

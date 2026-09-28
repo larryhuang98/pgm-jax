@@ -92,12 +92,20 @@ class ElecChannel:
     """Gaussian electrostatics, every pair interacting.  Options (options.py): `perm_dipoles`
     (covalent dipoles), `polarizable` (induced dipoles), `quadrupoles` (covalent quadrupole basis,
     multipole.py).  Defaults: pGM (charges, permanent and induced dipoles).  Use
-    ElecChannel.level("q" | "qp" | "qi" | "qpi", quadrupoles=...) for the named levels."""
+    ElecChannel.level("q" | "qp" | "qi" | "qpi", quadrupoles=...) for the named levels.
+
+    efield: a uniform external electric field (three numbers, V/nm; pgm_jax/md/efield.py).  It adds
+    "field" = -E . M (kJ/mol) with M = sum q r + sum p + sum mu, and E to the right-hand side of the
+    induction equations, so that the induced dipoles respond with the molecular polarizability:
+    sum mu(E) - sum mu(0) = alpha_mol E and the total energy is E(0) - E . M(0) - E . alpha_mol E / 2
+    exactly.  "ind" is then the rest of the induction energy, (mu . E - mu . F_perm) / 2 (kJ/mol), so
+    that perm + ind is the model's energy at the field-polarized dipoles (as "elec" of the MD engine)."""
     density: str = "gaussian"
     polarizable: bool = True
     perm_dipoles: bool = True
     quadrupoles: bool = False
     name: str = "elec"
+    efield: tuple | None = None
 
     @classmethod
     def level(cls, elec: str = "qpi", quadrupoles: bool = False, **kw):
@@ -126,6 +134,11 @@ class ElecChannel:
             e_perm = e_perm + jnp.sum(quadrupole_pair_terms(x, B, q[ii], p[ii], Th[ii], q[jj], p[jj], Th[jj]))
             aux["Theta"] = Th
         out = {"perm": KE * e_perm}
+        Ext = None
+        if self.efield is not None:
+            from .md.efield import VNM_TO_INTERNAL
+            Ext = jnp.asarray(self.efield, jnp.float64).reshape(3) * VNM_TO_INTERNAL
+            out["field"] = -KE * jnp.dot(Ext, jnp.sum(q[:, None] * pos, axis=0) + jnp.sum(p, axis=0))
         if self.polarizable:
             n = sys.n
             # ordered pairs i != j only (no self terms: they would put NaNs into the gradients)
@@ -136,8 +149,13 @@ class ElecChannel:
                 F_ord = F_ord + quadrupole_field(pos[oi] - pos[oj], b_ord, Th[oj])
             F = jnp.zeros((n, 3)).at[oi].add(F_ord)
             T = _dipole_matrix(pos, sys, phi, b_pair)
-            mu = solve_linear_induction(T, P["alpha"], F)
-            out["ind"] = KE * (-0.5 * jnp.sum(mu * F))
+            if Ext is None:
+                mu = solve_linear_induction(T, P["alpha"], F)
+                out["ind"] = KE * (-0.5 * jnp.sum(mu * F))
+            else:
+                mu = solve_linear_induction(T, P["alpha"], F + Ext[None, :])
+                out["ind"] = KE * 0.5 * (jnp.sum(mu * Ext[None, :]) - jnp.sum(mu * F))
+                out["field"] = out["field"] - KE * jnp.dot(Ext, jnp.sum(mu, axis=0))
             aux["mu"] = mu
         return out, aux
 

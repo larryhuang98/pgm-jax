@@ -28,7 +28,7 @@ from ..system import Molecule, System
 from .box import check_box, reduce_box, volume
 from .dipoles import DipoleRecorder, InducedDipoleFile
 from .forcefield import MDSettings, PGMForceField
-from .integrate import KB, Integrator, upgrade_state
+from .integrate import KB, Integrator, field_state, upgrade_state
 from .io import NetCDFTrajectory, box_from_cell, read_coordinates, write_restart
 from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .rigid import RigidMolecules
@@ -53,7 +53,7 @@ class Simulation:
                  ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0, pressure: float = 1.0,
                  barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None, params=None, log=sys.stdout,
                  neighbor_list: str = "auto", thermostat="langevin", tau_t: float = 1.0, restraints=None,
-                 alchemy=None, mts=None):
+                 alchemy=None, mts=None, efield=None):
         H = reduce_box(H_nm)
         check_box(H, settings.pair_cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
@@ -73,7 +73,7 @@ class Simulation:
             integ, extra = MTSIntegrator, {"mts": mts}
         self.integ = integ(self.ff, self.rigid, self.nb, dt, ensemble, temperature, gamma, pressure,
                            barostat_interval, params, thermostat=thermostat, tau_t=tau_t, restraints=restraints,
-                           alchemy=alchemy, **extra)
+                           alchemy=alchemy, efield=efield, **extra)
         self.dt, self.ensemble, self.T0 = dt, ensemble, temperature
         body = self.rigid.body0
         mom = None
@@ -95,6 +95,8 @@ class Simulation:
             self._print(f"# alchemical region: {alchemy.describe()}")
         if mts is not None:
             self._print(f"# {self.integ.describe_mts()}")
+        if self.integ.efield is not None:
+            self._print(f"# {self.integ.efield.describe()}")
 
     @classmethod
     def from_amber(cls, prmtop: str, coords: str, use_velocities: bool = True, charges: str = "pgm",
@@ -128,7 +130,25 @@ class Simulation:
         if self.ensemble == "npt":
             tries, acc = int(st.mc[0]), int(st.mc[1])
             out["mc_accept"] = acc / max(tries, 1)
+        if self.integ.efield is not None:                  # the field (V/nm) and the dipole it acts on (e nm)
+            fld = self.integ.efield
+            E = self.integ.field_at(st, st.step)[0]
+            Emac = np.asarray(fld.macroscopic(E, st.fdip, V))
+            out.update(efield=float(np.linalg.norm(np.asarray(E))), field_energy=float(fld.energy(E, st.fdip, V)),
+                       Mx=float(st.fdip[0]), My=float(st.fdip[1]), Mz=float(st.fdip[2]))
+            if fld.kind == "D":
+                out.update(Emac_x=float(Emac[0]), Emac_y=float(Emac[1]), Emac_z=float(Emac[2]))
         return out
+
+    def set_field(self, E0):
+        """Set the amplitude of the external field (three numbers, V/nm) of a simulation created with
+        `efield=`; no recompilation.  Forces are recomputed; epot and econs jump by the change of the
+        field energy (the work of the switch)."""
+        if self.integ.efield is None:
+            raise ValueError("the simulation has no external field: create it with efield=ExternalField(...)")
+        E0 = jnp.asarray(np.asarray(E0, float).reshape(3), jnp.float64)
+        st = self.state
+        self.state = self.integ.forces(st.set(efield=E0), False).set(induction=st.induction)
 
     def restraint_energies(self) -> dict:
         """Restraint energy by kind (kJ/mol) at the current state ({} without restraints)."""
@@ -158,7 +178,8 @@ class Simulation:
         pos = self.rigid.positions(st.dyn.position)
         idx = self.nb.candidates(st.nbr, st.dyn.position.center, st.box, pos)[0]
         if self.integ.alchemy is None:
-            W = self.ff.strain_derivative(pos, st.box, idx, st.induction.mu, self.integ.params)
+            W = self.ff.strain_derivative(pos, st.box, idx, st.induction.mu, self.integ.params,
+                                          efield=self.integ.field_at(st, st.step))
         else:
             W = self.integ.alchemy.strain_derivative(self.ff, pos, st.box, idx, st.induction.mu, self.integ.params, st.lam)
         W = W + self.integ.restraint_strain(pos, st.box)
@@ -260,6 +281,10 @@ class Simulation:
         if self._recorder is not None:
             self._recorder.keep()
         body = self.rigid.wrap(new.dyn.position, new.box)
+        if self.integ.efield is not None and self.integ.field_charged:   # itinerant dipole of re-wrapped ions
+            q = self.ff._atoms(self.integ.params)["q"]
+            shift = jnp.sum(q[:, None] * (self.rigid.positions(new.dyn.position) - self.rigid.positions(body)), axis=0)
+            new = new.set(fshift=new.fshift + shift)
         self.state = new.set(dyn=new.dyn.set(position=body))
         self.time_ps += n * self.dt
         if not np.isfinite(float(new.epot)):
@@ -331,6 +356,7 @@ class Simulation:
             d = pickle.load(fh)
         st = jax.tree_util.tree_map(jnp.asarray, d["state"])
         st = upgrade_state(st, self.state.aux)          # checkpoints from before the thermostat fields
+        st = field_state(st, self.integ.efield)        # the checkpoint's field amplitude, or the integrator's
         nbr = self.nb.allocate(self.rigid.positions(st.dyn.position), st.dyn.position.center, st.box)
         self.state = st.set(nbr=nbr)                   # forces, dipoles and history are part of the state
         self.time_ps = d["time_ps"]
