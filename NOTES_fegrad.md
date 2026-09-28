@@ -47,3 +47,7 @@
   trapezoid -11.58 +- 0.09 (z 0.98). examples/hydration_target.py prints the step from the npz.
 - D (methanol rmin 0.95 / 1.05) queued (chain3.sh); GPU shared with iface / bias.
 - full suite (final code): 221 passed in 44 min (runs/full2.log). D mer105 running from 09:54.
+- D done (mer095/me100/mer105, checkD.log): outer FD 13.07 +- 1.14 vs g(1) 12.48 +- 0.34 (z 0.5), Simpson z 0.4.
+- All GPU work finished 10:53 (coordinator: keep GPU use short; none left). Docs complete.
+## Status: done. Not done: local (low-noise) estimator for solvent parameters; log P (no second solvent box);
+  bonded (template) parameters of flexible solutes; volume response.

@@ -5,6 +5,14 @@ energy computed with `pgm_jax/md/alchemy.py`, **with their gradients with respec
 force-field parameter** of the solute and of the solvent, and statistical errors of both, in a
 form a fitting code can use as one more target. Units: kJ/mol, nm, e, e nm (tables also in kcal/mol).
 
+At a glance: dDeltaG/dtheta = <dU_{K-1}/dtheta>_{K-1} - <dU_0/dtheta>_0 (+ the gas-phase leg), at
+the converged induced dipoles, for the whole parameter table from the samples the windows already
+take (+1 % run time); MBAR-weighted and end-state estimators with block-jackknife errors; checked
+against finite differences over 11 independent free-energy calculations (water: solute charge and
+r_min scales; flexible methanol: charge and r_min scales), all within 1.1 standard errors, and
+exactly on analytic and zero-variance cases. A one-step fit of methanol's charge scale to its
+experimental hydration free energy is shown.
+
 ## Theory
 
 For a Hamiltonian U_k(x; theta) sampled at fixed volume and temperature, f_k(theta) = -kT ln
@@ -190,7 +198,26 @@ against the trapezoid of the gradients -11.58 +- 0.09 (end states -11.56 +- 0.14
 (A charge scale of 1.23 is only a demonstration of the machinery, not a proposed methanol model:
 the missing hydration comes as much from the weakly polar pGM water, `docs/free_energy.md`.)
 
-DTABLE
+**D. The same methanol, the solute's Lennard-Jones r_min scale** (R* of every methanol atom times
+s: its coupling to water through the soft core and, with "keep", its intramolecular van der Waals
+at both end states). 0.4 ns per window from the production windows, 50 ps discarded.
+
+| s | DeltaG_hyd (kcal/mol) | dG/ds MBAR-weighted | dG/ds end states |
+|---|---|---|---|
+| 0.95 | -3.372 +- 0.085 [0.103] | 13.64 +- 0.61 | 13.85 +- 0.71 |
+| 1.00 | -2.741 +- 0.094 [0.113] | 12.48 +- 0.34 | 12.37 +- 0.51 |
+| 1.05 | -2.065 +- 0.077 [0.109] | 12.10 +- 0.23 | 11.70 +- 0.43 |
+
+| Comparison | finite difference | from the gradients | z |
+|---|---|---|---|
+| 0.95 -> 1.00 vs trapezoid | 12.6 +- 2.5 | 13.06 +- 0.35 (end 13.11) | -0.17 (-0.19) |
+| 1.00 -> 1.05 | 13.5 +- 2.4 | 12.29 +- 0.21 (end 12.04) | 0.51 (0.61) |
+| 0.95 -> 1.05, central difference vs g(1) | 13.1 +- 1.1 | 12.48 +- 0.34 (end 12.37) | 0.50 (0.56) |
+| 0.95 -> 1.05 vs Simpson | 13.1 +- 1.1 | 12.61 +- 0.25 (end 12.51) | 0.40 (0.47) |
+
+**Summary of the finite-difference checks**: 4 parameter directions, 11 independent free-energy
+calculations; all 16 comparisons (both estimators) within 1.06 standard errors (|z| mean 0.6); the
+gradient is 3-10 times more precise than the finite difference built from the same simulations.
 
 ## Cost
 
