@@ -89,3 +89,4 @@ Running log so the work can be resumed.
   batch's slots (padded to P/4, P/2, P).  Timing (no virial): P=1 3.21 ms/step (native 2.24), P=8
   11.8 (engine 6.4; native 2.44), P=32 33.1 (engine 17.1; native 15.5); serial P=8 20.8.
 - Full suite (08:17 code): 221 passed in 35 min (cpu-short, 24 cores).
+- 10:10 full suite on the final code: 221 passed in 34 min (cpu-short, 24 cores). Done.

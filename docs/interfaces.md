@@ -34,7 +34,8 @@ Nothing beyond pgm_jax for the engine and the i-PI client. The drivers:
   `CONDA_OVERRIDE_GLIBC=2.28 conda create -p ... -c conda-forge python=3.12 openmm=8.6`). The pgmjax
   python imports it through a directory holding only a symlink to its `openmm` package:
   `PYTHONPATH=runs/ommlib` (with `runs/ommlib/openmm -> .../pgmjax-iface-omm/lib/python3.12/site-packages/openmm`),
-  so nothing is installed into `pgmjax`. OpenMM's CUDA platform loads on the GPU nodes.
+  so nothing is installed into `pgmjax`. OpenMM's CUDA platform does not work next to JAX on rayl8's
+  GPUs (Limits); its CPU platform does.
 
 ## Usage
 
@@ -60,14 +61,21 @@ res.induced_dipoles, res.dipole                     # e nm (fetched from the dev
   (pointer doubling; atoms may come wrapped one by one or never wrapped), whole molecules shifted
   into the cell, neighbour-list update (JAX-MD rebuilds when something moved more than skin/2),
   `PGMForceField.compute` (PME, pair rows, induced dipoles with the mu4 predictor), bonded terms,
-  cell dipole. The host receives one packed float64 array (energies, flags, forces); dipoles and
-  virial stay on the device until asked for.
+  optionally the virial and the cell dipole (`eng.with_dipole`, set by the i-PI client; otherwise
+  computed on first access). The host receives one packed float64 array (energies, flags, forces);
+  induced dipoles stay on the device until asked for.
 - **Induced-dipole history.** The engine keeps the predictor history between calls, so successive
   MD steps start the CG from the extrapolated dipoles as the native integrator does (same CG
   iteration counts). `slots=P` keeps P histories for interleaved configurations (ring-polymer
   beads sent one after the other): the first P calls fill the slots, later calls use the slot whose
-  last configuration is closest; a caller can name the slot (`slot=k`, i-PI batches). A jump larger
-  than `jump` (0.05 nm) restarts that slot's predictor.
+  last configuration is closest; a caller can name the slot (`slot=k`). A jump larger than `jump`
+  (0.05 nm, minimum image) restarts that slot's predictor.
+- **Batches of beads.** `eng.compute_batch(X, cell)` (X: B x N x 3) evaluates close structures that
+  share the cell in one vmapped call (chunks of 8 above 8): P slots with stacked dipole histories
+  (the predictor's step counter shared, so its branch stays a real branch under vmap), one
+  neighbour list of the slots' mean with the radius enlarged by `bead_margin`, exact duplicates
+  evaluated once and every distinct structure assigned to the slot with the closest last
+  configuration (one-to-one; i-PI reorders beads and splits a step over one or two batches).
 - **Safety.** Row / neighbour-list overflows, an atom beyond the list radius of its group, a
   volume change above 10 % (barostats) or a box too small for the molecule list are detected after
   the call; the engine resizes or rebuilds and repeats the call (counted in `eng.stats`). Nothing
@@ -102,20 +110,22 @@ strain derivative at the converged dipoles, not a second dipole solve.
 `FixRigidMolecules` (from `rigid_constraints`) holds molecules of up to three atoms rigid with
 SHAKE (Newton iterations on the three multipliers of each molecule) and RATTLE (one batched 3 x 3
 solve), vectorised over molecules. ASE's `FixBondLengths` gives the same positions and momenta
-(2e-13) but loops over pairs in Python: 0.6 s per step for 30 waters, 600x slower.
+(2e-13) but loops over pairs in Python: 0.6 s per step for 30 waters (ours: under 1 ms).
 
 ### i-PI
 
 ```bash
 i-pi input.xml &                                      # <ffsocket mode="unix"><address>pgm</address> ...
-python -m pgm_jax.interfaces.ipi --template water.flex --nmol 512 --address pgm --unix --slots 8
+python -m pgm_jax.interfaces.ipi --template water.flex --nmol 512 --address pgm --unix   # PIMD: <batch_size>P</batch_size>
 python -m pgm_jax.interfaces.ipi --prmtop water.prmtop --address localhost --port 31415   # inet
 ```
 
 or `IPIClient(engine_or_factory, address, unix=True).run()` from Python. The client speaks the
 i-PI protocol (STATUS / INIT / POSDATA / GETFORCE / EXIT, atomic units), including i-PI 3's batched
-requests (`<batch_size>P</batch_size>` in `<ffsocket>`: the P beads of a step arrive in one message
-and are answered in one; each position in the batch is its own dipole slot). Returned: energy,
+requests (`<batch_size>P</batch_size>` in `<ffsocket>`): the beads of a step arrive in one or two
+messages, each evaluated in one vmapped call (`compute_batch`; `--no-vmap`: one call per bead), each
+bead with its own dipole history. Without batching use `--slots P` (beads sent one at a time are
+matched to the closest of P histories). Returned: energy,
 forces, virial (-W, symmetric), extras `{"dipole": [...] (e Bohr), "cg_iterations": n}` (i-PI's
 `dipole` property works). The engine is built on the first structure i-PI sends (`--settings` takes
 MDSettings as JSON). `scripts/interfaces/ipi_tools.py` writes i-PI inputs (masses from the system,
@@ -129,7 +139,7 @@ om = PGMOpenMM(eng)
 system = om.system(rigid=True)                   # masses, box, constraints (SETTLE for water), pGM PythonForce, CMMotionRemover
 system.addForce(openmm.MonteCarloBarostat(1 * unit.bar, 298 * unit.kelvin, 25))
 sim = app.Simulation(om.topology(), system, openmm.LangevinMiddleIntegrator(298 * unit.kelvin, 1 / unit.picosecond,
-                     0.002 * unit.picoseconds), openmm.Platform.getPlatformByName("CUDA"))
+                     0.002 * unit.picoseconds), openmm.Platform.getPlatformByName("CPU"))   # JAX on the GPU
 sim.context.setPositions(om.positions()); sim.context.setPeriodicBoxVectors(*om.box())
 sim.reporters.append(app.DCDReporter("traj.dcd", 1000)); sim.step(100000)
 ```
@@ -208,8 +218,9 @@ per force evaluation), the others are complete MD steps.
   code needs one call per force evaluation: host -> device positions, one dispatch, the dipole solve
   with the same predictor and CG iterations, device -> host forces (one packed array). The
   difference is the latency of one synchronous round trip and a few small kernels (molecules made
-  whole, list centres): +0.3 ms per step at 1,536 atoms and +1.0 ms at 12,288. On the CPU (24 cores) the engine is 25 % slower than the native
-  step (25 vs 20 ms for 1,536 atoms).
+  whole, list centres): +0.3 ms per step at 1,536 atoms and +1.0 ms at 12,288. On the CPU the
+  difference is small: OpenMM + engine 46.7 ms per step vs native 40.3 (16 cores, 1,536 atoms;
+  NPT density 1.0197 +- 0.0027 vs 1.0179 +- 0.0033, `validation/interfaces/openmm_cpu.json`).
 - **OpenMM** adds its integrator and SETTLE on the CPU platform plus the State -> numpy conversion
   (0.02-0.03 ms).
 - **ASE** adds Python per step: `FixRigidMolecules` (SHAKE / RATTLE, vectorised numpy),
