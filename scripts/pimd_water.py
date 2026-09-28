@@ -26,11 +26,15 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-if os.environ.get("PIMD_WAIT_GPU"):       # shared GPU: wait until it is idle, take it at once (before the
-    import subprocess                      # imports below touch the device); 75: someone else was faster
-    while subprocess.run(["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader"],
-                         capture_output=True, text=True).stdout.strip():
-        time.sleep(0.1)
+if os.environ.get("PIMD_WAIT_GPU"):       # a GPU shared with jobs that retry when it is busy: take it as soon as
+    import ctypes                          # it is released (retain the primary context; JAX then uses it)
+    _cu = ctypes.CDLL("libcuda.so.1")
+    if _cu.cuInit(0) != 0:
+        sys.exit(75)
+    _dev, _ctx = ctypes.c_int(), ctypes.c_void_p()
+    _cu.cuDeviceGet(ctypes.byref(_dev), 0)
+    while _cu.cuDevicePrimaryCtxRetain(ctypes.byref(_ctx), _dev) != 0:
+        time.sleep(0.05)
     try:
         jax.devices()
     except RuntimeError:
@@ -124,7 +128,7 @@ def diffusion(C, dt_ps):
 
 def run(a):
     os.makedirs(os.path.dirname(os.path.abspath(a.prefix)), exist_ok=True)
-    sim = build(a)
+    sim = build(a, log=sys.stdout)
     if a.load is None:
         sim.minimize(200)
         if a.classical_ps > 0:                    # classical flexible equilibration (Bussi)
@@ -132,7 +136,8 @@ def run(a):
     pi = PIMDSimulation(sim, beads=a.beads, mode=a.mode, thermostat=a.thermostat, tau0=a.tau0, lam=a.lam,
                         propagator=a.propagator, contract=a.contract or None, bead_margin=a.bead_margin,
                         seed=a.seed, ensemble=a.ensemble, pressure=a.press, barostat_interval=a.barostat_interval,
-                        bead_chunk=a.bead_chunk or None)
+                        bead_chunk=a.bead_chunk if a.bead_chunk == "auto" else (int(a.bead_chunk) or None),
+                        log=sys.stdout)
     if a.load:
         pi.load(a.load)
         pi.state = pi.state.set(heat=jnp.zeros(()), step=jnp.zeros((), jnp.int32),
@@ -244,7 +249,26 @@ def bench(a):
             json.dump(out, fh, indent=1)
 
 
-def main():
+def batch(a):
+    """Several runs in this process (one GPU context for all): each line of the file is
+    `OUTFILE ARGS...` (the arguments of this script); stdout and stderr go to OUTFILE."""
+    import contextlib
+    import gc
+    import traceback
+    for line in open(a.file):
+        f = line.split()
+        if not f or f[0].startswith("#"):
+            continue
+        with open(f[0], "w") as out, contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            try:
+                main(f[1:])
+            except Exception:
+                traceback.print_exc()
+        gc.collect()
+        print("done", f[0], time.strftime("%H:%M:%S"), flush=True)
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("template")
@@ -260,9 +284,9 @@ def main():
         r.add_argument("--precision", default="mixed")
         r.add_argument("--thermostat", default="pile-g")
         r.add_argument("--tau0", type=float, default=0.1)
-        r.add_argument("--bead-margin", type=float, default=0.06)
+        r.add_argument("--bead-margin", type=float, default=0.08)
         r.add_argument("--seed", type=int, default=0)
-        r.add_argument("--bead-chunk", type=int, default=0)
+        r.add_argument("--bead-chunk", default="auto", help="beads per vmapped chunk: auto | 0 (all) | n")
     r = sub.choices["run"]
     r.add_argument("--beads", type=int, default=32)
     r.add_argument("--contract", type=int, default=0)
@@ -288,8 +312,10 @@ def main():
     b.add_argument("--steps", type=int, default=400)
     b.add_argument("--warm", type=int, default=100)
     b.add_argument("--out", default=None)
-    a = ap.parse_args()
-    {"template": template, "run": run, "bench": bench}[a.cmd](a)
+    bt = sub.add_parser("batch")
+    bt.add_argument("file")
+    a = ap.parse_args(argv)
+    {"template": template, "run": run, "bench": bench, "batch": batch}[a.cmd](a)
 
 
 if __name__ == "__main__":

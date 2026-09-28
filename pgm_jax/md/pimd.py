@@ -58,6 +58,10 @@ q' = T q with T = sqrt(P'/P) C'_{jl} C_{kl} over the P' lowest modes; the forces
 and U = sum_k V_mono(q^k) + (P/P') sum_k' [V - V_mono](q'^k').  P' = 1 puts the intermolecular
 forces on the centroid.
 
+NPT: isotropic Monte Carlo barostat, every bead of a molecule translated with the centroid's
+molecular centre of mass (PIMDIntegrator).  Force beads are evaluated in lax.map chunks of 8
+vmapped beads by default (bead_chunk; twice as fast as one vmap over 32 beads of 512 waters).
+
 Rigid bodies and constraints are not supported: a rigid-rotor path integral is not a ring polymer
 of atoms.  Quantum water needs flexible molecules (FlexibleTemplate; e.g.
 scripts/pimd_water.py builds a flexible pGM water).  Units: nm, ps, amu, kJ/mol, K."""
@@ -426,12 +430,13 @@ class PGMBeads:
     Every bead (or contracted bead) keeps its own induced dipoles and predictor history; one
     neighbour list of the centroid serves all beads (its radius is enlarged by `bead_margin` nm,
     the largest allowed distance of a bead atom from its centroid).  contract = P' < P: ring-polymer
-    contraction of the intermolecular part (module docstring)."""
+    contraction of the intermolecular part (module docstring).  bead_chunk: force beads per vmapped
+    chunk, the chunks run one after the other in a lax.map ("auto": 8 when that divides more than 8
+    beads; None: all at once); results are identical."""
 
-    def __init__(self, sim, nbeads: int, contract: int | None = None, bead_margin: float = 0.06,
-                 bead_chunk: int | None = None):
+    def __init__(self, sim, nbeads: int, contract: int | None = None, bead_margin: float = 0.08,
+                 bead_chunk: int | str | None = "auto"):
         integ = sim.integ
-        self.chunk = None if not bead_chunk else int(bead_chunk)
         if getattr(integ, "cons", None) is not None:
             raise ValueError("path integrals need flexible molecules without constraints (constraints='none', "
                              "no RigidTemplate)")
@@ -443,6 +448,9 @@ class PGMBeads:
         self.P = int(nbeads)
         self.Pc = None if (contract is None or int(contract) >= self.P) else int(contract)
         self.nf = self.P if self.Pc is None else self.Pc
+        if bead_chunk == "auto":            # 512 waters, P = 32: 15.2 ms/step vmapped at once, 8.0 in chunks of 8
+            bead_chunk = 8 if (self.nf > 8 and self.nf % 8 == 0) else None
+        self.chunk = None if not bead_chunk else int(bead_chunk)
         self.bead_margin = float(bead_margin)
         self.params = integ.params
         if self.Pc is not None:
@@ -686,9 +694,9 @@ class PIMDSimulation:
 
     def __init__(self, sim, beads: int = 32, mode: str = "pimd", thermostat: str = "pile-l", tau0: float = 0.2,
                  lam: float | None = None, propagator: str = "cayley", contract: int | None = None,
-                 bead_margin: float = 0.06, seed: int = 0, dt: float | None = None, spread: bool = True,
+                 bead_margin: float = 0.08, seed: int = 0, dt: float | None = None, spread: bool = True,
                  ensemble: str = "nvt", pressure: float = 1.0, barostat_interval: int = 100,
-                 bead_chunk: int | None = None, log=sys.stdout):
+                 bead_chunk: int | str | None = "auto", log=sys.stdout):
         self.sim, self.log = sim, log
         self.engine = PGMBeads(sim, beads, contract, bead_margin, bead_chunk)
         self.P = int(beads)

@@ -267,7 +267,7 @@ def test_pgm_npt_barostat():
     of a dilute water system shrinks, with accepted moves."""
     sim = _sim()
     pi = PIMDSimulation(sim, beads=2, log=None, seed=4, ensemble="npt", pressure=3000.0, barostat_interval=5,
-                        thermostat="pile-g", tau0=0.05)
+                        thermostat="pile-g", tau0=0.05, bead_margin=0.05)
     st = pi.state
     U, _ = jax.jit(pi.engine.energy)(st.q, st.box, st.eng)
     assert abs(float(U) - float(st.upot)) < 1e-7 * abs(float(st.upot))

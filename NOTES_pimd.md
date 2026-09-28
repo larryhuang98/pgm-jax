@@ -56,3 +56,14 @@
   RDF: OO peak unchanged (3.2-3.3 at 2.76 A); OH H-bond peak 1.46-1.49 -> 1.34-1.39; HH 1.42-1.44 -> 1.31.
 - pathenv multi_worker on gpu-2-0 retries when the GPU is busy; my jobs now take the GPU in a gap
   (PIMD_WAIT_GPU=1 in scripts/pimd_water.py; runs/pimd/campaign3.sh).
+- 00:10-00:45 GPU batches (single process holding the GPU: scripts/pimd_water.py batch, PIMD_WAIT_GPU=1):
+  P=8 KE_H 118.9; P'=16 149.37, P'=8 150.35 (contraction error +0.9 / +1.9 meV); bead chunks: P=32 15.2 ->
+  7.8 ms/step with chunks of 8 (now default "auto"); P=64 16.1 ms; RPMD NVE 512 waters P=32: H_P RMS
+  60 / 15 kJ/mol at 0.25 / 0.125 fs, no drift beyond block wander; identical with tol 1e-7 / double.
+  NPT: classical 1.0315+-0.003, quantum 1.0467+-0.0046 g/cm3. bead_margin default 0.08 (RPMD tripped 0.061).
+- docs/pimd.md, README (feature bullet, layout row, limits, 222 tests) written.
+
+## Left / ideas
+- Contraction with a reference that includes the monomer's response to the environment field.
+- Kubo-transformed correlation functions / IR spectra from TRPMD (post-processing only now).
+- 0.5 fs time step for flexible pGM water not tested; rigid-rotor PIMD not implemented.
