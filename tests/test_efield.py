@@ -398,3 +398,31 @@ def test_mts_with_a_field_is_the_ordinary_integrator_at_one_fast_step(engine):
     assert np.abs(out[0][0] - out[1][0]).max() < 1e-11
     assert abs(out[0][1] - out[1][1]) < 1e-8 * abs(out[0][1])
     assert abs(out[0][2] - out[1][2]) < 1e-9 and abs(out[0][2]) > 1e-4
+
+
+@pytest.mark.parametrize("kind", ["E", "D"])
+def test_charge_flux_with_a_field(kind):
+    """Charge flux (q(R), c(R)): the field's potential -E . r enters the charge pull-back; forces vs
+    autodiff at fixed mu and vs differences of the energy with the dipoles re-solved."""
+    from pgm_jax.md.flexible import FlexibleSimulation, liquid_box
+    from test_flux import flux_template, tight
+    tpl, _ = flux_template()
+    n = 16
+    pos, H = liquid_box(tpl, n, 0.55, seed=0, min_dist=0.18)
+    pos = pos + 0.004 * np.random.default_rng(1).normal(size=pos.shape)
+    sys = System([tpl.pgm] * n)
+    sim = FlexibleSimulation(sys, [tpl] * n, pos, H, tight(), ensemble="nve", log=None)
+    pos, H = jnp.asarray(sim.flex.pos0), jnp.asarray(H)
+    ff = PGMForceField(sys, H, tight(), topology=sim.topology, flux=sim.ff.flux)
+    idx = ff.rows_for(pos, H)
+    fld = (jnp.asarray(E1), None) if kind == "E" else (jnp.asarray(DD), None, "D")
+    res = jax.jit(lambda y: ff.compute(y, H, idx, ff.init_induction(), efield=fld))(pos)
+    P = ff._atoms(None)
+    F_ad = -jax.grad(lambda y: ff.energy_fixed_mu(y, H, res.induction.mu, idx, P, fld)[0])(pos)
+    assert float(jnp.abs(res.forces - F_ad).max()) < 1e-9 * float(jnp.abs(F_ad).max())
+    e = jax.jit(lambda y: ff.energy(y, H, idx, res.induction, efield=fld)[0])
+    h = 1e-6
+    for a, k in [(0, 0), (1, 1), (5, 2), (40, 0)]:
+        d = jnp.zeros_like(pos).at[a, k].set(h)
+        fd = -(float(e(pos + d)) - float(e(pos - d))) / (2 * h)
+        assert abs(fd - float(res.forces[a, k])) < 1e-6 * max(1.0, abs(fd)), (a, k, fd, float(res.forces[a, k]))

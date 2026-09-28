@@ -32,3 +32,19 @@
 - GPU gpu-2-1: p25 10 replicas (+-0.02, 0.05, 0.1, 0.2, 2 x 0) 1 ns: 42.0 ns/day per replica, 420 aggregate (2 fs)
   quick awk means (50 ps skipped): eps(+-0.02) 35.6, (0.05) 34.7, (0.1) 33.0, (0.2) 33.3
 - CPU (32 cores): TIP3P 2 replicas 2.9 ns/day each
+- 1 ns x 10 replicas (50 ps skipped), pairs:
+  p25   0.02 35.57+-4.99 | 0.05 34.70+-1.71 | 0.1 32.98+-0.60 | 0.2 33.34+-0.42 ; zero-field fluct 33.74+-1.93, 33.39+-1.09
+  tip3p 0.02 106.65+-4.21 | 0.05 92.68+-3.00 | 0.1 87.47+-0.83 | 0.2 72.57+-0.20 ; fit<=0.1 100.35+-2.96; zero 97.1, 96.3
+  base  0.02 71.69+-2.91 | 0.05 74.01+-1.02 | 0.1 70.47+-0.33 | 0.2 63.35+-0.21 ; fit<=0.2 73.08+-0.40 (chi2 2.8/2); zero 74.7, 72.3
+- zero-field references (validate_efield fluct, skip 200 ps): tip3p.dip (dipoles agent, NPT 9.8 ns) 103.77+-2.98, 1-ns
+  segments std 9.13; pgm3p25.dip 34.20+-0.70, std 2.19; base r1..r5 (5 x 9.8 ns) 73.23+-0.17, std 1.87 (tau_M ~1 ps)
+- GPU speeds (2 fs, 10 replicas): p25 42 ns/day/replica (420 agg), tip3p 73 (729), base 42 (421)
+- cluster note: sbatch without --mem takes the whole node's memory (125G): runs/cpu_mem.sh adds --mem
+- OpenMM TIP3P check (scripts/openmm_tip3p_field.py, CPU 16 threads ~31 ns/day): +-0.05, 0.1, 0.2 x 1.5 ns submitted
+- p25 after 2 ns: pairs 0.02 34.56+-2.98, 0.05 35.27+-1.14, 0.1 33.89+-0.47, 0.2 33.23+-0.24; fit(all) 34.39+-0.55
+  (c 29+-16); zero copies 33.07+-0.48, 34.39+-0.81
+- OpenMM TIP3P (1.45 ns/replica): +0.1 88.92+-0.98, -0.1 87.92+-1.08, +0.2 71.40+-0.44, -0.2 71.13+-0.17
+  -> pairs 88.4+-0.7 (pgm_jax 87.47+-0.83), 71.3+-0.2 (pgm_jax 72.57+-0.20)
+- full suite: 230 passed (35 min, 32 cores); zero-field identity with master: bitwise (efield_identical.py)
+- GPU lock on gpu-2-1 is contended by the iel agent (their jobs ~70 min); remaining work bundled in runs/gpu_all.sh
+  (tip3p +1 ns, p25 constant D +-3.3/6.6 0.5 ns, speed, tip3p +-0.2 at 1 fs)
