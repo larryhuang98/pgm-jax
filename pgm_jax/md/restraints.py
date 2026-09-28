@@ -383,19 +383,24 @@ class Restraints:
         """dE/d eps (3, 3) under the barostat's molecular scaling: molecular centres of mass
         (masses, molecule index mol per atom) and the box deformed by (1 + eps), molecules
         translated rigidly (as PGMForceField.strain_derivative)."""
-        pos = jnp.asarray(pos, jnp.float64)
-        H = jnp.asarray(H, jnp.float64)
-        w = jnp.asarray(masses, jnp.float64)
-        com = jax.ops.segment_sum(w[:, None] * pos, mol, nmol) / jax.ops.segment_sum(w, mol, nmol)[:, None]
-
-        def e(eps):
-            F = jnp.eye(3) + eps
-            return self.energy(pos + jnp.matmul(com, eps.T, precision=_HI)[mol], jnp.matmul(H, F.T, precision=_HI))
-
-        return jax.grad(e)(jnp.zeros((3, 3)))
+        return molecular_strain(self.energy, pos, H, mol, masses, nmol)
 
     def describe(self) -> str:
         return ", ".join(t.describe() for t in self.terms)
+
+
+def molecular_strain(energy, pos, H, mol, masses, nmol: int):
+    """dE/d eps (3, 3) of energy(pos, H) under molecular scaling (see Restraints.strain_derivative)."""
+    pos = jnp.asarray(pos, jnp.float64)
+    H = jnp.asarray(H, jnp.float64)
+    w = jnp.asarray(masses, jnp.float64)
+    com = jax.ops.segment_sum(w[:, None] * pos, mol, nmol) / jax.ops.segment_sum(w, mol, nmol)[:, None]
+
+    def e(eps):
+        F = jnp.eye(3) + eps
+        return energy(pos + jnp.matmul(com, eps.T, precision=_HI)[mol], jnp.matmul(H, F.T, precision=_HI))
+
+    return jax.grad(e)(jnp.zeros((3, 3)))
 
 
 def as_restraints(x) -> Restraints | None:

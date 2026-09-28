@@ -567,7 +567,7 @@ class LambdaWindows(MDReplicas):
         g = alch.dudl(ff, pos, st.box, cand, st.induction.mu, params, st.lam)
         # lambda-independent terms (restraints, bonded energy of flexible molecules): the same in every
         # window, kept so that u_n(x_n) = beta U of the step
-        const = integ._restraint_energy(pos, st.box) + (integ.flex.energy(pos) if hasattr(integ, "flex") else 0.0)
+        const = integ._restraint_energy(pos, st.box, st.bias) + (integ.flex.energy(pos) if hasattr(integ, "flex") else 0.0)
         return E[group] + esc + const, g, jnp.max(it), jnp.any(ovf) | ovf0
 
     def _sampler(self):

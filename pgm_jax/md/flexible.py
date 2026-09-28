@@ -369,7 +369,7 @@ class FlexibleIntegrator(Integrator):
         self.n_real = flex.n - (0 if self.vsites is None else self.vsites.n_sites)
         self.dof = 3 * self.n_real - nc - (3 if self.ensemble == "nve" else 0)
 
-    def _forces(self, pos, box, induction, nbr, force_rebuild=False, lam=None):
+    def _forces(self, pos, box, induction, nbr, force_rebuild=False, lam=None, bias=None):
         centers = self.flex.list_centers(pos)
         nbr = self.nb.update(nbr, pos, centers, box, force_rebuild)
         cand, ovf = self.nb.candidates(nbr, centers, box, pos)
@@ -380,16 +380,22 @@ class FlexibleIntegrator(Integrator):
         e_in, g_in = jax.value_and_grad(self.flex.energy)(pos)
         energy = dict(res.energy)
         energy["total"] = res.energy["total"] + e_in
-        res = self._add_restraints(res._replace(energy=energy, overflow=res.overflow | ovf), pos, box)
+        res = self._add_restraints(res._replace(energy=energy, overflow=res.overflow | ovf), pos, box, bias)
         if self.vsites is not None:                          # site forces to the parents
             return self.vsites.spread(pos, box, res.forces - g_in), res, nbr
         return res.forces - g_in, res, nbr
+
+    def _bias_atoms(self, x):
+        return x
+
+    def _map_atom_forces(self, x, box, F):
+        return F if self.vsites is None else self.vsites.spread(x, box, F)
 
     def place(self, pos, box):
         """Positions with the virtual sites rebuilt from their parents (identity without sites)."""
         return pos if self.vsites is None else self.vsites.place(pos, box)
 
-    def init(self, pos, box, key, momentum=None) -> MDState:
+    def init(self, pos, box, key, momentum=None, bias=None) -> MDState:
         box = jnp.asarray(box, jnp.float64)
         pos = jnp.asarray(pos, jnp.float64)
         if self.cons is not None:                          # start on the constraint surface
@@ -417,7 +423,7 @@ class FlexibleIntegrator(Integrator):
         st = MDState(dyn=dyn, box=box, induction=self.ff.init_induction(), nbr=nbr, epot=z, elec=z, vdw=z,
                      iters=zi, max_iters=zi, resid=z, step=zi, mc=jnp.zeros(4, jnp.int32),
                      mc_dv=jnp.asarray(0.01 * float(volume(box)), jnp.float64), overflow=jnp.zeros((), bool),
-                     aux=aux, heat=z, cg_total=z)
+                     aux=aux, heat=z, cg_total=z, bias=self._init_bias(bias))
         return self.forces(st, False)
 
     def _scaled(self, dyn: Dynamics):
@@ -462,7 +468,7 @@ class FlexibleIntegrator(Integrator):
             dyn = self._drift(dyn, dt / 2)
         if self.vsites is not None:
             dyn = dyn.set(position=self.vsites.place(dyn.position, st.box))
-        F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr, lam=st.lam)
+        F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr, lam=st.lam, bias=st.bias)
         st = self._with_result(st.set(dyn=dyn, aux=aux, heat=heat), F, res, nbr)
         st = st.set(dyn=self._kick(st.dyn, dt / 2), step=st.step + 1)
         if self.ensemble == "npt":
@@ -486,7 +492,7 @@ class FlexibleIntegrator(Integrator):
             e_n, ind_n, _, ovf = self.ff.energy(pos_n, Hn, cand, st.induction, self.params)
         else:
             e_n, ind_n, _, ovf = self.alchemy.energy(self.ff, pos_n, Hn, cand, st.induction, self.params, st.lam)
-        e_n = e_n + self.flex.energy(pos_n) + self._restraint_energy(pos_n, Hn)
+        e_n = e_n + self.flex.energy(pos_n) + self._restraint_energy(pos_n, Hn, st.bias)
         ovf = ovf | ovf0
         kT = self.thermostat_kT(st)
         w = (e_n - st.epot) + self.pressure * dV - self.nmol * kT * jnp.log(jnp.maximum(Vn, 1e-12) / V)
@@ -495,7 +501,7 @@ class FlexibleIntegrator(Integrator):
 
         def acc(st):
             st = st.set(dyn=st.dyn.set(position=pos_n), box=Hn, induction=ind_n)
-            F, res, nbr = self._forces(pos_n, Hn, ind_n, nbr_n, lam=st.lam)
+            F, res, nbr = self._forces(pos_n, Hn, ind_n, nbr_n, lam=st.lam, bias=st.bias)
             return self._with_result(st, F, res, nbr)
 
         st = jax.lax.cond(accept, acc, lambda s: s, st)
@@ -532,14 +538,14 @@ class FlexibleSimulation(Simulation):
     bonded heavy atom), None, or one value (or None) per molecule, e.g. AmberSystem.hmr({"water":
     4.0, "protein": 3.024}) (constraints.hmr_masses); restraints: md/restraints.py; alchemy: an
     alchemical region (md/alchemy.py); mts: multiple time stepping (md/mts.py: MTS settings; dt is
-    then the outer step)."""
+    then the outer step); bias: biases on collective variables (pgm_jax.bias)."""
 
     def __init__(self, sys: System, templates, pos_nm, H_nm, settings: MDSettings = MDSettings(),
                  dt: float = 0.0005, ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0,
                  pressure: float = 1.0, barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None,
                  params=None, log=None, neighbor_list: str = "auto", r_margin: float = 0.05,
                  constraints: str = "none", hmr=None, max_single: int | None = None,
-                 thermostat="langevin", tau_t: float = 1.0, restraints=None, alchemy=None, mts=None):
+                 thermostat="langevin", tau_t: float = 1.0, restraints=None, alchemy=None, mts=None, bias=None):
         H = reduce_box(H_nm)
         check_box(H, settings.pair_cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
@@ -568,7 +574,8 @@ class FlexibleSimulation(Simulation):
         self.integ = integ(self.ff, self.flex, self.nb, dt, constraints=self.constraints, ensemble=ensemble,
                            temperature=temperature, gamma=gamma, pressure=pressure,
                            barostat_interval=barostat_interval, params=params,
-                           thermostat=thermostat, tau_t=tau_t, restraints=restraints, alchemy=alchemy, **extra)
+                           thermostat=thermostat, tau_t=tau_t, restraints=restraints, alchemy=alchemy, bias=bias,
+                           **extra)
         self.dt, self.ensemble, self.T0 = dt, ensemble, temperature
         mom = None if vel_nm_ps is None else self.flex.mass * jnp.asarray(vel_nm_ps)
         self.state = self.integ.init(pos0, H, jax.random.PRNGKey(seed), mom)
@@ -589,6 +596,7 @@ class FlexibleSimulation(Simulation):
             self._print(f"# alchemical region: {alchemy.describe()}")
         if mts is not None:
             self._print(f"# {self.integ.describe_mts()}")
+        self._describe_bias()
 
     def minimize(self, steps: int = 500, max_step: float = 0.01, ftol: float = 50.0, seed: int = 1) -> dict:
         """Steepest descent (adaptive step, at most max_step nm per atom, constraints kept by SHAKE)
@@ -627,7 +635,7 @@ class FlexibleSimulation(Simulation):
                     break
         self._size_lists(pos, box)
         self.integ.compile()
-        self.state = self.integ.init(pos, box, jax.random.PRNGKey(seed))
+        self.state = self.integ.init(pos, box, jax.random.PRNGKey(seed), bias=st.bias)
         out = {"steps": it + 1, "accepted": n_acc, "energy": E, "fmax": float(jnp.max(jnp.linalg.norm(F, axis=1)))}
         self._print(f"# minimised: {out}")
         return out
@@ -676,7 +684,7 @@ class FlexibleSimulation(Simulation):
             W = self.ff.strain_derivative(pos, st.box, idx, st.induction.mu, self.integ.params)
         else:
             W = self.integ.alchemy.strain_derivative(self.ff, pos, st.box, idx, st.induction.mu, self.integ.params, st.lam)
-        W = W + self.integ.restraint_strain(pos, st.box)
+        W = W + self.integ.restraint_strain(pos, st.box, st.bias)
         ke_t = self.integ.kinetic(st)[1]
         return (2.0 * ke_t - jnp.trace(W)) / (3.0 * volume(st.box)) * 16.605390671738466
 
@@ -689,7 +697,7 @@ class FlexibleSimulation(Simulation):
     def load(self, path: str):
         with open(path, "rb") as fh:
             d = pickle.load(fh)
-        st = upgrade_state(jax.tree_util.tree_map(jnp.asarray, d["state"]), self.state.aux)
+        st = self._bias_of_checkpoint(upgrade_state(jax.tree_util.tree_map(jnp.asarray, d["state"]), self.state.aux))
         pos = st.dyn.position
         self.state = st.set(nbr=self.nb.allocate(pos, self.flex.list_centers(pos), st.box))
         self.time_ps = d["time_ps"]

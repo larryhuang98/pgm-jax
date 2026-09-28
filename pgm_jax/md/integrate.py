@@ -17,6 +17,11 @@
 Restraints (restraints.py, `restraints=`) add their energy to the potential energy and their
 atomic forces to the force-field forces before these are mapped to the bodies; the barostat's trial
 energy includes them at the scaled positions and box.
+Biases on collective variables (pgm_jax/bias, `bias=`: metadynamics, OPES, static biases) add
+V(s(x)) like the restraints, with a state MDState.bias (hills, kernels, COLVAR buffer) that is
+updated after the steps at which a bias deposits, inside the compiled loop; the forces of the new
+bias replace those of the old one at once (so the next kick uses them) and the change of V at
+fixed positions is booked as heat (econs stays conserved) and in BiasState.work.
 An alchemical region (alchemy.py, `alchemy=`) makes the Hamiltonian depend on the state's coupling
 MDState.lam = (lambda_elec, lambda_vdw), a traced value like kT, so lambda windows share one
 compiled step (batched with jax.vmap); without one the step is unchanged.
@@ -31,7 +36,7 @@ import numpy as np
 from ._jaxmd import dataclasses, rigid_body, simulate, space
 from .box import volume
 from .forcefield import InductionState, PGMForceField
-from .restraints import as_restraints
+from .restraints import as_restraints, molecular_strain
 from .rigid import RigidBody, RigidMolecules
 from .thermostats import Thermostat, make_thermostat
 
@@ -73,6 +78,7 @@ class MDState:
     lam: jnp.ndarray = None           # (2,) alchemical coupling (lambda_elec, lambda_vdw) of the state (alchemy.py:
                                       # lambda windows share one compiled step); None: the Alchemy's default
     mts: object = None                # multiple time stepping: forces of each level, short-range list (mts.MTSState)
+    bias: object = None               # state of the biases (pgm_jax.bias.BiasState) or None
 
 
 def upgrade_state(st: MDState, aux) -> MDState:
@@ -92,7 +98,8 @@ class Integrator:
     def __init__(self, ff: PGMForceField, rigid: RigidMolecules, neighbors, dt: float = 0.001,
                  ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0,
                  pressure: float = 1.0, barostat_interval: int = 100, params=None,
-                 thermostat: str | Thermostat = "langevin", tau_t: float = 1.0, restraints=None, alchemy=None):
+                 thermostat: str | Thermostat = "langevin", tau_t: float = 1.0, restraints=None, alchemy=None,
+                 bias=None):
         ensemble = ensemble.lower()
         if ensemble not in ("nve", "nvt", "npt"):
             raise ValueError("ensemble must be nve, nvt or npt")
@@ -110,6 +117,11 @@ class Integrator:
         self.restraints = as_restraints(restraints)
         if self.restraints is not None:
             self.restraints.check(rigid.sys.n)
+        from ..bias.core import as_bias_set
+        self.bias = as_bias_set(bias, colvar=100)   # pgm_jax.bias.BiasSet or None
+        if self.bias is not None:
+            self.bias.bind(float(temperature))
+            self.bias.check(rigid.sys.n)
         self.alchemy = alchemy                     # alchemy.Alchemy or None (then every hook below is inactive)
         if alchemy is not None:
             alchemy.check(ff)
@@ -121,7 +133,7 @@ class Integrator:
         self.forces = jax.jit(self._state_forces)
 
     # --------------------------------------------------------------------- forces
-    def _forces(self, body, box, induction, nbr, force_rebuild=False, lam=None):
+    def _forces(self, body, box, induction, nbr, force_rebuild=False, lam=None, bias=None):
         pos = self.rigid.positions(body)
         nbr = self.nb.update(nbr, pos, body.center, box, force_rebuild)
         cand, ovf = self.nb.candidates(nbr, body.center, box, pos)
@@ -129,24 +141,75 @@ class Integrator:
             res = self.ff.compute(pos, box, cand, induction, self.params, keep_geometry=self.keep_geometry)
         else:                                      # Hamiltonian at the state's coupling lam
             res = self.alchemy.compute(self.ff, pos, box, cand, induction, self.params, lam)
-        res = self._add_restraints(res._replace(overflow=res.overflow | ovf), pos, box)
+        res = self._add_restraints(res._replace(overflow=res.overflow | ovf), pos, box, bias)
         return self.rigid.forces(body, res.forces), res, nbr
 
-    def _add_restraints(self, res, pos, box):
-        """Restraint energy and atomic forces added to a force-field result."""
-        if self.restraints is None:
+    def _has_extra(self, bias) -> bool:
+        return self.restraints is not None or (self.bias is not None and bias is not None)
+
+    def _extra_energy(self, pos, box, bias=None):
+        """Restraint energy + bias energy (with the bias state `bias`; none if None), kJ/mol."""
+        e = jnp.zeros((), jnp.float64)
+        if self.restraints is not None:
+            e = e + self.restraints.energy(pos, box)
+        if self.bias is not None and bias is not None:
+            e = e + self.bias.energy(bias, pos, box)
+        return e
+
+    def _add_restraints(self, res, pos, box, bias=None):
+        """Restraint and bias energy and atomic forces added to a force-field result."""
+        if not self._has_extra(bias):
             return res
-        e, g = jax.value_and_grad(self.restraints.energy)(pos, box)
+        e, g = jax.value_and_grad(self._extra_energy)(pos, box, bias)
         return res._replace(energy=dict(res.energy, total=res.energy["total"] + e), forces=res.forces - g)
 
-    def _restraint_energy(self, pos, box):
-        return 0.0 if self.restraints is None else self.restraints.energy(pos, box)
+    def _restraint_energy(self, pos, box, bias=None):
+        return self._extra_energy(pos, box, bias) if self._has_extra(bias) else 0.0
 
-    def restraint_strain(self, pos, box):
-        """dE_restraint / d eps (3, 3) under molecular scaling (for the pressure)."""
-        if self.restraints is None:
+    def restraint_strain(self, pos, box, bias=None):
+        """d(E_restraint + E_bias) / d eps (3, 3) under molecular scaling (for the pressure)."""
+        if not self._has_extra(bias):
             return jnp.zeros((3, 3))
-        return self.restraints.strain_derivative(pos, box, self.ff.mol, self.ff.masses, self.nmol)
+        return molecular_strain(lambda p, h: self._extra_energy(p, h, bias), pos, box, self.ff.mol, self.ff.masses,
+                                self.nmol)
+
+    # --------------------------------------------------------------------- biases (pgm_jax.bias)
+    def _bias_atoms(self, x):
+        """Atom positions of the engine's position variable."""
+        return self.rigid.positions(x)
+
+    def _map_atom_forces(self, x, box, F):
+        """Atomic forces -> the engine's force variable (linear)."""
+        return self.rigid.forces(x, F)
+
+    def _bias_post(self, st: MDState) -> MDState:
+        """After a step: the COLVAR row, then the bias updates due at this step.  The forces and
+        epot of the state are corrected to the new bias at the same positions (a bias-only
+        evaluation), and the energy change is booked as heat and as bias work."""
+        if self.bias is None or st.bias is None:
+            return st
+        x, box = st.dyn.position, st.box
+        pos = self._bias_atoms(x)
+        st = st.set(bias=self.bias.record(st.bias, pos, box, st.step))
+        if not self.bias.dynamic:
+            return st
+
+        def dep(st):
+            old = st.bias
+            new = self.bias.deposit(old, pos, box, st.step)
+            e0, g0 = jax.value_and_grad(self.bias.energy, argnums=1)(old, pos, box)
+            e1, g1 = jax.value_and_grad(self.bias.energy, argnums=1)(new, pos, box)
+            dF = self._map_atom_forces(x, box, g0 - g1)
+            de = e1 - e0
+            add = lambda a, b: jax.tree_util.tree_map(jnp.add, a, b)          # noqa: E731
+            st = st.set(bias=new._replace(work=new.work + de), dyn=st.dyn.set(force=add(st.dyn.force, dF)),
+                        epot=st.epot + de, heat=st.heat + de)
+            m = getattr(st, "mts", None)
+            if m is not None:                          # multiple time stepping: the bias is in the slow group
+                st = st.set(mts=m.set(forces=(add(m.forces[0], dF),) + tuple(m.forces[1:])))
+            return st
+
+        return jax.lax.cond(self.bias.due(st.step), dep, lambda s: s, st)
 
     def _with_result(self, st: MDState, F, res, nbr) -> MDState:
         return st.set(dyn=st.dyn.set(force=F), nbr=nbr, induction=res.induction, epot=res.energy["total"],
@@ -160,11 +223,12 @@ class Integrator:
         return None
 
     def _state_forces(self, st: MDState, force_rebuild=True) -> MDState:
-        F, res, nbr = self._forces(st.dyn.position, st.box, st.induction, st.nbr, force_rebuild, lam=st.lam)
+        F, res, nbr = self._forces(st.dyn.position, st.box, st.induction, st.nbr, force_rebuild, lam=st.lam,
+                                   bias=st.bias)
         return self._with_result(st, F, res, nbr)
 
     # --------------------------------------------------------------------- setup
-    def init(self, body, box, key, momentum=None) -> MDState:
+    def init(self, body, box, key, momentum=None, bias=None) -> MDState:
         """Host-side: allocate the neighbour list, compute forces, draw or set momenta."""
         box = jnp.asarray(box, jnp.float64)
         nbr = self.nb.allocate(self.rigid.positions(body), body.center, box)
@@ -181,8 +245,14 @@ class Integrator:
         st = MDState(dyn=dyn, box=box, induction=self.ff.init_induction(), nbr=nbr, epot=z, elec=z, vdw=z,
                      iters=zi, max_iters=zi, resid=z, step=zi, mc=jnp.zeros(4, jnp.int32),
                      mc_dv=jnp.asarray(0.01 * float(volume(box)), jnp.float64), overflow=jnp.zeros((), bool),
-                     aux=aux, heat=z, cg_total=z)
+                     aux=aux, heat=z, cg_total=z, bias=self._init_bias(bias))
         return self.forces(st, False)
+
+    def _init_bias(self, bias=None):
+        """The bias state of a new MD state: `bias` (e.g. kept across minimisation) or a fresh one."""
+        if self.bias is None:
+            return None
+        return self.bias.init() if bias is None else bias
 
     # --------------------------------------------------------------------- thermostat
     def _scaled(self, dyn: Dynamics):
@@ -236,7 +306,7 @@ class Integrator:
             dyn = simulate.position_step(dyn, self.shift, dt / 2)
             dyn, aux, heat = self._o_step(dyn, aux, heat, dt, self.thermostat_kT(st))
             dyn = simulate.position_step(dyn, self.shift, dt / 2)
-        F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr, lam=st.lam)
+        F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr, lam=st.lam, bias=st.bias)
         st = self._with_result(st.set(dyn=dyn, aux=aux, heat=heat), F, res, nbr)
         st = st.set(dyn=simulate.momentum_step(st.dyn, dt / 2), step=st.step + 1)
         if self.ensemble == "npt":
@@ -260,7 +330,7 @@ class Integrator:
             e_n, ind_n, _, ovf = self.ff.energy(pos_n, Hn, cand, st.induction, self.params)
         else:
             e_n, ind_n, _, ovf = self.alchemy.energy(self.ff, pos_n, Hn, cand, st.induction, self.params, st.lam)
-        e_n = e_n + self._restraint_energy(pos_n, Hn)
+        e_n = e_n + self._restraint_energy(pos_n, Hn, st.bias)
         ovf = ovf | ovf0
         kT = self.thermostat_kT(st)
         w = (e_n - st.epot) + self.pressure * dV - self.nmol * kT * jnp.log(jnp.maximum(Vn, 1e-12) / V)
@@ -269,7 +339,7 @@ class Integrator:
 
         def acc(st):
             st = st.set(dyn=st.dyn.set(position=body_n), box=Hn, induction=ind_n)
-            F, res, nbr = self._forces(body_n, Hn, ind_n, nbr_n, lam=st.lam)
+            F, res, nbr = self._forces(body_n, Hn, ind_n, nbr_n, lam=st.lam, bias=st.bias)
             return self._with_result(st, F, res, nbr)
 
         st = jax.lax.cond(accept, acc, lambda s: s, st)
@@ -283,7 +353,9 @@ class Integrator:
 
     def _run(self, st: MDState, n) -> MDState:
         st = st.set(max_iters=jnp.zeros((), jnp.int32), resid=jnp.zeros((), jnp.float64), overflow=jnp.zeros((), bool))
-        return jax.lax.fori_loop(0, n, lambda _, s: self._step(s), st)
+        if self.bias is None:
+            return jax.lax.fori_loop(0, n, lambda _, s: self._step(s), st)
+        return jax.lax.fori_loop(0, n, lambda _, s: self._bias_post(self._step(s)), st)
 
     # --------------------------------------------------------------------- observables
     def kinetic(self, st: MDState):
