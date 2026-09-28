@@ -68,3 +68,15 @@ Running log so the work can be resumed.
 - iEL/SCF-2 Bussi 2 fs: 512 w 0.546 ms (316 ns/d), 4096 w 1.519 ms (113.7).
 - GPU queue: bench6 (1 ns NVE of block K7 / Jacobi K9 / block K9 / SCF; 1 fs 200 ps; dyn block K7;
   eps NPT 8 ns block K7 = runs/iel/geps_blk7_s100) then bench7 (dyn scf-2, eps scf-2 8 ns).
+- 07:40 defaults -> block + K7 (1 ns NVE 2 fs: block K7 +0.013, block K9 +0.013, Jacobi K9 +0.026, SCF
+  1e-5 +0.0035; 1 fs 200 ps: block K7 +0.0012, Jacobi K9 +0.0020, Jacobi K5 +0.0069).  Full suite 222 pass.
+- dyn (GPU) block K7: D 3.75 +- 0.11, tau2 0.862, mu err 1.57e-3, dU -0.11, drift +0.012; SCF-2: D 3.73,
+  tau2 0.884, mu err 2.3e-4, drift -0.0033, econs rms 0.71 kJ/mol.
+- eps (NPT 2 fs Bussi, skip 200 ps): block K7 2 x 7.8 ns GPU (geps_blk7_s100/101): 30.51 +- 0.25
+  (30.35, 30.62), density 1.0177, U -2115067 +- 4, mu 1.9865, T 296.9 (T_tr 296.7, T_rot 297.2);
+  SCF-2 7.8 ns: 31.03 +- 0.71, 1.0175, -2115038 +- 8, T_rot - T_tr -0.8; reference SCF 31.02 +- 0.35,
+  T_rot - T_tr -1.7.  Jacobi K5 CPU replicas (interim 10.2 ns): 30.46 +- 0.21, density 1.0188 +- 0.0005,
+  U -2115094 +- 5, T_rot - T_tr +2.9.
+- 1 fs Langevin block: 512 w 0.507 ms (170 ns/d), 4096 w 1.299 ms (66.5).
+- TODO at ~11:30: final pooled eps of eps_0scf_s* (scripts/iel_validate.py --eps ... --skip 50), fill
+  docs/iel.md placeholders (EPS_J5, RHO_J5, U_J5, MU_J5, T_J5, TROT_TEXT), commit.

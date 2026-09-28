@@ -156,14 +156,14 @@ of 0-SCF (1.6e-3 relative, 3e-3 D per molecule) is not visible in any property.
 dipole every 25 steps; the protocol of the reference run of `docs/dielectric.md`; tin-foil eps with
 eps_inf from the cell polarizability; jackknife errors):
 
-| | SCF tol 1e-5 (reference, 14.9 ns) | **0-SCF block K7 (7.8 ns)** | 0-SCF Jacobi K5 (EPS_J5_NS) | SCF-2 (EPS_S2_NS) |
+| | SCF tol 1e-5 (reference, 14.9 ns) | **0-SCF block K7 (2 x 7.8 ns)** | 0-SCF Jacobi K5 (EPS_J5_NS) | SCF-2 (7.8 ns) |
 |---|---|---|---|---|
-| eps | 31.02 +- 0.35 | **30.35 +- 0.44** | EPS_J5 | EPS_S2 |
-| eps_inf | 1.798 | 1.797 | EPS_J5_INF | EPS_S2_INF |
-| density (g/cm^3) | 1.0179 +- 0.0003 | 1.0173 +- 0.0006 | RHO_J5 | RHO_S2 |
-| <U> (kJ/mol) | -2115060 +- 5 | -2115070 +- 8 | U_J5 | U_S2 |
-| mean molecular dipole (D) | 1.9865 | 1.9864 | MU_J5 | MU_S2 |
-| <T>, T_trans, T_rot (K) | 296.1, 297.0, 295.3 | 297.0, 296.6, 297.3 | T_J5 | T_S2 |
+| eps | 31.02 +- 0.35 | **30.51 +- 0.25** (30.35 +- 0.44, 30.62 +- 0.25) | EPS_J5 | 31.03 +- 0.71 |
+| eps_inf | 1.798 | 1.797 | EPS_J5_INF | 1.798 |
+| density (g/cm^3) | 1.0179 +- 0.0003 | 1.0177 +- 0.0005 | RHO_J5 | 1.0175 +- 0.0002 |
+| <U> (kJ/mol) | -2115060 +- 5 | -2115067 +- 4 | U_J5 | -2115038 +- 8 |
+| mean molecular dipole (D) | 1.9865 | 1.9865 | MU_J5 | 1.9859 |
+| <T>, T_trans, T_rot (K) | 296.1, 297.0, 295.3 | 296.9, 296.7, 297.2 | T_J5 | 296.4, 296.7, 296.0 |
 
 eps, density, <U> and the molecular dipole agree within 1-1.5 standard errors. The one systematic
 difference is the equipartition between rotations and translations at 2 fs. With the global
