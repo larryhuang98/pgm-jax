@@ -586,3 +586,23 @@ def test_walkers(shared, tmp_path):
     wk3 = Walkers(sim, W, shared=shared, seed=9)
     wk3.load(prefix + ".walkers.chk")
     assert np.allclose(wk3.bias_energies(), E, atol=1e-10)
+
+
+def test_reserve_many_equal_shapes():
+    """Independent walkers whose buffers grow differently are padded to common sizes (stackable)."""
+    d = cv.Distance(0, 1)
+    bs = BiasSet([OPES(d, 0.01, 1, 20.0, temperature=300.0, capacity=4, compression=0.0),
+                  MetaD(d, 0.05, 1.0, 1, temperature=300.0, capacity=4)], colvar=1)
+    a = bs.init(log_rows=2)
+    b = bs.init(log_rows=2)
+    x = np.zeros((2, 3))
+    for k in range(1, 4):
+        x[1, 0] = 0.3 + 0.1 * k
+        a = bs.deposit(a, jnp.asarray(x), None, k)
+    out = bs.reserve_many([a, b], 10)
+    la, lb = jax.tree_util.tree_leaves(out[0]), jax.tree_util.tree_leaves(out[1])
+    assert all(p.shape == q.shape for p, q in zip(la, lb))
+    assert out[0].parts[0].heights.shape[0] > 4 and int(out[0].parts[0].nk) == 3
+    stacked = jax.tree_util.tree_map(lambda *v: jnp.stack(v), *out)
+    assert abs(float(bs.energy(jax.tree_util.tree_map(lambda v: v[0], stacked), jnp.asarray(x)))
+               - float(bs.energy(a, jnp.asarray(x)))) < 1e-12

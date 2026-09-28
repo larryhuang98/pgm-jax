@@ -163,7 +163,7 @@ class Walkers(MDReplicas):
         if self.shared:
             self.S = self.S.set(bias=bias.reserve(self.S.bias, n * self.n))
         else:
-            per = [bias.reserve(jax.tree_util.tree_map(lambda a: a[w], self.S.bias), n) for w in range(self.n)]
+            per = bias.reserve_many([jax.tree_util.tree_map(lambda a: a[w], self.S.bias) for w in range(self.n)], n)
             self.S = self.S.set(bias=jax.tree_util.tree_map(lambda *a: jnp.stack(a), *per))
 
     def _drain(self):

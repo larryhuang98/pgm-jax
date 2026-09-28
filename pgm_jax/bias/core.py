@@ -91,6 +91,14 @@ class Bias:
         """State with room for n_updates more updates (host; may change shapes)."""
         return state
 
+    def buffer_size(self, state) -> int:
+        """Size of the state's buffers (0: none)."""
+        return 0
+
+    def grow_to(self, state, size: int):
+        """The state with its buffers padded to `size` slots (host)."""
+        return state
+
     def describe(self) -> str:
         return f"{self.kind} on {', '.join(self.cvs.names)}"
 
@@ -314,8 +322,15 @@ class MetaD(Bias):
             return state
         if n > M:
             raise RuntimeError("metadynamics hill buffer overflowed (hills lost)")
-        new = max(2 * M, n + n_updates + 16)
-        pad = new - M
+        return self.grow_to(state, max(2 * M, n + n_updates + 16))
+
+    def buffer_size(self, state) -> int:
+        return int(state.heights.shape[0])
+
+    def grow_to(self, state, size: int):
+        pad = int(size) - state.heights.shape[0]
+        if pad <= 0:
+            return state
         return MetaDState(jnp.concatenate([state.centers, jnp.zeros((pad, self.d))]),
                           jnp.concatenate([state.heights, jnp.zeros(pad)]),
                           jnp.concatenate([state.steps, jnp.full(pad, -1, jnp.int32)]), state.n, state.grid)
@@ -523,8 +538,15 @@ class OPES(Bias):
         nk, K = int(st.nk), st.heights.shape[0]
         if nk + min(n_updates, 64) <= 0.8 * K:
             return st
-        new = max(2 * K, int((nk + min(n_updates, 64)) / 0.8) + 16)
-        pad = new - K
+        return self.grow_to(st, max(2 * K, int((nk + min(n_updates, 64)) / 0.8) + 16))
+
+    def buffer_size(self, st) -> int:
+        return int(st.heights.shape[0])
+
+    def grow_to(self, st, size: int):
+        pad = int(size) - st.heights.shape[0]
+        if pad <= 0:
+            return st
         return st._replace(centers=jnp.concatenate([st.centers, jnp.zeros((pad, self.d))]),
                            sigmas=jnp.concatenate([st.sigmas, jnp.ones((pad, self.d))]),
                            heights=jnp.concatenate([st.heights, jnp.zeros(pad)]))
@@ -649,6 +671,21 @@ class BiasSet:
             if need > C:
                 state = state._replace(log=jnp.concatenate([state.log, jnp.zeros((max(need, 2 * C) - C, self.ncol))]))
         return state
+
+    def reserve_many(self, states, nsteps: int) -> list:
+        """reserve() for several states (walkers), then padded to common buffer sizes so that they
+        can be stacked."""
+        states = [self.reserve(st, nsteps) for st in states]
+        parts = []
+        for k, b in enumerate(self.biases):
+            size = max(b.buffer_size(st.parts[k]) for st in states)
+            parts.append([b.grow_to(st.parts[k], size) for st in states])
+        C = max(st.log.shape[0] for st in states)
+        out = []
+        for w, st in enumerate(states):
+            log = st.log if st.log.shape[0] == C else jnp.concatenate([st.log, jnp.zeros((C - st.log.shape[0], self.ncol))])
+            out.append(st._replace(parts=tuple(p[w] for p in parts), log=log))
+        return out
 
     def drain(self, state: BiasState):
         """(COLVAR rows since the last drain as a numpy array, state with an empty buffer)."""

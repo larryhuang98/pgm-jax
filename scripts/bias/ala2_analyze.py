@@ -22,7 +22,7 @@ from pgm_jax.bias.core import KB  # noqa: E402
 from pgm_jax.bias.io import read_table  # noqa: E402
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--us", default=None)
+ap.add_argument("--us", nargs="*", default=[], help="umbrella walker sets (PREFIX.json: centres)")
 ap.add_argument("--metad", nargs="*", default=[])
 ap.add_argument("--opes", nargs="*", default=[])
 ap.add_argument("--plain", nargs="*", default=[])
@@ -64,12 +64,16 @@ def marg(F2):
 
 # ---- umbrella / WHAM reference (errors from blocks of every window)
 if a.us:
-    meta = json.load(open(a.us + ".json"))
-    samples = []
-    for f in walkers(a.us):
-        _, c = read_table(f)
-        x = c["phi"]
-        samples.append(x[int(a.us_skip * len(x)):])
+    samples, centers, kappa = [], [], None
+    for prefix in a.us:
+        meta = json.load(open(prefix + ".json"))
+        centers += list(meta["centers"])
+        kappa = meta["kappa"]
+        for f in walkers(prefix):
+            _, c = read_table(f)
+            x = c["phi"]
+            samples.append(x[int(a.us_skip * len(x)):])
+    meta = {"centers": centers, "kappa": kappa}
     F, fk = A.wham(samples, meta["centers"], np.full(len(samples), meta["kappa"]), ax, kT, period=P)
     Fb = []
     for b in range(a.blocks):

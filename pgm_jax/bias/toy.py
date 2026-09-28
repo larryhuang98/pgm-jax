@@ -142,7 +142,7 @@ class ToyLangevin:
 
     def _reserve_batched(self, bs, nsteps):
         """Grow the buffers of every walker's bias (host)."""
-        per = [self.bias.reserve(jax.tree_util.tree_map(lambda a: a[w], bs), nsteps) for w in range(self.W)]
+        per = self.bias.reserve_many([jax.tree_util.tree_map(lambda a: a[w], bs) for w in range(self.W)], nsteps)
         return jax.tree_util.tree_map(lambda *a: jnp.stack(a), *per)
 
     def _scan(self, st, nchunk, sample):
