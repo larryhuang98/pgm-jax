@@ -265,3 +265,39 @@ def test_one_iteration_of_liquid_fit(tmp_path):
     assert r["step"]["n_eff_exact"] > 0 and len(r["step"]["y_exact"]) == 20
     fit2 = LiquidFit(sys, pos, H, space, obj, settings=st, dt=0.001, rdf=rdf, prefix=str(tmp_path / "fit"), log=None)
     assert np.allclose(fit2.resume(), th)
+
+
+def test_nvt_replicas_are_ordered_by_replica(tmp_path):
+    """NVT with batched replicas: frames of each replica contiguous (blocks never mix replicas),
+    replicas independent (different trajectories), estimates finite."""
+    from pgm_jax.fit.liquid import LiquidFit
+    sys, pos, H = small_box(2)
+    space = ParameterSpace.scales(sys.table, ["q"])
+    obj = Objective([Target("energy", None, fit=False), Target("eps", None, fit=False)], space)
+    st = settings(cutoff=0.6, skin=0.1, pme_grid=(16, 16, 16), pme_order=6, ewald_beta=5.0, dipole_tol=1e-6,
+                  precision="double", peek=0.65, max_iter=100)
+    fit = LiquidFit(sys, pos, H, space, obj, settings=st, dt=0.001, equil_ps=0.01, prod_ps=0.03, every_ps=0.01,
+                    chunk=2, nblocks=2, prefix=str(tmp_path / "rep"), bootstrap=0, log=None, tol=1e-8,
+                    ensemble="nvt", replicas=2, equil_rep_ps=0.01, fixed=True)
+    frames, _, info = fit.simulate(np.zeros(1), seed=3)
+    assert info["frames"] == 6 and frames["U"].shape == (6,)
+    assert np.allclose(frames["V"], frames["V"][0])                              # NVT
+    a, b = frames["U"][:3], frames["U"][3:]
+    assert not np.allclose(a, b)                                                 # independent replicas
+    assert np.all(np.abs(np.diff(a)) > 0)
+
+
+def test_rdf_histogram_matches_numpy():
+    sys, pos, H, space, an = _analyzer()
+    out = an.frame(np.zeros(space.n), pos, H, grad=False)
+    s = an.rdf
+    o = pos[s.a]
+    d = o[:, None, :] - o[None, :, :]
+    Hn = np.asarray(H)
+    for c in (2, 1, 0):                                         # minimum image, reduced box
+        d = d - np.round(d[..., c:c + 1] / Hn[c, c]) * Hn[c]
+    r = np.linalg.norm(d, axis=-1)[np.triu_indices(len(o), 1)]
+    cnt, edges = np.histogram(r, bins=s.nbins, range=(0, s.rmax))
+    V = abs(np.linalg.det(Hn))
+    g = cnt * V / (len(o) * (len(o) - 1) / 2) / (4 / 3 * np.pi * (edges[1:] ** 3 - edges[:-1] ** 3))
+    assert np.allclose(out["rdf"], g, atol=1e-9)

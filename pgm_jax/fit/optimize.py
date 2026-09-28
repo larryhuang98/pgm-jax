@@ -172,34 +172,81 @@ class Objective:
         p = (np.asarray(theta) - self.prior_center) / self.prior_sigma
         return float(r @ r), float(p @ p)
 
-    def step(self, est: Estimate, radius: float = 1.0, J=None, y=None):
-        """LM step d (|d / sigma_prior| <= radius), predicted y and chi2; returns a dict."""
+    def _lm(self, Jw, c, th, radius):
+        """argmin_x |c + Jw x|^2 + |(th + x - prior)/sigma_prior|^2 subject to |x / sigma_prior| <= radius
+        (Levenberg-Marquardt damping found by bisection); returns (x, lambda)."""
+        Pinv = np.diag(1.0 / self.prior_sigma ** 2)
+        A = Jw.T @ Jw + Pinv
+        g = Jw.T @ c + Pinv @ (th - self.prior_center)
+        D = np.diag(np.diag(A))
+        size = lambda d: float(np.linalg.norm(d / self.prior_sigma))
+        x = -np.linalg.solve(A, g)
+        if size(x) <= radius:
+            return x, 0.0
+        lo, hi = 0.0, 1.0
+        while size(-np.linalg.solve(A + hi * D, g)) > radius:
+            hi *= 4.0
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            (lo, hi) = (mid, hi) if size(-np.linalg.solve(A + mid * D, g)) > radius else (lo, mid)
+        return -np.linalg.solve(A + hi * D, g), hi
+
+    def gas_rows(self, theta):
+        """Exact values and Jacobian of the gas-phase components (layout order; other rows 0) and
+        their mask."""
+        if self.gas is None:
+            return None
+        if getattr(self, "_gas_jit", None) is None:
+            def f(th):
+                g = self.gas(th)
+                out = []
+                for t in self.targets:
+                    v = jnp.atleast_1d(g[t.name]) if t.name in GAS else jnp.zeros(len(np.atleast_1d(self._n_of(t))))
+                    out.append(v)
+                return jnp.concatenate(out)
+            self._gas_jit = (jax.jit(f), jax.jit(jax.jacfwd(f)))
+        th = jnp.asarray(theta, float)
+        return np.asarray(self._gas_jit[0](th)), np.asarray(self._gas_jit[1](th))
+
+    def _n_of(self, t):
+        if t.name != "rdf":
+            return 1
+        s = self._sel(t)
+        return np.zeros(len(self.rdf_r) if s is None else len(s))
+
+    def step(self, est: Estimate, radius: float = 1.0, J=None, y=None, exact_gas: bool = True, iters: int = 30):
+        """LM step d (|d / sigma_prior| <= radius), predicted y and chi2; returns a dict.  The liquid
+        observables are linearised (y + J d); with exact_gas the gas-phase ones (exact, cheap) are
+        kept nonlinear: Gauss-Newton iterations on the mixed model inside the trust region."""
         J = est.J if J is None else J
         y = est.y if y is None else y
         _, f = self.scales(est)
         fit = est.fit
-        Jw = (J * f[:, None])[fit]
-        rw = ((y - np.nan_to_num(est.target)) * f)[fit]
         th = est.theta
-        Pinv = np.diag(1.0 / self.prior_sigma ** 2)
-        A = Jw.T @ Jw + Pinv
-        g = Jw.T @ rw + Pinv @ (th - self.prior_center)
-        D = np.diag(np.diag(A))
-        size = lambda d: float(np.linalg.norm(d / self.prior_sigma))
+        t = np.nan_to_num(est.target)
+        is_gas = np.array([n in GAS for n in est.names])
+        use_gas = exact_gas and self.gas is not None and bool(np.any(is_gas & fit))
+        d = np.zeros(len(th))
         lam = 0.0
-        d = -np.linalg.solve(A, g)
-        if size(d) > radius:
-            lo, hi = 0.0, 1.0
-            while size(-np.linalg.solve(A + hi * D, g)) > radius:
-                hi *= 4.0
-            for _ in range(60):
-                mid = 0.5 * (lo + hi)
-                (lo, hi) = (mid, hi) if size(-np.linalg.solve(A + mid * D, g)) > radius else (lo, mid)
-            lam = hi
-            d = -np.linalg.solve(A + lam * D, g)
+        for _ in range(iters if use_gas else 1):
+            Jm, ym = J, y + J @ d
+            if use_gas:
+                yg, Jg = self.gas_rows(th + d)
+                ym = np.where(is_gas, yg, ym)
+                Jm = np.where(is_gas[:, None], Jg, J)
+            Jw = (Jm * f[:, None])[fit]
+            c = ((ym - t) * f)[fit] - Jw @ d
+            d_new, lam = self._lm(Jw, c, th, radius)
+            done = np.linalg.norm((d_new - d) / self.prior_sigma) < 1e-8
+            d = d_new
+            if done:
+                break
         y_pred = y + J @ d
+        if use_gas:
+            y_pred = np.where(is_gas, self.gas_rows(th + d)[0], y_pred)
+        size = float(np.linalg.norm(d / self.prior_sigma))
         return {"delta": d, "lambda": lam, "y_pred": y_pred, "chi2_pred": self.chi2(y_pred, est, th + d),
-                "size": size(d), "at_boundary": lam > 0.0}
+                "size": size, "at_boundary": lam > 0.0}
 
     def covariance(self, est: Estimate) -> dict:
         """C_theta (sampling), the posterior-like G, and derived standard errors / correlations."""

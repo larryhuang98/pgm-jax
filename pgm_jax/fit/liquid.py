@@ -55,7 +55,8 @@ class LiquidFit:
                  equil_ps: float = 20.0, prod_ps: float = 200.0, every_ps: float = 0.5, rdf=None,
                  chunk: int = 8, tol: float = 1e-6, nblocks: int = 10, radius: float = 1.0,
                  radius_max: float = 4.0, prefix: str = "fit", exact_every: int = 0, bootstrap: int = 200,
-                 log=sys.stdout, seed: int = 0):
+                 log=sys.stdout, seed: int = 0, fixed: bool = False, save_frames: bool = True,
+                 ensemble: str = "npt", replicas: int = 1, equil_rep_ps: float = 20.0):
         if settings.pme_grid is None:
             from ..md.pme import grid_size
             settings = dataclasses.replace(settings, pme_grid=tuple(int(k) for k in grid_size(H, settings.pme_spacing)))
@@ -67,6 +68,12 @@ class LiquidFit:
         self.nblocks, self.radius, self.radius_max = int(nblocks), float(radius), float(radius_max)
         self.prefix, self.exact_every, self.nboot, self.seed = prefix, int(exact_every), int(bootstrap), int(seed)
         self.log = log
+        self.fixed, self.save_frames = bool(fixed), bool(save_frames)
+        if ensemble not in ("npt", "nvt"):
+            raise ValueError("ensemble: npt or nvt")
+        if replicas > 1 and ensemble != "nvt":
+            raise ValueError("batched replicas run NVT only (md/remd.MDReplicas)")
+        self.ensemble, self.replicas, self.equil_rep_ps = ensemble, int(replicas), float(equil_rep_ps)
         if any(t.name == "rdf" for t in objective.targets) and rdf is None:
             raise ValueError("an rdf target needs the RDFSpec (rdf=)")
         self.analyzer = FrameAnalyzer(sys_, self.H, settings, space, rdf=rdf, tol=tol, chunk=chunk)
@@ -83,7 +90,7 @@ class LiquidFit:
         equil_ps = self.equil_ps if equil_ps is None else equil_ps
         prod_ps = self.prod_ps if prod_ps is None else prod_ps
         params = self.space(jnp.asarray(theta, float))
-        sim = Simulation(self.sys, self.pos, self.H, self.settings, dt=self.dt, ensemble="npt", temperature=self.T,
+        sim = Simulation(self.sys, self.pos, self.H, self.settings, dt=self.dt, ensemble=self.ensemble, temperature=self.T,
                          pressure=self.p, seed=seed, vel_nm_ps=self.vel, params=params, log=None, **self.md_kw)
         t0 = time.time()
         n_eq = int(round(equil_ps / self.dt))
@@ -93,6 +100,8 @@ class LiquidFit:
             k = min(blk, n_eq)
             sim._advance(k)
             n_eq -= k
+        if self.replicas > 1:
+            return self._simulate_replicas(sim, theta, seed, every, prod_ps, keep_frames, t0)
         t1 = time.time()
         nframes = int(round(prod_ps / self.dt)) // every
         pending, results, stored = [], [], [] if keep_frames else None
@@ -119,11 +128,46 @@ class LiquidFit:
                 "analysis_ms_per_frame": 1000.0 * ta / max(nframes, 1)}
         return frames, stored, info
 
+    def _simulate_replicas(self, sim, theta, seed, every, prod_ps, keep_frames, t0):
+        """NVT: `replicas` copies advanced together (jax.vmap, md/remd.MDReplicas at one temperature),
+        each prod_ps long; frames ordered by replica, then time (contiguous blocks never mix replicas
+        when nblocks is a multiple of the number of replicas)."""
+        from ..md.remd import MDReplicas
+        R = self.replicas
+        rep = MDReplicas(sim, self.T + 1e-6 * np.arange(R), batched=True, seed=seed + 7)
+        rep.advance(int(round(self.equil_rep_ps / self.dt)))
+        t1 = time.time()
+        n = int(round(prod_ps / self.dt)) // every
+        th = jnp.asarray(theta, float)
+        out, stored, ta = [], [] if keep_frames else None, 0.0
+        for i in range(n):
+            rep.advance(every)
+            P = rep._positions(rep.S.dyn.position)
+            frames = [(P[k], rep.S.box[k], rep.S.induction.mu[k]) for k in range(R)]
+            if keep_frames:
+                stored.append([tuple(np.asarray(x) for x in f) for f in frames])
+            ta0 = time.time()
+            out.append(self.analyzer.analyze(th, frames))
+            ta += time.time() - ta0
+        fr = {k: np.stack([o[k] for o in out], axis=1) for k in out[0]}           # (replica, time, ...)
+        fr = {k: v.reshape((-1,) + v.shape[2:]) for k, v in fr.items()}
+        if keep_frames:
+            stored = [stored[i][k] for k in range(R) for i in range(n)]
+        st0 = rep.state(0)
+        self.pos = np.asarray(rep.sim.rigid.positions(st0.dyn.position))
+        self.H, self.vel = np.asarray(st0.box), None
+        info = {"equil_s": t1 - t0, "prod_s": time.time() - t1, "analysis_s": ta, "frames": n * R, "replicas": R,
+                "unconverged_frames": int(np.sum(~fr["converged"])), "analysis_ms_per_frame": 1000.0 * ta / max(n * R, 1)}
+        return fr, stored, info
+
     # ------------------------------------------------------------------ one iteration
     def iterate(self, theta, it: int = 0) -> dict:
         theta = np.asarray(theta, float)
         keep = self.exact_every > 0
-        frames, stored, info = self.simulate(theta, seed=self.seed + 1000 * it + 1, keep_frames=keep)
+        equil = 0.0 if (self.fixed and self.records) else None      # fixed theta: segments continue
+        frames, stored, info = self.simulate(theta, seed=self.seed + 1000 * it + 1, keep_frames=keep, equil_ps=equil)
+        if self.save_frames:
+            np.savez(f"{self.prefix}_frames{it:02d}.npz", theta=theta, **{k: v for k, v in frames.items()})
         samples = LiquidSamples(frames, self.T, self.sys.nmol, self.analyzer.mass, self.nblocks)
         est = self.obj.estimate(samples, theta)
         chi2, prior = self.obj.chi2(est.y, est, theta)
@@ -144,6 +188,8 @@ class LiquidFit:
             elif ratio > 0.75 and pv["at_boundary"]:
                 self.radius = min(2.0 * self.radius, self.radius_max)
         st = self.obj.step(est, self.radius)
+        if self.fixed:                                             # measurement only: theta stays
+            st.update(delta=np.zeros(self.space.n), y_pred=est.y, chi2_pred=(chi2, prior), at_boundary=False)
         d = st["delta"]
         cov = self.obj.covariance(est)
         yrw = np.asarray(self.obj.model(samples, theta, jnp.asarray(d)))
