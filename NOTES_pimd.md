@@ -23,3 +23,13 @@
   1600 / 3847 / 3916 cm-1 (target 1580 / 3853 / 3920).
 
 ## Status / log
+- 21:00 GPUs gpu-2-0..4 all busy with larry's alchemical/pathenv opt_driver2.sh (pmemd, outside the
+  lock); not interfering. CPU work meanwhile (cpu-long partition via runs/cpu_long.sh).
+- tests/test_pimd.py: 12 tests pass on CPU (~6 min).
+- Model validation (validation/pimd/*.json): HO omega=100, 700 rad/ps, P=1..64: V, Kprim, Kcv = exact
+  P-bead values within error; Kprim at large P has a small time-step bias (dt = 0.1/omega; gone at
+  0.025/omega), Kcv none. Free particle: all mode temperatures 299.6-300.4 K, spreads 1.000+-0.002.
+  RPMD NVE: sd(H_P) ~ dt^2, both propagators.
+- OpenMM RPMDIntegrator comparison (scripts/pimd_openmm.py): P=8 full / c1 / c3 agree within ~1-2 sd.
+- CPU water: classical (P=1) 1.38 ns/day at 0.5 fs, 48 cores; P=32 contracted to 1: 90 ms/step.
+  P=32->1 KE_H ~152 meV; CG 3.2/step with centroid contraction vs ~7 with bead evaluations.

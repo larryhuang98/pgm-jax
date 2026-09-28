@@ -238,15 +238,31 @@ class PIMDState:
     rng: jnp.ndarray
     heat: jnp.ndarray         # () heat taken up by the thermostat since the start, kJ/mol
     step: jnp.ndarray
+    mc: jnp.ndarray = None    # barostat (tries, accepts, window tries, window accepts)
+    mc_dv: jnp.ndarray = None  # current maximum volume change (nm^3)
 
 
 class PIMDIntegrator:
     """BAOAB ring-polymer integrator for an engine with init(q, box) -> eng and
-    compute(q, box, eng) -> (forces (P, N, 3), U, eng)."""
+    compute(q, box, eng) -> (forces (P, N, 3), U, eng).
+
+    ensemble "npt": isotropic Monte Carlo barostat every `barostat_interval` steps (engines with
+    molecules: scale(q, s), energy(q, box, eng), nmol).  Every bead of a molecule is translated with
+    the molecular centre of mass of the centroid, which leaves the springs and the intramolecular
+    terms unchanged; acceptance on (U' - U) / P + p dV - N_mol kT ln(V'/V) (the ring polymer
+    isomorphism at beta_P = beta / P), step size adapted to 25-75 % acceptance."""
 
     def __init__(self, engine, masses, nbeads: int, temperature: float, dt: float, mode: str = "pimd",
                  thermostat: str = "pile-l", tau0: float = 0.2, lam: float | None = None,
-                 propagator: str = "cayley"):
+                 propagator: str = "cayley", ensemble: str = "nvt", pressure: float = 1.0,
+                 barostat_interval: int = 100):
+        if ensemble not in ("nvt", "npt"):
+            raise ValueError("ensemble: 'nvt' | 'npt' (NVE: mode='rpmd')")
+        if ensemble == "npt" and not hasattr(engine, "scale"):
+            raise ValueError("the barostat needs an engine with molecules (PGMBeads)")
+        self.ensemble = ensemble
+        self.pressure = float(pressure) / BAR              # bar -> kJ/mol/nm^3
+        self.interval = int(barostat_interval)
         self.engine = engine
         self.mass = jnp.asarray(np.asarray(masses, float).reshape(-1, 1))
         self.n = int(self.mass.shape[0])
@@ -290,7 +306,8 @@ class PIMDIntegrator:
             p = jnp.asarray(momenta, jnp.float64)
         z = jnp.zeros((), jnp.float64)
         st = PIMDState(q=q, p=p, f=jnp.zeros_like(q), upot=z, box=box, eng=self.engine.init(q, box), rng=k3,
-                       heat=z, step=jnp.zeros((), jnp.int32))
+                       heat=z, step=jnp.zeros((), jnp.int32), mc=jnp.zeros(4, jnp.int32),
+                       mc_dv=jnp.asarray(0.01 * float(volume(box)), jnp.float64))
         return self.forces(st)
 
     def _step(self, st: PIMDState) -> PIMDState:
@@ -308,7 +325,32 @@ class PIMDIntegrator:
             qn, pn = self._free(qn, pn)
         st = st.set(q=self.ring.from_nm(qn), p=self.ring.from_nm(pn), rng=rng, heat=heat)
         st = self._forces(st)
-        return st.set(p=st.p + 0.5 * dt * st.f, step=st.step + 1)
+        st = st.set(p=st.p + 0.5 * dt * st.f, step=st.step + 1)
+        if self.ensemble == "npt":
+            st = jax.lax.cond(st.step % self.interval == 0, self._barostat, lambda s: s, st)
+        return st
+
+    def _barostat(self, st: PIMDState) -> PIMDState:
+        eng = self.engine
+        key, k1, k2 = jax.random.split(st.rng, 3)
+        V = volume(st.box)
+        dV = (2.0 * jax.random.uniform(k1, dtype=jnp.float64) - 1.0) * st.mc_dv
+        Vn = V + dV
+        s = jnp.cbrt(jnp.maximum(Vn, 1e-12) / V)
+        qn, Hn = eng.scale(st.q, s), st.box * s
+        Un, en = eng.energy(qn, Hn, st.eng)
+        kT = self.ring.kT
+        w = (Un - st.upot) / self.P + self.pressure * dV - eng.nmol * kT * jnp.log(jnp.maximum(Vn, 1e-12) / V)
+        accept = (Vn > 0) & (jnp.log(jax.random.uniform(k2, dtype=jnp.float64)) < -w / kT)
+        st = st.set(rng=key, eng=eng.flag(st.eng, en))
+        st = jax.lax.cond(accept, lambda s: self._forces(s.set(q=qn, box=Hn, eng=en)), lambda s: s, st)
+        mc = st.mc + jnp.array([1, 0, 1, 0], jnp.int32) + accept.astype(jnp.int32) * jnp.array([0, 1, 0, 1], jnp.int32)
+        adapt = mc[2] >= 10
+        rate = mc[3] / jnp.maximum(mc[2], 1)
+        dv = jnp.where(adapt & (rate < 0.25), st.mc_dv / 1.1, jnp.where(adapt & (rate > 0.75), st.mc_dv * 1.1, st.mc_dv))
+        dv = jnp.minimum(dv, 0.3 * volume(st.box))
+        mc = jnp.where(adapt, mc.at[2].set(0).at[3].set(0), mc)
+        return st.set(mc=mc, mc_dv=dv)
 
     def _run(self, st: PIMDState, n) -> PIMDState:
         if hasattr(self.engine, "reset_block"):
@@ -336,18 +378,29 @@ class PIMDIntegrator:
 
 # ----------------------------------------------------------------------------- engines
 class PotentialEngine:
-    """Any potential V(x (N, 3), box) -> kJ/mol on every bead (vmapped value_and_grad)."""
+    """Any potential V(x (N, 3), box) -> kJ/mol on every bead (vmapped value_and_grad).  With `soft`
+    and `contract` = P', the potential is V + soft, and soft is evaluated on P' contracted beads
+    (U = sum_k V(q^k) + (P/P') sum_k' soft(q'^k'), as for the pGM engine)."""
 
-    def __init__(self, energy_fn):
-        self.energy_fn = energy_fn
+    def __init__(self, energy_fn, soft=None, contract: int | None = None):
+        self.energy_fn, self.soft, self.contract = energy_fn, soft, contract
         self._vg = jax.vmap(jax.value_and_grad(energy_fn), in_axes=(0, None))
+        self._sg = None if soft is None else jax.vmap(jax.value_and_grad(soft), in_axes=(0, None))
 
     def init(self, q, box):
         return jnp.zeros(())
 
     def compute(self, q, box, eng):
         V, g = self._vg(q, box)
-        return -g, jnp.sum(V), eng
+        U, f = jnp.sum(V), -g
+        if self.soft is not None:
+            P = q.shape[0]
+            Pc = P if self.contract is None else min(int(self.contract), P)
+            Tm = jnp.asarray(contraction_matrix(P, Pc))
+            Vs, gs = self._sg(jnp.tensordot(Tm, q, axes=1), box)
+            U = U + P / Pc * jnp.sum(Vs)
+            f = f - P / Pc * jnp.tensordot(Tm.T, gs, axes=1)
+        return f, U, eng
 
 
 @dataclasses.dataclass
@@ -533,6 +586,43 @@ class PGMBeads:
                   cg_total=e.cg_total + itm, elec=jnp.mean(El), vdw=jnp.mean(Ev))
         return f, U, e
 
+    # ------------------------------------------------------------------ barostat
+    @property
+    def nmol(self) -> int:
+        return self.flex.nmol
+
+    def scale(self, q, s):
+        """Every bead of a molecule translated by (s - 1) times the centroid's molecular centre of mass."""
+        com = self.flex.centers(jnp.mean(q, 0))
+        return q + ((s - 1.0) * com)[self.flex.mol][None]
+
+    def flag(self, e: PGMBeadState, trial: PGMBeadState) -> PGMBeadState:
+        """Keep the overflow flag of a trial evaluation (the block is repeated if it overflowed)."""
+        return e.set(overflow=e.overflow | trial.overflow)
+
+    def energy(self, q, box, e: PGMBeadState):
+        """U at (q, box) with the dipoles solved from the last converged ones (no predictor history
+        update, Monte Carlo trials); the neighbour list is rebuilt.  Returns (U, engine state)."""
+        qc = jnp.mean(q, 0)
+        c = self._centers(qc)
+        nbr = self.nb.update(e.nbr, qc, c, box, True)
+        x = self.force_positions(q)
+        ff, params, nb = self.ff, self.params, self.nb
+
+        def one(xk, ind):
+            cand, ovf = nb.candidates(nbr, c, box, xk)
+            E, ind, it, ovf2 = ff.energy(xk, box, cand, ind, params)
+            return E, ind, ovf | ovf2
+
+        ax = self._ind_axes(e.induction)
+        E, ind, ovf = jax.vmap(one, in_axes=(0, ax), out_axes=(0, ax, 0))(x, e.induction)
+        ref = jax.vmap(self.reference)
+        if self.Pc is None:
+            U = jnp.sum(E) + jnp.sum(ref(q))
+        else:
+            U = self.P / self.Pc * jnp.sum(E - jax.vmap(self.monomer_nonbonded)(x)) + jnp.sum(ref(q))
+        return U, e.set(nbr=nbr, induction=ind, overflow=e.overflow | jnp.any(ovf))
+
     # ------------------------------------------------------------------ pressure
     def strain_derivative(self, q, box, e: PGMBeadState):
         """(3, 3) (1/P) dU/d eps, with every bead of a molecule translated with the molecular centre
@@ -573,17 +663,15 @@ class PIMDSimulation:
     def __init__(self, sim, beads: int = 32, mode: str = "pimd", thermostat: str = "pile-l", tau0: float = 0.2,
                  lam: float | None = None, propagator: str = "cayley", contract: int | None = None,
                  bead_margin: float = 0.06, seed: int = 0, dt: float | None = None, spread: bool = True,
-                 log=sys.stdout):
-        if sim.ensemble == "npt":
-            raise NotImplementedError("PIMD runs NVT (equilibrate the density classically or with a "
-                                      "classical NPT run first)")
+                 ensemble: str = "nvt", pressure: float = 1.0, barostat_interval: int = 100, log=sys.stdout):
         self.sim, self.log = sim, log
         self.engine = PGMBeads(sim, beads, contract, bead_margin)
         self.P = int(beads)
         self.dt = float(sim.dt if dt is None else dt)
         self.T0 = float(sim.T0)
         self.integ = PIMDIntegrator(self.engine, np.asarray(sim.flex.masses), beads, self.T0, self.dt, mode,
-                                    thermostat, tau0, lam, propagator)
+                                    thermostat, tau0, lam, propagator, ensemble, pressure, barostat_interval)
+        self.ensemble = ensemble
         self.elements = np.array(sim.sys.elements)
         H = jnp.asarray(sim.state.box)
         pos = sim.state.dyn.position
@@ -596,7 +684,9 @@ class PIMDSimulation:
         e = self.engine
         self._print(f"# pgm_jax PIMD: {sim.sys.nmol} molecules, {sim.sys.n} atoms, {self.P} beads"
                     f"{'' if e.Pc is None else f' (intermolecular forces contracted to {e.Pc})'}, "
-                    f"{self.integ.thermo.describe()}, T {self.T0:g} K, dt {self.dt * 1000:g} fs, "
+                    f"{self.integ.thermo.describe()}, {ensemble.upper()}"
+                    f"{f' ({pressure:g} bar, Monte Carlo every {barostat_interval} steps)' if ensemble == 'npt' else ''}, "
+                    f"T {self.T0:g} K, dt {self.dt * 1000:g} fs, "
                     f"{propagator} free ring-polymer step, {e.nb.kind} neighbour list of the centroid "
                     f"(bead margin {e.bead_margin:g} nm), {sim.settings.precision} precision, device {jax.devices()[0]}")
 
@@ -628,7 +718,29 @@ class PIMDSimulation:
         shift = jnp.matmul(jnp.floor(fr), H, precision=jax.lax.Precision.HIGHEST)[flex.mol]
         return st.set(q=st.q - shift[None])
 
+    def _rebuild_neighbors(self):
+        H = np.asarray(self.state.box)
+        self._print(f"# step {int(self.state.step)}: neighbour lists rebuilt for volume {float(volume(H)):.3f} nm^3")
+        self.engine.make_neighbors(H)
+        nbr = self._size(self.state.q, H)
+        redo = self.integ.forces(self.state.set(eng=self.state.eng.set(nbr=nbr)))
+        self.state = redo.set(eng=redo.eng.set(induction=self.state.eng.induction))
+
     def _advance(self, n: int):
+        """n steps; under NPT the lists are rebuilt when the volume has drifted by 10 %, and a block that
+        keeps overflowing (a box shrinking fast) is split in halves with rebuilds in between."""
+        if abs(float(volume(self.state.box)) / self.engine._nb_volume - 1.0) > 0.10:
+            self._rebuild_neighbors()
+        try:
+            self._advance_block(n)
+        except RuntimeError as err:
+            if "overflowing" not in str(err) or n < 2:
+                raise
+            self._rebuild_neighbors()
+            self._advance(n // 2)
+            self._advance(n - n // 2)
+
+    def _advance_block(self, n: int):
         e = self.engine
         start = self.state
         for attempt in range(6):
@@ -674,6 +786,11 @@ class PIMDSimulation:
                "temp_centroid": float(est["t_centroid"]), "epot": float(est["epot"]),
                "ekin_prim": float(est["prim"].sum()), "ekin_cv": float(est["cv"].sum()),
                "econs": float(est["econs"]), "elec": float(eng.elec), "vdw": float(eng.vdw)}
+        V = float(volume(st.box))
+        out["volume_nm3"] = V
+        out["density_g_cm3"] = float(np.sum(self.sim.sys.masses)) / V * 1.66053906660e-3
+        if self.ensemble == "npt":
+            out["mc_accept"] = int(st.mc[1]) / max(int(st.mc[0]), 1)
         for el in sorted(set(self.elements.tolist())):
             sel = self.elements == el
             out[f"ke_{el}_cv_meV"] = float(est["cv"][sel].mean()) * KJMOL_TO_MEV
@@ -781,6 +898,9 @@ class PIMDSimulation:
         if d.get("format") != FORMAT or int(d["beads"]) != self.P:
             raise ValueError(f"{path}: not a {self.P}-bead {FORMAT!r} checkpoint")
         st = jax.tree_util.tree_map(jnp.asarray, d["state"])
+        if st.mc is None:
+            st = st.set(mc=jnp.zeros(4, jnp.int32), mc_dv=jnp.asarray(0.01 * float(volume(st.box)), jnp.float64))
+        self.engine.make_neighbors(np.asarray(st.box))
         nbr = self._size(st.q, st.box)
         self.state = st.set(eng=st.eng.set(nbr=nbr))
         self.time_ps = float(d["time_ps"])

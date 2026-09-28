@@ -39,7 +39,7 @@ from pgm_jax.system import System  # noqa: E402
 
 TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
 RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
-TPL = os.path.join(ROOT, "runs/pimd/pgm_water_flex.flex")
+TPL = os.path.join(ROOT, "validation/pimd/pgm_water_flex.flex")
 
 
 def template(a):
@@ -98,6 +98,19 @@ def rdf_fn(sim, edges):
     return hist, len(O), len(Hy)
 
 
+def diffusion(C, dt_ps):
+    """Self-diffusion coefficient (1e-5 cm^2/s) from unwrapped molecular centres C (F, nmol, 3) nm
+    sampled every dt_ps: MSD over all time origins, slope of a line through lags between 20 % and
+    50 % of the run (Einstein relation, MSD = 6 D t); no finite-size correction."""
+    F = len(C)
+    lags = np.arange(1, F // 2 + 1)
+    msd = np.array([np.mean(np.sum((C[k:] - C[:-k]) ** 2, -1)) for k in lags])
+    t = lags * dt_ps
+    sel = (lags >= max(1, int(0.2 * F))) & (lags <= F // 2)
+    slope = np.polyfit(t[sel], msd[sel], 1)[0]
+    return slope / 6.0 * 1000.0, t, msd
+
+
 def run(a):
     os.makedirs(os.path.dirname(os.path.abspath(a.prefix)), exist_ok=True)
     sim = build(a)
@@ -107,7 +120,7 @@ def run(a):
             sim.run(int(round(a.classical_ps / (a.dt * 1e-3))), report=1000, prefix=a.prefix + "_classical")
     pi = PIMDSimulation(sim, beads=a.beads, mode=a.mode, thermostat=a.thermostat, tau0=a.tau0, lam=a.lam,
                         propagator=a.propagator, contract=a.contract or None, bead_margin=a.bead_margin,
-                        seed=a.seed)
+                        seed=a.seed, ensemble=a.ensemble, pressure=a.press, barostat_interval=a.barostat_interval)
     if a.load:
         pi.load(a.load)
         pi.state = pi.state.set(heat=jnp.zeros(()), step=jnp.zeros((), jnp.int32))
@@ -121,6 +134,7 @@ def run(a):
     H = np.zeros((3, len(edges) - 1))
     nfr, vol = 0, []
     samples = []
+    coms, last = [], None
     t0 = time.time()
     done = 0
     logf = open(a.prefix + ".log", "w")
@@ -139,6 +153,15 @@ def run(a):
         logf.write("  " + " ".join(f"{o[c]:14.6f}" if isinstance(o[c], float) else f"{o[c]:14d}" for c in cols) + "\n")
         logf.flush()
         samples.append([o[c] for c in cols])
+        com = np.asarray(sim.flex.centers(jnp.mean(pi.state.q, 0)))           # centroid molecular centres
+        if coms:                                                                 # unwrap (minimum image step)
+            Hb = np.asarray(pi.state.box)
+            d = com - last
+            d -= np.round(d @ np.linalg.inv(Hb)) @ Hb
+            coms.append(coms[-1] + d)
+        else:
+            coms.append(com)
+        last = com
         if a.rdf:
             H += np.asarray(hist(pi.state.q, pi.state.box))
             nfr += pi.P
@@ -152,7 +175,6 @@ def run(a):
     mean, err = X.mean(0), blocks.std(0, ddof=1) / np.sqrt(nb)
     summ = {"beads": a.beads, "contract": a.contract, "mode": a.mode, "thermostat": a.thermostat, "dt_fs": a.dt,
             "ps": a.ps, "ns_per_day": nstep * a.dt * 1e-6 / el * 86400.0, "ms_per_step": el / nstep * 1e3}
-    t_ = np.array([c for c in cols])
     drift = np.polyfit(X[:, cols.index("time_ps")], X[:, cols.index("econs")], 1)[0]
     summ["econs_drift_kJmol_ps"] = float(drift)
     for c in cols:
@@ -160,6 +182,9 @@ def run(a):
             continue
         k = cols.index(c)
         summ[c] = [float(mean[k]), float(err[k])]
+    D, tl, msd = diffusion(np.array(coms), rep * a.dt * 1e-3)
+    summ["D_1e-5cm2_s"] = float(D)
+    np.savetxt(a.prefix + ".msd", np.c_[tl, msd], header="t (ps)  MSD of the centroid molecular centres (nm^2)")
     print(json.dumps(summ, indent=1))
     with open(a.prefix + ".json", "w") as fh:
         json.dump(summ, fh, indent=1)
@@ -232,6 +257,9 @@ def main():
     r.add_argument("--equil-ps", type=float, default=2.0)
     r.add_argument("--ps", type=float, default=10.0)
     r.add_argument("--report-ps", type=float, default=0.05)
+    r.add_argument("--ensemble", default="nvt")
+    r.add_argument("--press", type=float, default=1.0, help="bar")
+    r.add_argument("--barostat-interval", type=int, default=100)
     r.add_argument("--rdf", action="store_true")
     r.add_argument("--pressure", action="store_true")
     r.add_argument("--load", default=None)

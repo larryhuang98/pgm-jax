@@ -15,7 +15,7 @@ from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec  # noqa: E
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.md.integrate import KB  # noqa: E402
-from pgm_jax.md.pimd import (HBAR, PGMBeads, PIMDIntegrator, PIMDSimulation, PotentialEngine,  # noqa: E402
+from pgm_jax.md.pimd import (HBAR, PIMDIntegrator, PIMDSimulation, PotentialEngine,  # noqa: E402
                              RingPolymer, WATER_FAMILIES, contraction_matrix, flexible_water,
                              harmonic_frequencies, normal_modes, qtip4pf_intra, water_geometry)
 from pgm_jax.system import System  # noqa: E402
@@ -53,6 +53,27 @@ def test_normal_modes_and_contraction():
     q = 0.3 + np.cos(2 * np.pi * j / 16) - 0.5 * np.sin(2 * np.pi * j / 16)      # a smooth (l <= 1) path
     jc = np.arange(5)
     assert np.allclose(contraction_matrix(16, 5) @ q, 0.3 + np.cos(2 * np.pi * jc / 5) - 0.5 * np.sin(2 * np.pi * jc / 5))
+
+
+def test_potential_engine_contraction():
+    """Contracted soft potential: forces are -dU/dq, P' = P is no contraction, P' = 1 gives every bead
+    the centroid force (the model of scripts/pimd_openmm.py, checked there against OpenMM)."""
+    P, n = 8, 5
+    stiff = lambda x, box: jnp.sum(1e4 * x[:, 0] ** 2 + 3e5 * x[:, 0] ** 4)                 # noqa: E731
+    soft = lambda x, box: jnp.sum(50.0 * jnp.sum(x * x, -1) + 400.0 * x[:, 1] ** 3)        # noqa: E731
+    q = 0.05 * jax.random.normal(jax.random.PRNGKey(0), (P, n, 3))
+    box = jnp.eye(3)
+    full = PotentialEngine(lambda x, b: stiff(x, b) + soft(x, b)).compute(q, box, None)
+    same = PotentialEngine(stiff, soft=soft, contract=P).compute(q, box, None)
+    assert np.allclose(full[0], same[0]) and abs(float(full[1] - same[1])) < 1e-10
+    for Pc in (1, 3, 4):
+        eng = PotentialEngine(stiff, soft=soft, contract=Pc)
+        f, U, _ = eng.compute(q, box, None)
+        g = jax.grad(lambda y: eng.compute(y, box, None)[1])(q)
+        assert np.allclose(f, -g, atol=1e-9)
+    f1 = PotentialEngine(lambda x, b: 0.0 * jnp.sum(x), soft=soft, contract=1).compute(q, box, None)[0]
+    fc = -jax.grad(lambda x: soft(x, box))(jnp.mean(q, 0))
+    assert np.allclose(f1, jnp.broadcast_to(fc, f1.shape))
 
 
 @pytest.mark.parametrize("kind", ["exact", "cayley"])
@@ -227,6 +248,25 @@ def test_pgm_rpmd_conserves_ring_polymer_energy():
     ke = 1.5 * pi.sim.sys.n * 4 * 4 * KB * T
     assert 3.0 < sd[0] / sd[1] < 5.5 and sd[1] < 5e-4 * ke, (sd, sd[1] / ke)
     assert np.isfinite(pi.pressure()) and pi.observables()["ke_H_cv_meV"] > 0
+
+
+def test_pgm_npt_barostat():
+    """Monte Carlo trial energy = the U of the force evaluation at the same state; at 3 kbar the box
+    of a dilute water system shrinks, with accepted moves."""
+    sim = _sim()
+    pi = PIMDSimulation(sim, beads=2, log=None, seed=4, ensemble="npt", pressure=3000.0, barostat_interval=5,
+                        thermostat="pile-g", tau0=0.05)
+    st = pi.state
+    U, _ = jax.jit(pi.engine.energy)(st.q, st.box, st.eng)
+    assert abs(float(U) - float(st.upot)) < 1e-7 * abs(float(st.upot))
+    q2 = pi.engine.scale(st.q, 1.01)
+    qc, qc2 = np.asarray(jnp.mean(st.q, 0)), np.asarray(jnp.mean(q2, 0))
+    X, X2 = qc.reshape(-1, 3, 3), qc2.reshape(-1, 3, 3)
+    assert np.allclose(np.linalg.norm(X[:, 1] - X[:, 0], axis=1), np.linalg.norm(X2[:, 1] - X2[:, 0], axis=1))
+    V0 = pi.observables()["volume_nm3"]
+    pi._advance(400)
+    o = pi.observables()
+    assert o["mc_accept"] > 0 and o["volume_nm3"] < V0, (o["mc_accept"], V0, o["volume_nm3"])
 
 
 def test_flexible_water_fit_reproduces_target():
