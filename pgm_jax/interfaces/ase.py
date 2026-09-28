@@ -159,11 +159,11 @@ class FixRigidMolecules(FixConstraint):
             self._setup(atoms)
 
     def _spread(self, n, a, b, coef, vec, inv_m):
-        """Per-atom sum of +-coef_l vec_l (divided by the masses if inv_m)."""
-        out = np.zeros((n, 3))
-        w = coef[..., None] * vec
-        np.add.at(out, a.ravel(), w.reshape(-1, 3))
-        np.add.at(out, b.ravel(), -w.reshape(-1, 3))
+        """Per-atom sum of +-coef_l vec_l (divided by the masses if inv_m); bincount, not np.add.at
+        (which is ~50x slower)."""
+        w = (coef[..., None] * vec).reshape(-1, 3)
+        ia, ib = a.ravel(), b.ravel()
+        out = np.stack([np.bincount(ia, w[:, j], n) - np.bincount(ib, w[:, j], n) for j in range(3)], 1)
         return out / self._masses[:, None] if inv_m else out
 
     def adjust_positions(self, atoms, new):

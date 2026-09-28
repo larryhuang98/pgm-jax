@@ -59,6 +59,12 @@ from ..md.topology import MDTopology
 
 __all__ = ["PGMEngine", "GasPhaseEngine", "EngineResult", "standard_cell"]
 
+# neighbour-list error bits that make a list invalid (as md/neighbors._failed; JAX-MD's MALFORMED_BOX
+# bit is set for valid boxes by JAX-MD 0.2.29 and is ignored there too)
+from ..md._jaxmd import partition as _partition  # noqa: E402
+_PEC = _partition.PartitionErrorCode
+_LIST_ERRORS = int(_PEC.NEIGHBOR_LIST_OVERFLOW | _PEC.CELL_LIST_OVERFLOW | _PEC.CELL_SIZE_TOO_SMALL)
+
 
 # ----------------------------------------------------------------------------- cells
 def standard_cell(cell):
@@ -111,6 +117,28 @@ def _bond_tree(sys: System, bonds_of=None):
                         queue.append(b)
         depth = max(depth, int(d.max()) if m.n else 0)
     return parent, depth
+
+
+def match_previous(X, prev):
+    """perm with prev[perm[k]] the previous structure closest to X[k] (a one-to-one assignment
+    minimising the summed squared displacements: i-PI does not keep the order of the beads in its
+    batches).  X, prev: (B, N, 3)."""
+    B = X.shape[0]
+    a, b = X.reshape(B, -1), prev.reshape(B, -1)
+    C = np.sum(a * a, 1)[:, None] + np.sum(b * b, 1)[None, :] - 2.0 * a @ b.T
+    try:
+        from scipy.optimize import linear_sum_assignment
+        rows, cols = linear_sum_assignment(C)
+        perm = np.empty(B, int)
+        perm[rows] = cols
+        return perm
+    except ImportError:                                   # greedy
+        perm, used = np.full(B, -1), set()
+        for k in np.argsort(C.min(1)):
+            j = next(int(j) for j in np.argsort(C[k]) if int(j) not in used)
+            perm[k] = j
+            used.add(j)
+        return perm
 
 
 @dataclass
@@ -176,7 +204,7 @@ class PGMEngine:
 
     def __init__(self, sys: System, pos, H, settings: MDSettings = MDSettings(), templates=None, params=None,
                  stress: str | None = None, slots: int = 1, r_margin: float = 0.05, neighbor_list: str = "auto",
-                 jump: float = 0.05, restraints=None):
+                 jump: float = 0.05, restraints=None, bead_margin: float = 0.08):
         from ..md.vsites import VirtualSites
         if VirtualSites.of(sys) is not None:
             raise NotImplementedError("virtual sites are not supported by the external-code interfaces yet")
@@ -187,7 +215,7 @@ class PGMEngine:
         H0, Q = standard_cell(H)
         pos = np.asarray(pos, float) if Q is None else np.asarray(pos, float) @ Q
         self.sys, self.settings, self.params = sys, settings, params
-        self.stress_mode, self.jump = stress, float(jump)
+        self.stress_mode, self.jump, self.bead_margin = stress, float(jump), float(bead_margin)
         self.n = sys.n
         self.masses = np.asarray(sys.masses, float)
         self.flex = None
@@ -375,7 +403,15 @@ class PGMEngine:
         return self._virial(x, H, cand, ind.mu, gb)
 
     # ------------------------------------------------------------------ host side
-    def _slot_for(self, x) -> _Slot:
+    @staticmethod
+    def _displacement(a, b, H) -> float:
+        """Largest displacement between two configurations (nm), each atom by its minimum image:
+        drivers may wrap atoms or molecules back into the cell between calls."""
+        d = b - a
+        f = d @ np.linalg.inv(H)
+        return float(np.max(np.abs(d - np.round(f) @ H)))
+
+    def _slot_for(self, x, H) -> _Slot:
         """An unused slot while there is one (the first calls of interleaved configurations fill the
         slots in turn), then the slot whose last configuration is closest to x."""
         if len(self.slots) == 1:
@@ -383,8 +419,19 @@ class PGMEngine:
         for s in self.slots:
             if s.x is None:
                 return s
-        d = [float(np.max(np.abs(s.x - x))) for s in self.slots]
+        d = [self._displacement(s.x, x, H) for s in self.slots]
         return self.slots[int(np.argmin(d))]
+
+    def batch_slots(self, positions, cell) -> np.ndarray:
+        """Slots for a batch of structures evaluated one by one: the one-to-one assignment to the
+        slots' last configurations (first batches: slot k for structure k)."""
+        X = np.asarray(positions, float)
+        B = X.shape[0]
+        if B > len(self.slots) or any(self.slots[k].x is None for k in range(B)):
+            return np.arange(B) % len(self.slots)
+        _, Q = standard_cell(cell)
+        Xs = X if Q is None else X @ Q
+        return match_previous(Xs, np.stack([self.slots[k].x for k in range(B)]))
 
     def reset(self):
         """Forget the dipole histories (the next call starts every slot from scratch)."""
@@ -396,20 +443,27 @@ class PGMEngine:
         nm, rows = lattice vectors; any right-handed cell, atoms wrapped or not.  slot: the
         induced-dipole history to use (default: the closest one)."""
         t0 = time.perf_counter()
-        H, Q = standard_cell(cell)
-        x = np.asarray(pos, float)
+        cell = np.asarray(cell, float)
+        x = np.array(pos, float)                         # a copy: kept as the slot's last configuration
         if x.shape != (self.n, 3):
             raise ValueError(f"expected positions of shape ({self.n}, 3), got {x.shape}")
+        cache = getattr(self, "_cell_cache", None)
+        if cache is not None and np.array_equal(cache[0], cell):
+            H, Q, Hd = cache[1:]                         # same cell as the last call (NVE / NVT)
+        else:
+            H, Q = standard_cell(cell)
+            check_box(H, self.settings.pair_cutoff + self.settings.skin)
+            if abs(float(np.linalg.det(H)) / self._nb_volume - 1.0) > 0.10 or not self._list_fits(H):
+                self._rebuild(x if Q is None else x @ Q, H)
+            Hd = jnp.asarray(H)
+            self._cell_cache = (cell.copy(), H, Q, Hd)
         if Q is not None:
             x = x @ Q
-        check_box(H, self.settings.pair_cutoff + self.settings.skin)
-        slot = self._slot_for(x) if slot is None else self.slots[int(slot)]
-        if slot.x is not None and float(np.max(np.abs(slot.x - x))) > self.jump:
+        slot = self._slot_for(x, H) if slot is None else self.slots[int(slot)]
+        if slot.x is not None and self._displacement(slot.x, x, H) > self.jump:
             slot.ind = None                              # new configuration: restart the predictor
             self.stats["resets"] += 1
-        if abs(float(np.linalg.det(H)) / self._nb_volume - 1.0) > 0.10 or not self._list_fits(H):
-            self._rebuild(x, H)
-        xd, Hd = jnp.asarray(x), jnp.asarray(H)
+        xd = jnp.asarray(x)
         for attempt in range(8):
             if slot.nbr is None:
                 xw = self._whole_c(xd, Hd)
@@ -418,7 +472,7 @@ class PGMEngine:
             packed, ind_new, nbr_new, dev = self._fn(xd, Hd, ind, slot.nbr, virial=bool(virial))
             out = np.asarray(packed)
             ovf, code, ext = bool(out[7]), int(out[8]), float(out[9])
-            nb_bad = self.nb.failed(nbr_new)
+            nb_bad = bool(code & _LIST_ERRORS)             # = nb.failed(nbr_new), without another transfer
             far = self.nb.kind == "molecule" and ext > self.r_list
             if not (ovf or nb_bad or far) and np.isfinite(out[0]):
                 break
@@ -477,6 +531,187 @@ class PGMEngine:
             s.nbr = None
         self._compile()
         return nbr
+
+    # ------------------------------------------------------------------ batches (ring-polymer beads)
+    def _whole_batch(self, X, H):
+        """Every structure made whole and wrapped (as _whole), then each molecule of structure k
+        shifted by the lattice vector that puts its centre of mass nearest to that of structure 0,
+        so that the batch mean (the centroid of a ring polymer) is meaningful."""
+        Xw = jax.vmap(self._whole, in_axes=(0, None))(X, H)
+        com = jax.vmap(lambda x: jax.ops.segment_sum(self._wmol[:, None] * x, self._mol, self._nmol))(Xw)
+        d = min_image(com - com[0][None], H)
+        return Xw + (com[0][None] + d - com)[:, self._mol]
+
+    def _eval_batch(self, X, H, ind, nbr, virial: bool, chunk):
+        X = self._whole_batch(X, H)
+        qc = jnp.mean(X, 0)
+        c = self._centers(qc)
+        nb = self._nbb
+        nbr = nb.update(nbr, qc, c, H)
+        ff, params = self.ff, self.params
+
+        def one(xk, indk):
+            cand, ovf = nb.candidates(nbr, c, H, xk)
+            res = ff.compute(xk, H, cand, indk, params)
+            E, F = res.energy["total"], res.forces
+            eb, gb = jnp.zeros((), jnp.float64), None
+            if self.flex is not None:
+                eb, gb = jax.value_and_grad(self.flex.energy)(xk)
+                F = F - gb
+            er = jnp.zeros((), jnp.float64)
+            if self.restraints is not None:
+                er, gr = jax.value_and_grad(self.restraints.energy)(xk, H)
+                F = F - gr
+            head = jnp.stack([E + eb + er, res.energy["elec"], res.energy["vdw"], eb, er,
+                              res.iterations.astype(jnp.float64), res.residual.astype(jnp.float64),
+                              (res.overflow | ovf).astype(jnp.float64)])
+            dev = {"mu": res.induction.mu, "dip": self._celldip.components(xk, H, res.induction.mu, params)}
+            if virial:
+                dev["W"] = self._virial(xk, H, cand, res.induction.mu, gb)
+            return jnp.concatenate([head, F.reshape(-1)]), res.induction, dev
+
+        ax = jax.tree_util.tree_map(lambda _: 0, ind.set(count=None))
+        vf = jax.vmap(one, in_axes=(0, ax), out_axes=(0, ax, 0))
+        B = X.shape[0]
+        if chunk is None or chunk >= B or B % chunk:
+            packed, ind_new, dev = vf(X, ind)
+        else:                                          # chunks of vmapped structures, one after the other
+            count = ind.count
+            split = lambda a: a.reshape((B // chunk, chunk) + a.shape[1:])        # noqa: E731
+            merge = lambda a: a.reshape((B,) + a.shape[2:])                        # noqa: E731
+
+            def body(args):
+                xc, ic = args
+                p, i2, d = vf(xc, ic.set(count=count))
+                return (p, i2.set(count=None), d), i2.count
+            (packed, ind_new, dev), counts = jax.lax.map(body, (split(X), jax.tree_util.tree_map(split, ind.set(count=None))))
+            packed, dev = merge(packed), jax.tree_util.tree_map(merge, dev)
+            ind_new = jax.tree_util.tree_map(merge, ind_new).set(count=counts[0])
+        ref = c[self._group] if nb.kind == "molecule" else qc
+        ext = jnp.max(jnp.sqrt(jnp.sum((X - ref[None]) ** 2, axis=-1)))
+        flags = jnp.stack([nbr.error.code.astype(jnp.float64), ext])
+        return packed, flags, ind_new, nbr, dev
+
+    def _batch_setup(self, B, X, H):
+        """Batch state: a molecular-centre neighbour list of the batch mean with the list radius
+        enlarged by bead_margin, stacked dipole histories (the predictor's step counter shared)."""
+        s = self.settings
+        r = self.r_list + self.bead_margin
+        if MoleculeNeighbors.fits(H, s.pair_cutoff, s.skin, r):
+            self._nbb = MoleculeNeighbors(self.topology.group, self._ngroup, r, H, s.pair_cutoff, s.skin)
+            self._bfar = r                                  # atom to its centroid group's centre
+        else:                   # atom list of the centroid: pairs of structure atoms within cutoff + 2 margins
+            rc = s.pair_cutoff + 2.0 * self.bead_margin
+            skin = min(s.skin, max_cutoff(H) - rc - 0.002)
+            if skin < 0.02:
+                return False
+            self._nbb = AtomNeighbors(self.n, H, rc, skin)
+            self._bfar = self.bead_margin                   # atom to its centroid atom
+        Xw = self._whole_batch_c(jnp.asarray(X), jnp.asarray(H))
+        qc = jnp.mean(Xw, 0)
+        c = self._centers(qc)
+        nbr = self._nbb.allocate(qc, c, jnp.asarray(H))
+        if self._nbb.kind == "molecule":
+            self._nbb.cap = max(self._nbb.size(nbr, c, jnp.asarray(H), Xw[k], 1.2) for k in range(B))
+        ind0 = self.ff.init_induction()
+        ind = jax.tree_util.tree_map(lambda a: jnp.broadcast_to(a, (B,) + jnp.shape(a)), ind0.set(count=None))
+        self._bstate = {"B": B, "ind": ind.set(count=ind0.count), "nbr": nbr, "H": np.asarray(H).copy(),
+                        "vol": float(np.linalg.det(H)), "x": None}
+        self._bfn = jax.jit(self._eval_batch, static_argnames=("virial", "chunk"))
+        return True
+
+    def compute_batch(self, positions, cell, virial: bool = False, chunk="auto") -> list:
+        """Structures that share one cell and are close to each other (the beads of a ring polymer,
+        i-PI's batched requests) in one vmapped call: positions (B, N, 3) nm.  Each keeps its own
+        induced-dipole history; one neighbour list of the batch mean (radius + bead_margin) serves
+        all.  chunk: structures per vmapped chunk ("auto": 8 when that divides B > 8).  Falls back
+        to one compute() per structure (slots) when the batch cannot share a list.  Returns a list
+        of EngineResult."""
+        X = np.array(positions, float)
+        B = X.shape[0]
+        cell = np.asarray(cell, float)
+        if chunk == "auto":
+            chunk = 8 if (B > 8 and B % 8 == 0) else None
+        H, Q = standard_cell(cell)
+        if Q is not None:
+            X = X @ Q
+        check_box(H, self.settings.pair_cutoff + self.settings.skin)
+        st = getattr(self, "_bstate", None)
+        if getattr(self, "_whole_batch_c", None) is None:
+            self._whole_batch_c = jax.jit(self._whole_batch)
+        if (st is None or st["B"] != B or abs(float(np.linalg.det(H)) / st["vol"] - 1.0) > 0.10) and \
+                not self._batch_setup(B, X, H):
+            return [self.compute(X[k] if Q is None else X[k] @ Q.T, cell, virial, slot=k % len(self.slots))
+                    for k in range(B)]
+        st = self._bstate
+        if st["x"] is not None:
+            perm = match_previous(X, st["x"])                # each structure with its own dipole history
+            if np.any(perm != np.arange(B)):
+                idx = jnp.asarray(perm)
+                ind = st["ind"]
+                st["ind"] = jax.tree_util.tree_map(lambda a: a[idx], ind.set(count=None)).set(count=ind.count)
+                self.stats["permuted"] = self.stats.get("permuted", 0) + 1
+            if self._displacement(st["x"][perm], X, H) > self.jump:
+                ind0 = self.ff.init_induction()
+                st["ind"] = jax.tree_util.tree_map(lambda a: jnp.broadcast_to(a, (B,) + jnp.shape(a)),
+                                                   ind0.set(count=None)).set(count=ind0.count)
+                self.stats["resets"] += 1
+        t0 = time.perf_counter()
+        Xd, Hd = jnp.asarray(X), jnp.asarray(H)
+        for attempt in range(8):
+            packed, flags, ind_new, nbr_new, dev = self._bfn(Xd, Hd, st["ind"], st["nbr"], virial=bool(virial), chunk=chunk)
+            out, fl = np.asarray(packed), np.asarray(flags)
+            ovf = bool(np.any(out[:, 7]))
+            nb_bad = bool(int(fl[0]) & _LIST_ERRORS)
+            far = float(fl[1]) > self._bfar
+            if not (ovf or nb_bad or far):
+                break
+            self.stats["repeats"] += 1
+            if far:
+                self.bead_margin *= 1.5
+                if not self._batch_setup(B, X, H):
+                    self._bstate = None
+                    return [self.compute(X[k] if Q is None else X[k] @ Q.T, cell, virial, slot=k % len(self.slots))
+                            for k in range(B)]
+            else:
+                Xw = self._whole_batch_c(Xd, Hd)
+                old = self.ff.capacity
+                c = self._centers(jnp.mean(Xw, 0))
+                nbr = self._nbb.allocate(jnp.mean(Xw, 0), c, Hd) if nb_bad else st["nbr"]
+                if self._nbb.kind == "molecule":
+                    self._nbb.cap = max(self._nbb.size(nbr, c, Hd, Xw[k], 1.3) for k in range(B))
+                cands = [self._nbb.candidates(nbr, c, Hd, Xw[k])[0] for k in range(B)]
+                caps = []
+                for k in range(B):
+                    self.ff.size_rows(Xw[k], Hd, cands[k], 1.3)
+                    caps.append(self.ff.capacity)
+                self.ff.fit_rows(caps)
+                if ovf:
+                    self.ff.grow_rows(old)
+                st["nbr"] = nbr
+                self._compile()
+                for sl in self.slots:
+                    sl.nbr = None
+                self._bfn = jax.jit(self._eval_batch, static_argnames=("virial", "chunk"))
+            st = self._bstate
+        else:
+            raise RuntimeError("neighbour list / row capacity keeps overflowing (batch)")
+        st["ind"], st["nbr"], st["x"] = ind_new, nbr_new, X
+        n = self.n
+        res = []
+        for k in range(B):
+            F = out[k, 8:8 + 3 * n].reshape(n, 3)
+            if Q is not None:
+                F = F @ Q.T
+            dk = {key: v[k] for key, v in dev.items()}
+            res.append(EngineResult(float(out[k, 0]), F, {"elec": float(out[k, 1]), "vdw": float(out[k, 2]),
+                                                          "bonded": float(out[k, 3]), "restraint": float(out[k, 4])},
+                                    int(out[k, 5]), dk, Q))
+            self.stats["cg"] += int(out[k, 5])
+        self.stats["calls"] += B
+        self.stats["batches"] = self.stats.get("batches", 0) + 1
+        self.stats["time"] += time.perf_counter() - t0
+        return res
 
     def describe(self) -> str:
         s = self.settings

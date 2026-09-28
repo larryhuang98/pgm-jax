@@ -2,6 +2,7 @@
 of the PIMD work, validation/interfaces/pgm_water_flex.flex), 298 K, dt 0.25 fs.
 
     python scripts/interfaces/validate_ipi.py start   # native minimisation + classical NVT -> runs/ipi_val/start.npz
+                                                      # (shared by every run; --work / --out: run directories, results)
     python scripts/interfaces/validate_ipi.py nve     # i-PI NVE vs native NVE from the same state (trajectories, drift)
     python scripts/interfaces/validate_ipi.py nvt     # classical i-PI (SVR thermostat) vs native Bussi: T, <U>
     python scripts/interfaces/validate_ipi.py pimd --beads 8   # i-PI PIMD (PILE-G) vs native PIMD: KE_H, KE_O (centroid virial)
@@ -77,7 +78,7 @@ def native_sim(tpl, s, pos, H, ensemble="nvt", vel=None, seed=0, dt=0.00025, T=2
 
 
 def load_start():
-    d = np.load(os.path.join(WORK, "start.npz"))
+    d = np.load(os.path.join(ROOT, "runs/ipi_val", "start.npz"))
     return d["pos"], d["vel"], d["H"]
 
 
@@ -101,14 +102,14 @@ def cmd_start(args):
     sim = native_sim(tpl, s, xyz * 0.1, H)
     sim.minimize(200)
     sim._advance(int(round(args.ps / 0.00025)))
-    os.makedirs(WORK, exist_ok=True)
-    np.savez(os.path.join(WORK, "start.npz"), pos=sim.positions_nm(), vel=sim.velocities_nm_ps(), H=np.asarray(sim.state.box))
+    os.makedirs(os.path.join(ROOT, "runs/ipi_val"), exist_ok=True)
+    np.savez(os.path.join(ROOT, "runs/ipi_val", "start.npz"), pos=sim.positions_nm(), vel=sim.velocities_nm_ps(), H=np.asarray(sim.state.box))
     print(sim.observables())
 
 
-def client_factory(sysm, tpls, s, slots, address, stress="atomic"):
+def client_factory(sysm, tpls, s, slots, address, stress="atomic", vmap=True):
     return lambda: IPIClient(lambda p, c: PGMEngine(sysm, p, c, s, templates=tpls, slots=slots, stress=stress),
-                             address, unix=True, log=None)
+                             address, unix=True, log=None, vmap_beads=vmap)
 
 
 def cmd_nve(args):
@@ -194,7 +195,8 @@ def cmd_pimd(args):
                   thermostat="pile_g", tau_fs=100.0, stride=rep, address=f"pgmval_p{P}",
                   batch_size=P if args.batch else 1, seed=11,
                   extra_props=("kinetic_cv(H)", "kinetic_cv(O)", "kinetic_td(H)"))
-    client, st, props, wall = T.run(wd, f"pgmval_p{P}", client_factory(sysm, tpls, s, P, f"pgmval_p{P}"))
+    client, st, props, wall = T.run(wd, f"pgmval_p{P}", client_factory(sysm, tpls, s, P, f"pgmval_p{P}",
+                                                                        vmap=bool(args.vmap)))
     nH, nO = 2 * n, n
     eq = int(round(args.equil_ps / (0.00025 * rep)))
     keH = props["kinetic_cv(H)"][eq:] / nH * T.KJMOL_MEV
@@ -202,21 +204,25 @@ def cmd_pimd(args):
     U = props["potential"][eq:]
     be = lambda x: float(np.std([np.mean(y) for y in np.array_split(np.asarray(x), 5)], ddof=1) / np.sqrt(5))
     eng = client.engine
-    out = {"beads": P, "batch": bool(args.batch), "steps": steps, "equil_ps": args.equil_ps,
+    blocks = np.array_split(np.asarray(U), 5)
+    out = {"beads": P, "batch": bool(args.batch), "vmap": bool(args.vmap), "steps": steps, "equil_ps": args.equil_ps,
+           "epot_blocks": [float(np.mean(b)) for b in blocks],
            "ke_H_cv_meV": [float(np.mean(keH)), be(keH)], "ke_O_cv_meV": [float(np.mean(keO)), be(keO)],
            "epot_bead_mean": [float(np.mean(U)), be(U)], "T": float(np.mean(props["temperature"][eq:])),
            "ms_per_step_ipi": 1e3 * st["t_total"] / steps, "engine_ms_per_call": 1e3 * eng.stats["time"] / eng.stats["calls"],
            "cg_per_call": eng.stats["cg"] / eng.stats["calls"], "engine_resets": eng.stats["resets"],
-           "engine_repeats": eng.stats["repeats"]}
+           "engine_repeats": eng.stats["repeats"], "engine_stats": dict(eng.stats)}
     ref = os.path.expanduser(f"~/project/pGM-JAX-pimd/validation/pimd/water/w{P}.json")
     if os.path.exists(ref):
         with open(ref) as fh:
             r = json.load(fh)
         out["native"] = {k: r[k] for k in ("ke_H_cv_meV", "ke_O_cv_meV", "epot", "ms_per_step", "ps", "cg_mean") if k in r}
-    save(f"pimd{P}{'_batch' if args.batch else '_serial'}", out)
+    save(f"pimd{P}{'_batch' if args.batch else '_serial'}{'_vmap' if args.vmap and args.batch else ''}_{steps}", out)
+    print(json.dumps(client.engine.stats), flush=True)
 
 
 def main():
+    global WORK, OUT
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=("start", "nve", "nvt", "pimd"))
     ap.add_argument("--template", default=TPL)
@@ -226,8 +232,12 @@ def main():
     ap.add_argument("--steps", type=int, default=2000)
     ap.add_argument("--beads", type=int, default=8)
     ap.add_argument("--batch", type=int, default=1)
+    ap.add_argument("--vmap", type=int, default=1, help="batched beads in one vmapped engine call")
     ap.add_argument("--equil-ps", type=float, default=0.5)
+    ap.add_argument("--work", default=WORK, help="i-PI run directories")
+    ap.add_argument("--out", default=OUT)
     args = ap.parse_args()
+    WORK, OUT = os.path.abspath(args.work), os.path.abspath(args.out)
     {"start": cmd_start, "nve": cmd_nve, "nvt": cmd_nvt, "pimd": cmd_pimd}[args.cmd](args)
 
 

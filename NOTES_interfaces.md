@@ -42,3 +42,27 @@ Running log so the work can be resumed.
   step-0 potential = engine energy (1e-8, i-PI's output digits); batched and serial give identical
   series (same seed).
 - stress default: "molecular" for the rigid-molecule model, "atomic" with templates.
+- 05:46 GPU batch 1 (gpu-2-2): ASE validation done (validation/interfaces/ase.json): single point
+  double identical (E 2e-16, F 4e-10, P 0.0 bar after the script fix), mixed within mixed noise;
+  NVE 10 ps native +0.0011, ASE -0.0022 kT/ns/dof; NVT 20 ps T 296.8+-0.8 / 298.7+-0.8,
+  U -4130.885+-0.073 / -4130.723+-0.074 kJ/mol/molecule. Speed: native 0.80 ms/step, ASE 4.26 (engine
+  1.90 at that time). OpenMM step crashed (CUDA platform), i-PI script had a syntax error.
+  (lock mess on gpu-2-2: gpu_run.sh's trap removes the lock dir unconditionally; killing a waiting
+  gpu_run.sh with SIGTERM removed fit2's lock; SIGKILL my own waiting gpu_run.sh processes instead.)
+- runs/gpu_any.sh: waits for any free gpu-2-x lock + idle GPU, then gpu_run.sh there.
+- 06:32 GPU batch 2 (gpu-2-0): profile: native 0.61 ms/step, engine.compute 1.37 ms, _fn 0.93 ms
+  (8 CG), ff.compute alone 0.87 (8 CG), native integ.forces 1.19 (8 CG).  Host overhead: one extra
+  device->host transfer for nb.failed(nbr) -> use the error code packed in the output.
+- OpenMM CUDA platform: CUDA_ERROR_UNSUPPORTED_PTX_VERSION (conda nvrtc 13.4 vs driver 610), and in
+  any case the GPUs are in exclusive-process mode = one context per device: OpenMM's own context and
+  JAX's primary context cannot coexist ("CUDA_ERROR_DEVICE_UNAVAILABLE").  Use OpenMM CPU platform +
+  JAX GPU (OpenMM integration + SETTLE ~0.5 ms/step for 1536 atoms).
+- i-PI (GPU): NVE 2000 steps from the same state: U agrees with native to 2e-6 relative over the run
+  (float32 chaos), E0 differs by 0.29 kJ/mol = KE 5e-5 (i-PI unit constants); drift both 0.08 kT/ns/dof
+  (0.5 ps); NVT classical 2 ps T 299.2+-1.1 vs 296.2+-0.8, U -4088.85+-0.07 vs -4088.70+-0.09.
+  PIMD P=8 (batch, one call per bead then): KE_H 119.18 vs native 118.89+-0.10 meV, KE_O 51.09 vs
+  51.15+-0.06, <V> -2084795+-53 vs -2085188+-43 (2.5 ps vs 10 ps).  37 ms/step (engine 3.1 ms per
+  bead, 39 % predictor resets: i-PI does not keep the bead order in batches -> slot = batch index is
+  wrong).  Fixed: one-to-one assignment to previous structures (match_previous), and
+  PGMEngine.compute_batch: all beads in one vmapped call (shared list of the centroid + bead margin,
+  molecule or atom list; stacked histories with a shared predictor counter; chunks).

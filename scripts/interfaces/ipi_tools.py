@@ -117,6 +117,8 @@ def start_server(workdir, address):
         pass
     cmd, root = ipi_command()
     env = dict(os.environ)
+    for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):   # leave the cores to the engine
+        env[k] = os.environ.get("IPI_THREADS", "1")
     if root:
         env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
     log = open(os.path.join(workdir, "ipi.log"), "w")

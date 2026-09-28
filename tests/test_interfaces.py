@@ -142,6 +142,30 @@ def test_slots_and_resizing():
     assert eng.stats["repeats"] >= 1 and eng.ff.mc > 8
 
 
+def test_compute_batch_matches_single_structures():
+    """Ring-polymer-like batches in one vmapped call (shared list of the batch mean, stacked dipole
+    histories, optionally in chunks) = one engine call per structure; molecules of one bead may
+    sit in another periodic image."""
+    sysm, pos, H = water_box(5)
+    s = settings(dipole_tol=1e-10, cutoff=0.4)            # the box holds the molecule list of the batch mean
+    rng = np.random.default_rng(1)
+    X = np.stack([pos + 0.004 * rng.normal(size=pos.shape) for _ in range(4)])
+    X[2, :3] += np.asarray(H)[0]                        # a whole molecule of bead 2 one cell over
+    for chunk, s in ((None, s), (2, settings(dipole_tol=1e-10))):          # molecule list, then atom list
+        ref = [PGMEngine(sysm, pos, H, s, stress="atomic").compute(x, H, virial=True) for x in X]
+        eng = PGMEngine(sysm, pos, H, s, stress="atomic", bead_margin=0.02)
+        out = eng.compute_batch(X, H, virial=True, chunk=chunk)
+        for r, q in zip(out, ref):
+            assert abs(r.energy - q.energy) < 1e-9 * abs(q.energy)
+            assert np.abs(r.forces - q.forces).max() < 1e-7
+            assert np.abs(r.virial - q.virial).max() < 1e-7
+            assert np.abs(r.dipole - q.dipole).max() < 1e-9
+        out2 = eng.compute_batch(X[::-1] + 1e-4, H)           # next step, beads in another order (as i-PI may)
+        assert all(abs(a.energy - b.energy) < 1.0 for a, b in zip(out2, out[::-1]))
+        assert eng.stats.get("batches", 0) == 2 and eng.stats.get("permuted", 0) == 1 and eng.stats["resets"] == 0
+        assert eng._nbb.kind == ("molecule" if chunk is None else "atom")
+
+
 def test_gas_phase_engine():
     from pgm_jax import ElecChannel, LJChannel, Model, System
     from test_grad import cluster

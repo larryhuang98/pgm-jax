@@ -50,6 +50,7 @@ def main():
     ap.add_argument("--steps", type=int, default=2000)
     ap.add_argument("--dt", type=float, default=0.001)
     ap.add_argument("--skip", nargs="*", default=[])
+    ap.add_argument("--profile", action="store_true", help="cProfile of 100 ASE steps")
     ap.add_argument("--out", default="validation/interfaces/bench.json")
     a = ap.parse_args()
     res = {"device": str(jax.devices()[0]), "steps": a.steps}
@@ -80,6 +81,8 @@ def main():
             eng.compute(x, H)
         r["engine_ms"] = 1e3 * (time.perf_counter() - t0) / 250
         r["engine_cg_per_call"] = eng.stats["cg"] / 250
+        for x in fr[:10]:
+            eng.compute(x, H, virial=True)                 # compile the virial variant
         t0 = time.perf_counter()
         for x in fr[50:]:
             eng.compute(x, H, virial=True)
@@ -102,6 +105,25 @@ def main():
             dyn.run(m)
             r["ase_ms"] = 1e3 * (time.perf_counter() - t0) / m
             r["ase_engine_ms"] = 1e3 * e2.stats["time"] / e2.stats["calls"]
+            cons = atoms.constraints[0]
+            t0 = time.perf_counter()
+            for _ in range(20):
+                p = atoms.get_positions()
+                cons.adjust_positions(atoms, p + 1e-4)
+                q = atoms.get_momenta()
+                cons.adjust_momenta(atoms, q)
+            r["ase_constraints_ms"] = 1e3 * (time.perf_counter() - t0) / 20
+            if a.profile:
+                import cProfile
+                import io
+                import pstats
+                pr = cProfile.Profile()
+                pr.enable()
+                dyn.run(100)
+                pr.disable()
+                sio = io.StringIO()
+                pstats.Stats(pr, stream=sio).sort_stats("tottime").print_stats(12)
+                print(sio.getvalue(), flush=True)
         if "openmm" not in a.skip:
             try:
                 import openmm
@@ -112,7 +134,11 @@ def main():
                     e3 = PGMEngine(sysm, pos0, H, s)
                     om = PGMOpenMM(e3)
                     integ = openmm.VerletIntegrator(a.dt * unit.picoseconds)
-                    ctx = openmm.Context(om.system(rigid=True), integ, openmm.Platform.getPlatformByName(p))
+                    try:
+                        ctx = openmm.Context(om.system(rigid=True), integ, openmm.Platform.getPlatformByName(p))
+                    except Exception as err:          # noqa: BLE001  (CUDA next to JAX on an exclusive GPU)
+                        r[f"openmm_{p}"] = str(err)
+                        continue
                     ctx.setPeriodicBoxVectors(*[openmm.Vec3(*v) for v in om.box()])
                     ctx.setPositions(pos0)
                     ctx.setVelocities(vel0)

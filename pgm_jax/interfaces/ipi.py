@@ -4,10 +4,12 @@ enhanced sampling), pgm_jax computes energies, forces and virials.
 Pure Python sockets; i-PI itself is only needed on the server side.  The client speaks the i-PI
 protocol (12-byte headers STATUS / INIT / POSDATA / GETFORCE / EXIT; atomic units: Bohr, Hartree),
 including i-PI's batched requests (INIT string "batch_size:n": one POSDATA carries n structures,
-e.g. the beads of a ring polymer, answered in one GETFORCE).  Each structure of a batch keeps its
-own induced-dipole history (engine slot = position in the batch); without batching, the engine
-picks the slot whose last configuration is closest (PGMEngine(slots=P) for P beads sent one after
-the other).
+e.g. the beads of a ring polymer, answered in one GETFORCE).  A batch with one cell is evaluated in
+one vmapped call (PGMEngine.compute_batch; vmap_beads=False: one call per structure).  Each
+structure keeps its own induced-dipole history: i-PI does not keep the order of the beads within
+its batches, so each structure is matched to the closest previous one (one-to-one assignment).
+Without batching the engine picks the slot whose last configuration is closest (PGMEngine(slots=P)
+for P beads sent one after the other).
 
     python -m pgm_jax.interfaces.ipi --prmtop water.prmtop [--template water.flex] \
         --address pgm --unix [--slots 32] [--precision mixed] [--settings '{"dipole_tol": 1e-5}']
@@ -51,11 +53,13 @@ class IPIClient:
     address: host name (inet) or socket name (unix: sockets_prefix + address); port for inet."""
 
     def __init__(self, engine, address: str = "localhost", port: int = 31415, unix: bool = False,
-                 sockets_prefix: str = "/tmp/ipi_", virial: bool = True, verbose: bool = False, log=sys.stdout):
+                 sockets_prefix: str = "/tmp/ipi_", virial: bool = True, verbose: bool = False, log=sys.stdout,
+                 vmap_beads: bool = True):
         self._engine = None if callable(engine) and not hasattr(engine, "compute") else engine
         self._factory = engine if self._engine is None else None
         self.address, self.port, self.unix, self.prefix = address, int(port), bool(unix), sockets_prefix
         self.virial, self.verbose, self.log = bool(virial), verbose, log
+        self.vmap_beads = bool(vmap_beads)            # batches of structures with one cell: one vmapped call
         self.batch = 1
         self.stats = {"structures": 0, "requests": 0, "t_engine": 0.0, "t_total": 0.0}
 
@@ -105,23 +109,48 @@ class IPIClient:
         Returns (energy Ha, forces Ha/Bohr (N, 3), virial Ha (3, 3), extras dict)."""
         cell = np.asarray(h, float).T * BOHR_NM             # rows = lattice vectors, nm
         pos = np.asarray(pos_bohr, float).reshape(-1, 3) * BOHR_NM
-        if self._engine is None:
-            self._engine = self._factory(pos, cell)
-            self._print(f"# {self._engine.describe()}" if hasattr(self._engine, "describe") else "# engine ready")
+        self._ensure(h, pos_bohr)
         t0 = time.perf_counter()
         eng = self._engine
         if slot is not None and hasattr(eng, "slots") and len(eng.slots) > 1:
             res = eng.compute(pos, cell, virial=self.virial, slot=slot % len(eng.slots))
         else:
             res = eng.compute(pos, cell, virial=self.virial)
+        self.stats["t_engine"] += time.perf_counter() - t0
+        self.stats["structures"] += 1
+        return self._convert(res)
+
+    def _ensure(self, h, pos_bohr):
+        """Build the engine from the factory on the first structure."""
+        if self._engine is None:
+            cell = np.asarray(h, float).T * BOHR_NM
+            self._engine = self._factory(np.asarray(pos_bohr, float).reshape(-1, 3) * BOHR_NM, cell)
+            self._print(f"# {self._engine.describe()}" if hasattr(self._engine, "describe") else "# engine ready")
+
+    def _convert(self, res):
         E = res.energy / HARTREE_KJMOL
         F = res.forces * (BOHR_NM / HARTREE_KJMOL)
         W = res.virial if (self.virial and res.virial is not None) else np.zeros((3, 3))
         vir = -0.5 * (W + W.T) / HARTREE_KJMOL
         extras = {"cg_iterations": int(res.iterations), "dipole": (res.dipole / BOHR_NM).tolist()}
-        self.stats["t_engine"] += time.perf_counter() - t0
-        self.stats["structures"] += 1
         return E, np.ascontiguousarray(F, np.float64), np.ascontiguousarray(vir, np.float64), extras
+
+    def _evaluate_batch(self, cells, pos_bohr):
+        """A batch of structures (i-PI batch_size > 1): one vmapped engine call when they share the
+        cell (ring-polymer beads; PGMEngine.compute_batch), else one call per structure."""
+        same_cell = all(np.array_equal(cells[0], c) for c in cells[1:])
+        if self._engine is None or not hasattr(self._engine, "compute_batch") or not self.vmap_beads or not same_cell:
+            slots = list(range(len(cells)))
+            if same_cell and hasattr(self._engine, "batch_slots"):   # i-PI does not keep the order of the beads
+                slots = self._engine.batch_slots(np.asarray(pos_bohr, float).reshape(len(cells), -1, 3) * BOHR_NM,
+                                                 np.asarray(cells[0], float).T * BOHR_NM)
+            return [self._evaluate(cells[i], pos_bohr[i], int(slots[i])) for i in range(len(cells))]
+        t0 = time.perf_counter()
+        cell = np.asarray(cells[0], float).T * BOHR_NM
+        res = self._engine.compute_batch(np.asarray(pos_bohr, float) * BOHR_NM, cell, virial=self.virial)
+        self.stats["t_engine"] += time.perf_counter() - t0
+        self.stats["structures"] += len(res)
+        return [self._convert(r) for r in res]
 
     # ------------------------------------------------------------------ protocol
     def run(self, max_requests: int | None = None):
@@ -151,7 +180,8 @@ class IPIClient:
                         nat = int(self._recv_array(np.int32, 1)[0])
                         cells = self._recv_array(np.float64, 18 * self.batch).reshape(self.batch, 2, 3, 3)
                         pos = self._recv_array(np.float64, 3 * nat * self.batch).reshape(self.batch, nat, 3)
-                        results = [self._evaluate(cells[i, 0], pos[i], i) for i in range(self.batch)]
+                        self._ensure(cells[0, 0], pos[0])
+                        results = self._evaluate_batch(cells[:, 0], pos)
                     else:
                         h = self._recv_array(np.float64, 9).reshape(3, 3)
                         self._recv_array(np.float64, 9)                    # inverse cell (unused)
@@ -238,12 +268,13 @@ def main(argv=None):
     p.add_argument("--precision", choices=("mixed", "double"))
     p.add_argument("--settings", help="MDSettings as JSON, e.g. '{\"dipole_tol\": 1e-5, \"cutoff\": 0.9}'")
     p.add_argument("--no-virial", action="store_true")
+    p.add_argument("--no-vmap", action="store_true", help="evaluate the structures of a batch one by one")
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args(argv)
     if not (args.prmtop or args.template):
         p.error("--prmtop or --template is required")
     client = IPIClient(_engine_factory(args), args.address, args.port, args.unix, virial=not args.no_virial,
-                       verbose=args.verbose)
+                       verbose=args.verbose, vmap_beads=not args.no_vmap)
     st = client.run()
     eng = client.engine
     if eng is not None and hasattr(eng, "stats"):

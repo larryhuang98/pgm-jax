@@ -35,8 +35,21 @@ KJ = unit.kilojoule_per_mole
 
 
 def platforms():
+    """Usable platforms: a context must open (OpenMM's CUDA platform cannot open a context on a GPU in
+    exclusive-process mode that JAX already uses)."""
     names = [openmm.Platform.getPlatform(i).getName() for i in range(openmm.Platform.getNumPlatforms())]
-    return [p for p in ("CUDA", "CPU") if p in names]
+    ok = []
+    for p in ("CUDA", "CPU"):
+        if p not in names:
+            continue
+        try:
+            s = openmm.System()
+            s.addParticle(1.0)
+            openmm.Context(s, openmm.VerletIntegrator(0.001), openmm.Platform.getPlatformByName(p))
+            ok.append(p)
+        except Exception as err:                  # noqa: BLE001
+            print(f"# platform {p} unusable: {err}", flush=True)
+    return ok
 
 
 def context(om, integrator, platform, pos, vel=None, barostat=None):
