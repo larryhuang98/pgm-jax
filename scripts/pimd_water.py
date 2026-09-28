@@ -26,6 +26,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+if os.environ.get("PIMD_WAIT_GPU"):       # shared GPU: wait until it is idle, take it at once (before the
+    import subprocess                      # imports below touch the device); 75: someone else was faster
+    while subprocess.run(["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader"],
+                         capture_output=True, text=True).stdout.strip():
+        time.sleep(0.1)
+    try:
+        jax.devices()
+    except RuntimeError:
+        sys.exit(75)
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 jax.config.update("jax_enable_x64", True)
@@ -125,7 +135,8 @@ def run(a):
                         bead_chunk=a.bead_chunk or None)
     if a.load:
         pi.load(a.load)
-        pi.state = pi.state.set(heat=jnp.zeros(()), step=jnp.zeros((), jnp.int32))
+        pi.state = pi.state.set(heat=jnp.zeros(()), step=jnp.zeros((), jnp.int32),
+                                eng=pi.state.eng.set(cg_total=jnp.zeros(())))
     nstep = int(round(a.ps / (a.dt * 1e-3)))
     neq = int(round(a.equil_ps / (a.dt * 1e-3)))
     rep = max(1, int(round(a.report_ps / (a.dt * 1e-3))))

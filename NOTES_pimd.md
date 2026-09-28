@@ -41,3 +41,18 @@
   randomizes the BAOAB splitting error; not a conservation diagnostic (use RPMD NVE).
 - OpenMM comparison, 6 cases x 4 observables: all within 2.2 sd (chi2/dof 1.7); dt check submitted.
 - GPU campaign script runs/pimd/campaign.sh waits for the pathenv driver on gpu-2-0 to finish.
+- 23:15 GPU (gpu-2-0 free after pathenv driver). bench (512 waters, dt 0.25 fs): P=8 2.19 ms/step
+  (9.9 ns/day), 8->1 1.44, 8->4 1.97; P=32 15.2 ms (1.42 ns/day), 32->1 2.46 (8.8), 32->4 3.19 (6.8).
+- w32 (P=32 full, GPU, 10 ps): KE_H 148.48+-0.07 meV cv (148.0+-0.3 prim), KE_O 55.22, p -1143+-73 bar,
+  dipole 2.143 D (<|mu|> 2.185), g_OO 3.257 at 2.76 A, CG 9.0/step (max over beads), 15.5 ms/step.
+  => centroid contraction (P'=1) overestimates KE_H by 4 meV (2.8 %), dipole 0.06 D low.
+- 23:45 full suite 222 passed (36.8 min, 32 cores).
+- GPU results: P=16 KE_H 139.65+-0.07 meV; P=32 148.48+-0.07; contraction P'=1 152.66, P'=4 151.49 (the
+  intermolecular part, with its induction, couples strongly to the O-H stretch -> high modes needed).
+  Isolated-molecule check: MD engine monomer frequencies = gas model to 0.04 (double) / 0.6 cm-1 (mixed),
+  so the contraction offset is liquid-phase physics, not a split artefact.
+  TRPMD P=32 20 ps: D 2.18e-5 cm2/s; classical flexible (P=1) D 4.08 (rigid pGM NVE 4.27 in
+  thermostat_ideas.md); PIMD P=32 (PILE-G) D 2.57.  NQE slow diffusion in this model (dipole 2.04 -> 2.14 D).
+  RDF: OO peak unchanged (3.2-3.3 at 2.76 A); OH H-bond peak 1.46-1.49 -> 1.34-1.39; HH 1.42-1.44 -> 1.31.
+- pathenv multi_worker on gpu-2-0 retries when the GPU is busy; my jobs now take the GPU in a gap
+  (PIMD_WAIT_GPU=1 in scripts/pimd_water.py; runs/pimd/campaign3.sh).
