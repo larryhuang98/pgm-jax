@@ -46,3 +46,4 @@
 - C2 meq1234 (charge 1.2335, one Newton step to -5.11): G = -5.321 +- 0.084, d/ds -13.02; pair FD -11.05 +- 0.54 vs
   trapezoid -11.58 +- 0.09 (z 0.98). examples/hydration_target.py prints the step from the npz.
 - D (methanol rmin 0.95 / 1.05) queued (chain3.sh); GPU shared with iface / bias.
+- full suite (final code): 221 passed in 44 min (runs/full2.log). D mer105 running from 09:54.

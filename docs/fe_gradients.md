@@ -44,7 +44,7 @@ K-1 (decoupled), so
 
 ## Estimators and errors (`gradient_estimate`)
 
-| Estimator | What | Uses |
+| Estimator | What | Meaning |
 |---|---|---|
 | `mbar` | E_k[dU_k/dtheta] = sum_n W_nk dU_k/dtheta(x_n) with the MBAR weights of the end states over the samples of every window | the exact derivative of the MBAR free energy of the perturbed end states reweighted from the sampled mixture: consistent with the MBAR DeltaG |
 | `end` | the plain averages over the end windows' own samples | the identity directly |
@@ -54,7 +54,10 @@ of every window, which keeps inside a block both the time correlation of each wi
 correlation between windows coupled by Hamiltonian exchange). The replicates are kept
 (`FEGradient.jk_value`, `jk_grad`), so the error of any projection (a scale direction, a chain-rule
 product) is exact, not propagated from per-entry errors. The free energy is MBAR on all samples
-(its jackknife error is reported with the asymptotic MBAR error of `free_energy.estimate`).
+(its jackknife error is reported with the asymptotic MBAR error of `free_energy.estimate`). The two
+estimators agree within their errors in every run below; the MBAR-weighted one has 1.3-2.4 times
+smaller errors (it also uses the samples of the neighbouring windows) and is the default of
+`FreeEnergyTarget`.
 
 ## Usage
 
