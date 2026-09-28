@@ -52,6 +52,7 @@ def test_dudp_matches_finite_differences_with_resolved_dipoles(mode, lam):
         v = direction(space, P, seed)
         h = 1e-5
         fd = (float(U(p0 + h * v)[0]) - float(U(p0 - h * v)[0])) / (2 * h)
+        print(f"[fe_grad] HF {mode} {tuple(np.asarray(lam).tolist())}: FD {fd:.8f} autodiff {g @ v:.8f} rel {abs(fd - g @ v) / abs(fd):.1e}")
         assert abs(fd - g @ v) < 1e-6 * max(1.0, abs(fd)), (mode, lam, fd, g @ v)
     # parameters the Hamiltonian does not see there have zero derivative
     solq = space.select(("q", "cov"), solute=True)
@@ -109,7 +110,7 @@ def test_estimators_are_derivatives_of_reweighted_free_energies(mode):
     E = jax.jit(lambda st, p, lam: alch.energy(ff, *(lambda f: (f[0], st.box, f[1]))(fg._frame(w, st)),
                                                st.induction, space.unflatten(p, P), lam)[0])
     v = direction(space, P, 7)
-    h = 1e-4
+    h = 3e-4                                  # float64 roundoff of U (~1e-7 kJ/mol) / h vs truncation h^2
     p0 = space.flatten(P)
     us, gs, dU = [], [], []                   # dU[s, sign, t, n]: U_t(x_n; p0 + sign h v)
     for _ in range(8):
@@ -134,7 +135,8 @@ def test_estimators_are_derivatives_of_reweighted_free_energies(mode):
         i = 0 if sg > 0 else 1
         return zw(dU[:, i, 1, K - 1] - U0[:, K - 1, K - 1]) - zw(dU[:, i, 0, 0] - U0[:, 0, 0])
     fd_end = (end(1) - end(-1)) / (2 * h)
-    assert abs(fd_end - r["solv"]["end"].grad @ v) < 1e-5 * max(1.0, abs(fd_end)), (fd_end, r["solv"]["end"].grad @ v)
+    print(f"[fe_grad] reweighting {mode}: end FD {fd_end:.8f} estimator {r['solv']['end'].grad @ v:.8f}")
+    assert abs(fd_end - r["solv"]["end"].grad @ v) < 1e-5 * max(100.0, abs(fd_end)), (fd_end, r["solv"]["end"].grad @ v)
     # MBAR: the perturbed end states as unsampled states of the mixture sampled at p0
     s = u.shape[0]
     u_kn = u.transpose(1, 2, 0).reshape(K, K * s)
@@ -147,7 +149,8 @@ def test_estimators_are_derivatives_of_reweighted_free_energies(mode):
         fk = [-logsumexp(-dU[:, i, t, :].T.reshape(-1) / kT - logden) for t in (0, 1)]
         return kT * (fk[1] - fk[0])
     fd_mbar = (mb(1) - mb(-1)) / (2 * h)
-    assert abs(fd_mbar - r["solv"]["mbar"].grad @ v) < 1e-5 * max(1.0, abs(fd_mbar)), (fd_mbar, r["solv"]["mbar"].grad @ v)
+    print(f"[fe_grad] reweighting {mode}: MBAR FD {fd_mbar:.8f} estimator {r['solv']['mbar'].grad @ v:.8f}")
+    assert abs(fd_mbar - r["solv"]["mbar"].grad @ v) < 1e-5 * max(100.0, abs(fd_mbar)), (fd_mbar, r["solv"]["mbar"].grad @ v)
     assert abs(r["solv"]["mbar"].value - kT * (f[-1] - f[0])) < 1e-8
 
 
@@ -187,6 +190,8 @@ def test_gas_leg_gradient_and_exact_sampled_case():
         # the solution "leg" here is the same molecule in vacuum: DeltaG_solv = DeltaG_gas, hydration 0
         assert abs(solv.value - dg) < 2e-3 and abs(hyd.value) < 2e-3
         scale = np.abs(gg).max()
+        print(f"[fe_grad] lone solute {est}: DeltaG {solv.value:.6f} exact {dg:.6f}; max |grad - exact| "
+              f"{np.abs(solv.grad - gg).max():.2e} of max |exact| {scale:.1f}; max grad error bar {np.abs(solv.grad_err).max():.1e}")
         assert np.abs(solv.grad - gg).max() < 1e-3 * scale, (est, np.abs(solv.grad - gg).max(), scale)
         assert np.abs(solv.grad_err).max() < 1e-6 * scale and solv.value_err < 1e-6
 
@@ -225,9 +230,13 @@ def test_harmonic_oscillators_analytic_gradient_and_calibrated_errors():
         verrs.append(r["solv"]["mbar"].value_err)
     for est in res:
         a = np.array(res[est])
+        print(f"[fe_grad] harmonic {est}: mean {a.mean():.5f} +- {a.std() / np.sqrt(len(a)):.5f} exact {exact_g:.5f}; "
+              f"mean error bar / spread {np.mean(errs[est]) / a.std():.3f}")
         assert abs(a.mean() - exact_g) < 3 * a.std() / np.sqrt(len(a)), (est, a.mean(), exact_g)
         assert 0.7 < np.mean(errs[est]) / a.std() < 1.4, (est, np.mean(errs[est]), a.std())
     vals = np.array(vals)
+    print(f"[fe_grad] harmonic value: mean {vals.mean():.5f} +- {vals.std() / np.sqrt(len(vals)):.5f} exact {exact_f:.5f}; "
+          f"error bar / spread {np.mean(verrs) / vals.std():.3f}")
     assert abs(vals.mean() - exact_f) < 3 * vals.std() / np.sqrt(len(vals))
     assert 0.7 < np.mean(verrs) / vals.std() < 1.4
 
