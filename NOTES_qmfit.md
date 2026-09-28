@@ -36,4 +36,5 @@ Running log so the work can be resumed.
   docs/qmfit.md table. Recommended: all_total (LJ, pmemd compatible; test RMSE 0.75, hexamer order
   right) and rec_gvdw (GVDW O+H; test 0.57, 3-body 0.18, forces 0.49; cage 0.27 below prism).
   LJ fits with SAPT weights push the O LJ to R* 0.3 nm / eps ~1e-3 (not recommended).
-- tests/test_qmfit.py: 8 passed (2.7 min, 8 cores). Full suite: runs/qmfit/fullsuite.log.
+- tests/test_qmfit.py: 8 passed (2.7 min, 8 cores). Full suite (24 cores, cpu-long): 215 passed in 29 min
+  (run before the 8th qmfit test was added; that one passed separately) -> 216 tests.
