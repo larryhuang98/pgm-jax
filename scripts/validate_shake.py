@@ -90,9 +90,9 @@ def nve(prec, names, ps):
     every step for the first 200 steps, CG iterations and speed."""
     x, v, H = load_eq()
     tol = 1e-5 if prec == "mixed" else 1e-9
-    path = os.path.join(OUT, f"nve_{prec}.json")
-    res = json.load(open(path)) if os.path.exists(path) else {}
     for name in names:
+        path = os.path.join(OUT, f"nve_{prec}_{name}.json")
+        res = {}
         cons, dt_fs, hmr = CONFIGS[name]
         dt = dt_fs * 1e-3
         pre = sim_for(name, x, H, prec, tol, ensemble="nvt", thermostat="bussi")
@@ -188,11 +188,12 @@ def sample(name, ns, seed, frame_ps=0.5, blocks=10):
     x, v, H = load_eq()
     s = sim_for(name, x, H, seed=seed)
     dt = s.dt
-    every = int(round(frame_ps / (dt * 1e3)))
-    s._advance(int(round(100.0 / (dt * 1e3))) // every * every)         # 100 ps equilibration
+    every = int(round(frame_ps / dt))                                   # dt in ps
+    s._advance(int(round(100.0 / dt)) // every * every)                 # 100 ps equilibration
     idx = atoms_of(template())
     per = int(round(ns * 1000.0 / frame_ps)) // blocks
-    rec = {k: [] for k in ("density", "epot", "temp", "temp_com", "temp_internal", "shake_err", "rattle_err", "press")}
+    rec = {k: [] for k in ("density", "epot", "temp", "temp_half", "temp_com", "temp_internal", "shake_err", "rattle_err",
+                           "press")}
     B = []
     w0, n0, c0 = time.time(), int(s.state.step), float(s.state.cg_total)
     for b in range(blocks):
@@ -201,7 +202,8 @@ def sample(name, ns, seed, frame_ps=0.5, blocks=10):
             s._advance(every)
             o = s.observables()
             o["press"] = s.pressure()                        # molecular virial (constraint forces are internal)
-            for k, kk in (("density", "density_g_cm3"), ("epot", "epot"), ("temp", "temp_K"), ("temp_com", "temp_com"),
+            for k, kk in (("density", "density_g_cm3"), ("epot", "epot"), ("temp", "temp_K"), ("temp_half", "temp_half"),
+                          ("temp_com", "temp_com"),
                           ("temp_internal", "temp_internal"), ("shake_err", "shake_err"), ("rattle_err", "rattle_err"),
                           ("press", "press")):
                 rec[k].append(o.get(kk, 0.0))
@@ -235,7 +237,7 @@ def compare_rows(paths, names, nmol, out):
             continue
         d = np.load(path)
         r = {"meta": json.loads(str(d["meta"]))}
-        for k in ("density", "temp", "temp_com", "temp_internal", "press"):
+        for k in ("density", "temp", "temp_half", "temp_com", "temp_internal", "press"):
             if k in d.files:
                 r[k] = block_stats(d[k])
         r["u_per_mol_kJ"] = block_stats(d["epot"] / nmol)
@@ -262,7 +264,7 @@ def compare_rows(paths, names, nmol, out):
         rows[name] = r
     ref = names[0]
     f = lambda t, p=4: f"{t[0]:.{p}f}+-{t[1]:.{p}f}" if isinstance(t, tuple) else "-"   # noqa: E731
-    print(f"{'run':10s} {'ns/day':>7s} {'density':>16s} {'U kJ/mol/mol':>17s} {'T':>13s} {'T_com':>13s} "
+    print(f"{'run':10s} {'ns/day':>7s} {'density':>16s} {'U kJ/mol/mol':>17s} {'T':>13s} {'T_half':>13s} {'T_com':>13s} "
           f"{'T_int':>13s} {'C-O-H deg':>13s} {'C-O nm':>18s} {'trans':>14s} {'gOO peak':>10s} {'max dev (sigma) gOO/gOH/dih/COH/CO':>36s}")
     for name, r in rows.items():
         dev = []
@@ -275,7 +277,8 @@ def compare_rows(paths, names, nmol, out):
         r["max_dev_sigma"] = dict(zip(("g_oo", "g_oh", "dih", "coh", "co"), dev))
         m = r["meta"]
         print(f"{name:10s} {m.get('ns_per_day') or 0:7.1f} {f(r.get('density'))} {f(r['u_per_mol_kJ'], 3)} "
-              f"{f(r.get('temp'), 2)} {f(r.get('temp_com'), 2)} {f(r.get('temp_internal'), 2)} {f(r['coh_mean'], 2)} "
+              f"{f(r.get('temp'), 2)} {f(r.get('temp_half'), 2)} {f(r.get('temp_com'), 2)} {f(r.get('temp_internal'), 2)} "
+              f"{f(r['coh_mean'], 2)} "
               f"{f(r['co_mean'], 5)} {f(r['dih_trans_frac'], 4)} {r['g_oo_peak'][0]:.3f}/{r['g_oo_peak'][1]:.2f} "
               f"P {f(r.get('press'), 0)} "
               + " ".join(f"{x:5.1f}" for x in dev)
@@ -286,13 +289,87 @@ def compare_rows(paths, names, nmol, out):
     return rows
 
 
+def peptide(ps=10.0):
+    """The solvated peptide of the tests (ACE-ALA-SER-NME, TIP3P, NaCl; placeholder pGM, ff19SB-form
+    bonded terms): every protein bond constrained (one cluster: the iterative solver) with 3.024 amu
+    hydrogens at 4 fs, against X-H bonds at 2 fs; 5 ps Bussi, then NVE with the constraint errors
+    of every step for 200 steps, drift and CG iterations."""
+    from pgm_jax.protein import amber_template, load_amber
+    prm, crd = os.path.join(ROOT, "tests/data/pep_wat.prmtop"), os.path.join(ROOT, "tests/data/pep_wat.inpcrd")
+    asys = load_amber(prm, crd)
+    tpl = {k: amber_template(m, prm) for k, m in enumerate(asys.molecules) if m.kind == "protein"}
+    templates = asys.templates(tpl)
+    st = MDSettings(cutoff=0.8, dipole_tol=1e-6, precision="double")
+    path = os.path.join(OUT, "peptide.json")
+    out = json.load(open(path)) if os.path.exists(path) else {}
+    x0 = None
+    for cons, dt_fs, hmr, opts in (("h-bonds", 2.0, None, None), ("all-bonds", 2.0, None, None),
+                                   ("all-bonds", 4.0, 3.024, None), ("h-bonds", 4.0, 3.024, None),
+                                   ("all-bonds", 2.0, None, {"dense_max": 40}), ("all-bonds", 4.0, 3.024, {"dense_max": 40})):
+        key = f"{cons} {dt_fs:g} fs" + (f" H {hmr}" if hmr else "") + (" dense" if opts else "")
+        if key in out:
+            continue
+        dt = dt_fs * 1e-3
+        s = FlexibleSimulation(asys.system(), templates, asys.system_positions() if x0 is None else x0, asys.box, st,
+                               dt=dt, ensemble="nvt", thermostat="bussi", tau_t=0.2, temperature=T0,
+                               constraints=cons, hmr=hmr, constraint_options=opts, log=sys.stdout)
+        if x0 is None:
+            s.minimize(300)
+            s._advance(int(round(5.0 / dt)))
+            x0 = s.positions_nm()
+        else:
+            s._advance(int(round(5.0 / dt)))
+        e = FlexibleSimulation(asys.system(), templates, s.positions_nm(), np.asarray(s.state.box), st, dt=dt,
+                               ensemble="nve", constraints=cons, hmr=hmr, vel_nm_ps=s.velocities_nm_ps(),
+                               constraint_options=opts, log=None)
+        ex = ev = 0.0
+        for _ in range(200):
+            e._advance(1)
+            o = e.observables()
+            ex, ev = max(ex, o["shake_err"]), max(ev, o["rattle_err"])
+        t, E, T = [], [], []
+        every = int(round(0.1 / dt))
+        w0, n0, c0 = time.time(), int(e.state.step), float(e.state.cg_total)
+        for _ in range(int(round(ps / 0.1))):
+            e._advance(every)
+            o = e.observables()
+            t.append(o["time_ps"]); E.append(o["etot"]); T.append(o["temp_K"])
+            ex, ev = max(ex, o["shake_err"]), max(ev, o["rattle_err"])
+        t = np.array(t) - t[0]
+        a, b = np.polyfit(t, E, 1)
+        kT = KB * np.mean(T)
+        out[key] = {"blocks": e.constraints.describe(), "dof": e.integ.dof, "T": float(np.mean(T)),
+                    "drift_kT_per_ns_per_dof": float(a * 1000.0 / (kT * e.integ.dof)),
+                    "fluct_kJmol": float(np.std(np.array(E) - a * t - b)), "max_shake_err": ex, "max_rattle_err": ev,
+                    "cg_per_step": (float(e.state.cg_total) - c0) / (int(e.state.step) - n0),
+                    "ms_per_step": 1e3 * (time.time() - w0) / (int(e.state.step) - n0), "device": str(jax.devices()[0])}
+        print(key, json.dumps(out[key]), flush=True)
+        json.dump(out, open(path, "w"), indent=1)
+
+
+def nve_table(prec):
+    """Markdown table of the NVE runs (nve_<prec>_<config>.json)."""
+    rows = []
+    for name in CONFIGS:
+        p = os.path.join(OUT, f"nve_{prec}_{name}.json")
+        if os.path.exists(p):
+            rows.append(json.load(open(p))[name] | {"name": name})
+    print(f"| config | constraints | dt (fs) | H mass | drift (kT/ns/dof) | E fluct. (kJ/mol) | fluct / (kT sqrt(N_f)) | "
+          f"max shake_err | max rattle_err | CG/step | ms/step ({rows[0]['device'] if rows else ''}) |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|")
+    for r in rows:
+        print(f"| {r['name']} | {r['constraints']} | {r['dt_fs']:g} | {r['hmr'] or 1.008} | {r['drift_kT_per_ns_per_dof']:+.4f} | "
+              f"{r['fluct_rms_kJmol']:.2f} | {r['fluct_over_kT_sqrt_dof']:.4f} | {r['max_shake_err']:.1e} | "
+              f"{r['max_rattle_err']:.1e} | {r['cg_per_step']:.2f} | {r['ms_per_step']:.2f} |")
+
+
 def analyze(names):
     compare_rows([os.path.join(OUT, f"sample_{n}.npz") for n in names], names, N, os.path.join(OUT, "analysis.json"))
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=("equil", "nve", "sample", "analyze"))
+    ap.add_argument("mode", choices=("equil", "nve", "nve-table", "sample", "analyze", "peptide"))
     ap.add_argument("names", nargs="*")
     ap.add_argument("--prec", default="mixed")
     ap.add_argument("--ps", type=float, default=20.0)
@@ -304,6 +381,10 @@ if __name__ == "__main__":
         equil()
     elif a.mode == "nve":
         nve(a.prec, a.names or list(CONFIGS), a.ps)
+    elif a.mode == "peptide":
+        peptide(a.ps)
+    elif a.mode == "nve-table":
+        nve_table(a.prec)
     elif a.mode == "sample":
         for n in a.names:
             sample(n, a.ns, a.seed)

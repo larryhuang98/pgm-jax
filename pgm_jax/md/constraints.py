@@ -14,9 +14,10 @@ Two solvers, chosen per cluster (float64 throughout; positions are float64 in ev
   dense    clusters of at most `dense_max` constraints (X-H groups, water, small molecules with every
            bond constrained): exact Newton on the cluster's small dense system, a fixed number of
            iterations (`n_iter`, unrolled; quadratic convergence, relative errors ~1e-3, 1e-6, 1e-12
-           after 1, 2, 3 iterations for the displacements of an MD step).  Clusters with the same
-           number of constraints form one block, all its clusters solved at once (one per molecule
-           copy: the per-template batching); systems of <= 3 are solved in closed form, larger ones
+           after 1, 2, 3 iterations for the displacements of an MD step).  Clusters of up to 3
+           constraints (X-H, XH2, XH3, water) form one block, larger ones one block per size; all
+           clusters of a block are solved at once (one per molecule copy: the per-template
+           batching); systems of <= 3 are solved in closed form, larger ones
            by unrolled Gaussian elimination (the matrices are Gram matrices of the mass-weighted
            constraint gradients: symmetric positive definite, no pivoting needed).
   sparse   larger clusters (a protein with every bond constrained): one flat list, matrix-free.
@@ -153,8 +154,14 @@ class _DenseBlock:
         return take(i) - take(j)
 
     def _move(self, w, V):
-        """(K, A, 3): sum_c inc_ac w_c V_c / m_a."""
-        return self.invm[..., None] * jnp.einsum("kac,kc,kcx->kax", self.inc, w, V)
+        """(K, A, 3): sum_c inc_ac w_c V_c / m_a (broadcast products: XLA fuses them; an einsum
+        becomes batched tiny matrix products, 4x slower on the GPU)."""
+        return self.invm[..., None] * jnp.sum(self.inc[..., None] * (w[:, None, :, None] * V[:, None]), axis=2)
+
+    @staticmethod
+    def _gram(R, S):
+        """(K, C, C): R_c . S_d."""
+        return jnp.sum(R[:, :, None, :] * S[:, None, :, :], -1)
 
     def positions(self, xp, rp):
         X, S = xp[self.atoms], self._vectors(rp[self.atoms])
@@ -166,7 +173,7 @@ class _DenseBlock:
         lam = jnp.zeros(self.shape[::2], X.dtype)
         R, sig = resid(lam)
         for _ in range(self.n_iter):                 # fixed count, unrolled: no reduction per step
-            J = 2.0 * jnp.einsum("kcx,kdx->kcd", R, S) * self.kmat * self._off + self._pad
+            J = 2.0 * self._gram(R, S) * self.kmat * self._off + self._pad
             lam = lam - _solve_small(J, sig)
             R, sig = resid(lam)
         return xp.at[self.atoms].set(X + self._move(lam, S))
@@ -176,7 +183,7 @@ class _DenseBlock:
         R = self._vectors(xp[self.atoms])
         V = pp[self.atoms] / m
         rv = jnp.sum(R * self._vectors(V), -1) * self.cmask
-        M = jnp.einsum("kcx,kdx->kcd", R, R) * self.kmat * self._off + self._pad
+        M = self._gram(R, R) * self.kmat * self._off + self._pad
         mu = -_solve_small(M, rv)
         return pp.at[self.atoms].set((V + self._move(mu, R)) * m)
 
@@ -198,7 +205,9 @@ class _SparseBlock:
     with J0 = 2 S K S^T solved by preconditioned CG, RATTLE by CG on R K R^T (while loops to `tol`)."""
     kind = "sparse"
 
-    def __init__(self, pairs, d0, n, tol=1e-10, max_iter=100, inner_tol=1e-3, cg_max=200):
+    unroll = 8                    # CG iterations per convergence test (each test is a device-to-host sync)
+
+    def __init__(self, pairs, d0, n, tol=1e-10, max_iter=100, inner_tol=1e-3, cg_max=400, rattle_tol=1e-11):
         pairs = np.asarray(pairs, int).reshape(-1, 2)
         atoms = np.unique(pairs)
         loc = {int(a): k for k, a in enumerate(atoms)}
@@ -220,6 +229,7 @@ class _SparseBlock:
         self.inc_c, self.inc_s = jnp.asarray(inc_c), jnp.asarray(inc_s)
         self.d2 = jnp.asarray(np.asarray(d0, float) ** 2)
         self.tol, self.max_iter, self.inner_tol, self.cg_max = float(tol), int(max_iter), float(inner_tol), int(cg_max)
+        self.rattle_tol = float(rattle_tol)
         self.shape = (na, D, nc)
 
     def describe(self):
@@ -243,27 +253,31 @@ class _SparseBlock:
 
     def _cg(self, V, b, tol, max_iter):
         """Solve (V K V^T) x = b (the Gram matrix of the mass-weighted constraint gradients), Jacobi
-        preconditioned, until |r|_max <= tol |b|_max."""
+        preconditioned, until |r|_max <= tol |b|_max; `unroll` iterations between tests.
+        Returns (x, iterations)."""
         op = lambda x: jnp.sum(V * self._vec(self._move(x, V)), -1)      # noqa: E731
         dinv = 1.0 / (jnp.sum(V * V, -1) * self._w)
         stop = tol * jnp.max(jnp.abs(b))
-        x = jnp.zeros_like(b)
         z = dinv * b
-        c0 = (x, b, z, z, jnp.sum(b * z), 0)
+        c0 = (jnp.zeros_like(b), b, z, jnp.sum(b * z), 0)
 
         def cond(c):
-            return (jnp.max(jnp.abs(c[1])) > stop) & (c[5] < max_iter)
+            return (jnp.max(jnp.abs(c[1])) > stop) & (c[4] < max_iter)
 
         def body(c):
-            x, r, z, d, rz, it = c
-            Ad = op(d)
-            a = rz / jnp.sum(d * Ad)
-            x, r = x + a * d, r - a * Ad
-            z = dinv * r
-            rz1 = jnp.sum(r * z)
-            return x, r, z, z + (rz1 / rz) * d, rz1, it + 1
+            x, r, d, rz, it = c
+            for _ in range(self.unroll):
+                Ad = op(d)
+                a = rz / jnp.where(rz != 0, jnp.sum(d * Ad), 1.0)
+                x, r = x + a * d, r - a * Ad
+                z = dinv * r
+                rz1 = jnp.sum(r * z)
+                d = z + (rz1 / jnp.where(rz != 0, rz, 1.0)) * d
+                rz = rz1
+            return x, r, d, rz, it + self.unroll
 
-        return jax.lax.while_loop(cond, body, c0)[0]
+        out = jax.lax.while_loop(cond, body, c0)
+        return out[0], out[4]
 
     def positions(self, xp, rp):
         X = xp[self.atoms]
@@ -279,7 +293,7 @@ class _SparseBlock:
 
         def body(c):
             lam, _, sig, it = c
-            lam = lam - self._cg(S, 0.5 * sig, self.inner_tol, self.cg_max)      # J0 = 2 S K S^T
+            lam = lam - self._cg(S, 0.5 * sig, self.inner_tol, self.cg_max)[0]   # J0 = 2 S K S^T
             Y, sig = resid(lam)
             return lam, Y, sig, it + 1
 
@@ -293,7 +307,7 @@ class _SparseBlock:
         R = self._vec(xp[self.atoms])
         V = pp[self.atoms] / m
         rv = jnp.sum(R * self._vec(V), -1)
-        mu = self._cg(R, -rv, 1e-13, 10 * self.cg_max)
+        mu = self._cg(R, -rv, self.rattle_tol, self.cg_max)[0]
         return pp.at[self.atoms].set((V + self._move(mu, R)) * m)
 
     def errors(self, xp, pp, mp):
@@ -311,11 +325,14 @@ class Constraints:
     """Distance constraints (pairs (nc, 2), lengths d0 (nc,) nm) of a system with `masses` (amu;
     massless virtual sites never constrained).  n_iter: Newton iterations of the dense solver;
     dense_max: largest cluster (number of constraints) for the dense solver; tol: relative
-    tolerance of the iterative solver (large clusters); bucket=False pads every small cluster to the
-    largest (one block, the previous behaviour)."""
+    tolerance of the iterative SHAKE (large clusters: max |sigma_c| / d_c^2), rattle_tol: of its
+    RATTLE (max residual of B v relative to its initial value); bucket: clusters of up to 3 constraints form
+    one block and larger ones one block per size (False: every small cluster padded to the largest,
+    one block).  Each block costs a few kernel launches per call, so on a GPU one padded block of
+    X-H groups and waters is faster than one block per size (docs/shake.md)."""
 
     def __init__(self, pairs, d0, masses, n_iter: int = 4, dense_max: int = DENSE_MAX, tol: float = 1e-10,
-                 bucket: bool = True):
+                 rattle_tol: float = 1e-11, bucket: bool = True):
         pairs = np.asarray(pairs, int).reshape(-1, 2)
         d0 = np.asarray(d0, float).reshape(-1)
         self.n = len(masses)
@@ -326,12 +343,12 @@ class Constraints:
         small = [c for c in cl if len(c[1]) <= dense_max]
         big = [c for c in cl if len(c[1]) > dense_max]
         groups = {}
-        for c in small:
-            groups.setdefault(len(c[1]) if bucket else 0, []).append(c)
+        for c in small:                                  # <= 3 constraints: one block (closed-form solves)
+            groups.setdefault(max(len(c[1]), 3) if bucket else 0, []).append(c)
         self.blocks = [_DenseBlock(g, pairs, d0, self.n, n_iter) for _, g in sorted(groups.items())]
         if big:
             idx = np.array([c for _, cs in big for c in cs], int)
-            self.blocks.append(_SparseBlock(pairs[idx], d0[idx], self.n, tol))
+            self.blocks.append(_SparseBlock(pairs[idx], d0[idx], self.n, tol, rattle_tol=rattle_tol))
         m = np.asarray(masses, float)
         invm = np.concatenate([np.divide(1.0, m, out=np.zeros_like(m), where=m != 0), [0.0]])   # massless sites: never in a cluster
         self.set_masses(invm)

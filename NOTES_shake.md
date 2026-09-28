@@ -35,3 +35,16 @@ Running log so the work can be resumed.
   (1.6e-7, PME lambda factor), BOND/ANGLE/DIHED/VDWAALS equal to 1e-4.
 - GPUs: all five occupied by the owner's pmemd.cuda jobs since ~00:40; every agent's gpu_run waits.
   CPU nodes saturated too (queue). scripts: validate_shake.py, shake_vs_pmemd.py, bench_shake.py.
+- 04:13 eq.npz from the GPU (NVT 2 ps 0.5 fs + NPT 200 ps at 1 fs X-H; density ~0.79). Then GPUs
+  blocked again (remd2 holds gpu-2-4); CPU jobs need `--mem` (default = whole node, one job per
+  node): runs/cpul.sh adds --mem=16G.
+- NVE mixed (CPU, 216 MeOH, 20 ps after 2 ps Bussi): shake/rattle errors <= 1e-14 every step;
+  drift kT/ns/dof: none-0.5 -0.004, hb-0.5 -0.0004, hb-1 +0.006, hb-2 +0.003, hb-2.5 +0.009,
+  hmr-2 +0.008, hmr-3 -0.009, hmr-4 +0.27 (!), ab-2 +0.005, ab-3 +0.018, ab-hmr-4 +0.009,
+  ab-hmr-5 +0.029. HMR 3.024 leaves the methyl C at 5.96 amu: C-O stretch at ~1320 cm-1 limits
+  X-H-only constraints to 3 fs; all-bonds + HMR runs at 4 fs. NVE T at full steps is low at
+  large dt (278-287 K at 3-4 fs): full-step kinetic energy bias of velocity Verlet.
+- bug fixed: frames per step used fs/ps mix (ZeroDivision) in sample/engine_md.
+- meoh125 single point vs pmemd.pgm: EELEC -8948.3885 / -8948.3876, others equal.
+- running: 16 pmemd.pgm CPU runs (0.25 ns each), 8 engine CPU runs (0.25 ns), samples hb-2,
+  hmr-4, ab-2, ab-hmr-4 on CPU (1 ns); GPU queue (runs/gpu_queue_shake.sh): bench, hb-0.5, none-0.5.

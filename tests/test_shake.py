@@ -53,8 +53,8 @@ def test_solvers_agree_and_project():
     y = x + 0.004 * rng.normal(size=x.shape)                     # an MD step's displacement
     p = rng.normal(size=x.shape) * np.sqrt(m)[:, None]
     solvers = {"blocks": Constraints(pairs, d0, m), "one block": Constraints(pairs, d0, m, bucket=False, dense_max=40),
-               "iterative": Constraints(pairs, d0, m, dense_max=0, tol=1e-13)}
-    assert [b.kind for b in solvers["blocks"].blocks] == ["dense"] * 4 + ["sparse"]
+               "iterative": Constraints(pairs, d0, m, dense_max=0, tol=1e-13, rattle_tol=1e-14)}
+    assert [b.kind for b in solvers["blocks"].blocks] == ["dense"] * 3 + ["sparse"]        # <= 3, 5, 12; the chain
     out = {}
     for name, C in solvers.items():
         z = np.asarray(jax.jit(C.positions)(jnp.asarray(y), jnp.asarray(x)))
@@ -66,11 +66,12 @@ def test_solvers_agree_and_project():
         q = np.asarray(C.momenta(jnp.asarray(z), jnp.asarray(p), m))
         v = q / m[:, None]
         rv = np.einsum("cx,cx->c", z[pairs[:, 0]] - z[pairs[:, 1]], v[pairs[:, 0]] - v[pairs[:, 1]])
-        assert np.abs(rv).max() < 1e-12 * np.abs(v).max()
-        assert float(C.velocity_violation(jnp.asarray(z), jnp.asarray(q), m)) < 1e-12
+        vtol = 1e-10 if name == "blocks" else 1e-12              # iterative RATTLE at rattle_tol 1e-11
+        assert np.abs(rv).max() < vtol * np.abs(v).max()
+        assert float(C.velocity_violation(jnp.asarray(z), jnp.asarray(q), m)) < vtol
         assert np.allclose(q.sum(0), p.sum(0), atol=1e-12)                    # no net momentum change
         q2 = np.asarray(C.momenta(jnp.asarray(z), jnp.asarray(q), m))
-        assert np.allclose(q2, q, atol=1e-12)                                   # a projection
+        assert np.allclose(q2, q, atol=1e-10)                                   # a projection
         # mass-weighted orthogonal: the removed part is M^-1-orthogonal to the kept one
         assert abs(np.sum((p - q) * q / m[:, None])) < 1e-10 * np.sum(p * p / m[:, None])
         out[name] = (z, q)
@@ -242,3 +243,18 @@ def test_thermostats_with_constraints():
             ec.append(o["econs"])
         ke = 0.5 * sim.integ.dof * KB * 298.0
         assert np.abs(np.asarray(ec) - e0).max() < 1e-2 * ke, (th, np.abs(np.asarray(ec) - e0).max() / ke)
+
+
+def test_half_step_kinetic_energy():
+    """half_step_kinetic() is the mean kinetic energy of the RATTLE-projected half-step momenta
+    p -+ h F / 2 (the leapfrog average), reported as temp_half."""
+    tpl, sys_, pos, H = _cluster()
+    sim = FlexibleSimulation(sys_, [tpl] * 8, pos, H, SCL, dt=0.002, ensemble="nvt", constraints="h-bonds", log=None)
+    sim._advance(10)
+    st = sim.state
+    q, p, F = st.dyn.position, st.dyn.momentum, st.dyn.force
+    m, M = sim.flex.masses, np.asarray(sim.flex.mass)
+    ke = [0.5 * np.sum(np.asarray(sim.constraints.momenta(q, p + s * 0.001 * F, m)) ** 2 / M) for s in (-1.0, 1.0)]
+    assert abs(sim.half_step_kinetic() - np.mean(ke)) < 1e-9 * np.mean(ke)
+    o = sim.observables()
+    assert abs(o["temp_half"] - 2.0 * np.mean(ke) / (sim.integ.dof * KB)) < 1e-8

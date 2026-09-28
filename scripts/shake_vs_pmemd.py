@@ -8,7 +8,7 @@ the prmtop's Lennard-Jones and Amber-form bonded terms (protein.amber_template),
 pmemd-pgm by protein.write_pgm_prmtop.  Both codes: NVT 298 K, Langevin 1/ps, dt 2 fs, X-H bonds
 constrained (pmemd: SHAKE, ntc = ntf = 2, tol 1e-7; the engine: constraints="h-bonds"), 9 A
 cutoff, PME ~0.8 A order 6, LJ long-range correction, dipole tolerance 1e-5.  Independent runs
-from the minimised structure (pmemd: heated 20 ps at 0.5 fs from 0 K; the engine: velocities at
+from the minimised structure (pmemd: heated 10 ps at 0.5 fs from 0 K; the engine: velocities at
 298 K), 50 ps equilibration, then production with a frame every 0.5 ps; each run is one block
 for the error bars.  The engine's charges and covalent dipoles are scaled by
 sqrt(KE_AMBER_PGM / KE) (pmemd-pgm's Coulomb constant), so both run the same Hamiltonian.
@@ -100,7 +100,7 @@ def pmemd(p, run, kind, ns, equil_ps=50.0):
     st = settings(asys.box)
     wd = os.path.join(p.wd, f"pm{run}")
     seed = 1000 + 17 * run
-    heat = pmemd_mdin(st, asys.box, nstlim=40000, dt=0.0005, temperature=T0, tempi=0.0, ntpr=2000, ntwr=40000, ig=seed)
+    heat = pmemd_mdin(st, asys.box, nstlim=20000, dt=0.0005, temperature=T0, tempi=0.0, ntpr=2000, ntwr=20000, ig=seed)
     run_pmemd(kind, os.path.join(wd, "heat"), p.prm, p.minrst, heat)
     n_eq = int(round(equil_ps / 0.002))
     eq = pmemd_mdin(st, asys.box, nstlim=n_eq, dt=0.002, temperature=T0, irest=1, ntpr=1000, ntwr=n_eq, ig=seed + 1)
@@ -154,12 +154,12 @@ def engine_md(p, run, ns, equil_ps=50.0, frame_ps=0.5, hmr=None, dt_fs=2.0, tag=
     sim = FlexibleSimulation(sys_, templates, x[np.asarray(asys.order)], asys.box, settings(asys.box), dt=dt,
                              ensemble="nvt", temperature=T0, gamma=1.0, constraints=cons, hmr=hmr, params=P,
                              seed=2000 + 17 * run, log=sys.stdout)
-    every = int(round(frame_ps / dt_fs))
-    sim._advance(int(round(equil_ps / dt_fs)) // every * every)
+    every = int(round(frame_ps / dt))                                    # dt in ps
+    sim._advance(int(round(equil_ps / dt)) // every * every)
     idx = atoms_of(asys.molecules[0].atom_names)
     nmol = len(asys.molecules)
     n_frames = int(round(ns * 1000.0 / frame_ps))
-    rec = {k: [] for k in ("epot", "temp", "temp_com", "temp_internal", "shake_err", "rattle_err")}
+    rec = {k: [] for k in ("epot", "temp", "temp_half", "temp_com", "temp_internal", "shake_err", "rattle_err")}
     L = np.diag(np.asarray(asys.box))
     acc = new_acc()
     w0, n0, c0 = time.time(), int(sim.state.step), float(sim.state.cg_total)
@@ -167,6 +167,7 @@ def engine_md(p, run, ns, equil_ps=50.0, frame_ps=0.5, hmr=None, dt_fs=2.0, tag=
         sim._advance(every)
         o = sim.observables()
         rec["epot"].append(o["epot"]); rec["temp"].append(o["temp_K"]); rec["temp_com"].append(o["temp_com"])
+        rec["temp_half"].append(o["temp_half"])
         rec["temp_internal"].append(o["temp_internal"]); rec["shake_err"].append(o["shake_err"])
         rec["rattle_err"].append(o["rattle_err"])
         hist_frame(sim.positions_nm(), L, idx, nmol, acc)
@@ -190,7 +191,7 @@ def merge(p, tag):
     out = {k: np.concatenate([d[k] for d in ds]) for k in ("blk_oo", "blk_oh", "blk_dih", "blk_coh", "blk_co", "blk_vol", "blk_frames")}
     for k in ("r_edges", "dih_edges", "ang_edges", "co_edges"):
         out[k] = ds[0][k]
-    for k in ("epot", "temp", "temp_com", "temp_internal", "shake_err", "rattle_err"):
+    for k in ("epot", "temp", "temp_half", "temp_com", "temp_internal", "shake_err", "rattle_err"):
         out[k] = np.concatenate([d[k][:n] for d in ds])
     metas = [json.loads(str(d["meta"])) for d in ds]
     out["meta"] = json.dumps({"runs": len(ds), "ns_per_day": float(np.mean([m["ns_per_day"] for m in metas])),
