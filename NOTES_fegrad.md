@@ -22,3 +22,20 @@
 3. pytest.
 
 ## Log
+- 04:10 smoke (water elec-only, 20 ps, from the alch clone checkpoint): works; partial hydration
+  (gas - elec stage) -7.17 +- 0.30 kcal/mol; d/dln s_charge(solute) -17.9 +- 0.5 (MBAR) / -18.0 +- 0.6
+  (end); environment gradients +-20 kcal/mol from 20 ps (extensive noise).
+- GPU bench (bench --grad): grad sample 8 windows 20 ms, 19 windows 43 ms (u sample 15 / 50 ms);
+  0.40 ms per window-step => 1.1 % overhead at 1 ps sampling.
+- The GPUs are shared with the owner pmemd jobs that cycle every few s: runs/gpu_fast.sh = gpu_run.sh
+  with a 2 s free-check and retries of jobs failing within 90 s. Lesson: do not kill a waiting
+  gpu_run.sh with TERM (its trap removes the lock and continues); kill -9 then remove own lock.
+- 04:20 chain started (runs/fg/chain.sh): A water charge elec-only s=1.0,0.9,1.1 (0.6 ns); B water
+  rmin s=1.0,0.97,1.03 (0.4 ns, 19 windows); C1 methanol reference (0.4 ns). Then C2: methanol at
+  the charge scale fitted to experiment (-5.11 kcal/mol) with the C1 gradient.
+- 05:13 A done (runs/fg/wq090/100/110, checkA.log): G = -5.280/-6.912/-8.964 kcal/mol; dG/ds -15.43/-18.57/-21.75;
+  FD outer -18.42 +- 0.35 vs centre -18.57 +- 0.08 (z 0.4), Simpson -18.57 (z 0.4); pairs z 0.85, -0.53.
+- full suite (before the h change of one test): 221 passed in 36.6 min (runs/full1.log).
+- tests_print.log: HF rel errors 1e-12..5e-10; reweighting identities 5e-8..1e-5; lone solute 3.7e-5
+  relative (PME/image), error bars 1e-3 of 2e4; harmonic: end -0.6983 +- 0.0072, mbar -0.7040 +- 0.0062
+  (exact -0.7), error bar / spread 0.98, 0.93; value 0.8075 +- 0.0054 (exact 0.8047), 0.97.
