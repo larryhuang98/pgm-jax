@@ -48,6 +48,7 @@ from .constraints import Constraints, hmr_masses
 from .flux import ChargeFlux
 from .forcefield import MDSettings, PGMForceField
 from .integrate import KB, Dynamics, Integrator, MDState, upgrade_state
+from .thermostats import Bussi
 from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .rigid import _unwrap
 from .simulation import Simulation
@@ -163,17 +164,17 @@ class FlexibleTemplate:
 
     def md_rule(self, constraints: str = "none") -> MoleculeRule:
         """How the MD engine treats this molecule: intramolecular van der Waals by graph distance
-        (lj_min_sep, lj14_scale of the fit); constraints "none" or "h-bonds" (X-H bonds at the
-        model's reference lengths)."""
+        (lj_min_sep, lj14_scale of the fit); constraints "none", "h-bonds" (X-H bonds at the
+        model's reference lengths) or "all-bonds" (every bond at its reference length)."""
         top = self.terms.mols[self.index].top
         cons = []
-        if constraints == "h-bonds":
+        if constraints in ("h-bonds", "all-bonds"):
             el = self.spec.elements
             for (i, j), b0 in zip(top.bonds, self.bond_lengths()):
-                if (el[i] == "H") != (el[j] == "H"):
+                if constraints == "all-bonds" or (el[i] == "H") != (el[j] == "H"):
                     cons.append((int(i), int(j), float(b0)))
         elif constraints != "none":
-            raise ValueError("constraints: 'none' | 'h-bonds'")
+            raise ValueError("constraints: 'none' | 'h-bonds' | 'all-bonds'")
         return MoleculeRule(bonds=[tuple(int(x) for x in b) for b in top.bonds], vdw="graph",
                             lj_min_sep=int(self.settings.get("lj_min_sep", 4)),
                             lj14_scale=float(self.settings.get("lj14_scale", 0.0)), constraints=tuple(cons))
@@ -357,7 +358,9 @@ class FlexibleIntegrator(Integrator):
     """Velocity Verlet (NVE) / BAOAB (NVT, thermostats.py: Langevin, Bussi or GLE) on atoms, with
     constraints in g-BAOAB order (SHAKE after every drift, RATTLE after every kick and thermostat
     step; GLE auxiliaries are projected too); NPT adds the Monte Carlo barostat with molecular
-    scaling (centres of mass scaled, molecules translated rigidly, which keeps the constraints)."""
+    scaling (centres of mass scaled, molecules translated rigidly, which keeps the constraints).
+    Degrees of freedom: 3 per real atom minus one per constraint, minus 3 when the total momentum
+    is conserved (NVE, Bussi; the net momentum is then removed at the start)."""
 
     def __init__(self, ff: PGMForceField, flex: FlexibleMolecules, neighbors, dt: float = 0.0005,
                  constraints: Constraints | None = None, **kw):
@@ -367,7 +370,9 @@ class FlexibleIntegrator(Integrator):
         super().__init__(ff, flex, neighbors, dt, **kw)
         nc = self.cons.nc if self.cons is not None else 0
         self.n_real = flex.n - (0 if self.vsites is None else self.vsites.n_sites)
-        self.dof = 3 * self.n_real - nc - (3 if self.ensemble == "nve" else 0)
+        # NVE and Bussi rescaling conserve the total momentum (constraint forces are internal)
+        self.momentum_conserved = self.ensemble == "nve" or isinstance(self.thermostat, Bussi)
+        self.dof = 3 * self.n_real - nc - (3 if self.momentum_conserved else 0)
 
     def _forces(self, pos, box, induction, nbr, force_rebuild=False, lam=None):
         centers = self.flex.list_centers(pos)
@@ -409,6 +414,9 @@ class FlexibleIntegrator(Integrator):
         else:
             p = jnp.asarray(momentum, jnp.float64)
             dyn = dyn.set(momentum=p if self.vsites is None else p * self.flex.real)
+        if self.momentum_conserved:                        # the 3 centre-of-mass dof carry no energy
+            m = self.flex.masses[:, None]
+            dyn = dyn.set(momentum=dyn.momentum - m * jnp.sum(dyn.momentum, 0) / jnp.sum(m))
         if self.cons is not None:
             dyn = dyn.set(momentum=self.cons.momenta(pos, dyn.momentum, self.flex.masses))
         z = jnp.zeros((), jnp.float64)
@@ -437,16 +445,19 @@ class FlexibleIntegrator(Integrator):
         p = dyn.momentum + h * dyn.force
         return dyn.set(momentum=p if self.cons is None else self.cons.momenta(dyn.position, p, self.flex.masses))
 
-    def _drift(self, dyn: Dynamics, h: float) -> Dynamics:
+    def _drift(self, dyn: Dynamics, h: float, project: bool = True) -> Dynamics:
         """Positions advanced by h (SHAKE) and momenta consistent with the constrained move (RATTLE).
-        Virtual sites have zero momentum, so they stay where they are; `_step` rebuilds them once
-        per step, before the forces."""
+        project=False leaves the RATTLE projection to the next kick, which projects at the same
+        positions (projection is linear: P(p + h F) = P(P p + h F)).  Virtual sites have zero
+        momentum, so they stay where they are; `_step` rebuilds them once per step, before the forces."""
         q = dyn.position
         q1 = q + h * dyn.momentum / dyn.mass
         if self.cons is not None:
             q1 = self.cons.positions(q1, q)
         p = dyn.mass * (q1 - q) / h
-        return dyn.set(position=q1, momentum=p if self.cons is None else self.cons.momenta(q1, p, self.flex.masses))
+        if self.cons is not None and project:
+            p = self.cons.momenta(q1, p, self.flex.masses)
+        return dyn.set(position=q1, momentum=p)
 
     def _step(self, st: MDState) -> MDState:
         if self.cons is None and self.vsites is None:
@@ -454,12 +465,13 @@ class FlexibleIntegrator(Integrator):
         dt = self.dt
         aux, heat = st.aux, st.heat
         dyn = self._kick(st.dyn, dt / 2)
+        # the last drift's momenta are projected by the closing kick (same positions)
         if self.ensemble == "nve":
-            dyn = self._drift(dyn, dt)
+            dyn = self._drift(dyn, dt, project=False)
         else:
-            dyn = self._drift(dyn, dt / 2)
+            dyn = self._drift(dyn, dt / 2)                  # projected: the O step books the heat of P p
             dyn, aux, heat = self._o_step(dyn, aux, heat, dt, self.thermostat_kT(st))
-            dyn = self._drift(dyn, dt / 2)
+            dyn = self._drift(dyn, dt / 2, project=False)
         if self.vsites is not None:
             dyn = dyn.set(position=self.vsites.place(dyn.position, st.box))
         F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr, lam=st.lam)
@@ -517,7 +529,7 @@ class FlexibleIntegrator(Integrator):
     def temperatures(self, st: MDState):
         """(centre-of-mass translational, internal) temperatures, K."""
         ke, ke_t = self.kinetic(st)
-        n_t = 3 * self.nmol - (3 if self.ensemble == "nve" else 0)
+        n_t = 3 * self.nmol - (3 if self.momentum_conserved else 0)
         nc = self.cons.nc if self.cons is not None else 0
         n_i = 3 * self.n_real - 3 * self.nmol - nc
         return 2.0 * ke_t / (n_t * KB), 2.0 * (ke - ke_t) / (max(n_i, 1) * KB)
@@ -527,8 +539,8 @@ class FlexibleIntegrator(Integrator):
 class FlexibleSimulation(Simulation):
     """Simulation driver for flexible molecules (same reporting, trajectories and checkpoints as
     `Simulation`); `templates[k]` (FlexibleTemplate or RigidTemplate) belongs to `sys.molecules[k]`.
-    constraints: "none" | "h-bonds" (X-H bonds of the flexible templates; rigid templates are
-    always constrained); hmr: hydrogen mass (amu) for mass repartitioning (the mass comes from the
+    constraints: "none" | "h-bonds" (X-H bonds of the flexible templates) | "all-bonds" (every bond;
+    rigid templates are always constrained; md/constraints.py, docs/shake.md); hmr: hydrogen mass (amu) for mass repartitioning (the mass comes from the
     bonded heavy atom), None, or one value (or None) per molecule, e.g. AmberSystem.hmr({"water":
     4.0, "protein": 3.024}) (constraints.hmr_masses); restraints: md/restraints.py; alchemy: an
     alchemical region (md/alchemy.py); mts: multiple time stepping (md/mts.py: MTS settings; dt is
@@ -581,6 +593,8 @@ class FlexibleSimulation(Simulation):
                     f"dt {dt * 1000:g} fs, {settings.precision} precision, PME grid {self.ff.pme.K} order "
                     f"{settings.pme_order}, {settings.describe_cutoffs()}, {self.nb.kind} neighbour list (group radius "
                     f"{self.r_list:.3f} nm), dipole tol {settings.dipole_tol:g}, device {jax.devices()[0]}")
+        if self.constraints.nc:
+            self._print(f"# constraints ({constraints}): {self.constraints.describe()}; {self.integ.dof} degrees of freedom")
         if self.integ.restraints is not None:
             self._print(f"# restraints: {self.integ.restraints.describe()}")
         if self.ff.flux is not None:
@@ -665,7 +679,10 @@ class FlexibleSimulation(Simulation):
         out["temp_com"] = out.pop("temp_trans")
         out["temp_internal"] = out.pop("temp_rot")
         if self.constraints.nc:
-            out["shake_err"] = float(self.constraints.violation(self.state.dyn.position))
+            st = self.state
+            out["shake_err"] = float(self.constraints.violation(st.dyn.position))
+            out["rattle_err"] = float(self.constraints.velocity_violation(st.dyn.position, st.dyn.momentum,
+                                                                          self.flex.masses))
         return out
 
     def _pressure(self, st):
