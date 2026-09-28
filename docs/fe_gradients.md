@@ -164,7 +164,30 @@ asymptotic ones they are smaller). The hydration free energy at s = 1 (-4.45 +- 
 per window, started from the production windows) is the production value of `docs/free_energy.md`
 (-4.45 +- 0.05).
 
-**C. Flexible methanol (intramolecular="keep") in pGM water**: CTABLE
+**C. Flexible methanol (intramolecular="keep") in pGM water, and a one-parameter fit to
+experiment.** The methanol of `docs/free_energy.md` (class II bonded terms, ESP-fitted pGM
+electrostatics, GAFF Lennard-Jones; X-H bonds constrained, rigid waters; 19 windows; the gas-phase
+leg inside the Hamiltonian, so both end states depend on the solute's electrostatic parameters).
+0.4 ns per window from the production windows, 50 ps discarded (350 samples per window).
+
+| s (solute charge scale) | DeltaG_hyd (kcal/mol) | dG/ds MBAR-weighted | dG/ds end states |
+|---|---|---|---|
+| 1.0 (the model) | -2.741 +- 0.094 [0.113] | -10.15 +- 0.13 | -10.19 +- 0.20 |
+| 1.2335 (one Newton step) | -5.321 +- 0.084 [0.132] | -13.02 +- 0.13 | -12.92 +- 0.20 |
+
+At s = 1 the hydration free energy agrees with the 1.2-ns production value (-2.65 +- 0.07); the
+experimental value is -5.11 (Ben-Naim & Marcus 1984). One Newton step on the charge scale with the
+computed gradient, s_1 = 1 + (-5.11 + 2.741) / (-10.145) = 1.2335 (`examples/hydration_target.py`
+prints it from the npz, with the chi^2 and the fit layout), was run: -5.32 +- 0.08, 0.21 kcal/mol
+past the target, as expected from the curvature (dG/ds grows by 28 % over the step; a quadratic
+model through G(1) and g(1) predicted -5.30). The next Newton step from s_1, with the gradient
+computed there, is s_2 = 1.2335 + (-5.11 + 5.321) / (-13.02) = 1.217. The pair is also a
+finite-difference check of the flexible "keep" path: (G(1.2335) - G(1)) / 0.2335 = -11.05 +- 0.54
+against the trapezoid of the gradients -11.58 +- 0.09 (end states -11.56 +- 0.14), z = 0.98 (0.91).
+(A charge scale of 1.23 is only a demonstration of the machinery, not a proposed methanol model:
+the missing hydration comes as much from the weakly polar pGM water, `docs/free_energy.md`.)
+
+DTABLE
 
 ## Cost
 

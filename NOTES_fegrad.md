@@ -43,3 +43,6 @@
   d/dln s_rmin = 39.7 / 37.1 / 33.0; outer FD 36.3 +- 1.9 vs g(1) 37.1 +- 0.5 (z -0.4). checkB pending (CPU queue).
 - C1 me100 (flexible methanol keep, 0.4 ns): G = -2.741 +- 0.094 (production -2.65 +- 0.07); d/dln s_charge
   -10.145 +- 0.125. C2 (chain2.sh) at s = 1.2335 (Newton step to -5.11). D (chain3.sh): methanol rmin 0.95, 1.05.
+- C2 meq1234 (charge 1.2335, one Newton step to -5.11): G = -5.321 +- 0.084, d/ds -13.02; pair FD -11.05 +- 0.54 vs
+  trapezoid -11.58 +- 0.09 (z 0.98). examples/hydration_target.py prints the step from the npz.
+- D (methanol rmin 0.95 / 1.05) queued (chain3.sh); GPU shared with iface / bias.
