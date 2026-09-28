@@ -380,3 +380,21 @@ def test_field_replicas_batched_run_and_analysis(tmp_path):
         assert np.allclose(np.asarray(st.efield), meta["fields"][k])
     res = analyse(meta, d, skip_ps=0.0, nblocks=2)
     assert len(res["pairs"]) == 1 and len(res["zero"]) == 1 and len(res["single"]) == 2
+
+
+@pytest.mark.parametrize("engine", ["rigid", "constraints"])
+def test_mts_with_a_field_is_the_ordinary_integrator_at_one_fast_step(engine):
+    """MTS(inner=1) with a time-dependent field = the ordinary step with it (field at the outer
+    evaluations, the work booked the same way)."""
+    from pgm_jax.md.mts import MTS
+    from test_mts import water_sim
+    fld = EF.ExternalField((0.2, 0.0, 0.8), omega=30.0)
+    out = []
+    for m in (None, MTS(inner=1, r_short=0.4, buffer=0.1, anchor=False)):
+        sim = water_sim(engine, m, ensemble="nve", efield=fld)
+        sim._advance(15)
+        o = sim.observables()
+        out.append((sim.positions_nm(), o["econs"], float(sim.state.heat)))
+    assert np.abs(out[0][0] - out[1][0]).max() < 1e-11
+    assert abs(out[0][1] - out[1][1]) < 1e-8 * abs(out[0][1])
+    assert abs(out[0][2] - out[1][2]) < 1e-9 and abs(out[0][2]) > 1e-4

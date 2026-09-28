@@ -278,7 +278,29 @@ def analyse(meta: dict, data: dict, skip_ps: float = 50.0, nblocks: int = 10, ep
             m, err = block_mean(d, nblocks)
             eps, eerr = eps_of(m, err, mag)
             out["pairs"].append({"replicas": (i, j), "E_mag": mag, "eps": eps, "err": eerr, "tau_ps": correlation_time(d, dt)})
+    out["fits"] = []
+    mags = sorted({p["E_mag"] for p in out["pairs"]})
+    for emax in mags[1:]:
+        f = saturation_fit([p for p in out["pairs"] if p["E_mag"] <= emax + 1e-12])
+        if f is not None:
+            out["fits"].append(dict(f, E_max=emax))
     return out
+
+
+def saturation_fit(pairs):
+    """Weighted least squares eps(E) = eps0 - c E^2 over +-E pairs (the leading non-linear term of
+    the response, dielectric saturation); returns eps0, c and their errors, or None for < 2 fields."""
+    E = np.array([p["E_mag"] for p in pairs])
+    if len(np.unique(E)) < 2:
+        return None
+    y = np.array([p["eps"] for p in pairs])
+    w = 1.0 / np.array([p["err"] for p in pairs]) ** 2
+    A = np.stack([np.ones_like(E), -E * E], 1)
+    C = np.linalg.inv(A.T @ (w[:, None] * A))
+    b = C @ A.T @ (w * y)
+    chi2 = float(np.sum(w * (y - A @ b) ** 2))
+    return {"eps0": float(b[0]), "eps0_err": float(np.sqrt(C[0, 0])), "c": float(b[1]), "c_err": float(np.sqrt(C[1, 1])),
+            "chi2": chi2, "n": int(len(E))}
 
 
 def predicted_errors(eps: float, eps_inf: float, V: float, T: float, E: float, tau_ps: float, run_ps: float) -> dict:

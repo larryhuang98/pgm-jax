@@ -123,6 +123,9 @@ def cmd_analyse(a):
     print("# +-E pairs: |E|  eps")
     for r in res["pairs"]:
         print(f"  {r['E_mag']:8.4f}  {r['eps']:8.2f} +- {r['err']:.2f}")
+    for f in res.get("fits", []):
+        print(f"# fit eps(E) = eps0 - c E^2 over |E| <= {f['E_max']:g}: eps0 {f['eps0']:.2f} +- {f['eps0_err']:.2f}, "
+              f"c {f['c']:.0f} +- {f['c_err']:.0f} (V/nm)^-2, chi2 {f['chi2']:.2f} for {f['n'] - 2} dof")
     for r in res["zero"]:
         print(f"# zero field replica {r['replica']}: fluctuation eps {r['eps']:.2f} +- {r['err']:.2f}, tau_M(z) {r['tau_ps']:.1f} ps")
     if res["pairs"] and res["zero"]:
