@@ -101,6 +101,21 @@ def water_model(model: str):
     return mols, xyz, vel, box, elec
 
 
+def lattice_box(mols, xyz, n: int, seed: int = 0):
+    """n^3 copies of the first molecule (its geometry in xyz, A) on a cubic lattice at 1 g/cm^3,
+    randomly rotated: a small box for cheap checks (equilibrate it with --npt-ps)."""
+    m = mols[0]
+    x = np.asarray(xyz[:m.n], float)
+    x = x - x.mean(axis=0)
+    rng = np.random.default_rng(seed)
+    a = (float(np.sum(m.masses)) * 1.66053906660 / 1.0) ** (1.0 / 3.0)          # A per molecule at 1 g/cm^3
+    pos = [x @ np.linalg.qr(rng.normal(size=(3, 3)))[0].T + (np.array([i, j, k]) + 0.5) * a
+           for i in range(n) for j in range(n) for k in range(n)]
+    L = n * a
+    print(f"# lattice box: {n ** 3} x {m.name}, {L:.3f} A", flush=True)
+    return [m] * n ** 3, np.concatenate(pos), (np.full(3, L), np.full(3, 90.0))
+
+
 def insert_solute(tpl, mols, xyz_nm, H, clear: float):
     """The template's molecule at the centre of the box (its reference geometry), waters with an atom
     within `clear` nm of it removed: (molecules, positions nm, templates) with the solute first."""
@@ -132,6 +147,9 @@ def build(a):
         elec = a.elec
     else:
         mols, xyz, vel, box, elec = water_model(a.model)
+    if getattr(a, "lattice", 0):
+        mols, xyz, box = lattice_box(mols, xyz, a.lattice, a.seed)
+        vel = None
     if box is None:
         raise ValueError("coordinates have no periodic box")
     H = box_from_cell(*box) * 0.1
@@ -421,6 +439,8 @@ def main():
     r.add_argument("--coords")
     r.add_argument("--elec", default="qpi", help="electrostatics level for --prmtop")
     r.add_argument("--solute", type=int, default=0, help="molecule (residue) index of the solute")
+    r.add_argument("--lattice", type=int, default=0, help="n: a small box of n^3 copies of the model's first "
+                   "molecule on a lattice (cheap checks; with --npt-ps, --cut, --nfft for the small box)")
     r.add_argument("--solute-template", help="flexible solute (FlexibleTemplate file) inserted into the water box")
     r.add_argument("--clear", type=float, default=0.25, help="nm: waters this close to the inserted solute are removed")
     r.add_argument("--rigid-solute", action="store_true",
@@ -463,7 +483,7 @@ def main():
     b.add_argument("--grad", action="store_true", help="also time the parameter-gradient samples")
     for x in r._actions:
         if x.dest in ("prmtop", "coords", "elec", "solute", "dt", "temp", "tol", "cut", "ew_coeff", "nfft", "order",
-                      "precision", "seed", "solute_template", "clear"):
+                      "precision", "seed", "solute_template", "clear", "lattice"):
             b._add_action(x)
     fs = sub.add_parser("finite-size")
     fs.add_argument("--model", default="pgm", choices=["pgm", "pgm3p25", "tip3p"])

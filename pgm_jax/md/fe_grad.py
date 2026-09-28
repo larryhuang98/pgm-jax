@@ -442,6 +442,21 @@ class FreeEnergyTarget:
             out["dchi2"] = 2.0 * (r.value - self.experiment) / s ** 2 * np.asarray(g)
         return out
 
+    def estimate(self, theta_fn, theta, space: ParamSpace | None = None, unit: str = "kJ/mol") -> dict:
+        """The target in the layout of a multi-target fit (one observable, n parameters): y (1,), J
+        (1, n), cov_y (1, 1), J_err (1, n) and the delete-one-block replicates loo = {"y": (B, 1),
+        "J": (B, 1, n)} (jackknife: cov = (B - 1)/B sum (x_b - mean)^2), in kJ/mol or kcal/mol."""
+        c = 1.0 / KCAL if unit == "kcal/mol" else 1.0
+        r = self.result
+        J = self._J(theta_fn, theta, space or self.space)
+        g = c * (r.grad @ J)
+        jy = c * np.asarray(r.jk_value, float)[:, None]
+        jJ = c * (np.asarray(r.jk_grad, float) @ J)[:, None, :]
+        return {"names": [self.name or "dG"], "y": np.array([c * r.value]), "J": g[None, :],
+                "cov_y": np.array([[(c * r.value_err) ** 2]]), "J_err": jackknife_error(jJ),
+                "loo": {"y": jy, "J": jJ}, "target": np.array([np.nan if self.experiment is None else c * self.experiment]),
+                "tol": np.array([c * (self.sigma or 1.0)]), "unit": unit}
+
     def predict(self, dp_flat) -> float:
         """First-order prediction of the free energy after changing the table by dp_flat (kJ/mol)."""
         return float(self.result.value + self.result.grad @ np.asarray(dp_flat, float))

@@ -269,6 +269,9 @@ def test_run_outputs_restart_and_fitting_target(tmp_path):
     proj, err = t.result.project(vq)
     assert abs(r["grad"][0] - proj) < 1e-8 * max(1.0, abs(proj)) and abs(r["grad_err"][0] - err) < 1e-8 * max(1.0, err)
     assert abs(r["dchi2"][0] - 2 * (r["value"] + 20.0) / 4.0 * proj) < 1e-8 * max(1.0, abs(proj))
+    est = t.estimate(theta_fn, jnp.array([0.0]), unit="kcal/mol")
+    assert est["J"].shape == (1, 1) and est["loo"]["J"].shape == (2, 1, 1) and est["loo"]["y"].shape == (2, 1)
+    assert abs(est["J"][0, 0] - proj / 4.184) < 1e-8 * max(1.0, abs(proj)) and abs(est["target"][0] + 20.0 / 4.184) < 1e-12
     # original (non-alchemical) table: the solute's copy and the solvent's key both follow P0
     sys0 = alch_sim()[3][2]
     amap = fg.alchemical_map(sys0, w.alchemy.sys)
@@ -304,3 +307,39 @@ def test_param_space_and_scaled_params():
     assert np.allclose(pq[se], 0.9 * np.asarray(p)[se])
     v = space.scale_direction(p, "eps")
     assert np.allclose(v[se], 0.5 * np.asarray(p)[se]) and np.count_nonzero(v) == np.count_nonzero(np.asarray(p)[se])
+
+
+def test_flexible_solute_keep_sampler():
+    """A flexible solute with intramolecular="keep" (the gas-phase correction depends on the solute's
+    electrostatic parameters at every lambda): batched = sequential = direct; the decoupled end
+    state still depends on the solute's charges (its gas-phase electrostatics) and its LJ (its
+    intramolecular pairs), not on the solute-water coupling."""
+    from pgm_jax.md.flexible import FlexibleSimulation
+    from test_alchemy import flex_box
+    tpl, sys0, tpls, X, H = flex_box()
+    sysA, P = alchemical_system(sys0, 0)
+    mk = lambda: FlexibleSimulation(sysA, tpls, X, H, settings(dipole_tol=1e-9), dt=0.001, log=None, params=P,   # noqa: E731
+                                    alchemy=Alchemy(sysA, 0, intramolecular="keep"), constraints="h-bonds",
+                                    thermostat="bussi")
+    L = standard_schedule(2, [0.4, 0.0])
+    wb, ws = LambdaWindows(mk(), L, seed=1), LambdaWindows(mk(), L, batched=False, seed=1)
+    wb.advance(6)
+    ws.advance(6)
+    gb, gs = fg.ParamGradients(wb), fg.ParamGradients(ws)
+    Gb, Gs = gb.sample(), gs.sample()
+    assert np.allclose(Gb, Gs, rtol=1e-7, atol=1e-6)
+    ff, alch = wb.sim.ff, wb.alchemy
+    K = wb.n
+    st = wb.state(1)
+    Y, cand, _ = fg._frame(wb, st)
+    lam = jnp.zeros(2)
+    _, ind, _, _ = alch.energy(ff, Y, st.box, cand, ff.init_induction(), P, lam)
+    g = np.asarray(gb.space.flatten(jax.grad(lambda Q: alch.energy_fixed_mu(ff, Y, st.box, cand, ind.mu, Q, lam))(P)))
+    assert np.allclose(Gb[1, 1], g, rtol=1e-7, atol=1e-6)
+    sq = gb.space.select(("q",), solute=True)
+    se = gb.space.select(("lj_sqrt_eps",), solute=True)
+    assert np.abs(Gb[1][:, sq]).max() > 1.0 and np.abs(Gb[1][:, se]).max() > 1e-3     # gas-phase elec, intra LJ
+    # the gas-phase part at (0, 0) equals dE_gas/dq of the lone solute at its geometry
+    gas = GasPhaseLeg(alch, np.asarray(Y)[:6], "qpi")
+    gg = np.asarray(gb.space.flatten(jax.grad(lambda Q: gas._e(jnp.asarray(1.0), Q))(P)))
+    assert np.allclose(Gb[1, 1][sq], gg[sq], rtol=1e-6, atol=1e-6)
