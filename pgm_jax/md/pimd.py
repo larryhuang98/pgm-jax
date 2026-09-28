@@ -63,8 +63,8 @@ molecular centre of mass (PIMDIntegrator).  Force beads are evaluated in lax.map
 vmapped beads by default (bead_chunk; twice as fast as one vmap over 32 beads of 512 waters).
 
 Rigid bodies and constraints are not supported: a rigid-rotor path integral is not a ring polymer
-of atoms.  Quantum water needs flexible molecules (FlexibleTemplate; e.g.
-scripts/pimd_water.py builds a flexible pGM water).  Units: nm, ps, amu, kJ/mol, K."""
+of atoms.  Quantum water needs flexible molecules (FlexibleTemplate; flexible_water below builds a
+flexible pGM water with the q-TIP4P/F monomer surface; docs/pimd.md).  Units: nm, ps, amu, kJ/mol, K."""
 from __future__ import annotations
 
 import math
@@ -681,7 +681,7 @@ class PGMBeads:
 
 # ----------------------------------------------------------------------------- driver
 class PIMDSimulation:
-    """Path-integral MD of a FlexibleSimulation's system (flexible molecules, NVT).
+    """Path-integral MD of a FlexibleSimulation's system (flexible molecules, NVT or NPT).
 
         sim = FlexibleSimulation(sys, [tpl] * n, pos, H, MDSettings(), dt=0.00025, ensemble="nvt", temperature=298)
         pi = PIMDSimulation(sim, beads=32, mode="pimd", thermostat="pile-g", tau0=0.5)
@@ -690,7 +690,9 @@ class PIMDSimulation:
 
     dt, temperature and settings come from `sim` (its own integrator and thermostat are not used).
     contract: ring-polymer contraction of the intermolecular forces to P' beads (None: off).
-    bead_margin: largest distance (nm) of a bead atom from its centroid (neighbour lists)."""
+    bead_margin: largest distance (nm) of a bead atom from its centroid (neighbour lists).
+    ensemble "npt": Monte Carlo barostat at `pressure` (bar) every `barostat_interval` steps.
+    bead_chunk: force beads per vmapped chunk ("auto": 8 for more than 8 beads)."""
 
     def __init__(self, sim, beads: int = 32, mode: str = "pimd", thermostat: str = "pile-l", tau0: float = 0.2,
                  lam: float | None = None, propagator: str = "cayley", contract: int | None = None,
