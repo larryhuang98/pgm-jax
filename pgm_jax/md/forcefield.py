@@ -57,6 +57,18 @@ bond lengths.  Every energy evaluation takes them at its own positions (charges_
 charge gradient, pulled back through the bond-local flux map by one vector-Jacobian product
 (_energy_forces_flux).  Without flux none of this code runs.
 
+Extended-Lagrangian dipoles (`iel`, docs/iel.md; Albaugh, Niklasson & Head-Gordon, JPCL 8, 1714
+(2017)): auxiliary dipoles x ride along with the atoms, x_{n+1} = 2 x_n - x_{n-1} + kappa (mu_n - x_n)
++ a sum_k c_k x_{n-k} (Niklasson's dissipative Verlet), and replace the predictor + CG:
+  * "0scf" (iEL/0-SCF): one field sweep, r = field(q, p + x) - x/alpha, mu = x + delta with
+    delta = alpha r, and the shadow energy U~(R, x) = U(R, x) - sum alpha |r|^2 / 2
+    = U(R, x + delta) - U_es(0, delta), which is stationary in delta, so its exact forces are the
+    fixed-dipole forces at mu minus the fixed-dipole forces of U_es(0, delta) (the dipole-dipole
+    energy of delta alone: rows, PME, self; _dipole_energy_forces).  E_kin + U~ is conserved;
+    U~ - U* is second order in the error of x.
+  * "scf" (iEL/SCF): iel_iter CG iterations started from x, forces at fixed mu.
+The first steps (and those after an accepted Monte Carlo volume move) are solved to dipole_tol.
+
 Differentiability: E(pos, H, theta) at fixed mu is differentiable throughout (forces, virial,
 dE/dtheta by Hellmann-Feynman).  With `differentiable=True`, compute() also returns forces and
 dipoles with exact derivatives: the dipole solve is a jax.custom_vjp whose backward pass solves
@@ -121,6 +133,15 @@ class MDSettings:
                                       # "qpi" pGM (options.py); quadrupoles are not in the MD engine yet
     vdw: str = "lj"                   # "lj" | "gvdw" (vdw.py; pmemd-pgm igvdw=1) | "none"
     gvdw_rep: str = "gauss"           # GVDW repulsion: "gauss" (gvdw_rep_form=0) | "slater" (=1)
+    # extended-Lagrangian induced dipoles (docs/iel.md): auxiliary dipoles x propagated by Niklasson's
+    # time-reversible Verlet with dissipation, x' = 2x - x_ - kappa (mu - x) + a sum_k c_k x_k
+    iel: str = "none"                 # "none": SCF from the predictor (above) | "0scf": iEL/0-SCF, no CG:
+                                      # mu = x + alpha r(x) and exact forces of the shadow energy |
+                                      # "scf": iEL/SCF, CG started from x (iel_iter iterations)
+    iel_iter: int = 1                 # "scf": CG iterations per step (0: to dipole_tol)
+    iel_order: int = 5                # Niklasson dissipation order K (3..9; 0: none, exactly time-reversible)
+    iel_kappa: float | None = None    # kappa = (omega dt)^2; None: Niklasson's value for K (1.0 for K = 0)
+    iel_alpha: float | None = None    # dissipation strength a; None: Niklasson's value for K
 
     @property
     def perm_dipoles(self) -> bool:
@@ -144,6 +165,18 @@ class MDSettings:
         """Cutoff of the pair rows and of the neighbour list (nm): the larger of the electrostatics
         and van der Waals cutoffs (the latter only with a van der Waals term)."""
         return self.elec_rc if self.vdw == "none" else max(float(self.cutoff), self.elec_rc)
+
+    def describe_induction(self) -> str:
+        """Induced-dipole scheme for log headers."""
+        if self.iel == "none":
+            return f"predictor {self.predictor}{' (fused)' if self.fused else ''}, dipole tol {self.dipole_tol:g}"
+        kap, a, _ = _XL[self.iel_order]
+        kap = kap if self.iel_kappa is None else self.iel_kappa
+        a = a if self.iel_alpha is None else self.iel_alpha
+        what = "iEL/0-SCF" if self.iel == "0scf" else \
+            f"iEL/SCF ({self.iel_iter} CG iterations)" if self.iel_iter > 0 else "iEL/SCF (CG to tol)"
+        return (f"{what} extended-Lagrangian dipoles (K {self.iel_order}, kappa {kap:g}, a {a:g}), "
+                f"dipole tol {self.dipole_tol:g} (warm-up)")
 
     def describe_cutoffs(self) -> str:
         """Cutoffs for log headers."""
@@ -200,6 +233,17 @@ def elec_cutoff_settings(elec_cutoff: float, dsum_tol: float = DSUM_TOL, exponen
 
 _PRED = {"mu3": (3.0, -3.0, 1.0), "mu4": (4.0, -6.0, 4.0, -1.0)}
 
+# Niklasson's dissipative extended-Lagrangian Verlet (Niklasson et al., JCP 130, 214109 (2009),
+# Table I): K -> (kappa, a, c_0..c_K); x_{n+1} = 2 x_n - x_{n-1} + kappa (mu_n - x_n) + a sum_k c_k x_{n-k}
+_XL = {0: (1.0, 0.0, (0.0,)),
+       3: (1.69, 0.150, (-2, 3, 0, -1)),
+       4: (1.75, 0.057, (-3, 6, -2, -2, 1)),
+       5: (1.82, 0.018, (-6, 14, -8, -3, 4, -1)),
+       6: (1.84, 0.0055, (-14, 36, -27, -2, 12, -6, 1)),
+       7: (1.86, 0.0016, (-36, 99, -88, 11, 32, -25, 8, -1)),
+       8: (1.88, 0.00044, (-99, 286, -286, 78, 78, -90, 42, -10, 1)),
+       9: (1.89, 0.00012, (-286, 858, -936, 364, 168, -300, 184, -63, 12, -1))}
+
 
 @dataclasses.dataclass
 class InductionState:
@@ -211,6 +255,7 @@ class InductionState:
     rec: jnp.ndarray         # (4, S, N, 3) "ls" records: alpha b, mu, mu - pred1, mu - pred2
     pred: jnp.ndarray        # (2, N, 3) "ls" order-1 and order-2 predictions
     lscount: jnp.ndarray     # (4,) int32
+    xl: jnp.ndarray = None   # (K1, N, 3) extended-Lagrangian auxiliary dipoles x_{n+1}, x_n, ... (settings.iel)
 
 
 class Result(NamedTuple):
@@ -260,6 +305,15 @@ class PGMForceField:
             raise ValueError(f"unknown predictor {settings.predictor!r}")
         check_vdw(settings.vdw, settings.gvdw_rep)
         self.pd, self.ind = elec_flags(settings.elec)
+        if settings.iel not in ("none", "0scf", "scf"):
+            raise ValueError(f"unknown iel {settings.iel!r} (none | 0scf | scf)")
+        if settings.iel != "none":
+            if settings.iel_order not in _XL:
+                raise ValueError(f"iel_order must be one of {sorted(_XL)}, got {settings.iel_order}")
+            if settings.differentiable:
+                raise ValueError("iel (extended-Lagrangian dipoles) and differentiable=True are exclusive")
+            if settings.iel_iter < 0:
+                raise ValueError("iel_iter must be >= 0")
         if any(len(m.quad) for m in sys.molecules):
             import warnings
             warnings.warn("quadrupole terms are ignored by the MD engine (gas phase only for now)")
@@ -600,9 +654,109 @@ class PGMForceField:
     def init_induction(self) -> InductionState:
         dt = jnp.float64
         z = jnp.zeros((self.n, 3), dt)
+        xl = jnp.zeros((self.xl_len, self.n, 3), dt) if self.iel else None
         return InductionState(mu=z, hist=jnp.zeros((4, self.n, 3), dt), count=jnp.zeros((), jnp.int32),
                               norm=jnp.ones((), dt), rec=jnp.zeros((4, self.S, self.n, 3), dt),
-                              pred=jnp.zeros((2, self.n, 3), dt), lscount=jnp.zeros(4, jnp.int32))
+                              pred=jnp.zeros((2, self.n, 3), dt), lscount=jnp.zeros(4, jnp.int32), xl=xl)
+
+    # ------------------------------------------------------------------ extended Lagrangian (iEL)
+    @property
+    def iel(self) -> bool:
+        """Extended-Lagrangian induced dipoles (settings.iel != "none", with induction)."""
+        return self.s.iel != "none" and self.ind
+
+    @property
+    def shadow(self) -> bool:
+        """iEL/0-SCF: the energy and forces are those of the shadow potential U~(R, x) (not the
+        converged U*(R)); the barostat then evaluates U* at both volumes."""
+        return self.iel and self.s.iel == "0scf"
+
+    @property
+    def xl_coefficients(self):
+        """(kappa, a, c_0..c_K) of the auxiliary-dipole recurrence."""
+        kap, a, c = _XL[self.s.iel_order]
+        kap = kap if self.s.iel_kappa is None else float(self.s.iel_kappa)
+        a = a if self.s.iel_alpha is None else float(self.s.iel_alpha)
+        return kap, a, tuple(float(v) for v in c)
+
+    @property
+    def xl_len(self) -> int:
+        """Auxiliary dipoles kept: x_{n+1} and x_n ... x_{n-K} after a step (at least 3)."""
+        return max(len(_XL[self.s.iel_order][2]) + 1, 3)
+
+    @property
+    def xl_warmup(self) -> int:
+        """Steps solved to dipole_tol at the start (and after an accepted volume move) that fill the
+        auxiliary history with converged dipoles."""
+        return max(self.s.iel_order, 2) + 1
+
+    def _solve_iel(self, g, S, Gk, alpha, q, p, ind: InductionState):
+        """Extended-Lagrangian dipoles (settings.iel).  x = ind.xl[0] are the auxiliary dipoles of this
+        step (propagated at the last one).  "0scf": mu = x + alpha r(x) with r(x) = field(q, p + x) -
+        x / alpha, one field sweep; "scf": iel_iter CG iterations from x (to dipole_tol if 0).  The
+        first xl_warmup steps solve to dipole_tol and put the solution in place of x.  Then
+        x_{n+1} = 2 x_n - x_{n-1} + kappa (mu - x_n) + a sum_k c_k x_{n-k}.  Returns mu, the shadow
+        displacement delta = mu - x ("0scf"; 0 in the warm-up), iterations, residual (at x for
+        "0scf": max|alpha r(x)| / mean|alpha b|) and the new InductionState."""
+        cd = self.cd
+        a64 = alpha[:, None]
+        qc = q.astype(cd)
+        A = self._operator(g, S, Gk, alpha)
+        X = ind.xl
+        x = X[0]
+        first = ind.count == 0
+        warm = ind.count < self.xl_warmup
+
+        def converged(_):
+            b = self._field(g, S, Gk, qc, p)
+            ab = a64 * b.astype(jnp.float64)
+            # the first step starts from ind.mu when set (a volume move's converged dipoles), else alpha b
+            x0 = jnp.where(first, jnp.where(jnp.any(ind.mu != 0.0), ind.mu, ab), x)
+            norm = jnp.mean(jnp.abs(ab)) + 1e-300
+            mu, it, err = self._cg(g, A, alpha, x0, b - A(x0.astype(cd)), norm)
+            return mu, jnp.zeros_like(mu), it, err, norm
+
+        def extended(_):
+            r0 = self._field(g, S, Gk, qc, p + x) - _div_alpha(x, a64, self.alpha_mask).astype(cd)
+            norm = ind.norm
+            if self.s.iel == "0scf":
+                d = a64 * r0.astype(jnp.float64)
+                return x + d, d, jnp.zeros((), jnp.int32), jnp.max(jnp.abs(d)) / norm, norm
+            k = int(self.s.iel_iter)
+            mu, it, err = self._cg(g, A, alpha, x, r0, norm, tol=(0.0 if k > 0 else None),
+                                   max_iter=(k if k > 0 else None))
+            return mu, mu - x, it, err, norm
+
+        mu, d, it, err, norm = jax.lax.cond(warm, converged, extended, None)
+        kap, a, c = self.xl_coefficients
+        Xh = jnp.where(first, jnp.broadcast_to(mu, X.shape), jnp.where(warm, X.at[0].set(mu), X))
+        dx = jnp.where(warm, 0.0, d)
+        x_new = 2.0 * Xh[0] - Xh[1] + kap * dx
+        if a != 0.0:
+            x_new = x_new + a * sum(ck * Xh[k] for k, ck in enumerate(c) if ck != 0.0)
+        ind = ind.set(mu=mu, xl=_push(Xh, x_new), hist=_push(ind.hist, mu), count=ind.count + 1, norm=norm)
+        return mu, dx, it, err, ind
+
+    def _dipole_energy_forces(self, pos, H, g, Gk, d):
+        """Electrostatic energy U_es(0, d) of dipoles d alone (rows + PME + self; kJ/mol) and its
+        gradient with respect to the positions at fixed d: the iEL/0-SCF shadow correction."""
+        cd = self.cd
+        dc = d.astype(cd)
+        k, x, G1, G2, G3 = g["k"], g["x"], g["G1"], g["G2"], g["G3"]
+        dkk = dc[k]
+        dk = (dkk[..., 0], dkk[..., 1], dkk[..., 2])
+        di = tuple(dc[:, j][:, None] for j in range(3))
+        dix = di[0] * x[0] + di[1] * x[1] + di[2] * x[2]
+        dkx = dk[0] * x[0] + dk[1] * x[1] + dk[2] * x[2]
+        didk = di[0] * dk[0] + di[1] * dk[1] + di[2] * dk[2]
+        e = G1 * didk - G2 * dix * dkx
+        radial = G3 * dix * dkx - G2 * didk
+        gx = jnp.stack([jnp.sum(radial * x[j] - G2 * (di[j] * dkx + dk[j] * dix), axis=1) for j in range(3)], -1)
+        se = jnp.sum(jnp.sum(e, axis=1).astype(jnp.float64))
+        zq = jnp.zeros(self.n, jnp.float64)
+        e_rec, g_rec = jax.value_and_grad(lambda y: self.pme.energy(self.pme.setup(y, H), Gk, zq, d))(pos)
+        e_self = -0.5 * self.c_self * jnp.sum(d * d)
+        return KE * (0.5 * se + e_rec + e_self), KE * (gx.astype(jnp.float64) + g_rec)
 
     def _extrapolate_ls(self, st: InductionState, new):
         """pmemd-pgm CPU multi-order least-squares extrapolation (dipole_scf_init = 3)."""
@@ -643,11 +797,12 @@ class PGMForceField:
         zq = jnp.zeros(self.n, cd)
         return lambda v: v * inv_a - self._field(g, S, Gk, zq, v)
 
-    def _cg(self, g, A, alpha, x, r, norm, tol=None, peek=None):
+    def _cg(self, g, A, alpha, x, r, norm, tol=None, peek=None, max_iter=None):
         """Preconditioned CG from (x0, r0 = b - A x0); returns mu (float64), iterations, residual."""
         cd, s = self.cd, self.s
         tol = s.dipole_tol if tol is None else tol
         peek = s.peek if peek is None else peek
+        max_iter = s.max_iter if max_iter is None else int(max_iter)
         inv_a = _div_alpha(1.0, alpha, self.alpha_mask).astype(cd)[:, None]
         a_c = alpha.astype(cd)[:, None]
 
@@ -680,7 +835,7 @@ class PGMForceField:
         z = precond(r)
 
         def cond(c):
-            return (c[6] > tol) & (c[5] < s.max_iter)
+            return (c[6] > tol) & (c[5] < max_iter)
 
         def body(c):
             x, r, z, p, rz, it, _ = c
@@ -970,12 +1125,22 @@ class PGMForceField:
         p = self.perm_dipoles(pos, H, P["cov"])
         S = self.pme.setup(pos, H)
         Gk = self.pme.influence(H)
+        delta = None
         if self.ind:                                           # the solve sees the electrostatic rows only
             ge = {key: v for key, v in g.items() if key != "vdw_rows"}
-            mu, it, err, ind = self._solve(ge, S, Gk, P, p, ind)
+            if self.iel:                                       # extended-Lagrangian dipoles
+                if ind.xl is None:                             # a state from an SCF run: start the history
+                    ind = ind.set(xl=jnp.zeros((self.xl_len, self.n, 3)), count=jnp.zeros_like(ind.count))
+                mu, delta, it, err, ind = self._solve_iel(ge, S, Gk, P["alpha"], P["q"], p, ind)
+            else:
+                mu, it, err, ind = self._solve(ge, S, Gk, P, p, ind)
         else:                                                  # no induced dipoles ("q", "qp")
             mu, it, err = jnp.zeros((self.n, 3)), jnp.zeros((), jnp.int32), jnp.zeros(())
         energy, forces = self._energy_forces(pos, H, mu, g, P, pull)
+        if self.shadow:                                        # U~ = U(mu) - U_es(0, delta), exact forces
+            e_c, g_c = self._dipole_energy_forces(pos, H, ge, Gk, delta)
+            energy = {"elec": energy["elec"] - e_c, "vdw": energy["vdw"], "total": energy["total"] - e_c}
+            forces = forces + g_c
         return Result(energy, forces, ind, it, err, g["overflow"], g if keep_geometry else None)
 
     def energy(self, pos, H, idx, ind: InductionState, params=None):
@@ -997,6 +1162,8 @@ class PGMForceField:
         else:
             mu, it = jnp.zeros((self.n, 3)), jnp.zeros((), jnp.int32)
         e, _ = self.energy_fixed_mu(pos, H, mu, idx, P)
+        if self.iel:                                           # auxiliary dipoles restart at the new geometry
+            return e, ind.set(mu=mu, count=jnp.zeros_like(ind.count)), it, g["overflow"]
         return e, ind.set(mu=mu), it, g["overflow"]
 
     def strain_derivative(self, pos, H, idx, mu, params=None, molecular: bool = True):

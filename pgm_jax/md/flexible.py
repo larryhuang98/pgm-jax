@@ -489,7 +489,12 @@ class FlexibleIntegrator(Integrator):
         e_n = e_n + self.flex.energy(pos_n) + self._restraint_energy(pos_n, Hn)
         ovf = ovf | ovf0
         kT = self.thermostat_kT(st)
-        w = (e_n - st.epot) + self.pressure * dV - self.nmol * kT * jnp.log(jnp.maximum(Vn, 1e-12) / V)
+        e_0 = st.epot
+        if self.ff.shadow:                         # iEL/0-SCF: converged energies at both volumes
+            c0 = self.flex.list_centers(pos)
+            e_0 = self.ff.energy(pos, H, self.nb.candidates(st.nbr, c0, H, pos)[0], st.induction, self.params)[0] \
+                + self.flex.energy(pos) + self._restraint_energy(pos, H)
+        w = (e_n - e_0) + self.pressure * dV - self.nmol * kT * jnp.log(jnp.maximum(Vn, 1e-12) / V)
         accept = (Vn > 0) & (jnp.log(jax.random.uniform(k2, dtype=jnp.float64)) < -w / kT)
         st = st.set(dyn=st.dyn.set(rng=key), overflow=st.overflow | ovf)
 
@@ -580,7 +585,7 @@ class FlexibleSimulation(Simulation):
                     f"{'' if self.integ.thermostat is None else ' (' + self.integ.thermostat.describe() + ')'}, "
                     f"dt {dt * 1000:g} fs, {settings.precision} precision, PME grid {self.ff.pme.K} order "
                     f"{settings.pme_order}, {settings.describe_cutoffs()}, {self.nb.kind} neighbour list (group radius "
-                    f"{self.r_list:.3f} nm), dipole tol {settings.dipole_tol:g}, device {jax.devices()[0]}")
+                    f"{self.r_list:.3f} nm), {settings.describe_induction()}, device {jax.devices()[0]}")
         if self.integ.restraints is not None:
             self._print(f"# restraints: {self.integ.restraints.describe()}")
         if self.ff.flux is not None:

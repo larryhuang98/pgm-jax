@@ -113,6 +113,8 @@ class Integrator:
         self.alchemy = alchemy                     # alchemy.Alchemy or None (then every hook below is inactive)
         if alchemy is not None:
             alchemy.check(ff)
+            if ff.iel:
+                raise NotImplementedError("extended-Lagrangian dipoles (iel) with an alchemical region")
         self.compile()
 
     def compile(self):
@@ -263,7 +265,12 @@ class Integrator:
         e_n = e_n + self._restraint_energy(pos_n, Hn)
         ovf = ovf | ovf0
         kT = self.thermostat_kT(st)
-        w = (e_n - st.epot) + self.pressure * dV - self.nmol * kT * jnp.log(jnp.maximum(Vn, 1e-12) / V)
+        e_0 = st.epot
+        if self.ff.shadow:                         # iEL/0-SCF: converged energies at both volumes
+            pos0 = self.rigid.positions(body)
+            e_0 = self.ff.energy(pos0, H, self.nb.candidates(st.nbr, body.center, H, pos0)[0], st.induction,
+                                 self.params)[0] + self._restraint_energy(pos0, H)
+        w = (e_n - e_0) + self.pressure * dV - self.nmol * kT * jnp.log(jnp.maximum(Vn, 1e-12) / V)
         accept = (Vn > 0) & (jnp.log(jax.random.uniform(k2, dtype=jnp.float64)) < -w / kT)
         st = st.set(dyn=st.dyn.set(rng=key), overflow=st.overflow | ovf)
 
