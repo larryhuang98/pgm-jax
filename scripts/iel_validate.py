@@ -246,6 +246,7 @@ def pooled_eps(files, skip, prefix):
         sel = t >= t[0] + skip
         Ms.append(d["M"][sel]); Vs.append(d["volume_nm3"][sel]); As.append(d["alpha_nm3"][sel])
         mus.append(d["mol_dipole"][sel])
+        dt = float(np.median(np.diff(t)))
         log = f[:-4] + ".log"
         if os.path.exists(log):
             names = open(log).readline().lstrip("#").split()
@@ -253,20 +254,19 @@ def pooled_eps(files, skip, prefix):
             keep = x[:, names.index("time_ps")] >= x[0, names.index("time_ps")] - x[0, names.index("time_ps")] + skip
             U.append(x[keep, names.index("epot")]); rho.append(x[keep, names.index("density_g_cm3")])
             T.append(x[keep, names.index("temp_K")])
-    n = min(len(m) for m in Ms)
-    nblocks = len(Ms) if len(Ms) >= 4 else 10
-    if len(Ms) >= 4:                                   # equal lengths: one jackknife block per replica
-        Ms, Vs, As, mus = [m[:n] for m in Ms], [v[:n] for v in Vs], [a[:n] for a in As], [m[:n] for m in mus]
+    lens = [len(m) for m in Ms]
+    # one jackknife block per replica when they have equal lengths, else 10 contiguous blocks of the
+    # concatenation (replicas of unequal length)
+    nblocks = len(Ms) if (len(Ms) >= 4 and max(lens) == min(lens)) else 10
     M, V, alpha = np.concatenate(Ms), np.concatenate(Vs), np.concatenate(As)
     r = D.static_dielectric(M, V, temp, alpha=alpha, nblocks=nblocks)
-    dt = 0.05
     out = {"files": files, "replicas": len(Ms), "samples": int(len(M)), "ns": float(len(M) * dt / 1000.0),
            "eps": [r["eps"], r["err"]], "eps_inf": [r["eps_inf"], r["eps_inf_err"]], "fluct": [r["fluct"], r["fluct_err"]],
-           "mol_dipole_D": per_block(np.concatenate(mus) / DEBYE_E_NM, nblocks)}
+           "mol_dipole_D": per_block(np.concatenate(mus) / DEBYE_E_NM, 10), "replica_ns": [float(n * dt / 1000.0) for n in lens]}
     if U:
-        out["density"] = per_block(np.concatenate(rho), len(rho) if len(rho) >= 4 else 10)
-        out["U_kJ_mol"] = per_block(np.concatenate(U), len(U) if len(U) >= 4 else 10)
-        out["T"] = per_block(np.concatenate(T), len(T) if len(T) >= 4 else 10)
+        out["density"] = per_block(np.concatenate(rho), 10)
+        out["U_kJ_mol"] = per_block(np.concatenate(U), 10)
+        out["T"] = per_block(np.concatenate(T), 10)
     print(json.dumps(out), flush=True)
     with open(prefix + "_eps.json", "w") as fh:
         json.dump(out, fh, indent=1)

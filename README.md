@@ -140,6 +140,14 @@ How it works:
   inner-CG preconditioner (`scf_local_niter`) are available; on the GPU a Jacobi iteration is
   cheaper than the iterations they save. Forces are Hellmann-Feynman at the converged dipoles
   (the energy is variational in mu).
+- **Extended-Lagrangian induced dipoles** (`MDSettings(iel="0scf")`, `--iel 0scf`;
+  `pgm_jax/md/iel.py`, `docs/iel.md`): iEL/0-SCF (Albaugh, Niklasson & Head-Gordon 2017). Auxiliary
+  dipoles follow Niklasson's dissipative time-reversible Verlet, and each step does one field sweep
+  and a block-Jacobi update with no CG. Forces are the exact gradient of a shadow energy (computed in
+  the same row and PME passes). 512 waters, Bussi, 2 fs: 1.6x the speed of the SCF solver at
+  tol 1e-5 (4,096 waters 1.5x). NVE drift is +0.001 (1 fs) and +0.013 (2 fs) kT/ns/dof. Dipoles
+  are within 1.6e-3 RMS of converged ones, and eps, density, D and g_OO agree with SCF (docs/iel.md).
+  iEL/SCF-k (`iel="scf"`) runs k CG iterations from the auxiliary dipoles.
 - **Rigid molecules** (every molecule; the model has no bonded terms) as JAX-MD rigid bodies:
   NO_SQUISH quaternion integration from JAX-MD `simulate`. Equivalent to SHAKE-rigid water.
 - **Thermostats** (`thermostat=` in `Simulation` / `FlexibleSimulation`, `pgm_jax/md/thermostats.py`): BAOAB with an
@@ -496,6 +504,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/md/flexible.py` | flexible molecules in MD: `FlexibleTemplate` (bonded fit -> MD), `RigidTemplate` (water, ions by constraints), `FlexibleSimulation` (atoms, g-BAOAB with SHAKE / RATTLE, `constraints="h-bonds"`, `hmr`), `liquid_box` |
 | `pgm_jax/md/vsites.py` | virtual sites: `VirtualSite` (average2, average3, outofplane, local, amber), `VirtualSites` (placement, force spreading by the transposed Jacobian, checks), `amber_extra_points` (Amber's EP frames from the bond graph); `scripts/validate_vsites.py` (TIP4P-Ew vs sander, NVE, NPT, speed) |
 | `pgm_jax/md/flux.py` | charge flux in MD: `ChargeFlux` (per-bond charge and covalent-dipole flux of fitted templates, or built directly; `charges(pos)` -> q(R), c(R)), `molecule_at` (charges frozen at a geometry for rigid molecules); `scripts/validate_flux.py`, `scripts/flux_md.py` (liquid, NVE, speed, gas phase) |
+| `pgm_jax/md/iel.py` | extended-Lagrangian induced dipoles (engine in `forcefield.py`: `_solve_iel`, shadow terms, block preconditioner): CLI options, `spectral_radius`, `response_spectrum`; `scripts/iel_validate.py` (NVE drift, dipole error, D, rotations, g_OO; NPT replicas; pooled eps), `scripts/iel_cost.py` |
 | `pgm_jax/md/mts.py` | multiple time stepping (r-RESPA) for both engines: `MTS` settings, force groups (bonded / special pairs / short-range pGM model; slow = full - fast), BAOAB-RESPA step, short-range pair list, anchored dipole predictor, CLI helpers |
 | `pgm_jax/md/remd.py` | temperature replica exchange for both engines: `ReplicaExchange` (exchanges, statistics, round trips, outputs, checkpoints), `MDReplicas` (replicas batched with `jax.vmap`, or sequential), `geometric_ladder`, `read_exchange_log` |
 | `pgm_jax/md/alchemy.py` | alchemical free energies: `Alchemy` (lambda Hamiltonian of one solute: annihilated electrostatics with a polarizability floor, soft-core van der Waals rows), `alchemical_system`, `LambdaWindows` (windows batched with `jax.vmap`), `FreeEnergyRun` (samples of u_k(x_n) and dU/dlambda, Hamiltonian replica exchange, outputs, checkpoints), `GasPhaseLeg`, `standard_schedule` |
