@@ -53,8 +53,10 @@ def _ff_state(settings, seed=1):
     return ff, jnp.asarray(pos), jnp.asarray(H), idx
 
 
-def test_shadow_forces_are_exact_and_energy_error_second_order():
-    s = _settings(cutoff=0.6, pme_grid=(48, 48, 48), pme_order=8, ewald_beta=6.0, iel="0scf")
+@pytest.mark.parametrize("omega,precond", [(1.0, "jacobi"), (0.8, "jacobi"), (1.0, "block")])
+def test_shadow_forces_are_exact_and_energy_error_second_order(omega, precond):
+    s = _settings(cutoff=0.6, pme_grid=(48, 48, 48), pme_order=8, ewald_beta=6.0, iel="0scf", iel_omega=omega,
+                  iel_precond=precond)
     ff, pos, H, idx = _ff_state(s)
     comp = jax.jit(ff.compute)
     ref = comp(pos, H, idx, ff.init_induction())               # warm-up step: converged dipoles

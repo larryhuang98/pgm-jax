@@ -26,3 +26,19 @@ Running log so the work can be resumed.
   CPU smoke test (2 x 1 ps, 2 fs, 0scf): mu rel RMS error 1.9e-3, U~ - U* = -0.35 kJ/mol (of -2.1e6).
 - GPU gpu-2-1 blocked by the owner's pmemd stream since ~02:30; NVE drift runs moved to CPU
   (runs/iel/nvecpu.sh -> runs/iel/nve_dt*.log, bench_md.py --ensemble nve --ps).
+- 03:40 fused the shadow correction into _row_terms / _nonpair (delta argument); iel_shadow option
+  (False: fixed-dipole forces at mu).  tests: test_iel + test_md + test_flux 26 pass.
+- CPU jobs: sbatch default mem = whole node (125G) -> one job per node; use --mem=6000 (scontrol
+  update MinMemoryNode=6000 on pending jobs).  Only touch jobs named iel-* / pgmjax-pGM-JAX-iel.
+- 04:08-04:22 GPU (runs/iel/bench1.log, bench2.log).  Cost per force call (512 w): scf-k 0.331,
+  0.384, 0.453, 0.563 (k=1..4), 0.665 (6); 0scf 0.292 ms.  4096 w: 1.009 .. 1.724; 0scf 0.842.
+  NVT speed 512 w Langevin 1 fs: SCF 1e-5 0.770 ms (112 ns/d), 1e-4 0.672, 0scf 0.469 (184), scf1 0.497;
+  Bussi 2 fs: 1e-5 0.789 (219), 1e-4 257, 0scf 0.473 (366), scf1 340.
+  4096 w: Langevin 1 fs 1e-5 2.029 (42.6), 1e-4 50.9, 0scf 1.192 (72.5), scf1 68.0; Bussi 2 fs 83.2 / 96.4 / 132.0 / 126.5.
+  NVE (README restart, 50/100 ps): 1 fs drift kT/ns/dof: 1e-5 +0.0014, 1e-4 +0.0106, 0scf +0.0060,
+  scf1 -0.0013, scf2 +0.0012.  2 fs: 1e-5 +0.0036, 1e-4 +0.030, 0scf +0.158 (!), scf1 -0.079, scf2 -0.006.
+  -> 0scf heats at 2 fs from this start; CPU dyn run (equilibrated start, 2 fs) had 2e-4.  bench3.sh:
+  dissipation order / kappa / no-shadow variants at 2 fs + dyn protocol on GPU.
+- CPU dyn (2 fs, 50 ps NVE, equilibrated start): SCF 1e-5 mu rel err 7.8e-7, dU +0.18 kJ/mol (mixed vs
+  double), econs rms 0.65 kJ/mol; 0scf mu rel err 1.9e-3, dU -0.33, econs rms 2.0 kJ/mol.
+- eps replicas (12 x 1.5 ns NPT, 0scf, CPU): runs/iel/epscpu.sh -> runs/iel/eps_0scf_s*.{dip,log}

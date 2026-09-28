@@ -59,10 +59,15 @@ def block_err(x, nb=5):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-o", "--out", required=True)
-    ap.add_argument("--checkpoint", required=True, help="equilibrated .chk of the same box (e.g. an NPT run)")
+    ap.add_argument("--checkpoint", help="equilibrated .chk of the same box (e.g. an NPT run)")
     ap.add_argument("--dt", type=float, default=2.0, help="fs")
     ap.add_argument("--tol", type=float, default=1e-5)
     ap.add_argument("--seeds", type=int, default=5)
+    ap.add_argument("--seed0", type=int, default=0, help="first seed (independent jobs: one seed each, then --combine)")
+    ap.add_argument("--npt", type=float, default=0.0, help="instead: NPT production of this many ns per seed (Bussi 1 ps, "
+                    "Monte Carlo barostat every 100 steps, cell dipole every 25 steps) from the checkpoint with fresh "
+                    "velocities, to prefix_s<seed>.{log,dip,chk}: independent replicas for eps, density, <U>, <mu_mol>")
+    ap.add_argument("--combine", nargs="+", help="summarise these prefix.json files (with their _rdf.dat) into -o")
     ap.add_argument("--equil", type=float, default=10.0, help="ps of Bussi NVT (tau 1 ps) before each NVE segment")
     ap.add_argument("--ps", type=float, default=100.0, help="ps of NVE per segment")
     ap.add_argument("--every", type=float, default=0.02, help="ps between frames (MSD, rotations)")
@@ -73,6 +78,8 @@ def main():
                     "(0: kept); default: <density> of the 15 ns SCF NPT run of the box")
     add_iel_arguments(ap)
     a = ap.parse_args()
+    if a.combine:
+        return combine(a.combine, a.out)
     mols = _dedupe(read_prmtop_pgm(TOP, first_residue_only=False))
     xyz, vel, box = read_coordinates(RST)
     H = box_from_cell(*box) * 0.1
@@ -84,6 +91,8 @@ def main():
                     dipole_tol=a.tol, precision="mixed", **iel_settings(a))
     dt = a.dt / 1000
     kw = dict(settings=st, temperature=298.0, dt=dt, log=None, thermostat="bussi", tau_t=1.0)
+    if a.npt > 0:
+        return npt_replicas(a, sys_, pos, H * n, kw)
     nvt = Simulation(sys_, pos, H * n, ensemble="nvt", **kw)
     nve = Simulation(sys_, pos, H * n, ensemble="nve", **kw)
     nve.ff = nve.integ.ff = nvt.ff                             # one force field and neighbour list, two steps
@@ -122,7 +131,7 @@ def main():
     rdf_frames, rdf_vol = 0, []
     out = {"args": vars(a), "segments": []}
     t_run = 0.0
-    for seed in range(a.seeds):
+    for seed in range(a.seed0, a.seed0 + a.seeds):
         nvt.state = nvt.integ.init(start.dyn.position, start.box, jax.random.PRNGKey(1000 + seed))
         nvt._advance(int(round(a.equil / a.dt * 1000)))
         nve.integ.compile()                                    # row capacities may have grown
@@ -170,13 +179,13 @@ def main():
         t_run += time.time() - t0
         ts, E = np.array(ts), np.array(E)
         dof = nve.integ.dof
-        slope = np.polyfit(ts, E, 1)[0] / 1000.0                       # kJ/mol/ps
-        drift = slope * 1000.0 / dof / (KB * 298.0)
+        slope = np.polyfit(ts, E, 1)[0]                                # kJ/mol/ps (ts in ps)
+        drift = slope * 1000.0 / dof / (KB * 298.0)                    # kT / ns / dof
         resid = E - np.polyval(np.polyfit(ts, E, 1), ts)
         com, axis = np.array(com), np.array(axis)
         D, tau1, tau2 = dynamics(com, axis, a.every)
         errs = np.array(errs)
-        seg = {"seed": seed, "drift_kT_ns_dof": drift, "econs_rms_kT_per_dof": float(np.std(resid) / (KB * 298.0) / np.sqrt(dof)),
+        seg = {"seed": seed, "drift_units_ok": 1, "drift_kT_ns_dof": drift, "econs_rms_kT_per_dof": float(np.std(resid) / (KB * 298.0) / np.sqrt(dof)),
                "econs_rms_kJ": float(np.std(resid)),
                "T": float(np.mean(T)), "U": float(np.mean(U)), "D_1e-9_m2_s": D, "tau1_ps": tau1, "tau2_ps": tau2,
                "mu_rel_rms": float(np.sqrt(np.mean(errs[:, 0] ** 2))), "mu_max_err_e_nm": float(errs[:, 1].max()),
@@ -185,24 +194,72 @@ def main():
                "cg_mean": (float(nve.state.cg_total) - it0) / (int(nve.state.step) - s0 + k_every)}
         out["segments"].append(seg)
         print(json.dumps(seg), flush=True)
-    segs = out["segments"]
-    keys = [k for k in segs[0] if k != "seed"]
-    summ = {}
-    for k in keys:
-        v = np.array([sg[k] for sg in segs], float)
-        summ[k] = [float(v.mean()), float(v.std(ddof=1) / np.sqrt(len(v))) if len(v) > 1 else float("nan")]
     rc = 0.5 * (edges[1:] + edges[:-1])
     shell = 4.0 / 3.0 * np.pi * (edges[1:] ** 3 - edges[:-1] ** 3)
     g = hist / (rdf_frames * 0.5 * nmol * (nmol - 1) / np.mean(rdf_vol) * shell)
     np.savetxt(a.out + "_rdf.dat", np.c_[rc, g], header="r (nm)  g_OO(r)")
+    out["rdf_frames"] = rdf_frames
+    out["ns_per_day_incl_sampling"] = a.seeds * a.ps / 1000 / t_run * 86400
+    summarise(out, [(g, rdf_frames)], rc)
+    with open(a.out + ".json", "w") as fh:
+        json.dump(out, fh, indent=1)
+
+
+def npt_replicas(a, sys_, pos, H, kw):
+    """Independent NPT replicas from one checkpoint (fresh Maxwell velocities and random streams)."""
+    for seed in range(a.seed0, a.seed0 + a.seeds):
+        prefix = f"{a.out}_s{seed}"
+        kw = dict(kw, log=open(prefix + ".out", "a"))
+        sim = Simulation(sys_, pos, H, ensemble="npt", pressure=1.0, barostat_interval=100, **kw)
+        if os.path.exists(prefix + ".chk"):                   # continue this replica
+            sim.load(prefix + ".chk")
+            done = int(round(sim.time_ps * 1000 / a.dt))
+            append = True
+        else:
+            sim.load(a.checkpoint)
+            st0 = sim.state
+            sim.state = sim.integ.init(st0.dyn.position, st0.box, jax.random.PRNGKey(2000 + seed))
+            sim.time_ps, done, append = 0.0, 0, False
+        total = int(round(a.npt * 1e6 / a.dt))
+        total -= total % 5000
+        if total > done:
+            sim.run(total - done, report=5000, restart=25000, prefix=prefix, dipoles=25, append=append)
+
+
+def summarise(out, rdfs, rc):
+    """Mean +- standard error over the segments; RDF peak and minimum of the frame-weighted RDF."""
+    segs = out["segments"]
+    keys = [k for k in segs[0] if k not in ("seed", "drift_units_ok")]
+    summ = {}
+    for k in keys:
+        v = np.array([sg[k] for sg in segs], float)
+        summ[k] = [float(v.mean()), float(v.std(ddof=1) / np.sqrt(len(v))) if len(v) > 1 else float("nan")]
+    g = sum(gi * n for gi, n in rdfs) / sum(n for _, n in rdfs)
     kmax = int(np.argmax(g))
     kmin = kmax + int(np.argmin(g[kmax:kmax + 60]))
     summ["gOO_peak"] = [float(rc[kmax]), float(g[kmax])]
     summ["gOO_min"] = [float(rc[kmin]), float(g[kmin])]
-    summ["ns_per_day_incl_sampling"] = a.seeds * a.ps / 1000 / t_run * 86400
+    summ["n_segments"] = len(segs)
     out["summary"] = summ
     print("SUMMARY " + json.dumps(summ), flush=True)
-    with open(a.out + ".json", "w") as fh:
+    return g
+
+
+def combine(files, prefix):
+    out, rdfs, rc = {"parts": files, "segments": []}, [], None
+    for f in files:
+        d = json.load(open(f))
+        for sg in d["segments"]:                           # early runs: drift printed in kT / ps / dof
+            if not sg.get("drift_units_ok"):
+                sg["drift_kT_ns_dof"] *= 1000.0
+                sg["drift_units_ok"] = 1
+        out["segments"] += d["segments"]
+        r = np.loadtxt(f[:-5] + "_rdf.dat")
+        rc = r[:, 0]
+        rdfs.append((r[:, 1], d.get("rdf_frames", 1)))
+    g = summarise(out, rdfs, rc)
+    np.savetxt(prefix + "_rdf.dat", np.c_[rc, g], header="r (nm)  g_OO(r)")
+    with open(prefix + ".json", "w") as fh:
         json.dump(out, fh, indent=1)
 
 
