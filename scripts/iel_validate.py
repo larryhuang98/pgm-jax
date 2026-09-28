@@ -67,6 +67,9 @@ def main():
     ap.add_argument("--npt", type=float, default=0.0, help="instead: NPT production of this many ns per seed (Bussi 1 ps, "
                     "Monte Carlo barostat every 100 steps, cell dipole every 25 steps) from the checkpoint with fresh "
                     "velocities, to prefix_s<seed>.{log,dip,chk}: independent replicas for eps, density, <U>, <mu_mol>")
+    ap.add_argument("--eps", nargs="+", help="instead: pooled eps, density, <U>, <mu_mol> of these .dip files (independent "
+                    "replicas, each with its .log), the first --skip ps of each dropped; jackknife over the replicas")
+    ap.add_argument("--skip", type=float, default=50.0, help="ps dropped at the start of each --eps replica")
     ap.add_argument("--combine", nargs="+", help="summarise these prefix.json files (with their _rdf.dat) into -o")
     ap.add_argument("--equil", type=float, default=10.0, help="ps of Bussi NVT (tau 1 ps) before each NVE segment")
     ap.add_argument("--ps", type=float, default=100.0, help="ps of NVE per segment")
@@ -80,6 +83,8 @@ def main():
     a = ap.parse_args()
     if a.combine:
         return combine(a.combine, a.out)
+    if a.eps:
+        return pooled_eps(a.eps, a.skip, a.out)
     mols = _dedupe(read_prmtop_pgm(TOP, first_residue_only=False))
     xyz, vel, box = read_coordinates(RST)
     H = box_from_cell(*box) * 0.1
@@ -224,6 +229,54 @@ def npt_replicas(a, sys_, pos, H, kw):
         total -= total % 5000
         if total > done:
             sim.run(total - done, report=5000, restart=25000, prefix=prefix, dipoles=25, append=append)
+
+
+def pooled_eps(files, skip, prefix):
+    """Static dielectric constant of independent replicas pooled (tin-foil, eps_inf from alpha_cell):
+    <M.M> - <M>.<M> over all samples, jackknife with one block per replica (or 10 contiguous blocks
+    for a single run); <V>, density, <U>, <T> from the logs, <mu_mol> from the .dip files."""
+    from pgm_jax.md import dielectric as D
+    from pgm_jax.md.dipoles import read_dipoles
+    Ms, Vs, As, mus, U, rho, T = [], [], [], [], [], [], []
+    temp = None
+    for f in files:
+        meta, d = read_dipoles([f])
+        temp = float(meta["temperature_K"])
+        t = d["time_ps"]
+        sel = t >= t[0] + skip
+        Ms.append(d["M"][sel]); Vs.append(d["volume_nm3"][sel]); As.append(d["alpha_nm3"][sel])
+        mus.append(d["mol_dipole"][sel])
+        log = f[:-4] + ".log"
+        if os.path.exists(log):
+            names = open(log).readline().lstrip("#").split()
+            x = np.loadtxt(log, ndmin=2)
+            keep = x[:, names.index("time_ps")] >= x[0, names.index("time_ps")] - x[0, names.index("time_ps")] + skip
+            U.append(x[keep, names.index("epot")]); rho.append(x[keep, names.index("density_g_cm3")])
+            T.append(x[keep, names.index("temp_K")])
+    n = min(len(m) for m in Ms)
+    nblocks = len(Ms) if len(Ms) >= 4 else 10
+    if len(Ms) >= 4:                                   # equal lengths: one jackknife block per replica
+        Ms, Vs, As, mus = [m[:n] for m in Ms], [v[:n] for v in Vs], [a[:n] for a in As], [m[:n] for m in mus]
+    M, V, alpha = np.concatenate(Ms), np.concatenate(Vs), np.concatenate(As)
+    r = D.static_dielectric(M, V, temp, alpha=alpha, nblocks=nblocks)
+    dt = 0.05
+    out = {"files": files, "replicas": len(Ms), "samples": int(len(M)), "ns": float(len(M) * dt / 1000.0),
+           "eps": [r["eps"], r["err"]], "eps_inf": [r["eps_inf"], r["eps_inf_err"]], "fluct": [r["fluct"], r["fluct_err"]],
+           "mol_dipole_D": per_block(np.concatenate(mus) / DEBYE_E_NM, nblocks)}
+    if U:
+        out["density"] = per_block(np.concatenate(rho), len(rho) if len(rho) >= 4 else 10)
+        out["U_kJ_mol"] = per_block(np.concatenate(U), len(U) if len(U) >= 4 else 10)
+        out["T"] = per_block(np.concatenate(T), len(T) if len(T) >= 4 else 10)
+    print(json.dumps(out), flush=True)
+    with open(prefix + "_eps.json", "w") as fh:
+        json.dump(out, fh, indent=1)
+
+
+def per_block(x, nb):
+    x = np.asarray(x, float)
+    m = len(x) // nb * nb
+    b = x[:m].reshape(nb, -1).mean(1)
+    return [float(x.mean()), float(b.std(ddof=1) / np.sqrt(nb))]
 
 
 def summarise(out, rdfs, rc):

@@ -42,3 +42,29 @@ Running log so the work can be resumed.
 - CPU dyn (2 fs, 50 ps NVE, equilibrated start): SCF 1e-5 mu rel err 7.8e-7, dU +0.18 kJ/mol (mixed vs
   double), econs rms 0.65 kJ/mol; 0scf mu rel err 1.9e-3, dU -0.33, econs rms 2.0 kJ/mol.
 - eps replicas (12 x 1.5 ns NPT, 0scf, CPU): runs/iel/epscpu.sh -> runs/iel/eps_0scf_s*.{dip,log}
+- 04:30-05:30 NVE 2 fs experiments (GPU bench3/4, CPU nve*): drift kT/ns/dof, 0scf Jacobi:
+  K=5 +0.20/+0.21 (GPU/CPU), K=7 +0.047, K=3 explodes (T 473 K at 15 ps), K=0 (no dissipation) NaN at
+  61 ps, kappa 1.4 +0.25, no-shadow +0.19/+0.18; omega 0.8 -0.106, omega 0.8 K7 -0.038, omega 0.7 -0.44,
+  omega 0.8 K0 NaN.  scf-1 K3: -9.8 (T -> 92 K).  1 fs: 0scf K5 +0.003..+0.006, K7 -0.002, K0 +0.007.
+  -> the drift at 2 fs is set by the dissipation (not by the phase lag at nuclear frequencies, which is
+  1e-5 rad for K=5: /tmp/lag.py) acting on the auxiliary modes near Nyquist, and its sign by omega.
+- block preconditioner: spectrum of M^-1 A 0.706-1.559 (10-90 %: 0.82-1.20) vs alpha A 0.679-1.853
+  (runs/eig2.py); FD test of the block shadow forces passes.
+- reference eps (scripts/iel_validate.py --eps prod.dip --skip 200): 31.02 +- 0.35, eps_inf 1.798,
+  density 1.0179 +- 0.0003, mu_mol 1.9865 D, U -2115060 +- 5 kJ/mol, T 296.13.
+- dyn (2 fs NVE 4 x 50 ps from the equilibrated box, runs/iel/dyn_*.json): D (1e-9 m2/s) SCF 3.73 +- 0.21,
+  0scf 3.81 +- 0.12, scf1 3.70 +- 0.10; tau2 0.855 / 0.857 / 0.845 ps; mu rel err 7.8e-7 / 1.9e-3 / 1.1e-3;
+  U~ - U* +0.18 / -0.32 / +0.23 kJ/mol; drift 0.0035 / 0.205 / -0.076.  (early dyn JSONs have drift in
+  kT/ps/dof; --combine converts.)
+- 05:45 released the 9 held eps replicas (0scf K5 Jacobi 2 fs, the literature scheme).
+- 06:00-07:30 energy-flow picture (docs/iel.md): auxiliary modes carry energy of the sign of
+  1 - omega lambda (lambda: eigenvalues of W A).  omega = 1: modes lambda > 1 negative -> damping them
+  heats (K5 +0.2), K0 unstable (NaN 60 ps); omega 0.9 +0.045, 0.8 -0.106, 0.7 -0.44, 0.5 -2.6 (K5),
+  0.5 K0 -0.46 with T falling to 265 K in 200 ps (energy flows into the undamped auxiliary modes: at
+  2 fs they are not adiabatically separated from the librations).  1 fs, omega 0.5 K0: +0.0006,
+  block omega 0.6 K0: +0.0034.  Jacobi K9 (omega 1): +0.008 (80 ps CPU); block K7 +0.019, block K5 +0.095,
+  block K0 NaN at 34 ps.
+- block preconditioner cost: 512 w NVE 0.41 vs 0.36 ms (Jacobi); Bussi 2 fs 0.506 vs 0.473 ms; 4096 w 1.394 vs 1.309.
+- iEL/SCF-2 Bussi 2 fs: 512 w 0.546 ms (316 ns/d), 4096 w 1.519 ms (113.7).
+- GPU queue: bench6 (1 ns NVE of block K7 / Jacobi K9 / block K9 / SCF; 1 fs 200 ps; dyn block K7;
+  eps NPT 8 ns block K7 = runs/iel/geps_blk7_s100) then bench7 (dyn scf-2, eps scf-2 8 ns).

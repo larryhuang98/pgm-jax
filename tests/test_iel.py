@@ -53,7 +53,7 @@ def _ff_state(settings, seed=1):
     return ff, jnp.asarray(pos), jnp.asarray(H), idx
 
 
-@pytest.mark.parametrize("omega,precond", [(1.0, "jacobi"), (0.8, "jacobi"), (1.0, "block")])
+@pytest.mark.parametrize("omega,precond", [(1.0, "jacobi"), (0.8, "jacobi"), (1.0, "block"), (0.9, "block")])
 def test_shadow_forces_are_exact_and_energy_error_second_order(omega, precond):
     s = _settings(cutoff=0.6, pme_grid=(48, 48, 48), pme_order=8, ewald_beta=6.0, iel="0scf", iel_omega=omega,
                   iel_precond=precond)
@@ -221,3 +221,26 @@ def test_refuses_unsupported_combinations():
         PGMForceField(*_water()[:1], np.eye(3) * 1.24, _settings(iel="0scf", differentiable=True))
     with pytest.raises(ValueError):
         PGMForceField(*_water()[:1], np.eye(3) * 1.24, _settings(iel="0scf", iel_order=2))
+
+
+def test_response_spectrum_and_positive_auxiliary_energy():
+    from pgm_jax.md.iel import response_spectrum
+    s = _settings(cutoff=0.6, pme_grid=(48, 48, 48), pme_order=8, ewald_beta=6.0, iel="0scf")
+    ff, pos, H, idx = _ff_state(s)
+    lo_j, hi_j = response_spectrum(ff, pos, H, idx, precond="jacobi")
+    lo_b, hi_b = response_spectrum(ff, pos, H, idx, precond="block")
+    assert 0.0 < lo_j < 1.0 < hi_j < 2.5 and 0.0 < lo_b < 1.0 < hi_b < hi_j, (lo_j, hi_j, lo_b, hi_b)
+    # omega lambda_max < 1: every auxiliary mode has positive energy; without dissipation (time
+    # reversible) E_kin + U~ is conserved at 1 fs as with converged dipoles
+    sys, p, Hw = _water()
+    dev = {}
+    for name, st in (("iel", _settings(iel="0scf", iel_omega=0.5, iel_order=0, iel_kappa=1.82)), ("scf", _settings())):
+        sim = Simulation(sys, p, Hw, st, dt=0.001, ensemble="nve", log=None, seed=3)
+        sim._advance(20)
+        e0 = sim.observables()["etot"]
+        E = []
+        for _ in range(8):
+            sim._advance(50)
+            E.append(sim.observables()["etot"] - e0)
+        dev[name] = (max(abs(e) for e in E), sim.observables()["ekin"])
+    assert dev["iel"][0] < 3.0 * dev["scf"][0] + 0.002 * dev["scf"][1], dev

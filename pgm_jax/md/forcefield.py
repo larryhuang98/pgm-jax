@@ -139,10 +139,10 @@ class MDSettings:
                                       # mu = x + alpha r(x) and exact forces of the shadow energy |
                                       # "scf": iEL/SCF, CG started from x (iel_iter iterations)
     iel_iter: int = 1                 # "scf": CG iterations per step (0: to dipole_tol)
-    iel_order: int = 5                # Niklasson dissipation order K (3..9; 0: none, exactly time-reversible)
+    iel_order: int = 7                # Niklasson dissipation order K (3..9; 0: none, exactly time-reversible)
     iel_kappa: float | None = None    # kappa = (omega dt)^2; None: Niklasson's value for K (1.0 for K = 0)
     iel_alpha: float | None = None    # dissipation strength a; None: Niklasson's value for K
-    iel_precond: str = "jacobi"       # "0scf": delta = omega alpha r ("jacobi") or omega M^-1 r with M = 1/alpha +
+    iel_precond: str = "block"        # "0scf": delta = omega alpha r ("jacobi") or omega M^-1 r with M = 1/alpha +
                                       # the intramolecular row blocks of molecules of <= 8 atoms ("block")
     iel_omega: float = 1.0            # "0scf": mu = x + omega alpha r(x) (omega < 1: damped Jacobi step)
     iel_shadow: bool = True           # "0scf": energy and forces of the shadow potential (exact, conserved);
@@ -325,8 +325,6 @@ class PGMForceField:
                 raise ValueError("iel_omega must be in (0, 2)")
             if settings.iel_precond not in ("jacobi", "block"):
                 raise ValueError(f"iel_precond must be jacobi or block, got {settings.iel_precond!r}")
-            if settings.iel_precond == "block" and settings.iel_omega != 1.0:
-                raise ValueError("iel_omega != 1 is implemented for the Jacobi preconditioner only")
         if any(len(m.quad) for m in sys.molecules):
             import warnings
             warnings.warn("quadrupole terms are ignored by the MD engine (gas phase only for now)")
@@ -1115,8 +1113,9 @@ class PGMForceField:
             Dkk = delta[k]
             Dk = (Dkk[..., 0], Dkk[..., 1], Dkk[..., 2])
             Di = tuple(delta[:, j][:, None] for j in range(3))
-            if self._blocks is not None:                       # block preconditioner: M holds these pairs
-                keep = jnp.where(self._block_mask(k), 0.0, 1.0).astype(x[0].dtype)
+            if self._blocks is not None:                       # block preconditioner: M / omega holds these pairs
+                w_blk = 1.0 - 1.0 / float(self.s.iel_omega)
+                keep = jnp.where(self._block_mask(k), w_blk, 1.0).astype(x[0].dtype)
                 Di = tuple(Di[j] * keep for j in range(3))
             Dix = Di[0] * x[0] + Di[1] * x[1] + Di[2] * x[2]
             Dkx = Dk[0] * x[0] + Dk[1] * x[1] + Dk[2] * x[2]
