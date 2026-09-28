@@ -533,7 +533,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `scripts/dielectric.py`, `scripts/water_dielectric.py` | eps (and IR spectrum) from `.dip` series; the water validation runs (pGM, pGM3P-25 geometry, TIP3P control) |
 | `scripts/pgm3p25_prmtop.py`, `scripts/trajectory_dipoles.py` | pGM3P-25 with its published geometry and LJ as a pmemd-pgm topology (supercells, mdin); cell-dipole series (`.dip`) of Amber trajectories (e.g. pmemd.pgm) with the induced dipoles solved by pgm_jax |
 | `scripts/bench_md.py`, `scripts/pgm_supercell.py` | MD speed benchmark (`--mts`, `--ps` / `--rdf`: drift, <U>, group temperatures, density, g_OO); replicate a pGM prmtop for larger systems |
-| `tests/` | `pytest -q`: 208 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
+| `tests/` | `pytest -q`: 221 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
 | `scripts/validate_amber.py` | comparison with sander / pmemd-pgm / PyRESP (`compare`, `pyresp`, `virial`) |
 | `scripts/bench.py` | timings on the current device |
 | `validation/` | Amber reference runs (inputs + outputs) and `validate_amber.json` |

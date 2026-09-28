@@ -218,6 +218,7 @@ eps 78.4 +- 1.5, gas dipole 1.855 +- 0.01 D, gas polarizability 1.47 +- 0.01 A^3
 | 2 | +0.0723 | -0.0497 | -0.2805 | -0.1961 | +0.0958 | -0.0041 | 0.9218(5) | 9.298(5) | 59.7(40) | 1.7771 | 1.4823 | 2.489 | 1987.7 |
 | 3 | +0.0688 | -0.0452 | -0.2900 | -0.1819 | +0.0841 | -0.1526 | 0.9905(7) | 10.486(6) | 74.5(35) | 1.8409 | 1.4749 | 2.609 | 13.3 |
 | 4 | +0.0415 | -0.1270 | -0.2926 | -0.1847 | +0.0760 | -0.0623 | 0.9966(6) | 10.491(5) | 80.7(48) | 1.8525 | 1.4706 | 2.623 | 0.7 |
+| 5 | +0.0711 | -0.0215 | -0.2955 | -0.1755 | +0.0737 | -0.0415 | 0.9968(4) | 10.457(3) | 72.0(35) | 1.8539 | 1.4699 | 2.611 | 4.4 |
 
 Scale factors at iteration 4: q x1.042, cov x0.881, alpha x0.746, radius x0.831, R* x1.079, LJ eps x0.940
 (the Bayesian-optimisation pGM3P-25 scaled alpha by 0.771 and radii by 0.750). All five targets are met
@@ -231,7 +232,10 @@ reweighting (n_eff 1-3 of 4000 frames for the early steps) only helped for the l
 Sampling errors of the parameters at iteration 4: ln s_q 0.029, ln s_cov 0.105, ln s_pol 0.0024,
 ln s_rad 0.008, ln s_R 0.003, ln s_eps 0.056: charges and covalent dipoles are nearly degenerate
 (both make the molecular dipole), and so are R* and eps; the polarizability, radius and R* scales are
-well determined. Each iteration is one GPU job of about 17 minutes.
+well determined. Iteration 5 moved along the q-cov valley (q x1.074, cov x0.979) with the same quality
+(chi2 4.4; density 0.9968, Hvap 10.457, eps 72.0 +- 3.5; every prediction within z 1.4): at 2 ns per
+iteration the fit has reached the noise of eps (+- 3.5-5), and the chi2 ratio (-4.6) shrank the radius.
+Each iteration is one GPU job of about 17 minutes.
 
 
 ## Speed
