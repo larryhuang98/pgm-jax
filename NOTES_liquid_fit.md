@@ -60,3 +60,16 @@
 - full suite (cluster CPU, 07:05 code): 221 passed in 41 min.
 - 10:05 rec512b done (4 iterations x 2 ns): chi2 50718 -> 23 -> 5.1 -> 0.2; fitted (0.0001, 0.0000, 0.0028, -0.057)
   +- (0.0004, 0.0006, 0.014, 0.26) posterior; Mahalanobis 0.9.  RDF FD (512): 56 bins, rms z 1.01.
+- 10:30 demo512 iter 4: chi2 0.65 (rho 0.9966, Hvap 10.491, eps 80.7(48), gas mu 1.8525, pol 1.4706, liquid mu 2.623);
+  iter 5 (along the q-cov valley): chi2 4.4, eps 72.0(35).  demo512_final: 10 ns at iteration-4 parameters
+  (runs/gpu_master4.sh), for eps to +-1.5, alpha_p, kappa_t, g(r).
+- Final tests: tests/test_liquid_fit.py 13 passed (cluster CPU, final code); full suite 221 passed (07:05 code).
+
+## What is left / ideas
+- Longer runs (or several replicas) per iteration once the fit is near the targets: eps +-1.5 needs ~10 ns of
+  512 waters; the Jacobian of eps is the noisiest piece (small boxes or FD along the step direction help).
+- Jacobians from small-box replicas (cheap, precise) with values from the large box; NPT batched replicas.
+- Step rejection in the trust region (currently every step is taken); per-key fits (alpha@OW etc.) not run.
+- Flexible molecules (bonded + intramolecular LJ in U, gas-phase ensemble), charge flux, virtual sites.
+- 14:20 demo512_final (10 ns at iteration-4 theta): rho 0.9963(3), Hvap 10.491(2), eps 81.5(25), eps_inf 1.748,
+  liquid mu 2.623 D, gas mu 1.852, pol 1.471; kappa_t 5.0e-5 /bar, alpha_p 1e-5(3e-5) /K (exp 2.6e-4).

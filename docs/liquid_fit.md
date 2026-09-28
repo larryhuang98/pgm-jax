@@ -237,6 +237,13 @@ well determined. Iteration 5 moved along the q-cov valley (q x1.074, cov x0.979)
 iteration the fit has reached the noise of eps (+- 3.5-5), and the chi2 ratio (-4.6) shrank the radius.
 Each iteration is one GPU job of about 17 minutes.
 
+A 10 ns run at the iteration-4 parameters (5 x 2 ns, 20000 frames): density 0.9963 +- 0.0003 g/cm^3,
+Hvap 10.491 +- 0.002 kcal/mol, eps 81.5 +- 2.5 (eps_inf 1.748), gas dipole 1.852 D, polarizability
+1.471 A^3, liquid dipole 2.623 D; not targeted: compressibility 5.0e-5 /bar (experiment 4.5e-5) and
+thermal expansion 1e-5 +- 3e-5 /K (experiment 2.6e-4: this parameter set has its density maximum near
+298 K; alpha_p is available as a target with its gradient). eps is within 2 sigma of 78.4; tightening it
+needs iterations of ~10 ns (the Jacobian of eps at 10 ns: d eps/d ln s_q = 420 +- 240).
+
 
 ## Speed
 
