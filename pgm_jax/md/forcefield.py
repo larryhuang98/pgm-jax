@@ -846,7 +846,7 @@ class PGMForceField:
     @staticmethod
     def field_dipole(pos, q, d, off=None):
         """M = sum q r + sum d (+ offset), e nm: the dipole a uniform field acts on (whole molecules)."""
-        M = jnp.sum(q[:, None] * pos, axis=0) + jnp.sum(jnp.asarray(d, jnp.float64), axis=0)
+        M = jnp.sum(q[:, None] * pos + jnp.asarray(d, jnp.float64), axis=0)     # one reduction (GPU: one kernel)
         return M if off is None else M + off
 
     # ------------------------------------------------------------------ van der Waals rows
@@ -968,14 +968,14 @@ class PGMForceField:
             sl = sl + rowsum(elt)
         return rowsum(e), sl, gx.astype(jnp.float64), glx
 
-    def _energy_forces(self, pos, H, mu, g, P, flux_pull=None, ext=None):
+    def _energy_forces(self, pos, H, mu, g, P, flux_pull=None, ext=None, M=None):
         """Energy and forces at fixed mu: analytic row forces for the pair terms (no scatter-adds),
         autodiff for PME, one vector-Jacobian product through the covalent-dipole frames.  With
         charge flux (flux_pull: the pull-back of the flux map at pos; P holds q(R), c(R)):
         _energy_forces_flux.  ext (_ext) or None: the field F at M = sum q r + sum d + offset adds its
         energy (_ext_terms), KE q F to the forces and -KE F to dE/dd (torques)."""
         if flux_pull is not None:
-            return self._energy_forces_flux(pos, H, mu, g, P, flux_pull, ext)
+            return self._energy_forces_flux(pos, H, mu, g, P, flux_pull, ext, M)
         cd = self.cd
         p, vjp_p = jax.vjp(lambda y: self.perm_dipoles(y, H, P["cov"]), pos)
         d = p + mu
@@ -983,7 +983,7 @@ class PGMForceField:
         se, sl, gx_el, gx_lj = self._row_terms(g, qc, dc)
         dEdd = KE * self._row_field(g, qc, dc).astype(jnp.float64)
         if ext is not None:
-            Fx, e_f = self._ext_terms(ext, self.field_dipole(pos, P["q"], d, ext[1]))
+            Fx, e_f = self._ext_terms(ext, self.field_dipole(pos, P["q"], d, ext[1]) if M is None else M)
             dEdd = dEdd - KE * Fx[None, :]
         e_np, (gpos_np, gd_np) = jax.value_and_grad(self._nonpair, argnums=(0, 2))(pos, H, d, mu, P)
         forces = -(KE * gx_el + gx_lj + gpos_np + vjp_p(dEdd + gd_np)[0])
@@ -994,7 +994,7 @@ class PGMForceField:
         forces = forces + KE * P["q"][:, None] * Fx[None, :]
         return {"elec": e_elec, "vdw": e_lj, "field": e_f, "total": e_elec + e_lj + e_f}, forces
 
-    def _energy_forces_flux(self, pos, H, mu, g, P, flux_pull, ext=None):
+    def _energy_forces_flux(self, pos, H, mu, g, P, flux_pull, ext=None, M=None):
         """_energy_forces with charge flux; P holds q(R) and c(R).  F = -dE/dR|_{q,c,mu}
         - phi . dq/dR - (dE/dc) . dc/dR: the potential phi = dE/dq (rows, and PME, self and
         background terms from the autodiff of _nonpair with q among the arguments) and dE/dc (the
@@ -1008,7 +1008,7 @@ class PGMForceField:
         dEdd = KE * self._row_field(g, qc, dc).astype(jnp.float64)
         phi = KE * self._row_potential(g, qc, dc).astype(jnp.float64)
         if ext is not None:                                    # the external potential -F . r at each atom
-            Fx, e_f = self._ext_terms(ext, self.field_dipole(pos, P["q"], d, ext[1]))
+            Fx, e_f = self._ext_terms(ext, self.field_dipole(pos, P["q"], d, ext[1]) if M is None else M)
             dEdd = dEdd - KE * Fx[None, :]
             phi = phi - KE * (pos @ Fx)
         e_np, (gpos_np, gd_np, gq_np) = jax.value_and_grad(
@@ -1057,8 +1057,8 @@ class PGMForceField:
             mu, it, err, ind = self._solve(ge, S, Gk, P, p, ind, ext=ext_s)
         else:                                                  # no induced dipoles ("q", "qp")
             mu, it, err = jnp.zeros((self.n, 3)), jnp.zeros((), jnp.int32), jnp.zeros(())
-        energy, forces = self._energy_forces(pos, H, mu, g, P, pull, ext)
         M = None if ext is None else self.field_dipole(pos, P["q"], p + mu, ext[1])
+        energy, forces = self._energy_forces(pos, H, mu, g, P, pull, ext, M)
         return Result(energy, forces, ind, it, err, g["overflow"], g if keep_geometry else None, M)
 
     def energy(self, pos, H, idx, ind: InductionState, params=None, efield=None):
