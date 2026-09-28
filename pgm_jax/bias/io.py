@@ -73,7 +73,8 @@ class BiasOutput:
 
 def read_table(path) -> tuple[dict, dict]:
     """A COLVAR or HILLS file (or a list of continuation segments): (header, {column: array}).
-    Rows superseded by a continuation from an earlier checkpoint (the step goes back) are dropped."""
+    Rows superseded by a continuation from an earlier checkpoint (where the step goes back, the rows
+    of earlier segments at that step or later) are dropped; equal steps in a row (walkers) are kept."""
     paths = [path] if isinstance(path, (str, os.PathLike)) else list(path)
     meta, rows, cols = {}, [], None
     for p in paths:
@@ -89,8 +90,10 @@ def read_table(path) -> tuple[dict, dict]:
         x = np.loadtxt(p, comments="#", ndmin=2)
         rows.append(x.reshape(-1, len(cols)))
     x = np.concatenate(rows)
-    if len(x):
+    if len(x):                       # continuation segments start where the step goes back
         step = x[:, 0]
-        later_min = np.minimum.accumulate(step[::-1])[::-1]
-        x = x[np.append(step[:-1] < later_min[1:], True)]
+        starts = np.append(False, step[1:] < step[:-1])
+        s_at = np.where(starts, step, np.inf)
+        later = np.append(np.minimum.accumulate(s_at[::-1])[::-1][1:], np.inf)    # min over starts after i
+        x = x[step < later]
     return meta, {c: x[:, k] for k, c in enumerate(cols)}

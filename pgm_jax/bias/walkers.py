@@ -69,7 +69,6 @@ class Walkers(MDReplicas):
             st = integ.init(base.dyn.position, base.box, key, bias=b)
             states.append(st.set(nbr=base.nbr))
         if self.shared:
-            self.bias_state = base.bias
             self.S = _stack([s.set(bias=None) for s in states]).set(bias=base.bias)
         else:
             self.S = _stack(states)

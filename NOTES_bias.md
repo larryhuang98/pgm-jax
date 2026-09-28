@@ -14,3 +14,22 @@ Running log so the work can be resumed.
   level. Barostat trial energies and pressure include the bias.
 - Driver: reserve() buffers before each block (hills / kernels / COLVAR rows; shape change =>
   retrace), drain COLVAR rows after, files prefix.colvar / .hills / .bias; checkpoint includes bias.
+
+## Progress log
+- Commit fbbb43f: core package + MD hook + walkers + tests (19 tests pass on CPU, test_walkers added after).
+- Toy validation (scripts/bias/validate_toy.py): 10 us/step for 8 walkers on CPU. dw metaD 20 ns: RMSD 0.21+-0.02
+  (bias), 0.16+-0.01 (reweighted) per run; shared 8 walkers 0.075/0.085.
+- OPES reserve was O(n_updates) -> buffer padding made OPES slow; now doubles at 80 % fill, forced merge
+  on overflow (OPESState.forced counter).
+- GPU vacuum ala2 (22 atoms): 0.75 ms/step single; metaD +10 %; 16 independent walkers 1386 ns/day aggregate.
+- CPU vacuum ala2: 3.1 ms/step (16 cores) with PME 40^3; vacuum settings now beta 2.5, grid 20^3.
+- NVE (8 waters, rigid, float64): static bias E max dev 0.010 kJ/mol with 17 kJ/mol bias range.
+- Running: runs/ala2/chain.sh (GPU: umbrella 24 x 2 ns, metaD 12 x 4 ns, OPES 12 x 4 ns, 40-min segments,
+  --resume); CPU: tests, nve_check, toy_all, engine_dw smoke.
+- OPES recursive merging (PLUMED default) added, checked against the reference implementation.
+- read_table: equal steps kept (walkers), only rows superseded by a continuation dropped.
+- CPU queue: jobs without --mem take the whole node's memory; runs/cpul.sh now passes --mem (MEM=6G).
+- GPU gpu-2-3 starved by fegrad's back-to-back chain (message sent to main). Fallback: ala2 on CPU:
+  umbrella runs/ala2/usc_{0..21} (8 jobs x 3 windows x 1.5 ns), metaD mdc1-4 and OPES opc1-4 (3 walkers x
+  3 ns each); GPU chain2.sh (md, op: 12 walkers x 4 ns) waits for the lock.
+- CPU vacuum ala2: 1.28 ms/step single (grid 20, beta 2.5), 3 walkers 143 ns/day aggregate, 12 walkers 147.

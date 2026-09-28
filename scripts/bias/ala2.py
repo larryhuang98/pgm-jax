@@ -58,6 +58,8 @@ ap.add_argument("--biasfactor", type=float, default=6.0)
 ap.add_argument("--barrier", type=float, default=50.0)
 ap.add_argument("--window", type=int, default=0)
 ap.add_argument("--nwin", type=int, default=24)
+ap.add_argument("--first", type=int, default=0, help="umbrella: first window of this run")
+ap.add_argument("--count", type=int, default=None, help="umbrella: windows in this run (default all)")
 ap.add_argument("--kappa", type=float, default=150.0)
 ap.add_argument("--equil", type=float, default=20.0, help="ps before a window's production")
 ap.add_argument("--report", type=float, default=10.0, help="ps between log lines")
@@ -149,8 +151,9 @@ elif a.mode == "plain":
 elif a.mode == "umbrella":
     # all windows as walkers of one program; each first steered from the start to its centre
     from pgm_jax.bias.walkers import Walkers
-    K = a.nwin
-    cen = -np.pi + (np.arange(K) + 0.5) * 2 * np.pi / K
+    cen_all = -np.pi + (np.arange(a.nwin) + 0.5) * 2 * np.pi / a.nwin
+    cen = cen_all[a.first:a.first + (a.count or a.nwin)]
+    K = len(cen)
     holder = {}
 
     def mk(phi, psi):
@@ -186,7 +189,7 @@ elif a.mode == "umbrella":
     n = int(round(a.ns * 1000 / a.dt)) - int(np.asarray(wk.S.step)[0])
     t0 = time.time()
     wk.run(n, report=rep, restart=rep * 50, prefix=a.out, append=a.resume)
-    json.dump({"centers": cen.tolist(), "kappa": a.kappa, "nwin": K}, open(a.out + ".json", "w"))
+    json.dump({"centers": cen.tolist(), "kappa": a.kappa, "nwin": a.nwin, "first": a.first}, open(a.out + ".json", "w"))
     print(f"# {K} windows x {n} steps in {time.time() - t0:.0f} s")
 elif a.mode == "bench":
     # the same system and settings with and without a 2D metaD bias (grid; hills every 250 steps)

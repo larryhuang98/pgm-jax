@@ -171,7 +171,7 @@ def test_metad_grid_matches_hill_sum(periodic):
         assert float(jnp.max(jnp.abs(g(jnp.asarray(p + e)) - g(jnp.asarray(p - e))))) < 1e-5
 
 
-def _opes_reference(S, sigma0, barrier, kT, periods, compression=1.0, fixed_sigma=False):
+def _opes_reference(S, sigma0, barrier, kT, periods, compression=1.0, fixed_sigma=False, recursive=True):
     """PLUMED OPES_METAD (update() and calculate()) written out with lists, one CV set per call."""
     d = len(sigma0)
     g = barrier / kT
@@ -210,30 +210,48 @@ def _opes_reference(S, sigma0, barrier, kT, periods, compression=1.0, fixed_sigm
         if not fixed_sigma:
             sig = sig * (neff * (d + 2) / 4) ** (-1 / (4 + d))
         h = w * np.prod(np.asarray(sigma0) / sig)
-        best, bn = None, compression ** 2
-        for i, k in enumerate(K):
-            n2 = np.sum((diff(s, k[1]) / k[2]) ** 2)
-            if n2 < bn:
-                best, bn = i, n2
-        if best is None or compression == 0:
+        def merge(t, g):                           # g merged into t (moments about t's centre)
+            dc = diff(g[1], t[1])
+            hm = t[0] + g[0]
+            c = t[1] + g[0] / hm * dc
+            s2 = (t[0] * t[2] ** 2 + g[0] * (g[2] ** 2 + dc ** 2)) / hm - (g[0] / hm * dc) ** 2
+            return [hm, np.where(P > 0, c - P * np.round(c / np.where(P > 0, P, 1)), c), np.sqrt(s2)]
+
+        def mergeable(center, skip):
+            best, bn = None, compression ** 2
+            for i, k in enumerate(K):
+                if i == skip:
+                    continue
+                n2 = np.sum((diff(center, k[1]) / k[2]) ** 2)
+                if n2 < bn:
+                    best, bn = i, n2
+            return best
+
+        best = mergeable(s, None) if compression > 0 else None
+        if best is None:
             K.append([h, s.copy(), sig])
         else:
-            k = K[best]
-            dc = diff(s, k[1])
-            hm = k[0] + h
-            c = k[1] + h / hm * dc
-            s2 = (k[0] * k[2] ** 2 + h * (sig ** 2 + dc ** 2)) / hm - (h / hm * dc) ** 2
-            c = np.where(P > 0, c - P * np.round(c / np.where(P > 0, P, 1)), c)
-            K[best] = [hm, c, np.sqrt(s2)]
+            K[best] = merge(K[best], [h, s, sig])
+            if recursive:
+                g = best
+                t = mergeable(K[g][1], g)
+                while t is not None:
+                    K[t] = merge(K[t], K[g])
+                    del K[g]
+                    if t > g:
+                        t -= 1
+                    g = t
+                    t = mergeable(K[g][1], g)
         Z = np.mean([sum(kern(j, k[1]) for j in K) / sw for k in K])
     return out, K, Z, sw
 
 
-@pytest.mark.parametrize("fixed", [False, True])
-def test_opes_matches_reference_algorithm(fixed):
+@pytest.mark.parametrize("fixed,recursive", [(False, True), (True, True), (False, False)])
+def test_opes_matches_reference_algorithm(fixed, recursive):
     kT = KB * 300.0
     phi, d = cv.Dihedral(0, 1, 2, 3), cv.Distance(0, 3)
-    b = OPES([d, phi], sigma=[0.05, 0.3], pace=1, barrier=30.0, temperature=300.0, capacity=8, fixed_sigma=fixed)
+    b = OPES([d, phi], sigma=[0.05, 0.3], pace=1, barrier=30.0, temperature=300.0, capacity=8, fixed_sigma=fixed,
+             recursive=recursive)
     rng = np.random.default_rng(2)
     S = np.stack([0.3 + 0.08 * rng.normal(size=60), np.mod(2.0 + 0.9 * rng.normal(size=60) + np.pi, 2 * np.pi) - np.pi], 1)
     st = b.init()
@@ -243,13 +261,19 @@ def test_opes_matches_reference_algorithm(fixed):
         st = b.reserve(st, 1)
         V.append(float(b.potential(st, jnp.asarray(s))))
         st = b.update(st, jnp.asarray(s), i + 1)
-    Vr, Kr, Zr, swr = _opes_reference(S, [0.05, 0.3], 30.0, kT, [0.0, 2 * np.pi], fixed_sigma=fixed)
+    Vr, Kr, Zr, swr = _opes_reference(S, [0.05, 0.3], 30.0, kT, [0.0, 2 * np.pi], fixed_sigma=fixed, recursive=recursive)
     assert np.allclose(V, Vr, atol=1e-9, rtol=0), np.max(np.abs(np.array(V) - Vr))
-    assert int(st.nk) == len(Kr) < 60 and int(st.merged) == 60 - len(Kr)
+    assert int(st.nk) == len(Kr) < 60 and (recursive or int(st.merged) == 60 - len(Kr))
+    # the same kernels (in another order after recursive deletions)
+    kr = np.array(sorted([[k[0], *k[1], *k[2]] for k in Kr]))
+    kj = np.array(sorted(np.concatenate([np.asarray(st.heights[:int(st.nk)])[:, None], np.asarray(st.centers[:int(st.nk)]),
+                                         np.asarray(st.sigmas[:int(st.nk)])], 1).tolist()))
+    assert np.allclose(kr, kj, rtol=1e-9, atol=1e-12)
     assert abs(float(st.zed) - Zr) < 1e-10 * Zr and abs(float(st.sum_w) - swr) < 1e-9 * swr
     for s in S[:5]:                                          # the final bias too
         assert abs(float(b.potential(st, jnp.asarray(s))) - _opes_reference(np.vstack([S, s]), [0.05, 0.3], 30.0, kT,
-                                                                              [0.0, 2 * np.pi], fixed_sigma=fixed)[0][-1]) < 1e-9
+                                                                              [0.0, 2 * np.pi], fixed_sigma=fixed,
+                                                                              recursive=recursive)[0][-1]) < 1e-9
     assert b.info(st)["kernels"] == len(Kr)
     # a full buffer: new kernels merge into their nearest neighbour instead of being lost
     small = OPES([d, phi], sigma=[0.05, 0.3], pace=1, barrier=30.0, temperature=300.0, capacity=4, compression=0.0)

@@ -364,7 +364,8 @@ class OPES(Bias):
     sigma = sigma0 (N_eff (d + 2) / 4)^(-1 / (d + 4)) (bandwidth rescaling; N_eff = (1 + sum_w)^2 /
     (1 + sum_w2); fixed_sigma=True keeps sigma0), height w prod(sigma0 / sigma); merged into the
     nearest kernel when that is closer than `compression` in units of its sigma (compression: 0 = off;
-    one level of merging, PLUMED also merges recursively); Z = mean over kernel centres of P,
+    recursive=True, PLUMED's default: the merged kernel is merged again while another kernel is
+    within the threshold); Z = mean over kernel centres of P,
     recomputed after each deposition (O(K^2)).
     barrier: expected barrier Delta E (kJ/mol); defaults as PLUMED: biasfactor gamma = Delta E /
     kB T, eps = exp(-Delta E / ((1 - 1/gamma) kB T)), kernel cutoff sqrt(2 Delta E / ((1 - 1/gamma)
@@ -373,7 +374,8 @@ class OPES(Bias):
 
     def __init__(self, cvs, sigma, pace: int, barrier: float, biasfactor: float | None = None,
                  temperature=None, epsilon: float | None = None, kernel_cutoff: float | None = None,
-                 compression: float = 1.0, sigma_min=None, fixed_sigma: bool = False, capacity: int = 512):
+                 compression: float = 1.0, sigma_min=None, fixed_sigma: bool = False, capacity: int = 512,
+                 recursive: bool = True):
         super().__init__(cvs, temperature)
         self.sigma0 = _vec(sigma, self.d, "sigma")
         self.sigma_min = np.zeros(self.d) if sigma_min is None else _vec(sigma_min, self.d, "sigma_min")
@@ -382,6 +384,7 @@ class OPES(Bias):
         self.pace, self.barrier = int(pace), float(barrier)
         self._biasfactor, self._epsilon, self._cutoff = biasfactor, epsilon, kernel_cutoff
         self.compression = float(compression)
+        self.recursive = bool(recursive)
         self.fixed_sigma = bool(fixed_sigma)
         self.capacity = int(capacity)
 
@@ -453,18 +456,14 @@ class OPES(Bias):
         full = st.nk >= K                     # no free slot: merge into the nearest kernel (counted in `forced`)
         forced = full & ~merge
         merge = merge | full
-        # merged kernel (moments about the taker's centre, periodic-safe)
-        h1, c1, s1 = st.heights[k], st.centers[k], st.sigmas[k]
-        hm = h1 + h
-        dc = ds[k]
-        a = h / hm
-        cm = self.cvs.canonical(c1 + a * dc)
-        sm = jnp.sqrt((h1 * s1 ** 2 + h * (sigma ** 2 + dc ** 2)) / hm - (a * dc) ** 2)
+        cm, sm, hm = self._merge(st.centers[k], st.sigmas[k], st.heights[k], s, sigma, h)
         slot = jnp.where(merge, k, st.nk)
         centers = st.centers.at[slot].set(jnp.where(merge, cm, s))
         sigmas = st.sigmas.at[slot].set(jnp.where(merge, sm, sigma))
         heights = st.heights.at[slot].set(jnp.where(merge, hm, h))
         nk = st.nk + jnp.where(merge, 0, 1).astype(jnp.int32)
+        if self.recursive:
+            centers, sigmas, heights, nk = self._recursive(centers, sigmas, heights, nk, slot, merge & ~forced)
         new = OPESState(centers, sigmas, heights, nk, sum_w, sum_w2, st.zed, counter,
                         st.merged + merge.astype(jnp.int32),
                         (jnp.zeros((), jnp.int32) if st.forced is None else st.forced) + forced.astype(jnp.int32))
@@ -473,6 +472,49 @@ class OPES(Bias):
         P = jax.vmap(lambda c: self.probability(new, c))(centers)
         zed = jnp.sum(jnp.where(act, P, 0.0)) / jnp.maximum(nk, 1)
         return new._replace(zed=zed)
+
+    def _merge(self, c1, s1, h1, c2, s2, h2):
+        """Kernel 2 merged into kernel 1: summed heights, weighted mean and second moment (moments
+        about c1, so periodic CVs are safe)."""
+        hm = h1 + h2
+        dc = wrap(c2 - c1, self.cvs.periods)
+        a = h2 / hm
+        cm = self.cvs.canonical(c1 + a * dc)
+        sm = jnp.sqrt(jnp.maximum((h1 * s1 ** 2 + h2 * (s2 ** 2 + dc ** 2)) / hm - (a * dc) ** 2, 1e-300))
+        return cm, sm, hm
+
+    def _mergeable(self, centers, sigmas, nk, g):
+        """Nearest kernel j != g to kernel g's centre in units of sigma_j, and whether it is below
+        the compression threshold."""
+        K = centers.shape[0]
+        ds = wrap(centers[g][None, :] - centers, self.cvs.periods) / sigmas
+        idx = jnp.arange(K)
+        n2 = jnp.where((idx < nk) & (idx != g), jnp.sum(ds * ds, 1), jnp.inf)
+        j = jnp.argmin(n2)
+        return j, n2[j] < self.compression ** 2
+
+    def _recursive(self, centers, sigmas, heights, nk, g, go):
+        """PLUMED's recursive merging: while the merged kernel g is within the threshold of another
+        kernel t, merge g into t and delete g (the last kernel moves into its slot)."""
+        t, near = self._mergeable(centers, sigmas, nk, g)
+
+        def body(c):
+            centers, sigmas, heights, nk, g, t, _ = c
+            cm, sm, hm = self._merge(centers[t], sigmas[t], heights[t], centers[g], sigmas[g], heights[g])
+            centers, sigmas, heights = centers.at[t].set(cm), sigmas.at[t].set(sm), heights.at[t].set(hm)
+            last = nk - 1                                         # delete g: the last kernel takes its slot
+            centers, sigmas, heights = (centers.at[g].set(centers[last]), sigmas.at[g].set(sigmas[last]),
+                                        heights.at[g].set(heights[last]))
+            heights = heights.at[last].set(0.0)
+            sigmas = sigmas.at[last].set(1.0)
+            t = jnp.where(t == last, g, t)
+            nk = nk - 1
+            g = t
+            t, near = self._mergeable(centers, sigmas, nk, g)
+            return centers, sigmas, heights, nk, g, t, near
+
+        c = jax.lax.while_loop(lambda c: c[-1], body, (centers, sigmas, heights, nk, g, t, go & near))
+        return c[0], c[1], c[2], c[3]
 
     def reserve(self, st, n_updates: int):
         """Kernels are compressed, so the buffer is not sized for every update: it doubles when the
