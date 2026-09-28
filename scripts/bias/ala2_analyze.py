@@ -34,6 +34,7 @@ ap.add_argument("--us-skip", type=float, default=0.1)
 ap.add_argument("--bins", type=int, default=36)
 ap.add_argument("--bins2", type=int, default=24)
 ap.add_argument("--fmax", type=float, default=25.0)
+ap.add_argument("--fmax-remd", type=float, default=12.0, help="region of the REMD comparison (300 K samples)")
 ap.add_argument("--blocks", type=int, default=4)
 ap.add_argument("--out", required=True)
 a = ap.parse_args()
@@ -96,7 +97,7 @@ else:
     Fref = eref = None
 refs = {}
 if Fref is not None:
-    refs["wham"] = (Fref, eref)
+    refs["wham"] = (Fref, eref, a.fmax)
 
 
 def dihedral_np(X, idx):
@@ -120,12 +121,13 @@ if a.remd:
     Fr = A.histogram_fes(phi_r, None, [ax], kT, [P])
     blocks = [A.histogram_fes(b, None, [ax], kT, [P]) for b in np.array_split(phi_r, 5)]
     blocks = np.array([A.align_rmsd(f, Fr, Fr < a.fmax)[2] for f in blocks])
-    er = blocks.std(0, ddof=1) / np.sqrt(5)
+    with np.errstate(invalid="ignore"):
+        er = np.nanstd(np.where(np.isfinite(blocks), blocks, np.nan), 0, ddof=1) / np.sqrt(5)
     dgb = [dG(b, np.zeros(len(b))) for b in np.array_split(phi_r, 5)]
     res["remd"] = {"F": Fr.tolist(), "err": er.tolist(), "frames": int(len(phi_r)), "dG_aL": dG(phi_r, np.zeros(len(phi_r))),
                    "dG_aL_err": float(np.std(dgb, ddof=1) / np.sqrt(5)),
                    "F2": A.histogram_fes(np.stack([phi_r, psi_r], 1), None, [ax2, ax2], kT, [P, P]).tolist()}
-    refs["remd"] = (Fr, er)
+    refs["remd"] = (Fr, er, a.fmax_remd)
     print(f"REMD 300 K ({len(phi_r)} frames): dG(phi>0) = {res['remd']['dG_aL']:.2f} +- {res['remd']['dG_aL_err']:.2f} kJ/mol")
     if Fref is not None:
         m = (Fref < a.fmax) & np.isfinite(Fr)
@@ -138,21 +140,21 @@ def compare(name, Fs1, dgs, Fs2=None, Fbias=None):
     Fs1 = np.array(Fs1)
     out = {"runs": len(Fs1), "dG_aL_runs": [float(x) for x in dgs], "dG_aL": float(np.mean(dgs)),
            "dG_aL_err": float(np.std(dgs, ddof=1) / np.sqrt(len(dgs))) if len(dgs) > 1 else None}
-    for rname, (Fr, er) in refs.items():
-        m = (Fr < a.fmax) & np.isfinite(Fr)
+    for rname, (Fr, er, fmax) in refs.items():
+        m = (Fr < fmax) & np.isfinite(Fr) & np.isfinite(er)
         al = np.array([A.align_rmsd(f, Fr, m)[2] for f in Fs1])
         Fm = al.mean(0)
         em = al.std(0, ddof=1) / np.sqrt(len(al)) if len(al) > 1 else np.zeros_like(Fm)
         r, mx, _ = A.align_rmsd(Fm, Fr, m)
         tot = np.sqrt(em ** 2 + er ** 2)
-        o = {"F_mean": Fm.tolist(), "F_err": em.tolist(), "rmsd": r, "max": mx,
+        o = {"region_F_below": fmax, "bins": int(m.sum()), "F_mean": Fm.tolist(), "F_err": em.tolist(), "rmsd": r, "max": mx,
              "rmsd_runs": [A.align_rmsd(f, Fr, m)[0] for f in Fs1],
              "chi2_per_bin": float(np.mean(((Fm - Fr)[m] / np.maximum(tot[m], 1e-6)) ** 2)), "mean_err": float(tot[m].mean())}
         if Fbias is not None:
             fb = np.array(Fbias)
             o["rmsd_bias"] = A.align_rmsd(np.mean([A.align_rmsd(f, Fr, m)[2] for f in fb], 0), Fr, m)[0]
         out["vs_" + rname] = o
-        print(f"{name} vs {rname}: F(phi) RMSD {r:.3f} kJ/mol (max {mx:.2f}; per run {np.mean(o['rmsd_runs']):.3f}), "
+        print(f"{name} vs {rname} ({int(m.sum())} bins, F < {fmax:g}): F(phi) RMSD {r:.3f} kJ/mol (max {mx:.2f}; per run {np.mean(o['rmsd_runs']):.3f}), "
               f"chi2/bin {o['chi2_per_bin']:.2f}, mean error {o['mean_err']:.3f}"
               + (f"; from the final bias RMSD {o['rmsd_bias']:.3f}" if Fbias is not None else ""))
     print(f"{name}: dG(phi>0) {out['dG_aL']:.2f} +- {out['dG_aL_err'] if out['dG_aL_err'] is not None else float('nan'):.2f} "

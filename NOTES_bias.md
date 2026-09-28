@@ -33,3 +33,15 @@ Running log so the work can be resumed.
   umbrella runs/ala2/usc_{0..21} (8 jobs x 3 windows x 1.5 ns), metaD mdc1-4 and OPES opc1-4 (3 walkers x
   3 ns each); GPU chain2.sh (md, op: 12 walkers x 4 ns) waits for the lock.
 - CPU vacuum ala2: 1.28 ms/step single (grid 20, beta 2.5), 3 walkers 143 ns/day aggregate, 12 walkers 147.
+- Full suite (before strided change): 230 passed (36 min, 32 cores).
+- Strided loop: per-step lax.cond removed (GPU overhead 12 % -> 8 % solvated, 11 % -> 4 % vacuum).
+- Umbrella/WHAM reference in phi FAILS for windows -52.5..-7.5 deg: psi trapped (0 or 1 fraction, <10
+  transitions in 1.5 ns). metaD (GPU md, 12x4 ns) and OPES (CPU) agree with each other (2D RMSD 0.38 over
+  159 bins F<15; dG(phi>0) 7.83+-0.04 / 7.89+-0.18) but not with WHAM (7.40, F max dev 2.4 near phi -45).
+  -> REMD reference (8 replicas 300-700 K): GPU chain5.sh (remd 4 ns then OPES GPU), CPU remdc41/42 (1.5 ns).
+- GPU gpu-2-3: fegrad / iface chains take the lock back-to-back; my jobs get in only occasionally.
+- FINAL (10:30): full suite 231 passed (35 min, 32 cores) after the strided-loop change.
+  ala2 vacuum: REMD (GPU 8x4 ns + CPU 2x8x1.5 ns) dG(phi>0) 7.75+-0.26; metaD 24 runs 7.88+-0.03, F(phi) vs REMD
+  RMSD 0.17 (chi2 0.33); OPES 24 runs 7.90+-0.08, 0.17 (chi2 0.39); metaD vs OPES 2D 0.18. WHAM(phi only) 7.40
+  (psi trapped in windows -52.5..-7.5). Docs: docs/enhanced_sampling.md. Analysis: runs/ala2/an6.sh -> an6.json.
+- Not done: OPES MB 2D (too slow: O(K^2) Z, growing K), py-plumed, PT-metaD, solvated FES comparison.
