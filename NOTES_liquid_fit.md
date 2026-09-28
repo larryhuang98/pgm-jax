@@ -73,3 +73,4 @@
 - Flexible molecules (bonded + intramolecular LJ in U, gas-phase ensemble), charge flux, virtual sites.
 - 14:20 demo512_final (10 ns at iteration-4 theta): rho 0.9963(3), Hvap 10.491(2), eps 81.5(25), eps_inf 1.748,
   liquid mu 2.623 D, gas mu 1.852, pol 1.471; kappa_t 5.0e-5 /bar, alpha_p 1e-5(3e-5) /K (exp 2.6e-4).
+- 14:50 full suite with the final code: 221 passed (31.8 min, cpu-short 32 cores).
