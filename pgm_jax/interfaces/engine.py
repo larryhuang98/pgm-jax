@@ -13,8 +13,12 @@ everything that is expensive to rebuild on the device between calls:
     the CG from the extrapolated dipoles exactly as the native integrator does.  Several `slots`
     keep separate histories for interleaved configurations (i-PI sends the P beads of a ring polymer
     to one client one after the other): the first calls fill the slots in turn, later calls pick the
-    slot whose last configuration is closest (or the slot named by the caller: i-PI batches).  A configuration far from the slot's last one (a jump larger than `jump` nm, e.g. a
-    new structure) restarts that slot's predictor.
+    slot whose last configuration is closest (or the slot named by the caller).  A configuration
+    far from the slot's last one (a jump larger than `jump` nm, e.g. a new structure) restarts that
+    slot's predictor;
+  * for batches of close structures that share the cell (ring-polymer beads, i-PI's batched
+    requests), compute_batch evaluates them in one vmapped call: P slots with stacked dipole
+    histories, one neighbour list of their mean, every structure matched to its own slot.
 
 Per call the host sends positions (float64) and the cell and receives one packed float64 array
 (energy terms, forces, flags); induced dipoles, the cell dipole and the virial stay on the device

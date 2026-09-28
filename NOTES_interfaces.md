@@ -80,3 +80,12 @@ Running log so the work can be resumed.
   1e-4 s, competes with XLA's threads; cancelled the CPU PIMD run: 2 s/step).
 - Native rigid-body Langevin (gamma 1/ps) came out 290-297 K in the 6-20 ps runs of these scripts
   (ASE / OpenMM Langevin 297-299 K); not investigated (outside this feature).
+- 08:16 GPU batch 4: PIMD P=8 with i-PI splitting="baoab" + Cayley (as native): KE_H 118.80+-0.04
+  (native 118.89+-0.10), KE_O 51.09+-0.01 (51.15+-0.06), <V>/molecule -4072.17+-0.09 (-4072.63+-0.08;
+  first block high: equilibration).  P=32 (2.5 ps): KE_H 148.53+-0.06 (148.48+-0.07), KE_O 55.21+-0.03
+  (55.22+-0.06), <V>/molecule -4066.45+-0.11 (-4066.64+-0.07).  Bench after fixes: x1 engine 1.01 ms
+  vs native 0.73; x2 2.90 vs 1.89; ASE x2 12.3 ms (constraints 3.6); OpenMM-CPU 1.50 / 3.19.
+- i-PI splits a step's beads over 1-2 batches (P=32: always 2) -> compute_batch evaluates only the
+  batch's slots (padded to P/4, P/2, P).  Timing (no virial): P=1 3.21 ms/step (native 2.24), P=8
+  11.8 (engine 6.4; native 2.44), P=32 33.1 (engine 17.1; native 15.5); serial P=8 20.8.
+- Full suite (08:17 code): 221 passed in 35 min (cpu-short, 24 cores).
