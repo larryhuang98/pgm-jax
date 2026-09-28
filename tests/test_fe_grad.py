@@ -110,7 +110,7 @@ def test_estimators_are_derivatives_of_reweighted_free_energies(mode):
     E = jax.jit(lambda st, p, lam: alch.energy(ff, *(lambda f: (f[0], st.box, f[1]))(fg._frame(w, st)),
                                                st.induction, space.unflatten(p, P), lam)[0])
     v = direction(space, P, 7)
-    h = 3e-4                                  # float64 roundoff of U (~1e-7 kJ/mol) / h vs truncation h^2
+    h = 3e-5                                  # truncation (h^2: 5e-4 at h = 1e-4) vs float64 roundoff / h
     p0 = space.flatten(P)
     us, gs, dU = [], [], []                   # dU[s, sign, t, n]: U_t(x_n; p0 + sign h v)
     for _ in range(8):
