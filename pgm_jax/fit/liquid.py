@@ -214,7 +214,8 @@ class LiquidFit:
             rec["uq"]["bootstrap_theta_sd"] = b["theta_sd"]
             rec["uq"]["bootstrap_y_sd"] = b["y_sd"]
         # propagated error of the predicted observables: from the sampling error of theta + d
-        y_pred_err = np.sqrt(np.clip(np.einsum("mi,ij,mj->m", est.J, cov["C_theta"], est.J), 0, None))
+        y_pred_err = np.sqrt(np.clip(np.einsum("mi,ij,mj->m", est.J, cov["C_theta"], est.J), 0, None)
+                             + (est.J_err ** 2) @ (d ** 2))              # + the Jacobian's own noise times the step
         self.pending = {"y_pred": st["y_pred"], "y_pred_err": y_pred_err, "y_rw": yrw, "chi2_prev": chi2 + prior,
                         "chi2_pred": sum(st["chi2_pred"]), "at_boundary": st["at_boundary"]}
         rec["next_theta"] = theta + d

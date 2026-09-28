@@ -49,3 +49,12 @@
   eps +0.7, eps_inf -0.4, dipole +0.7; --skip 1: all |z| < 0.9).  The early z ~ 3 came from 2-4 segments
   (equilibration transient after the 40 ps start / chance); no evidence of a 2 fs bias.
 - gpu_master2.sh: fd512_c -> rec512 -> one demo job -> w64 to 24 segments -> demo; then gpu_queue6.sh (x64, 2 fs GPU).
+- 08:10 FD 512 (m3/c/p3, 4 ns each): all |z| <= 2.0 (full), <= 1.2 dropping the first 2 ns.  Calibration (64-water
+  replicas, 600 ps each): jackknife errors of eps/Hvap/dipole = replica spread; parameter errors right for 1-param and
+  well-conditioned fits, conservative (<= 2x) when J has a small noisy element.
+- 08:40 first recovery (q,cov,alpha,lj_eps from (0.03,-0.10,0.06,0.15)) went off: q/cov nearly degenerate and the
+  Marquardt diag(A) damping pushed the trust-region step into lj_eps.  Fixed: damping in the prior metric (exact TR
+  subproblem).  Killed that run; rec512b: (q, alpha, R*, eps) from (0.02,-0.05,0.01,0.10).
+- rec512b iter 1: all targets within ~1-4 sigma; next theta (-0.0001, 0.0000, -0.0084, 0.157), posterior sd
+  (0.0003, 0.0006, 0.0050, 0.097), corr(R*, eps) -0.996; Mahalanobis 8.5 (chi2_4 95 % = 9.5).
+- full suite (cluster CPU, 07:05 code): 221 passed in 41 min.

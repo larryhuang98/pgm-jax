@@ -147,7 +147,53 @@ roughly as sqrt(N) (covariance of two extensive fluctuating quantities): 16 x 40
 the slope to 4-5 %. Independent simulations at theta +- delta measure a directional derivative more
 precisely than the fluctuation formula; the formula gives all parameters' derivatives from one run.
 
+**(c) Calibration of the uncertainties.** The 16 replicas of the 64-water run at theta = 0 (2 fs,
+600 ps each after 40 ps) are independent trajectories: each gives its own observables, jackknife
+errors (10 blocks of 60 ps, conservative rule), Jacobian, fit and predicted C_theta
+(`liquid_fit_tools.py calib-rep`, targets at the pooled means, no tolerances, wide prior). Spread
+over the fits (95 % interval of a standard deviation from 16 samples) against the predictions:
+
+| Quantity | spread over independent runs | predicted (rms) | bootstrap |
+|---|---|---|---|
+| eps (single replica) | 2.78 (2.05-4.30) | jackknife 2.76 | |
+| Hvap (kcal/mol) | 0.0096 (0.0071-0.0149) | jackknife 0.0101 | |
+| liquid dipole (D) | 0.0008 (0.0006-0.0012) | jackknife 0.0008 | |
+| ln s_q fitted to eps (1 parameter) | 0.0076 (0.0056-0.0118) | 0.0074 | 0.0082 |
+| ln s_q, ln s_pol fitted to eps + Hvap | 0.19 (0.14-0.30), 0.89 (0.66-1.38) | 0.26, 1.18 | 0.37, 1.72 |
+| ln s_q, ln s_eps(LJ) fitted to eps + Hvap | 0.012 (0.009-0.019), 0.72 (0.53-1.11) | 0.020, 1.15 | 0.023, 1.31 |
+| same, fits of 2 replicas (8 fits) | 0.0033 (0.0022-0.0068), 0.17 (0.11-0.35) | 0.0080, 0.44 | 0.012, 0.64 |
+
+The jackknife errors of the observables are accurate. The parameter errors are right for a
+well-conditioned fit and conservative (up to ~2x) when a Jacobian element is small and noisy
+(d eps/d ln s_eps(LJ) = 3 +- 12 per replica makes some replicas' J nearly singular). With blocks shorter
+than the dipole's slow tail (300 ps replicas, 10 blocks of 30 ps) the eps jackknife error was 1.6x too
+small; halving the number of blocks and keeping the larger variance (the default, `conservative`)
+guards against that.
+
+**(b) Recovery test** (512 waters, NPT, 2 ns per iteration): the base water perturbed to
+(ln s_q, ln s_pol, ln s_R, ln s_eps) = (0.02, -0.05, 0.01, 0.10) and fitted back to the base model's
+own values (density 0.97633, Hvap 6.81193, eps 73.26 from a 2 ns reference run, tolerances = the
+reference's statistical errors; gas dipole 1.85807 D, polarizability 1.98364 A^3, tolerance 0.001),
+prior width 1 (negligible), trust radius 0.1:
+
+RECOVERY_TABLE
+
+**(d) Demonstration: the base pGM water toward experiment** (preliminary; 512 waters, NPT, 2 ns per
+iteration; six global scale factors q, cov, alpha, radius, R*, eps; prior width 0.3 on each ln s,
+i.e. regularised toward the base model; targets density 0.997 +- 0.002, Hvap 10.52 +- 0.05 kcal/mol,
+eps 78.4 +- 1.5, gas dipole 1.855 +- 0.01 D, gas polarizability 1.47 +- 0.01 A^3):
+
+DEMO_TABLE
+
 ## Speed
+
+One RTX PRO 6000 Blackwell, 512 waters, mixed precision, frames every 0.5 ps (250 steps of 2 fs):
+the analysis of a frame (tight dipole re-solve, four adjoint solves, one jacrev of six outputs for
+3-6 parameters, g(r)), vmapped in chunks of 8, takes 4-7 ms, 2-3 % of the MD time between frames
+(2 ns of NPT MD + 4000 frames: 15-19 min, i.e. 150-190 ns/day). 64 waters in 16 batched replicas:
+50 ps per replica (1 fs) in 37 s including the analysis. On CPUs (48 cores) a frame of 512 waters takes
+0.87 s. The per-iteration estimates (jackknife over blocks, 200 bootstrap resamples, LM with exact
+gas-phase terms) take seconds.
 
 ## Limits
 
