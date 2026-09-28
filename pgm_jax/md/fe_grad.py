@@ -318,7 +318,7 @@ def gradient_estimate(samples, discard_ps: float = 0.0, gas=None, n_blocks: int 
     solute's exact leg, gas_leg_gradient; zeros with intramolecular="keep", where the hydration free
     energy is -Delta G_solv).  Returns {"solv": {"mbar": FEGradient, "end": FEGradient},
     "hyd": {...} (if gas), "names", "samples_per_window", "n_blocks", "end_means": (<dU_0/dP>_0,
-    <dU_{K-1}/dP>_{K-1}), "mbar_value_err_asymptotic"}.  The value of the "end" entries is the MBAR
+    <dU_{K-1}/dP>_{K-1}) and "end_means_err"}.  The value of the "end" entries is the MBAR
     free energy too (the end-state estimator is for the gradient only).  Errors: block jackknife."""
     S = dict(samples)
     meta = S.get("meta", {})
