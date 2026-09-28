@@ -94,3 +94,22 @@ bootstrap of y, J and the step as a check.
 ## Speed
 
 ## Limits
+
+- Rigid molecules (the `Simulation` engine). `FrameAnalyzer` evaluates the PGMForceField energy
+  (pGM + intermolecular van der Waals): flexible molecules would need their bonded and intramolecular
+  LJ terms in U and a gas-phase ensemble for Hvap (`scripts/fit_liquid.py` has the latter for LJ only);
+  charge flux and virtual sites are refused.
+- `GasPhase` is one rigid molecule (the monomer geometry of the liquid); `fit_multi.py` handles boxes
+  of one molecule type (the library takes any system; gas-phase targets per molecule type).
+- Reweighting predictions collapse for the steps a fit takes: with 512 waters n_eff ~ 1 of 4000 for
+  |d theta| ~ 0.05 in ln s_q (linear-exponential and exact alike), so the next iteration is predicted
+  by the linear model (liquid) and exact gas-phase values, and verified by the next simulation.
+- Steps in the strongly nonlinear regime (base water: eps and density change by 2x for 8 % charge
+  scaling) are only as good as the trust region; the ratio test uses noisy chi2 values and no step is
+  rejected (the next simulation always runs at the new parameters).
+- The parameter covariance is the linearised sampling covariance at the fixed point; the Jacobian's
+  own noise enters only through the bootstrap.
+- `alpha_p` (thermal expansion) and `kappa_t` (compressibility) have exact estimator gradients
+  (third cumulants through the reweighted averages; pytest) but were not used or validated in fits;
+  there are no other temperature-derivative targets (Cp, TMD).
+- Batched replicas run NVT only (md/remd.MDReplicas); NPT runs one simulation.

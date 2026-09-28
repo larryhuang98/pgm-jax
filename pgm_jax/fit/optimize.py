@@ -78,8 +78,9 @@ class Estimate:
 
 
 class Objective:
-    def __init__(self, targets: list[Target], space, gas=None, prior_center=None, rdf_r=None):
+    def __init__(self, targets: list[Target], space, gas=None, prior_center=None, rdf_r=None, conservative: bool = True):
         self.targets, self.space, self.gas = targets, space, gas
+        self.conservative = bool(conservative)
         self.prior_center = np.zeros(space.n) if prior_center is None else np.asarray(prior_center, float)
         self.prior_sigma = np.asarray(space.prior_sigma, float)
         self.rdf_r = rdf_r
@@ -154,6 +155,17 @@ class Objective:
             B = len(W)
             cov = jackknife_cov(yl)
             J_err = np.sqrt((B - 1) / B * np.sum((Jl - Jl.mean(0)) ** 2, axis=0))
+            if self.conservative and B >= 8:
+                # blocks twice as long: if the variances grow, the blocks were not longer than the
+                # correlation time (the dipole's ~10 ps): scale up, keeping the correlations
+                Wh = samples.blocks_weights(B // 2)
+                yh = np.array([np.asarray(f(z, jnp.asarray(wb))) for wb in Wh])
+                Jh = np.array([np.asarray(jf(z, jnp.asarray(wb))) for wb in Wh])
+                vh, v = np.diag(jackknife_cov(yh)), np.diag(cov)
+                c = np.sqrt(np.maximum(1.0, np.where(v > 0, vh / np.where(v > 0, v, 1.0), 1.0)))
+                cov = cov * c[:, None] * c[None, :]
+                Bh = len(Wh)
+                J_err = np.maximum(J_err, np.sqrt((Bh - 1) / Bh * np.sum((Jh - Jh.mean(0)) ** 2, axis=0)))
         else:
             yl, Jl = None, None
             cov, J_err = np.zeros((len(y), len(y))), np.zeros_like(J)

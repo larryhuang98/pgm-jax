@@ -144,9 +144,11 @@ class LiquidSamples:
             return (avg["V2"] - avg["V"] ** 2) / (kT * avg["V"]) / BAR_KJ
         raise KeyError(f"unknown liquid observable {name!r}")
 
-    def blocks_weights(self):
-        """Leave-one-block-out frame weights (nblocks, F)."""
-        return np.array([(self.block != b).astype(float) for b in range(self.nblocks)])
+    def blocks_weights(self, nblocks: int | None = None):
+        """Leave-one-block-out frame weights (nblocks, F) for nblocks contiguous blocks (default: self.nblocks)."""
+        B = self.nblocks if nblocks is None else int(nblocks)
+        block = self.block if nblocks is None else np.minimum((np.arange(self.F) * B) // self.F, B - 1)
+        return np.array([(block != b).astype(float) for b in range(B)])
 
     def bootstrap_weights(self, rng, n: int):
         """Block-bootstrap frame weights (n, F): each block's multiplicity in a resample."""
