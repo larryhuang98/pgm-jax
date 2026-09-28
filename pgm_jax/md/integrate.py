@@ -92,6 +92,22 @@ def upgrade_state(st: MDState, aux) -> MDState:
     return st
 
 
+def strided_loop(st, n, step, post, stride: int):
+    """n steps with post(state) after every step whose counter is a multiple of `stride`, written
+    as plain inner loops of `stride` steps, so the steps in between carry no conditional (on a GPU
+    each lax.cond reads its predicate on the host: two per step cost ~0.1 ms)."""
+    s0 = st.step if jnp.ndim(st.step) == 0 else st.step.reshape(-1)[0]
+    head = (stride - s0 % stride) % stride
+    h = jnp.minimum(head, n)
+    st = jax.lax.fori_loop(0, h, lambda _, s: step(s), st)
+    st = jax.lax.cond((h == head) & (head > 0), post, lambda s: s, st)
+    rem = n - h
+    nch = rem // stride
+    inner = lambda s: jax.lax.fori_loop(0, stride, lambda _, t: step(t), s)          # noqa: E731
+    st = jax.lax.fori_loop(0, nch, lambda _, s: post(inner(s)), st)
+    return jax.lax.fori_loop(0, rem - nch * stride, lambda _, s: step(s), st)
+
+
 class Integrator:
     keep_geometry = False             # ask the force field for its row geometry (multiple time stepping, mts.py)
 
@@ -353,9 +369,9 @@ class Integrator:
 
     def _run(self, st: MDState, n) -> MDState:
         st = st.set(max_iters=jnp.zeros((), jnp.int32), resid=jnp.zeros((), jnp.float64), overflow=jnp.zeros((), bool))
-        if self.bias is None:
+        if self.bias is None or self.bias.stride == 0:
             return jax.lax.fori_loop(0, n, lambda _, s: self._step(s), st)
-        return jax.lax.fori_loop(0, n, lambda _, s: self._bias_post(self._step(s)), st)
+        return strided_loop(st, n, self._step, self._bias_post, self.bias.stride)
 
     # --------------------------------------------------------------------- observables
     def kinetic(self, st: MDState):

@@ -87,7 +87,7 @@ class Walkers(MDReplicas):
         if self.shared:
             self._run = jax.jit(self._run_shared, static_argnums=1)
         else:
-            self._run = jax.jit(jax.vmap(integ._run, in_axes=(ax, None), out_axes=ax))
+            self._run = jax.jit(self._run_independent, static_argnums=1)
         self._forces = jax.jit(jax.vmap(lambda s: integ._state_forces(s, True), in_axes=(ax,), out_axes=ax))
         self._wrap = jax.jit(jax.vmap(sim.rigid.wrap))
         self._positions = jax.jit(jax.vmap(sim.rigid.positions))
@@ -99,6 +99,21 @@ class Walkers(MDReplicas):
                                               in_axes=(0, 0, None)))
         else:
             self._energies = jax.jit(jax.vmap(lambda x, box, bs: bias.energies(bs, integ._bias_atoms(x), box)))
+
+    def _run_independent(self, S, n):
+        """Every walker with its own bias: the step and the bias update vmapped, the loop over steps
+        outside vmap (the walkers share the step counter), so the steps between updates carry no
+        conditional (md/integrate.strided_loop)."""
+        from ..md.integrate import strided_loop
+        integ = self.integ
+        ax = self._axes()
+        W = self.n
+        S = S.set(max_iters=jnp.zeros(W, jnp.int32), resid=jnp.zeros(W), overflow=jnp.zeros(W, bool))
+        step = jax.vmap(integ._step, in_axes=(ax,), out_axes=ax)
+        if integ.bias.stride == 0:
+            return jax.lax.fori_loop(0, n, lambda _, s: step(s), S)
+        post = jax.vmap(integ._bias_post, in_axes=(ax,), out_axes=ax)
+        return strided_loop(S, n, step, post, integ.bias.stride)
 
     def _run_shared(self, S, n):
         integ, bias = self.integ, self.integ.bias

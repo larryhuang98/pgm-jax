@@ -37,7 +37,9 @@ from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.protein import amber_template, load_amber  # noqa: E402
 
 ap = argparse.ArgumentParser()
-ap.add_argument("mode", choices=("metad", "opes", "umbrella", "plain", "analyze", "bench"))
+ap.add_argument("mode", choices=("metad", "opes", "umbrella", "plain", "remd", "analyze", "bench"))
+ap.add_argument("--replicas", type=int, default=8)
+ap.add_argument("--tmax", type=float, default=700.0)
 ap.add_argument("--prmtop", default="runs/ala2/ala2.prmtop")
 ap.add_argument("--inpcrd", default="runs/ala2/ala2.inpcrd")
 ap.add_argument("--out", required=True)
@@ -191,6 +193,28 @@ elif a.mode == "umbrella":
     wk.run(n, report=rep, restart=rep * 50, prefix=a.out, append=a.resume)
     json.dump({"centers": cen.tolist(), "kappa": a.kappa, "nwin": a.nwin, "first": a.first}, open(a.out + ".json", "w"))
     print(f"# {K} windows x {n} steps in {time.time() - t0:.0f} s")
+elif a.mode == "remd":
+    # temperature replica exchange (md/remd.py), the replicas batched: the 300 K slot is an
+    # independent reference for the phi/psi distribution
+    from pgm_jax.md.remd import ReplicaExchange, geometric_ladder
+    sim, phi, psi = build(None)
+    rex_T = geometric_ladder(a.T, a.tmax, a.replicas)
+    n = int(round(a.ns * 1000 / a.dt))
+    rep = int(round(a.report / a.dt))
+    if a.resume and os.path.exists(a.out + ".remd.chk"):
+        rex = ReplicaExchange(sim, rex_T, exchange_every=250, seed=a.seed)
+        rex.load(a.out + ".remd.chk")
+        n -= int(rex.step)
+        print(f"# resumed at step {int(rex.step)}; {n} steps to go", flush=True)
+    else:
+        sim.minimize(200, seed=a.seed)
+        sim.run(int(round(a.equil / a.dt)), report=int(round(a.equil / a.dt)), prefix=a.out + "_eq")
+        rex = ReplicaExchange(sim, rex_T, exchange_every=250, seed=a.seed)
+    json.dump({"phi": [int(i) for i in phi.idx], "psi": [int(i) for i in psi.idx], "T": list(map(float, rex_T))},
+              open(a.out + ".json", "w"))
+    t0 = time.time()
+    rex.run(n, report=rep, traj=100, restart=rep * 50, prefix=a.out, append=a.resume)
+    print(f"# REMD {a.replicas} replicas x {n} steps in {time.time() - t0:.0f} s", flush=True)
 elif a.mode == "bench":
     # the same system and settings with and without a 2D metaD bias (grid; hills every 250 steps)
     out = {}

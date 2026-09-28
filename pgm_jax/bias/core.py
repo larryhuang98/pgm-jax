@@ -609,6 +609,16 @@ class BiasSet:
     def dynamic(self) -> bool:
         return any(b.pace > 0 for b in self.biases)
 
+    @property
+    def stride(self) -> int:
+        """Steps between possible COLVAR rows or updates (gcd of `colvar` and the paces; 0: none)."""
+        import math
+        s = 0
+        for x in [self.colvar] + [b.pace for b in self.biases]:
+            if x > 0:
+                s = math.gcd(s, int(x))
+        return s
+
     def init(self, log_rows: int = 64) -> BiasState:
         return BiasState(tuple(b.init() for b in self.biases), jnp.zeros((int(log_rows), self.ncol), jnp.float64),
                          jnp.zeros((), jnp.int32), jnp.zeros((), jnp.float64))

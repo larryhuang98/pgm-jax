@@ -26,6 +26,7 @@ ap.add_argument("--us", nargs="*", default=[], help="umbrella walker sets (PREFI
 ap.add_argument("--metad", nargs="*", default=[])
 ap.add_argument("--opes", nargs="*", default=[])
 ap.add_argument("--plain", nargs="*", default=[])
+ap.add_argument("--remd", nargs="*", default=[], help="REMD prefixes (PREFIX_T00.nc, PREFIX.json with the phi/psi atoms)")
 ap.add_argument("--T", type=float, default=300.0)
 ap.add_argument("--biasfactor", type=float, default=6.0)
 ap.add_argument("--skip", type=float, default=0.2, help="fraction of each biased run discarded")
@@ -93,30 +94,69 @@ if a.us:
     Fref, eref = F, err
 else:
     Fref = eref = None
+refs = {}
+if Fref is not None:
+    refs["wham"] = (Fref, eref)
+
+
+def dihedral_np(X, idx):
+    b0, b1, b2 = X[:, idx[1]] - X[:, idx[0]], X[:, idx[2]] - X[:, idx[1]], X[:, idx[3]] - X[:, idx[2]]
+    n1, n2 = np.cross(b0, b1), np.cross(b1, b2)
+    m1 = np.cross(n1, b1 / np.linalg.norm(b1, axis=1)[:, None])
+    return np.arctan2(-np.sum(m1 * n2, 1), np.sum(n1 * n2, 1))
+
+
+if a.remd:
+    from pgm_jax.md.io import read_trajectory
+    Sphi, Spsi = [], []
+    for prefix in a.remd:
+        meta = json.load(open(prefix + ".json"))
+        files = sorted(glob.glob(prefix + "_T00*.nc"))
+        X = np.concatenate([read_trajectory(f)[0] for f in files])
+        X = X[int(0.1 * len(X)):]
+        Sphi.append(dihedral_np(X, meta["phi"]))
+        Spsi.append(dihedral_np(X, meta["psi"]))
+    phi_r, psi_r = np.concatenate(Sphi), np.concatenate(Spsi)
+    Fr = A.histogram_fes(phi_r, None, [ax], kT, [P])
+    blocks = [A.histogram_fes(b, None, [ax], kT, [P]) for b in np.array_split(phi_r, 5)]
+    blocks = np.array([A.align_rmsd(f, Fr, Fr < a.fmax)[2] for f in blocks])
+    er = blocks.std(0, ddof=1) / np.sqrt(5)
+    dgb = [dG(b, np.zeros(len(b))) for b in np.array_split(phi_r, 5)]
+    res["remd"] = {"F": Fr.tolist(), "err": er.tolist(), "frames": int(len(phi_r)), "dG_aL": dG(phi_r, np.zeros(len(phi_r))),
+                   "dG_aL_err": float(np.std(dgb, ddof=1) / np.sqrt(5)),
+                   "F2": A.histogram_fes(np.stack([phi_r, psi_r], 1), None, [ax2, ax2], kT, [P, P]).tolist()}
+    refs["remd"] = (Fr, er)
+    print(f"REMD 300 K ({len(phi_r)} frames): dG(phi>0) = {res['remd']['dG_aL']:.2f} +- {res['remd']['dG_aL_err']:.2f} kJ/mol")
+    if Fref is not None:
+        m = (Fref < a.fmax) & np.isfinite(Fr)
+        r, mx, _ = A.align_rmsd(Fr, Fref, m)
+        print(f"REMD vs WHAM F(phi): RMSD {r:.3f}, max {mx:.2f}")
+        res["remd"]["rmsd_vs_wham"] = r
 
 
 def compare(name, Fs1, dgs, Fs2=None, Fbias=None):
     Fs1 = np.array(Fs1)
     out = {"runs": len(Fs1), "dG_aL_runs": [float(x) for x in dgs], "dG_aL": float(np.mean(dgs)),
            "dG_aL_err": float(np.std(dgs, ddof=1) / np.sqrt(len(dgs))) if len(dgs) > 1 else None}
-    if Fref is not None:
-        m = Fref < a.fmax
-        al = np.array([A.align_rmsd(f, Fref, m)[2] for f in Fs1])
+    for rname, (Fr, er) in refs.items():
+        m = (Fr < a.fmax) & np.isfinite(Fr)
+        al = np.array([A.align_rmsd(f, Fr, m)[2] for f in Fs1])
         Fm = al.mean(0)
         em = al.std(0, ddof=1) / np.sqrt(len(al)) if len(al) > 1 else np.zeros_like(Fm)
-        r, mx, _ = A.align_rmsd(Fm, Fref, m)
-        tot = np.sqrt(em ** 2 + eref ** 2)
-        out.update({"F_mean": Fm.tolist(), "F_err": em.tolist(), "rmsd_vs_wham": r, "max_vs_wham": mx,
-                    "rmsd_runs": [A.align_rmsd(f, Fref, m)[0] for f in Fs1],
-                    "chi2_per_bin": float(np.mean(((Fm - Fref)[m] / np.maximum(tot[m], 1e-6)) ** 2)),
-                    "mean_err": float(tot[m].mean())})
+        r, mx, _ = A.align_rmsd(Fm, Fr, m)
+        tot = np.sqrt(em ** 2 + er ** 2)
+        o = {"F_mean": Fm.tolist(), "F_err": em.tolist(), "rmsd": r, "max": mx,
+             "rmsd_runs": [A.align_rmsd(f, Fr, m)[0] for f in Fs1],
+             "chi2_per_bin": float(np.mean(((Fm - Fr)[m] / np.maximum(tot[m], 1e-6)) ** 2)), "mean_err": float(tot[m].mean())}
         if Fbias is not None:
             fb = np.array(Fbias)
-            out["rmsd_bias_vs_wham"] = A.align_rmsd(np.mean([A.align_rmsd(f, Fref, m)[2] for f in fb], 0), Fref, m)[0]
-        print(f"{name}: F(phi) vs WHAM RMSD {r:.3f} kJ/mol (max {mx:.2f}; per run {np.mean(out['rmsd_runs']):.3f}), "
-              f"chi2/bin {out['chi2_per_bin']:.2f}, mean error {out['mean_err']:.3f}; dG(phi>0) {out['dG_aL']:.2f} +- "
-              f"{out['dG_aL_err'] if out['dG_aL_err'] is not None else float('nan'):.2f}"
-              + (f"; from the final bias RMSD {out['rmsd_bias_vs_wham']:.3f}" if Fbias is not None else ""))
+            o["rmsd_bias"] = A.align_rmsd(np.mean([A.align_rmsd(f, Fr, m)[2] for f in fb], 0), Fr, m)[0]
+        out["vs_" + rname] = o
+        print(f"{name} vs {rname}: F(phi) RMSD {r:.3f} kJ/mol (max {mx:.2f}; per run {np.mean(o['rmsd_runs']):.3f}), "
+              f"chi2/bin {o['chi2_per_bin']:.2f}, mean error {o['mean_err']:.3f}"
+              + (f"; from the final bias RMSD {o['rmsd_bias']:.3f}" if Fbias is not None else ""))
+    print(f"{name}: dG(phi>0) {out['dG_aL']:.2f} +- {out['dG_aL_err'] if out['dG_aL_err'] is not None else float('nan'):.2f} "
+          f"({len(Fs1)} runs)")
     if Fs2 is not None:
         out["F2_mean"] = np.array(Fs2).mean(0).tolist()
     res[name] = out
@@ -126,7 +166,7 @@ def compare(name, Fs1, dgs, Fs2=None, Fbias=None):
 def fes2_from_hills(hills, factor):
     """-factor V(phi, psi) on the 2D analysis grid from a hills table (read_table)."""
     C = np.stack([hills["c_phi"], hills["c_psi"]], 1)
-    pts, shape = A.mesh(ax2, ax2)
+    pts, shape = A.mesh(ax, ax)
     V = np.zeros(len(pts))
     for i in range(0, len(C), 512):
         V += A._hill_values(C[i:i + 512], hills["height"][i:i + 512], [hills["sigma_phi"][0], hills["sigma_psi"][0]],
@@ -180,4 +220,13 @@ if "metad" in res and "opes" in res:
     r, mx, _ = A.align_rmsd(F1, F2, m)
     res["metad_vs_opes_2d"] = {"rmsd": r, "max": mx, "bins": int(m.sum())}
     print(f"F(phi, psi) metaD vs OPES over {int(m.sum())} bins with F < 15: RMSD {r:.3f}, max {mx:.2f} kJ/mol")
+if "remd" in res:
+    F3 = np.array(res["remd"]["F2"])
+    for kind in ("metad", "opes"):
+        if kind in res:
+            F1 = np.array(res[kind]["F2_mean"])
+            m = (F1 < 15.0) & (F3 < 15.0) & np.isfinite(F1) & np.isfinite(F3)
+            r, mx, _ = A.align_rmsd(F1, F3, m)
+            res[f"{kind}_vs_remd_2d"] = {"rmsd": r, "max": mx, "bins": int(m.sum())}
+            print(f"F(phi, psi) {kind} vs REMD over {int(m.sum())} bins with F < 15: RMSD {r:.3f}, max {mx:.2f} kJ/mol")
 json.dump(res, open(a.out, "w"), indent=1)
