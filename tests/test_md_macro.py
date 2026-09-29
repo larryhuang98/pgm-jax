@@ -1,6 +1,12 @@
-"""Macromolecules in the MD engine: neighbour-list groups and special pairs (md/topology.py),
-constraints (md/constraints.py), rigid water by constraints, a flexible peptide against the
-gas-phase model it was fitted with."""
+"""Macromolecules in the MD engine: groups and special pairs, constraints, a flexible peptide.
+
+What is checked, and against what: heavy-atom neighbour-list groups and special pairs with weights
+from graph distances (md/topology.py); SHAKE / RATTLE on water, CH3 and OH clusters (constraint
+lengths and velocities to 1e-12, no net momentum) and mass repartitioning; rigid water by
+constraints against rigid bodies (energy 1e-8 relative, comparable NVE fluctuation); a flexible
+29-atom peptide against the gas-phase model it was fitted with (forces 2e-3 of the RMS force); a
+solvated peptide with X-H constraints and HMR at 2 fs.  The peptides need RDKit.
+"""
 
 import jax
 import jax.numpy as jnp
@@ -16,6 +22,11 @@ from pgm_jax.md.topology import MDTopology, MoleculeRule, heavy_atom_groups
 
 @requires("rdkit")
 def test_groups_and_special_pairs():
+    """Topology groups are the heavy atoms and special pairs carry graph-distance weights.
+
+    Every pair within three bonds is special, weights are symmetric (0 for 1-2 / 1-3, 0.5 for 1-4, 1
+    beyond); rigid molecules form one group each with every intramolecular pair excluded.
+    """
     s, x = peptide()
     top = MDTopology.build(System([s.pgm]), [MoleculeRule(bonds=s.bonds, vdw="graph", lj_min_sep=4, lj14_scale=0.5)])
     g = top.group
@@ -43,6 +54,7 @@ def test_groups_and_special_pairs():
 
 
 def test_constraints_shake_rattle():
+    """SHAKE / RATTLE hold bond lengths and tangent velocities; mass repartitioning keeps the total mass."""
     rng = np.random.default_rng(0)
     # water triangle (0-2), CH3 (3-6), OH (7-8)
     x = np.array(
@@ -83,8 +95,11 @@ def test_constraints_shake_rattle():
 
 @requires("rdkit")
 def test_peptide_forces_match_gas_phase_model():
-    """A 29-atom peptide split into heavy-atom groups: MD forces (PME pGM + bonded + intramolecular
-    van der Waals from the special pairs, 1-4 scaled) equal the gradient of the gas-phase model."""
+    """MD forces of a flexible peptide equal the gradient of its gas-phase model.
+
+    A 29-atom peptide split into heavy-atom groups: MD forces (PME pGM + bonded + intramolecular
+    van der Waals from the special pairs, 1-4 scaled) equal the gradient of the gas-phase model.
+    """
     tpl, model, P, x = peptide_template()
     y = x + 0.003 * np.random.default_rng(0).normal(size=x.shape)
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=2.2, skin=0.05, lj_lrc=False)
@@ -97,6 +112,7 @@ def test_peptide_forces_match_gas_phase_model():
 
 
 def test_rigid_water_by_constraints_matches_rigid_bodies():
+    """Rigid water by constraints equals rigid bodies and conserves energy as well at 2 fs."""
     from pgm_jax.md.simulation import Simulation
 
     pos, H, w = water_lattice()
@@ -125,8 +141,11 @@ def test_rigid_water_by_constraints_matches_rigid_bodies():
 
 @requires("rdkit")
 def test_peptide_in_water_hbond_constraints_hmr():
-    """Flexible peptide + rigid water, X-H constraints and hydrogen mass repartitioning: runs at
-    2 fs with the constraints held and a bounded energy drift."""
+    """A solvated flexible peptide with X-H constraints and HMR runs stably at 2 fs.
+
+    Flexible peptide + rigid water, X-H constraints and hydrogen mass repartitioning: runs at
+    2 fs with the constraints held and a bounded energy drift.
+    """
     tpl, model, P, x = peptide_template()
     pos_w, H, w = water_lattice(n_side=6, spacing=0.31)
     c = H.diagonal() / 2

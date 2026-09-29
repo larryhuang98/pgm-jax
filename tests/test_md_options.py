@@ -1,6 +1,11 @@
-"""MD engine options: electrostatics levels (PME vs exact Ewald), GVDW (pair energies vs the
-periodic reference, analytic row forces vs autodiff and finite differences, dispersion tail),
-flexible molecules with GVDW, and the template/settings consistency check."""
+"""MD engine options: electrostatics levels, GVDW van der Waals and the settings check.
+
+What is checked, and against what: every electrostatics level (q, qp, qi) of the MD force field
+against the exact Ewald reference (2e-6 relative); GVDW pair energies against PeriodicModel
+(1e-9), its analytic row forces against autodiff (1e-9) and central differences (1e-5), the
+dispersion tail and the strain derivative (upper triangle, 2e-6); a flexible molecule with GVDW
+against its gas-phase model; the template / settings consistency check.
+"""
 
 import jax
 import jax.numpy as jnp
@@ -16,12 +21,14 @@ GV = {"OW": (60.0, 0.05, 4.0), "c3": (40.0, 0.06, 3.5), "oh": (55.0, 0.05, 4.2),
 
 
 def _gvdw_box(seed=0):
+    """Return small_box(seed) with GVDW parameters (GV) set on every molecule."""
     sys, pos, H = small_box(seed)
     mols = {id(m): set_gvdw(m, GV) for m in sys.molecules}
     return System([mols[id(m)] for m in sys.molecules]), pos, H
 
 
 def _list(sys, pos, H, s):
+    """Return the atom neighbour rows of positions pos for settings s."""
     return AtomNeighbors(sys.n, H, s.cutoffs.cutoff, s.neighbors.skin).allocate(pos, None, H).idx
 
 
@@ -89,7 +96,7 @@ def test_gvdw_tail_and_virial():
 
 
 def test_flexible_gvdw_single_molecule_and_settings_check():
-
+    """A flexible GVDW molecule matches its gas-phase gradient; mismatched vdw settings are refused."""
     from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate
     from pgm_jax.md.forcefield import MDSettings
 

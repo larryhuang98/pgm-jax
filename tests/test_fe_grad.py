@@ -1,10 +1,24 @@
-"""Parameter gradients of alchemical free energies (md/fe_grad.py, fit/free_energy.py): dU/dP at converged dipoles
-against finite differences with the dipoles re-solved (annihilate and keep), the sampler (batched =
-sequential = direct), the estimators as exact derivatives of the reweighted free energies (end
-states: exponential averaging; MBAR with the sampled mixture) on stored frames, the gas-phase leg,
-an exactly known case (a lone rigid solute: zero variance, the gradient of E_gas(0) - E_gas(1)),
-harmonic oscillators with analytic df/dtheta and calibrated jackknife errors, the driver's outputs
-and the fitting-target API."""
+"""Parameter gradients of alchemical free energies (md/fe_grad.py, fit/free_energy.py).
+
+What is checked, and against what:
+
+- dU/dP at converged dipoles (Hellmann-Feynman) against central differences of the energy with
+  the dipoles re-solved, for annihilation and intramolecular="keep", along random directions of
+  the whole parameter table;
+- the sampler: batched = sequential = direct derivatives of the window energies;
+- the estimators as exact derivatives of the reweighted free energies on stored frames (end
+  states: exponential averaging; MBAR with the sampled mixture);
+- the gas-phase leg and an exactly known case (a lone rigid solute: zero variance, the gradient of
+  E_gas(0) - E_gas(1));
+- harmonic oscillators with an analytic df/dtheta: unbiased estimators and calibrated jackknife
+  errors over 40 repeats;
+- the driver's outputs, restarts and the fitting-target API (FreeEnergyTarget, ParameterSpace).
+
+Tolerances: Hellmann-Feynman 1e-6 relative (h = 1e-5, h^2 truncation); estimator derivatives
+1e-5 relative to max(100, |value|) (h = 3e-5 balances truncation and float64 round-off in the
+exponential averages); statistics 3 standard errors and error-bar ratios 0.7-1.4.  The prints
+report the compared numbers (pytest -s).
+"""
 
 import jax
 import jax.numpy as jnp
@@ -31,7 +45,10 @@ from pgm_jax.units import KCAL
 
 
 def direction(space, P, seed=0):
-    """A random direction in the flat table, relative to each entry (zero where the entry is zero)."""
+    """Return a random direction in the flat parameter table, scaled entry by entry.
+
+    A random direction in the flat table, relative to each entry (zero where the entry is zero).
+    """
     p = np.asarray(space.flatten(P))
     return p * np.random.default_rng(seed).normal(size=p.size)
 
@@ -48,9 +65,12 @@ def direction(space, P, seed=0):
     ],
 )
 def test_dudp_matches_finite_differences_with_resolved_dipoles(mode, lam):
-    """Hellmann-Feynman for parameters: dU/dP at the converged dipoles (autodiff at fixed mu) equals the
+    """dU/dP at converged dipoles equals central differences with re-solved dipoles.
+
+    Hellmann-Feynman for parameters: dU/dP at the converged dipoles (autodiff at fixed mu) equals the
     central difference of the energy with the dipoles re-solved, along a random direction of the
-    whole table (charges, covalent dipoles, radii, polarizabilities, LJ of solute and solvent)."""
+    whole table (charges, covalent dipoles, radii, polarizabilities, LJ of solute and solvent).
+    """
     sim, alch, P, _ = alch_sim()
     X, Hb, cand = alch_frame(sim)
     ff = sim.ff
@@ -80,6 +100,22 @@ def test_dudp_matches_finite_differences_with_resolved_dipoles(mode, lam):
 
 # ----------------------------------------------------------------------------- sampler
 def windows(batched=True, seed=1, mode="annihilate"):
+    """Build three lambda windows of the alchemical water box (Bussi NVT, dipoles to 1e-9).
+
+    Parameters
+    ----------
+    batched : bool
+        One vmapped program (True) or the windows one by one.
+    seed : int
+        Random seed of the windows.
+    mode : {"annihilate", "keep"}
+        Intramolecular treatment of the solute.
+
+    Returns
+    -------
+    tuple
+        (LambdaWindows, parameters of the alchemical system).
+    """
     sim, alch, P, _ = alch_sim(alch_settings(dipole_tol=1e-9), thermostat="bussi")
     if mode == "keep":
         pos = sim.positions()
@@ -126,10 +162,13 @@ def test_sampler_batched_equals_sequential_and_direct():
 
 @pytest.mark.parametrize("mode", ["annihilate", "keep"])
 def test_estimators_are_derivatives_of_reweighted_free_energies(mode):
-    """On stored frames the estimators are exact derivatives: 'end' of the exponential-averaging
+    """The gradient estimators are exact derivatives of the reweighted free energies.
+
+    On stored frames the estimators are exact derivatives: 'end' of the exponential-averaging
     (Zwanzig) free energies of the perturbed end states from their own windows, 'mbar' of the MBAR
     free energies of the perturbed end states from the sampled mixture.  Central differences in the
-    parameters (energies with the dipoles re-solved) against the analytic gradient . v."""
+    parameters (energies with the dipoles re-solved) against the analytic gradient . v.
+    """
     w, P = windows(mode=mode)
     pg = fg.ParameterGradients(w)
     space = pg.space
@@ -175,9 +214,11 @@ def test_estimators_are_derivatives_of_reweighted_free_energies(mode):
     U0 = u * kT
 
     def zw(a):
+        """Return the Zwanzig free energy -kT ln <exp(-a / kT)> [kJ/mol]."""
         return -kT * np.log(np.mean(np.exp(-a / kT)))
 
     def end(sg):
+        """Return the end-state free energy difference at parameters p0 + sg h v."""
         i = 0 if sg > 0 else 1
         return zw(dU[:, i, 1, K - 1] - U0[:, K - 1, K - 1]) - zw(dU[:, i, 0, 0] - U0[:, 0, 0])
 
@@ -192,6 +233,7 @@ def test_estimators_are_derivatives_of_reweighted_free_energies(mode):
     from scipy.special import logsumexp
 
     def mb(sg):
+        """Return the MBAR free energy difference of the perturbed end states at p0 + sg h v."""
         i = 0 if sg > 0 else 1
         fk = [-logsumexp(-dU[:, i, t, :].T.reshape(-1) / kT - logden) for t in (0, 1)]
         return kT * (fk[1] - fk[0])
@@ -207,10 +249,16 @@ def test_estimators_are_derivatives_of_reweighted_free_energies(mode):
 
 # ----------------------------------------------------------------------------- gas phase, exact case
 def test_gas_leg_gradient_and_exact_sampled_case():
-    """The rigid solute's gas-phase leg: d(E_gas(0) - E_gas(1))/dP by autodiff = central differences.
+    """The gas-phase leg gradient, and a lone solute whose sampled gradient is exact.
+
+    The rigid solute's gas-phase leg: d(E_gas(0) - E_gas(1))/dP by autodiff = central differences.
     The same free energy sampled with the MD engine (the lone rigid water in a 4.2 nm box, windows
     lambda_elec = 1, 0.5, 0): its energy does not depend on the configuration, so both estimators
-    must return the exact gradient with zero variance (up to the box's image and PME error)."""
+    must return the exact gradient with zero variance (up to the box's image and PME error).
+
+    Tolerances: value 2e-3 kJ/mol and gradient 1e-3 of its largest entry (image and PME error of the
+    4.2 nm box); error bars below 1e-6 (no configurational variance).
+    """
     w = water()
     sysA, P = alchemical_system(System([w]), 0)
     alch = Alchemy(sysA, 0)
@@ -271,10 +319,13 @@ def test_gas_leg_gradient_and_exact_sampled_case():
 
 # ----------------------------------------------------------------------------- analytic toy
 def test_harmonic_oscillators_analytic_gradient_and_calibrated_errors():
-    """States u_k(x; theta) = K_k exp(c_k theta) x^2 / 2 (beta = 1) at theta = 0: f_k = ln K_k(theta) / 2,
+    """Harmonic oscillators: unbiased gradient estimators with calibrated error bars.
+
+    States u_k(x; theta) = K_k exp(c_k theta) x^2 / 2 (beta = 1) at theta = 0: f_k = ln K_k(theta) / 2,
     d(f_{K-1} - f_0)/dtheta = (c_{K-1} - c_0) / 2 exactly.  Correlated samples (AR(1), phi = 0.9) of
     every state; both estimators unbiased within 3 standard errors over 40 repeats, their jackknife
-    errors match the spread of the estimates (ratio 0.7-1.4), the value too."""
+    errors match the spread of the estimates (ratio 0.7-1.4), the value too.
+    """
     Kk = np.array([1.0, 1.7, 3.0, 5.0])
     c = np.array([0.8, 0.3, -0.2, -0.6])
     exact_g = 0.5 * (c[-1] - c[0])
@@ -326,7 +377,14 @@ def test_harmonic_oscillators_analytic_gradient_and_calibrated_errors():
 
 # ----------------------------------------------------------------------------- driver and targets
 def test_run_outputs_restart_and_fitting_target(tmp_path):
-    """FreeEnergyRun stores dU/dP samples, restarts with them, and feeds FreeEnergyTarget."""
+    """FreeEnergyRun stores and restarts dU/dP samples; FreeEnergyTarget chains them to theta.
+
+    FreeEnergyRun stores dU/dP samples, restarts with them, and feeds FreeEnergyTarget.
+
+    The target's gradient is the projection of the table gradient on the charge-scaling direction
+    (1e-8), dchi2 = 2 (value - experiment) / sigma^2 times it, and relative free energies combine
+    values and gradients linearly and errors in quadrature.
+    """
     w, P = windows()
     pg = fg.ParameterGradients(w)
     prefix = str(tmp_path / "g")
@@ -355,6 +413,7 @@ def test_run_outputs_restart_and_fitting_target(tmp_path):
     vq = space.scale_direction(p0, "charge")
 
     def theta_fn(th):
+        """Return the parameters with the solute's charges scaled by exp(th[0])."""
         return fg.scaled_params(space, P, {"charge": jnp.exp(th[0])})
 
     with pytest.raises(ValueError):
@@ -388,7 +447,10 @@ def test_run_outputs_restart_and_fitting_target(tmp_path):
 
 
 def test_parameter_space_and_scaled_params():
-    """ParameterSpace.values flattens and restores a table; scaled_params and scale_direction act on the solute only."""
+    """ParameterSpace.values round-trips the table; scaled_params acts on the solute only.
+
+    ParameterSpace.values flattens and restores a table; scaled_params and scale_direction act on the solute only.
+    """
     sim, alch, P, (pos, H, sys0) = alch_sim()
     space = ParameterSpace.values(sim.sys.table)
     p = space.flatten(P)
@@ -407,17 +469,20 @@ def test_parameter_space_and_scaled_params():
 
 
 def test_flexible_solute_keep_sampler():
-    """A flexible solute with intramolecular="keep" (the gas-phase correction depends on the solute's
+    """A flexible solute with intramolecular="keep": the sampler and the gas-phase part at (0, 0).
+
+    A flexible solute with intramolecular="keep" (the gas-phase correction depends on the solute's
     electrostatic parameters at every lambda): batched = sequential = direct; the decoupled end
     state still depends on the solute's charges (its gas-phase electrostatics) and its LJ (its
-    intramolecular pairs), not on the solute-water coupling."""
-
+    intramolecular pairs), not on the solute-water coupling.
+    """
     from pgm_jax.md.flexible import FlexibleSimulation
 
     tpl, sys0, tpls, X, H = flex_solute_box()
     sysA, P = alchemical_system(sys0, 0)
 
     def mk():
+        """Build the flexible alchemical simulation (keep, h-bond constraints, Bussi)."""
         return FlexibleSimulation(
             sysA,
             tpls,

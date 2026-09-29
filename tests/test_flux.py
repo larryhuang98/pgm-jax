@@ -1,8 +1,15 @@
-"""Charge flux in MD (pgm_jax/md/flux.py): the flux of a fitted template equals the bonded model's
-(charges, covalent dipoles, gas-phase energy and forces); forces, strain derivatives and the
-differentiable path against finite differences with the dipoles re-solved; the cell dipole with
-q(R); rigid molecules (constant shift); refusals (pmemd-pgm export, stray flux parameters);
-energy conservation."""
+"""Charge flux in MD (pgm_jax/md/flux.py): q(R) and covalent dipoles c(R) in the MD engine.
+
+What is checked, and against what: the flux of a fitted template equals the bonded model's
+(charges, covalent dipoles, gas-phase energy and forces); forces, molecular and atomic strain
+derivatives and the differentiable path against autodiff and central differences with the dipoles
+re-solved; the cell dipole with q(R); rigid molecules (constant shift); the gather tables of the
+flux map; refusals (pmemd-pgm export, stray flux parameters); NVE energy conservation and flux-free
+constrained bonds.
+
+Tolerances: identities 1e-10 to 1e-15 (float64, dipoles to 1e-12); finite differences 1e-6 to
+1e-7 relative (h = 1e-6).
+"""
 
 import jax
 import jax.numpy as jnp
@@ -26,7 +33,10 @@ from pgm_jax.units import KB
 
 @pytest.fixture(scope="module")
 def box():
-    """16 flexible methanols with flux, bonds perturbed off their references (1.15 nm box)."""
+    """Return the 16-methanol flux box (fixture, module scope): template, System, sim, positions, box.
+
+    16 flexible methanols with flux, bonds perturbed off their references (1.15 nm box).
+    """
     tpl, _ = flux_template()
     n = 16
     pos, H = liquid_box(tpl, n, 0.55, seed=0, min_dist=0.18)
@@ -37,9 +47,12 @@ def box():
 
 
 def test_flux_equals_bonded_model():
-    """Charges and covalent dipoles as BondedModel._flux; the bonded model's gas-phase pGM energy is
+    """The MD engine's charge flux equals the bonded model's, and so do its forces.
+
+    Charges and covalent dipoles as BondedModel._flux; the bonded model's gas-phase pGM energy is
     the gas-phase Model's at those charges; in MD, flux equals the flux-free engine run on the
-    charges of the geometry, and the forces are the gas-phase model's gradient (one molecule)."""
+    charges of the geometry, and the forces are the gas-phase model's gradient (one molecule).
+    """
     tpl, x = flux_template()
     y = x + 0.004 * np.random.default_rng(0).normal(size=x.shape)
     sys1 = System([tpl.pgm])
@@ -82,8 +95,11 @@ def test_flux_equals_bonded_model():
 
 
 def test_flux_forces_and_strain_derivatives(box):
-    """Forces = -dE/dR with q(R), c(R) (autodiff at fixed dipoles, and central differences with the
-    dipoles re-solved); molecular and atomic strain derivatives vs differences of the energy."""
+    """Flux forces and strain derivatives match autodiff and central differences.
+
+    Forces = -dE/dR with q(R), c(R) (autodiff at fixed dipoles, and central differences with the
+    dipoles re-solved); molecular and atomic strain derivatives vs differences of the energy.
+    """
     tpl, sys_, sim, pos, H = box
     ff = PGMForceField(sys_, H, flux_settings(), topology=sim.topology, flux=sim.ff.flux)
     idx = ff.rows_for(pos, H)
@@ -113,6 +129,7 @@ def test_flux_forces_and_strain_derivatives(box):
     ea = jax.jit(lambda x, h: ff.energy(x, h, idx, res.induction)[0])
 
     def eas(s):
+        """Return the energy after the atomic strain s, rotated back to a lower-triangular box."""
         return float(
             ea(*lower_triangular_frame(np.asarray(pos) @ (np.eye(3) + s).T, np.asarray(H) @ (np.eye(3) + s).T))
         )
@@ -125,8 +142,11 @@ def test_flux_forces_and_strain_derivatives(box):
 
 
 def test_flux_differentiable_path(box):
-    """settings.differentiable: gradients of forces and dipoles with respect to jb, jc, jc2 (and
-    positions) and dE/djb against central differences with the dipoles re-solved."""
+    """The differentiable path with flux parameters matches central differences.
+
+    settings.differentiable: gradients of forces and dipoles with respect to jb, jc, jc2 (and
+    positions) and dE/djb against central differences with the dipoles re-solved.
+    """
     tpl, sys_, sim, pos, H = box
     ff = PGMForceField(
         sys_, H, flux_settings(differentiable=True, adjoint_tol=1e-12), topology=sim.topology, flux=sim.ff.flux
@@ -136,6 +156,7 @@ def test_flux_differentiable_path(box):
     wF, wmu = rng.normal(size=pos.shape), rng.normal(size=pos.shape)
 
     def loss(theta, x):
+        """Return a weighted sum of forces and induced dipoles (the test functional)."""
         r = ff.compute(x, H, idx, ff.init_induction(), theta)
         return jnp.sum(wF * r.forces) + 1e3 * jnp.sum(wmu * r.induction.mu)
 
@@ -172,8 +193,11 @@ def test_flux_differentiable_path(box):
 
 
 def test_flux_cell_dipole_and_rigid_molecules(box):
-    """The cell dipole takes q(R), c(R); a molecule held rigid gets the constant shift of its
-    geometry (molecule_at), which reproduces the flux engine's energy at that geometry."""
+    """The cell dipole uses q(R), c(R); frozen charges of each geometry give the same energy.
+
+    The cell dipole takes q(R), c(R); a molecule held rigid gets the constant shift of its
+    geometry (molecule_at), which reproduces the flux engine's energy at that geometry.
+    """
     tpl, sys_, sim, pos, H = box
     ff = sim.ff
     idx = ff.rows_for(pos, H)
@@ -194,6 +218,7 @@ def test_flux_cell_dipole_and_rigid_molecules(box):
 
 
 def _no_flux_fit():
+    """Return (BondedModel, parameters) of methanol without charge flux."""
     m, x = methanol()
     model = BondedModel(
         [MolSpec("methanol", list(m.elements), METHANOL_BONDS, [1] * len(METHANOL_BONDS), 0, x, m)],
@@ -203,9 +228,12 @@ def _no_flux_fit():
 
 
 def test_flux_map_tables():
-    """The gather tables of the flux map: molecules without flux (padding) keep their charges,
+    """The gather tables of the flux map: padding, minimum image and the VJP.
+
+    The gather tables of the flux map: molecules without flux (padding) keep their charges,
     bonds across the box boundary are taken at the minimum image, and the map's vector-Jacobian
-    product (the force pull-back) matches central differences."""
+    product (the force pull-back) matches central differences.
+    """
     tpl, x = flux_template()
     ntpl = FlexibleTemplate.from_fit(*_no_flux_fit())
     sys_ = System([tpl.pgm, ntpl.pgm, tpl.pgm])
@@ -220,6 +248,7 @@ def test_flux_map_tables():
     Q, th = sys_.expand(), fl.theta()
 
     def f(y):
+        """Return (q, c) of the flux map at positions y."""
         return fl.charges(y, H, Q["q"], Q["cov"], th)
 
     q, c = f(pos)
@@ -231,6 +260,7 @@ def test_flux_map_tables():
     g = jax.vjp(f, pos)[1]((phi, gc))[0]
 
     def L(y):
+        """Return a random linear functional of (q, c) at positions y."""
         return float(jnp.sum(phi * f(y)[0]) + jnp.sum(gc * f(y)[1]))
 
     for a, k in [(0, 0), (1, 2), (5, 1), (13, 0), (17, 2)]:
@@ -240,6 +270,7 @@ def test_flux_map_tables():
 
 
 def test_flux_refusals_and_options():
+    """Flux order 1 has no jc2; stray, mis-shaped or invalid flux parameters and pmemd export are refused."""
     tpl, x = flux_template(order=1)
     fl = ChargeFlux.from_templates(System([tpl.pgm]), [tpl])
     assert set(fl.params) == {"jb", "jc"}
@@ -267,8 +298,11 @@ def test_flux_refusals_and_options():
 
 
 def test_flux_nve_and_constraints():
-    """NVE conservation with flux (double precision, tight dipoles), and X-H constraints at the
-    reference lengths leave those bonds without flux."""
+    """NVE with flux conserves the energy; constrained X-H bonds carry no flux.
+
+    NVE conservation with flux (double precision, tight dipoles), and X-H constraints at the
+    reference lengths leave those bonds without flux.
+    """
     tpl, _ = flux_template()
     n = 32  # as test_flexible's NVE test (same box and cutoff)
     pos, H = liquid_box(tpl, n, 0.55, seed=0, min_dist=0.18)

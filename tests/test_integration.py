@@ -1,7 +1,13 @@
-"""Cross-feature checks of the merged feature branches (docs/CHANGES_2026-09.md): extended-Lagrangian
-dipoles in an external field (constant E and constant D: exact shadow forces, the field-polarized
-solution), biases together with a field and with iEL, walkers with a time-dependent field,
-multiple time stepping in FlexibleSimulation.minimize, and the combinations that are refused."""
+"""Cross-feature checks of the merged feature branches (docs/CHANGES_2026-09.md).
+
+What is checked, and against what: extended-Lagrangian dipoles in an external field (constant E
+and constant D: exact shadow forces against central differences, the SCF step converging to the
+field-polarized dipoles, NVE); biases together with a field and with iEL (bias forces add to the
+field forces, econs conserved); walkers with a time-dependent field (walker 0 = the single run,
+heat booked the same); multiple time stepping in FlexibleSimulation.minimize; the full strain
+derivative tensor against finite differences of rotated-back strained boxes; and the
+combinations that are refused.
+"""
 
 import jax
 import jax.numpy as jnp
@@ -21,10 +27,12 @@ DD = np.array([1.0, -2.0, 3.0])  # D / eps0, V/nm
 
 
 def _field(kind):
+    """Return the field tuple of the MD engine: E1 (constant E) or DD (constant D) [V/nm]."""
     return (jnp.asarray(E1), None) if kind == "E" else (jnp.asarray(DD), None, "D")
 
 
 def _rel(a, b):
+    """Return the relative RMS difference |a - b| / |b|."""
     return float(jnp.sqrt(jnp.sum((a - b) ** 2) / jnp.sum(b**2)))
 
 
@@ -33,10 +41,13 @@ def _rel(a, b):
     "kind,precond,omega", [("E", "jacobi", 1.0), ("E", "block", 0.9), ("D", "jacobi", 1.0), ("D", "block", 0.9)]
 )
 def test_iel_shadow_forces_are_exact_in_a_field(kind, precond, omega):
-    """iEL/0-SCF with an external field: the warm-up gives the field-polarized SCF dipoles, x at that
+    """iEL/0-SCF in an E or D field: SCF warm-up, zero residual at mu*, exact shadow forces.
+
+    iEL/0-SCF with an external field: the warm-up gives the field-polarized SCF dipoles, x at that
     solution has zero residual (the field is on the right-hand side of the auxiliary-dipole step),
     and the shadow forces match finite differences of the shadow energy (at constant D including the
-    kappa |sum delta|^2 / 2 term, which the preconditioner does not contain)."""
+    kappa |sum delta|^2 / 2 term, which the preconditioner does not contain).
+    """
     sys, pos, H = small_box(1)
     pos = jnp.asarray(pos)
     fld = _field(kind)
@@ -59,6 +70,7 @@ def test_iel_shadow_forces_are_exact_in_a_field(kind, precond, omega):
     noise = jnp.asarray(rng.normal(size=mu_star.shape)) * float(jnp.sqrt(jnp.mean(mu_star**2)))
 
     def shadow(eps):
+        """Return the induction state with the auxiliary dipoles mu* + eps noise."""
         return ref.induction.set(
             count=jnp.asarray(100, jnp.int32), xl=ref.induction.xl.at[0].set(mu_star + eps * noise)
         )
@@ -86,8 +98,11 @@ def test_iel_shadow_forces_are_exact_in_a_field(kind, precond, omega):
 
 @pytest.mark.parametrize("kind", ["E", "D"])
 def test_iel_scf_step_converges_to_the_field_polarized_dipoles(kind):
-    """iEL/SCF (CG from x to tolerance) in a field: the operator and the right-hand side include the
-    field (and at constant D its kappa term), so a step from a perturbed x ends at the SCF dipoles."""
+    """iEL/SCF in a field converges to the SCF dipoles from perturbed auxiliary dipoles (1e-9).
+
+    iEL/SCF (CG from x to tolerance) in a field: the operator and the right-hand side include the
+    field (and at constant D its kappa term), so a step from a perturbed x ends at the SCF dipoles.
+    """
     sys, pos, H = small_box(3)
     pos = jnp.asarray(pos)
     fld = _field(kind)
@@ -104,6 +119,7 @@ def test_iel_scf_step_converges_to_the_field_polarized_dipoles(kind):
 
 
 def _econs(sim, blocks=8, n=50):
+    """Advance `blocks` blocks of n steps and return econs after each [kJ/mol]."""
     e = []
     for _ in range(blocks):
         sim.advance(n)
@@ -113,6 +129,7 @@ def _econs(sim, blocks=8, n=50):
 
 @pytest.mark.parametrize("field", [(0.0, 0.0, 1.0), "D"])
 def test_iel_nve_conserves_energy_in_a_field(field):
+    """NVE with iEL/0-SCF in a static E or D field conserves econs (4e-4 / 8e-4 of the kinetic scale)."""
     sys, pos, H = small_box(6, nm=0)
     fld = EF.displacement((0.0, 0.0, 2.0)) if field == "D" else field
     s = md_settings(cutoff=0.6, dipole_tol=1e-8, vdw="none", iel="0scf")
@@ -128,8 +145,11 @@ def test_iel_nve_conserves_energy_in_a_field(field):
 # ----------------------------------------------------------------------------- biases
 @pytest.mark.parametrize("iel", ["none", "0scf"])
 def test_bias_with_field_and_iel(iel):
-    """A static umbrella on an O-O distance together with an external field (and iEL/0-SCF): the
-    bias forces add to the field forces, and NVE conserves econs."""
+    """A static umbrella with a field (and iEL): bias forces add up and econs is conserved.
+
+    A static umbrella on an O-O distance together with an external field (and iEL/0-SCF): the
+    bias forces add to the field forces, and NVE conserves econs.
+    """
     pos, H, w = water_cluster_box()
     sys = System([water()] * (len(pos) // 3))
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False, iel=iel)
@@ -161,8 +181,11 @@ def test_bias_with_field_and_iel(iel):
 
 
 def test_walkers_book_the_work_of_a_time_dependent_field():
-    """Independent walkers step through the same compiled step as a single simulation, including the
-    heat booked for the explicit time dependence of E(t): walker 0 reproduces the single run."""
+    """Walkers with a time-dependent field reproduce the single run, heat included.
+
+    Independent walkers step through the same compiled step as a single simulation, including the
+    heat booked for the explicit time dependence of E(t): walker 0 reproduces the single run.
+    """
     from pgm_jax.bias.walkers import Walkers
 
     pos, H, w = water_cluster_box()
@@ -172,6 +195,7 @@ def test_walkers_book_the_work_of_a_time_dependent_field():
     fld = EF.ExternalField((0.0, 0.0, 1.5), omega=2 * np.pi / 0.1)
 
     def mk():
+        """Build the water-cluster simulation with the umbrella and the oscillating field."""
         return Simulation(
             sys,
             pos,
@@ -197,7 +221,7 @@ def test_walkers_book_the_work_of_a_time_dependent_field():
 
 # ----------------------------------------------------------------------------- other paths
 def test_flexible_minimize_with_mts():
-
+    """FlexibleSimulation.minimize works with multiple time stepping and the run continues."""
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
     from pgm_jax.md.mts import MTS
 
@@ -222,7 +246,7 @@ def test_flexible_minimize_with_mts():
 
 
 def test_refused_combinations():
-
+    """PIMD with a bias, a field, constraints or iEL, and PGMEngine with a bias, a field or iEL are refused."""
     from pgm_jax.interfaces.engine import PGMEngine
     from pgm_jax.md.flexible import FlexibleSimulation
     from pgm_jax.md.pimd import PIMDSimulation
@@ -231,6 +255,7 @@ def test_refused_combinations():
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=0.5, skin=0.05, lj_lrc=False, max_iter=200)
 
     def flex(settings=s, **kw):
+        """Build the flexible PIMD water box with extra engine keywords."""
         return FlexibleSimulation(
             sys, [tpl] * sys.nmol, pos, H, settings, dt=0.0002, thermostat="bussi", temperature=300.0, log=None, **kw
         )
@@ -253,8 +278,29 @@ def test_refused_combinations():
 
 # ----------------------------------------------------------------------------- full virial tensor
 def _rotated_energy(ff, pos, H, mu, P, eps, com, efield=None):
-    """Energy at fixed mu of the strained configuration, rotated back to a lower-triangular box
-    (everything rotates: positions, box, induced dipoles and the field), where the engine is exact."""
+    """Return the fixed-mu energy of a strained configuration in a lower-triangular box.
+
+    Energy at fixed mu of the strained configuration, rotated back to a lower-triangular box
+    (everything rotates: positions, box, induced dipoles and the field), where the engine is exact.
+
+    Parameters
+    ----------
+    ff : PGMForceField
+    pos : np.ndarray (N, 3)
+        Positions [nm].
+    H : np.ndarray (3, 3)
+        Box [nm].
+    mu : jax.Array (N, 3)
+        Induced dipoles [e nm], held fixed.
+    P : dict
+        Per-atom parameters.
+    eps : np.ndarray (3, 3)
+        Strain.
+    com : np.ndarray (M, 3), optional
+        Molecular centres (molecular scaling); None scales the atoms.
+    efield : tuple, optional
+        Field tuple (rotated with the configuration).
+    """
     F = np.eye(3) + eps
     Hs = H @ F.T
     x = pos + ((com @ eps.T)[np.asarray(ff.mol)] if com is not None else pos @ eps.T)
@@ -270,9 +316,12 @@ def _rotated_energy(ff, pos, H, mu, P, eps, com, efield=None):
 
 @pytest.mark.parametrize("molecular,field", [(True, None), (False, None), (False, "E"), (True, "D")])
 def test_strain_derivative_full_tensor_matches_finite_differences(molecular, field):
-    """PGMForceField.strain_derivative returns the whole tensor: every component (including the lower
+    """The full strain-derivative tensor matches central differences (1e-6 of its largest entry).
+
+    PGMForceField.strain_derivative returns the whole tensor: every component (including the lower
     off-diagonal ones, which take the box out of lower-triangular form) against central differences of
-    the energy of strained configurations rotated back to a lower-triangular box."""
+    the energy of strained configurations rotated back to a lower-triangular box.
+    """
     sys, pos, H = small_box(4)
     ff = PGMForceField(sys, H, md_settings(lj_lrc=True))
     idx = ff.rows_for(jnp.asarray(pos), H)

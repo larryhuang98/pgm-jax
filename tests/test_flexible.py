@@ -1,5 +1,11 @@
-"""Flexible-molecule MD: templates, the single-molecule limit (MD forces = gas-phase model),
-NVE energy conservation and an NPT run that compresses a dilute box (neighbour-list rebuilds)."""
+"""Flexible-molecule MD (md/flexible.py): templates, the single-molecule limit, NVE and NPT.
+
+What is checked, and against what: a template's scaled 1-4 LJ pairs and its save / load round
+trip; MD forces of one molecule in a large box against the gradient of the gas-phase model the
+bonded terms are fitted with (1e-3 of the RMS force: PME and image error); NVE energy conservation
+(std 1e-3 and drift 2e-3 of the kinetic scale 0.5 dof kB T at 0.5 fs) with molecules staying whole;
+an NPT run that compresses a dilute box through neighbour-list rebuilds.
+"""
 
 import jax
 import jax.numpy as jnp
@@ -16,6 +22,7 @@ from pgm_jax.units import KB
 
 
 def test_template_roundtrip_and_pgm_only(tmp_path):
+    """A template has the three scaled H-C-O-H LJ pairs, saves and loads exactly, and refuses bad options."""
     tpl, x = methanol_template()
     i, j, w = tpl.lj_pairs()
     assert len(i) == 3 and np.allclose(w, 0.5)  # the three H-C-O-H pairs
@@ -30,8 +37,11 @@ def test_template_roundtrip_and_pgm_only(tmp_path):
 
 
 def test_single_molecule_matches_gas_phase_model():
-    """One molecule in a large box: MD forces (PME pGM + bonded + intramolecular LJ) equal the
-    gradient of the gas-phase model the bonded terms are fitted with."""
+    """MD forces of one flexible molecule equal the gas-phase model's gradient.
+
+    One molecule in a large box: MD forces (PME pGM + bonded + intramolecular LJ) equal the
+    gradient of the gas-phase model the bonded terms are fitted with.
+    """
     tpl, x = methanol_template()
     y = x + 0.004 * np.random.default_rng(0).normal(size=x.shape)
     s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=1.8, skin=0.05, lj_lrc=False)
@@ -44,6 +54,11 @@ def test_single_molecule_matches_gas_phase_model():
 
 
 def test_nve_energy_conservation():
+    """NVE of 32 flexible methanols conserves the energy after a Langevin start; bonds stay intact.
+
+    1 ps of Langevin equilibration, then 1000 NVE steps at 0.5 fs: std and drift of E_tot below 1e-3
+    and 2e-3 of 0.5 dof kB T; the C-O and O-H bond lengths stay within 0.08-0.16 nm.
+    """
     tpl, sys, pos, H = methanol_liquid()
     s = MDSettings().replace(precision="double", dipole_tol=1e-8, cutoff=0.6, skin=0.05, lj_lrc=False)
     sim = FlexibleSimulation(
@@ -74,8 +89,11 @@ def test_nve_energy_conservation():
 
 
 def test_npt_compresses_dilute_box():
-    """NPT at 2 kbar from a dilute box: the box shrinks by far more than the neighbour lists were
-    built for, so the driver must rebuild them on the way (and the molecules must stay whole)."""
+    """NPT at 2 kbar compresses a dilute box, rebuilding the neighbour lists on the way.
+
+    NPT at 2 kbar from a dilute box: the box shrinks by far more than the neighbour lists were
+    built for, so the driver must rebuild them on the way (and the molecules must stay whole).
+    """
     tpl, sys, pos, H = methanol_liquid(density=0.45)
     s = MDSettings().replace(precision="mixed", dipole_tol=1e-5, cutoff=0.5, skin=0.05)
     sim = FlexibleSimulation(

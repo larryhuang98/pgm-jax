@@ -1,8 +1,16 @@
-"""Interfaces to other MD codes (pgm_jax.interfaces): the device-resident engine against the native
-force field and MD engines, the ASE calculator (energy, forces, stress vs finite differences, rigid
-water constraints, NVE), the i-PI socket client (protocol and units against an in-process server,
-single and batched requests; a real i-PI run if IPI_ROOT or i-pi is available) and the OpenMM
-PythonForce (if OpenMM >= 8.4 is importable)."""
+"""Interfaces to other MD codes (pgm_jax.interfaces).
+
+What is checked, and against what: the device-resident PGMEngine against the native force field
+and the MD engines (energy, forces, dipoles, atomic and molecular virial; general rotated cells);
+the virial against finite differences of strained configurations; slots and resizing; batched
+evaluation against single structures; the gas-phase engine against Model; the ASE calculator
+(units, stress vs finite differences, rigid-water constraints, NVE); the i-PI socket client
+(protocol and units against an in-process fake server, single and batched requests; a real i-PI
+run when IPI_ROOT or i-pi is available); the OpenMM PythonForce (if OpenMM >= 8.4 is importable).
+
+Tolerances: engine vs native 1e-9 relative in energy, 1e-8 in forces (float64); finite-difference
+virials 2e-6 of the largest entry (h = 1e-5); NVE relative to the kinetic energy.
+"""
 
 import os
 import socket
@@ -20,6 +28,13 @@ from pgm_jax.units import KB
 
 
 def settings(**kw):
+    """Return MD settings of the interface tests (0.6 nm cutoff, 32^3 grid, float64, dipoles 1e-10).
+
+    Parameters
+    ----------
+    **kw
+        Flat MDSettings names that override the defaults.
+    """
     base = dict(
         cutoff=0.6,
         skin=0.05,
@@ -36,22 +51,26 @@ def settings(**kw):
 
 
 def water_box(seed=0):
+    """Return 30 waters of small_box(seed) (System, positions [nm], box [nm])."""
     return small_box(seed, nw=30, nm=0)
 
 
 def rotation(seed):
+    """Return a random proper rotation matrix (det = +1)."""
     R = np.linalg.qr(np.random.default_rng(seed).normal(size=(3, 3)))[0]
     return R if np.linalg.det(R) > 0 else -R
 
 
 @pytest.fixture(scope="module")
 def box():
+    """Return the small water / methanol box and a PGMEngine with atomic stress (fixture, module scope)."""
     sysm, pos, H = small_box(0)
     s = settings()
     return sysm, pos, H, s, PGMEngine(sysm, pos, H, s, stress="atomic")
 
 
 def test_engine_matches_native_force_field(box):
+    """PGMEngine equals the native force field, also in a rotated general cell with wrapped atoms."""
     sysm, pos, H, s, eng = box
     ff = PGMForceField(sysm, H, s)
     idx = ff.rows_for(pos, H)
@@ -75,8 +94,11 @@ def test_engine_matches_native_force_field(box):
 
 
 def test_virial_matches_finite_differences(box):
-    """Atomic strain derivative (all nine components) vs differences of the energy of strained
-    configurations (general cells: the engine rotates them to its box form)."""
+    """The engine's atomic virial matches finite differences of strained configurations.
+
+    Atomic strain derivative (all nine components) vs differences of the energy of strained
+    configurations (general cells: the engine rotates them to its box form).
+    """
     sysm, pos, H, s, eng = box
     W = eng.compute(pos, H, virial=True).virial
     h = 1e-5
@@ -90,6 +112,7 @@ def test_virial_matches_finite_differences(box):
 
 
 def test_molecular_virial_trace_matches_native(box):
+    """The molecular virial trace equals the native force field's (1e-8 of the largest entry)."""
     sysm, pos, H, s, _ = box
     ff = PGMForceField(sysm, H, s)
     idx = ff.rows_for(pos, H)
@@ -100,7 +123,7 @@ def test_molecular_virial_trace_matches_native(box):
 
 
 def test_flexible_templates_match_flexible_simulation():
-
+    """With flexible templates the engine equals FlexibleSimulation; its bonded virial matches differences."""
     from pgm_jax.md.flexible import FlexibleSimulation
 
     tpl, sysm, pos, H = methanol_liquid()
@@ -125,8 +148,11 @@ def test_flexible_templates_match_flexible_simulation():
 
 
 def test_slots_and_resizing():
-    """Two interleaved configurations in two slots give the results of separate engines (the dipole
-    history of each slot); an engine whose row capacity is too small resizes and repeats."""
+    """Slots keep separate dipole histories; an overflowing engine resizes and repeats.
+
+    Two interleaved configurations in two slots give the results of separate engines (the dipole
+    history of each slot); an engine whose row capacity is too small resizes and repeats.
+    """
     sysm, pos, H = water_box(1)
     s = settings(dipole_tol=1e-5)
     rng = np.random.default_rng(0)
@@ -150,9 +176,12 @@ def test_slots_and_resizing():
 
 
 def test_compute_batch_matches_single_structures():
-    """Ring-polymer-like batches in one vmapped call (shared list of the batch mean, stacked dipole
+    """compute_batch equals one engine call per structure, also for partial and reordered batches.
+
+    Ring-polymer-like batches in one vmapped call (shared list of the batch mean, stacked dipole
     histories, optionally in chunks) = one engine call per structure; molecules of one bead may
-    sit in another periodic image."""
+    sit in another periodic image.
+    """
     sysm, pos, H = water_box(5)
     s = settings(dipole_tol=1e-10, cutoff=0.4)  # the box holds the molecule list of the batch mean
     rng = np.random.default_rng(1)
@@ -181,7 +210,7 @@ def test_compute_batch_matches_single_structures():
 
 
 def test_gas_phase_engine():
-
+    """GasPhaseEngine equals Model's energy and forces."""
     from pgm_jax import ElecChannel, LJChannel, Model
 
     sysm, pos = cluster(np.random.default_rng(0))
@@ -198,6 +227,11 @@ def test_gas_phase_engine():
 # ----------------------------------------------------------------------------- ASE
 @requires("ase")
 def test_ase_calculator_units_stress_and_dipoles(box):
+    """The ASE calculator converts energy, forces, stress and dipoles to ASE units correctly.
+
+    Energies and forces against the engine's in eV and eV / A (1e-9), stress against the virial / V
+    and against finite differences of ASE energies under atomic scaling (1e-5 of the largest entry).
+    """
     from ase import units
 
     from pgm_jax.interfaces.ase import PGMCalculator, atoms_from_system
@@ -233,7 +267,10 @@ def test_ase_calculator_units_stress_and_dipoles(box):
 
 @requires("ase")
 def test_ase_rigid_water_nve():
-    """NVE with ASE's VelocityVerlet and FixRigidMolecules conserves the energy; waters stay rigid."""
+    """ASE's VelocityVerlet with rigid-water constraints conserves the energy (2e-3 of KE).
+
+    NVE with ASE's VelocityVerlet and FixRigidMolecules conserves the energy; waters stay rigid.
+    """
     from ase import units
     from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
     from ase.md.verlet import VelocityVerlet
@@ -261,6 +298,7 @@ def test_ase_rigid_water_nve():
 
 @requires("ase")
 def test_fix_rigid_molecules_equals_fix_bond_lengths():
+    """rigid_constraints gives the same positions and momenta as ASE's FixBondLengths (1e-9)."""
     from ase.constraints import FixBondLengths
 
     from pgm_jax.interfaces.ase import atoms_from_system, rigid_blocks, rigid_constraints
@@ -285,32 +323,39 @@ class FakeIPI:
     """The server side of the i-PI socket protocol (as i-PI's interfaces/sockets.py sends it)."""
 
     def __init__(self, path):
+        """Bind and listen on the Unix socket `path`."""
         self.path = path
         self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.srv.bind(path)
         self.srv.listen(1)
 
     def accept(self):
+        """Accept the client's connection."""
         self.c, _ = self.srv.accept()
 
     def recv(self, n):
+        """Receive exactly n bytes."""
         b = b""
         while len(b) < n:
             b += self.c.recv(n - len(b))
         return b
 
     def msg(self, s):
+        """Return a 12-byte i-PI header."""
         return s.upper().ljust(12).encode()
 
     def status(self):
+        """Send STATUS and return the client's answer."""
         self.c.sendall(self.msg("STATUS"))
         return self.recv(12).decode().strip()
 
     def init(self, text=""):
+        """Send INIT with the given text (bead index 0)."""
         t = text.encode()
         self.c.sendall(self.msg("INIT") + np.int32(0).tobytes() + np.int32(len(t)).tobytes() + t)
 
     def posdata(self, h, pos):
+        """Send one structure: cell h, its inverse (Bohr, lattice vectors as columns) and positions."""
         self.c.sendall(
             self.msg("POSDATA")
             + h.tobytes()
@@ -320,6 +365,7 @@ class FakeIPI:
         )
 
     def posdata_batch(self, hs, poss):
+        """Send a batch of structures (the batched POSDATA of i-PI's batch_size mode)."""
         body = b"".join(h.tobytes() + np.linalg.inv(h).tobytes() for h in hs)
         self.c.sendall(
             self.msg("POSDATA")
@@ -329,6 +375,7 @@ class FakeIPI:
         )
 
     def getforce(self, batch=1):
+        """Send GETFORCE and return [(energy, forces, virial, extra)] per structure (atomic units)."""
         self.c.sendall(self.msg("GETFORCE"))
         assert self.recv(12).decode().strip() == "FORCEREADY"
         if batch == 1:
@@ -350,6 +397,12 @@ class FakeIPI:
 
 
 def test_ipi_client_protocol_and_units(tmp_path):
+    """The i-PI client speaks the protocol and returns the engine's results in atomic units.
+
+    Against an in-process fake server: the NEEDINIT / READY / HAVEDATA states, energy (Hartree),
+    forces (Hartree / Bohr), virial (with i-PI's sign) and dipole (JSON extra, e Bohr) equal the
+    engine's to 1e-9 / 1e-7; a batched request of two structures; EXIT ends the client.
+    """
     import json
 
     from pgm_jax.interfaces.ipi import IPIClient
@@ -394,6 +447,7 @@ def test_ipi_client_protocol_and_units(tmp_path):
 
 
 def _ipi_available():
+    """Return True if the i-PI command can be located (ipi_tools.ipi_command)."""
     try:
         from pgm_jax.interfaces import ipi_tools
 
@@ -406,9 +460,11 @@ def _ipi_available():
 @pytest.mark.skipif(not _ipi_available(), reason="i-PI not available (set IPI_ROOT)")
 @pytest.mark.needs_external
 def test_ipi_real_server_short_nvt(tmp_path):
-    """A real i-PI server (classical NVT, then 2 beads batched) driven by the pgm_jax client: the
-    step-0 potential is the engine's energy; the conserved quantity is conserved."""
+    """A real i-PI run driven by the pgm_jax client: step-0 energy and conserved quantity.
 
+    A real i-PI server (classical NVT, then 2 beads batched) driven by the pgm_jax client: the
+    step-0 potential is the engine's energy; the conserved quantity is conserved.
+    """
     from pgm_jax.interfaces import ipi_tools as T
     from pgm_jax.interfaces.ipi import IPIClient
 
@@ -437,6 +493,7 @@ def test_ipi_real_server_short_nvt(tmp_path):
 
 # ----------------------------------------------------------------------------- OpenMM
 def _openmm():
+    """Return the openmm module if it has PythonForce (OpenMM >= 8.4), else None."""
     try:
         import openmm
 
@@ -448,6 +505,7 @@ def _openmm():
 @pytest.mark.skipif(_openmm() is None, reason="OpenMM >= 8.4 (PythonForce) not available")
 @pytest.mark.needs_external
 def test_openmm_pythonforce_energy_forces_and_nve():
+    """The OpenMM PythonForce gives the engine's energy and forces, and rigid-water NVE conserves energy."""
     import openmm
     from openmm import unit
 
