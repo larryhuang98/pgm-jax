@@ -1194,9 +1194,9 @@ class PGMForceField:
         didk = di[0] * dk[0] + di[1] * dk[1] + di[2] * dk[2]
         t = qi * dkx - qk * dix
         dd = dix * dkx
-        if delta is None:
-            e = qi * qk * G0 + t * G1 - G2 * dd + G1 * didk
-            radial = -qi * qk * G1 - t * G2 + G3 * dd - G2 * didk
+        if delta is None:                                      # as before iEL (same rounding: SCF runs unchanged)
+            e = qi * qk * G0 + t * G1 - G2 * dix * dkx + G1 * didk
+            radial = -qi * qk * G1 - t * G2 + G3 * dix * dkx - G2 * didk
             cross = [di[j] * dkx + dk[j] * dix for j in range(3)]
         else:                                                  # minus the delta-delta pair terms
             Dkk = delta[k]
