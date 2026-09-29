@@ -259,24 +259,26 @@ def share_identical(mols: list[Molecule]) -> list[Molecule]:
 
 
 def read_prmtop_molecules(path: str, charges: str = "pgm", point_radius: float | None = None) -> list[Molecule]:
-    """Every molecule (residue) of a prmtop, identical ones shared (share_identical).
+    """Return every molecule (residue) of a prmtop, identical ones shared (share_identical).
 
     Parameters
     ----------
     path : str
         Amber prmtop (a pGM prmtop, or a classical one with charges="amber").
-    charges, point_radius
+    charges : {"pgm", "amber"}
         As in read_prmtop_pgm.
+    point_radius : float, optional
+        As in read_prmtop_pgm [nm].
 
     Returns
     -------
     list of Molecule
-        One entry per residue, in prmtop order.
+        One entry per residue, in prmtop order; identical residues are the same object.
     """
     return share_identical(read_prmtop_pgm(path, first_residue_only=False, charges=charges, point_radius=point_radius))
 
 
-def _prmtop_lj(s) -> tuple[np.ndarray, np.ndarray]:
+def _prmtop_lj(s: Prmtop) -> tuple[np.ndarray, np.ndarray]:
     """Return per-atom LJ R* [nm] and sqrt(eps) [sqrt(kJ/mol)] from the prmtop's ACOEF/BCOEF tables.
 
     Amber stores A = eps r_min^12 [kcal/mol A^12] and B = 2 eps r_min^6 [kcal/mol A^6] per type

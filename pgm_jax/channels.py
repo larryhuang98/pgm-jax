@@ -125,7 +125,7 @@ def _pair_perm(
         gradient with respect to r_i.
     """
 
-    def f(a, c):
+    def f(a: jax.Array, c: jax.Array) -> jax.Array:
         return phi(jnp.linalg.norm(a - c), b)
 
     gi = jax.grad(f, 0)(ri, rj)
@@ -148,10 +148,10 @@ def _field_at_i(
     pair exponent [1/nm] and phi the kernel as in _pair_perm.
     """
 
-    def f(a, c):
+    def f(a: jax.Array, c: jax.Array) -> jax.Array:
         return phi(jnp.linalg.norm(a - c), b)
 
-    def V(x):
+    def V(x: jax.Array) -> jax.Array:
         return qj * f(x, rj) + pj @ jax.grad(f, 1)(x, rj)
 
     return -jax.grad(V)(ri)
@@ -190,7 +190,7 @@ def _dipole_tensor(
 ) -> jax.Array:
     """Return T_ij = d^2 phi(|r_i - r_j|, b) / dr_i dr_j (3, 3) [1/nm^3] by forward-over-reverse autodiff."""
 
-    def f(a, c):
+    def f(a: jax.Array, c: jax.Array) -> jax.Array:
         return phi(jnp.linalg.norm(a - c), b)
 
     return jax.jacfwd(jax.grad(f, 0), 1)(ri, rj)

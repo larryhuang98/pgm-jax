@@ -285,7 +285,7 @@ class Molecule:
                 adj[i].add(j)
                 adj[j].add(i)
 
-        def relabel(sig):
+        def relabel(sig: list) -> list[int]:
             order = {s: k for k, s in enumerate(sorted(set(sig)))}
             return [order[s] for s in sig]
 

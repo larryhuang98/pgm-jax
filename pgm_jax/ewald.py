@@ -177,7 +177,7 @@ def _pair_tensors(x: jax.Array, bij: jax.Array, b0: float) -> tuple[jax.Array, j
     d2g : jax.Array (3, 3) [1/nm^3]
     """
 
-    def g(v):
+    def g(v: jax.Array) -> jax.Array:
         return (erf(bij * jnp.linalg.norm(v)) - erf(b0 * jnp.linalg.norm(v))) / jnp.linalg.norm(v)
 
     return g(x), jax.grad(g)(x), jax.hessian(g)(x)
@@ -405,7 +405,7 @@ class PeriodicPGM:
         """
         z = jnp.zeros((self.sys.n, 3))
 
-        def gradG(mu):
+        def gradG(mu: jax.Array) -> jax.Array:
             return jax.grad(self._G)(mu, theta)
 
         g0, hvp = jax.linearize(gradG, z)  # G is quadratic: the Hessian is constant
