@@ -12,6 +12,9 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
+from test_grad import water  # noqa: E402
+from test_hmr import _cluster  # noqa: E402
+
 from pgm_jax import System  # noqa: E402
 from pgm_jax.bias import OPES, BiasSet, Harmonic, LowerWall, MetaD, StaticBias, UpperWall, cv  # noqa: E402
 from pgm_jax.bias import analysis as A  # noqa: E402
@@ -19,8 +22,6 @@ from pgm_jax.bias.core import KB  # noqa: E402
 from pgm_jax.bias.toy import ToyLangevin, double_well, ring  # noqa: E402
 from pgm_jax.md.box import reduce_box  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from test_grad import water  # noqa: E402
-from test_hmr import _cluster  # noqa: E402
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
 

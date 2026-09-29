@@ -4,7 +4,7 @@ from __future__ import annotations
 import jax.numpy as jnp
 import numpy as np
 
-from .core import Family, _mask_n, _N, _pair_index, register
+from .core import _N, Family, _mask_n, _pair_index, register
 
 
 @register

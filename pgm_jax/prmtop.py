@@ -55,7 +55,7 @@ class Prmtop:
 
     # ------------------------------------------------------------------ reading
     @classmethod
-    def read(cls, path: str) -> "Prmtop":
+    def read(cls, path: str) -> Prmtop:
         version, secs, cur, raw = "", [], None, []
 
         def finish():

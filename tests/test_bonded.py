@@ -6,12 +6,13 @@ import numpy as np
 
 jax.config.update("jax_enable_x64", True)
 
+from test_grad import methanol  # noqa: E402
+
 from pgm_jax.bonded import terms as T  # noqa: E402
 from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec  # noqa: E402
 from pgm_jax.bonded.topology import build_topology  # noqa: E402
 from pgm_jax.channels import ElecChannel  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
-from test_grad import methanol  # noqa: E402
 
 
 def ethanal():

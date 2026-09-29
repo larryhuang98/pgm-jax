@@ -3,14 +3,21 @@ copies of a molecule (vmapped over copies, as FlexibleMolecules does), one GPU.
     python scripts/bonded/bench_sets.py [--mol alanine_dipeptide] [--copies 500]
 The neural set is timed frozen (stage-1 coefficients evaluated once, as in MD); stage 1 itself
 is timed separately."""
-import argparse, json, os, sys, time
+import argparse
+import json
+import os
+import sys
+import time
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
 import jax
+
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 from experiments import load
+
 from pgm_jax.bonded import terms as T
 from pgm_jax.bonded.model import BondedModel, BondedSettings
 

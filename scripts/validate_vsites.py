@@ -357,6 +357,7 @@ def _timed(sim, steps):
 
 def bench(a):
     import dataclasses
+
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
     sys4, pos4, vel, H = load(TOP, os.path.join(OUT, "equil.rst7"))
     n = a.replicate

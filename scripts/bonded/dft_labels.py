@@ -3,7 +3,11 @@ of MACE-OFF's training data (SPICE).  One task = one line of runs/bonded/dft_tas
     <name> <npz key> <start> <end>
     python scripts/bonded/dft_labels.py TASK_INDEX --threads 8
 Writes data/bonded/dft/<name>__<key>__<start>.npz; skips frames already done."""
-import argparse, json, os, time
+import argparse
+import json
+import os
+import time
+
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -30,6 +34,7 @@ el, charge = mol_info["elements"], mol_info["charge"]
 
 os.chdir(os.environ.get("PSI_SCRATCH", "/tmp"))            # psi4 leaves psi.<pid>.clean files in the cwd
 import psi4  # noqa: E402
+
 psi4.set_memory(f"{a.memory} GB"); psi4.set_num_threads(a.threads)
 psi4.core.set_output_file(f"/tmp/larry_psi4_{os.getpid()}.out", False)
 psi4.set_options({"basis": "def2-tzvppd", "scf_type": "df", "d_convergence": 1e-8, "dft_spherical_points": 590,

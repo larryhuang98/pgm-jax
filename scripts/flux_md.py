@@ -23,10 +23,16 @@ gas: the isolated molecule with the gas-phase model the template was fitted with
 bonded terms, pGM with every pair, intramolecular van der Waals, the flux), 256 independent copies
 (vmap), BAOAB Langevin 5/ps, dt 0.5 fs, 20 ps + 100 ps sampled every 50 fs: <U_gas> and <|mu|>;
 with the liquid's <U>/N it gives the heat of vaporization <U_gas> - <U_liq>/N + RT."""
-import argparse, json, os, sys, time
+import argparse
+import json
+import os
+import sys
+import time
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import jax
+
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np

@@ -6,10 +6,11 @@ import numpy as np
 
 jax.config.update("jax_enable_x64", True)
 
-from pgm_jax.bonded import terms as T  # noqa: E402
-from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec  # noqa: E402
 from test_bonded import ethanal  # noqa: E402
 from test_grad import methanol  # noqa: E402
+
+from pgm_jax.bonded import terms as T  # noqa: E402
+from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec  # noqa: E402
 
 BONDS = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)]
 

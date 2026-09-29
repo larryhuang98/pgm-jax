@@ -1,6 +1,9 @@
 """Write runs/bonded/dft_tasks.txt (one line per Slurm task: name key start end) for every frame
 set that exists and has no DFT file yet, and the Slurm array script runs/bonded/dft.sh."""
-import glob, os, sys
+import glob
+import os
+import sys
+
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

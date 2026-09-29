@@ -8,12 +8,13 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
+from test_flexible import template  # noqa: E402
+
 from pgm_jax.md.constraints import Constraints  # noqa: E402
 from pgm_jax.md.flexible import FlexibleSimulation, liquid_box  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.md.integrate import KB  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
-from test_flexible import template  # noqa: E402
 
 
 def _clusters():

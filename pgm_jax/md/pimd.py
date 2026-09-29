@@ -76,13 +76,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ..units import DEBYE_E_NM
 from ._jaxmd import dataclasses
 from .box import inv3, max_cutoff, volume
 from .integrate import KB
 from .io import NetCDFTrajectory, write_restart
 from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .thermostats import Bussi
-from ..units import DEBYE_E_NM
 
 HBAR = 0.0635077993                  # kJ/mol ps  (1.054571817e-34 J s * N_A)
 KJMOL_TO_MEV = 10.364269656262175    # 1 kJ/mol per particle in meV
@@ -1000,6 +1000,7 @@ def flexible_water(molecule, target=qtip4pf_intra, families=WATER_FAMILIES, n_sa
     Urey-Bradley term).  Returns (template, report) with the RMS errors and the harmonic
     frequencies of the fitted and target monomers."""
     import scipy.optimize
+
     from ..bonded import terms as TT
     from ..bonded.model import BondedModel, BondedSettings, MolSpec
     from .flexible import FlexibleTemplate

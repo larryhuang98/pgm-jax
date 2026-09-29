@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .core import Family, _N, register
+from .core import _N, Family, register
 
 
 @register

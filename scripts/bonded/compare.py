@@ -1,6 +1,10 @@
 """Per-molecule and mean test errors of several result files (molecules common to all)."""
-import json, os, sys
+import json
+import os
+import sys
+
 import numpy as np
+
 RES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "runs/bonded/results")
 names = sys.argv[1:]
 excl = {"methanethiol"}

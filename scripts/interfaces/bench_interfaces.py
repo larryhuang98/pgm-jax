@@ -19,6 +19,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import jax  # noqa: E402
+
 jax.config.update("jax_enable_x64", True)
 import numpy as np  # noqa: E402
 
@@ -91,6 +92,7 @@ def main():
         if "ase" not in a.skip:
             from ase import units
             from ase.md.verlet import VelocityVerlet
+
             from pgm_jax.interfaces.ase import PGMCalculator, atoms_from_system, rigid_constraints
             e2 = PGMEngine(sysm, pos0, H, s)
             atoms = atoms_from_system(sysm, pos0, H)
@@ -128,6 +130,7 @@ def main():
             try:
                 import openmm
                 from openmm import unit
+
                 from pgm_jax.interfaces.openmm import PGMOpenMM
                 names = [openmm.Platform.getPlatform(i).getName() for i in range(openmm.Platform.getNumPlatforms())]
                 for p in [x for x in ("CPU", "CUDA") if x in names]:

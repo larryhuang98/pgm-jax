@@ -7,15 +7,21 @@ py_resp parameters.  Restraint: lam * sum (q - q_start)^2 on nothing but the fre
 
     python scripts/bonded/esp_fit_jax.py [names]     # runs/bonded/pgm2/<name>/esp_*.dat -> data/bonded/params2/
 """
-import glob, json, os, sys
+import glob
+import os
+import sys
+
 import numpy as np
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 import jax  # noqa: E402
+
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
-from scipy.optimize import minimize  # noqa: E402
 from jax.flatten_util import ravel_pytree  # noqa: E402
+from scipy.optimize import minimize  # noqa: E402
+
 from pgm_jax.channels import ElecChannel  # noqa: E402
 from pgm_jax.param import load_molecule, save_molecule  # noqa: E402
 from pgm_jax.system import System  # noqa: E402

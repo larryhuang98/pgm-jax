@@ -11,8 +11,21 @@ import pytest
 jax.config.update("jax_enable_x64", True)
 
 from pgm_jax import ElecChannel, LJChannel, Model, Molecule, System  # noqa: E402
-from pgm_jax.qmfit import (KCAL, ClusterModel, FitWeights, ParamMap, Prepared, QMFit, QMSet, error_table,  # noqa: E402
-                           evaluate, label, rigid_body_forces, rigid_water, superpose_monomers)
+from pgm_jax.qmfit import (  # noqa: E402
+    KCAL,
+    ClusterModel,
+    FitWeights,
+    ParamMap,
+    Prepared,
+    QMFit,
+    QMSet,
+    error_table,
+    evaluate,
+    label,
+    rigid_body_forces,
+    rigid_water,
+    superpose_monomers,
+)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

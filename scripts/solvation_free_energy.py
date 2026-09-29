@@ -62,8 +62,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pgm_jax.md import fe_grad as fg  # noqa: E402
 from pgm_jax.md import free_energy as fe  # noqa: E402
-from pgm_jax.md.alchemy import (KCAL, Alchemy, FreeEnergyRun, GasPhaseLeg, LambdaWindows,  # noqa: E402
-                                alchemical_system, standard_schedule)
+from pgm_jax.md.alchemy import (  # noqa: E402
+    KCAL,
+    Alchemy,
+    FreeEnergyRun,
+    GasPhaseLeg,
+    LambdaWindows,
+    alchemical_system,
+    standard_schedule,
+)
 from pgm_jax.md.box import volume  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.md.io import box_from_cell, read_coordinates  # noqa: E402

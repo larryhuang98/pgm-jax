@@ -5,10 +5,11 @@ import numpy as np
 
 jax.config.update("jax_enable_x64", True)
 
+from test_protein_bonded import ACE_ALA_GLY_NME, peptide_spec  # noqa: E402
+
 from pgm_jax.bonded import terms as T  # noqa: E402
 from pgm_jax.bonded.model import BondedSettings, BondedTerms  # noqa: E402
 from pgm_jax.ensemble import ALPHA_BOX, KARPLUS, KB, Reweighting, backbone_torsions, in_region, karplus  # noqa: E402
-from test_protein_bonded import ACE_ALA_GLY_NME, peptide_spec  # noqa: E402
 
 
 def test_karplus_and_regions():

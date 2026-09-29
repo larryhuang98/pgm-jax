@@ -5,19 +5,24 @@ paper's metrics on 298 K frames and force-field-relaxed scans.  Results: runs/bo
     python scripts/bonded/experiments.py run NAME --mols A1 --families paper [--elec 3] ...
     python scripts/bonded/experiments.py table NAME [NAME ...]
 """
-import argparse, json, os, sys, time
+import argparse
+import json
+import os
+import sys
+import time
+
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 import jax  # noqa: E402
+
 jax.config.update("jax_enable_x64", True)
-import jax.numpy as jnp  # noqa: E402
 
 from pgm_jax.bonded import terms as T  # noqa: E402
 from pgm_jax.bonded.bench import scan_metrics  # noqa: E402
 from pgm_jax.bonded.data import esp_data, frames, mol_spec, scan_keys  # noqa: E402
-from pgm_jax.bonded.fit import SCALES, FrameSet, Fitter  # noqa: E402
+from pgm_jax.bonded.fit import SCALES, Fitter, FrameSet  # noqa: E402
 from pgm_jax.bonded.model import BondedModel, BondedSettings  # noqa: E402
 from pgm_jax.bonded.molecules import MOLECULES  # noqa: E402
 

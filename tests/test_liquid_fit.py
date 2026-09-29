@@ -10,16 +10,25 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
+from test_grad import water  # noqa: E402
+from test_md import settings, small_box  # noqa: E402
+
 from pgm_jax import ElecChannel, System  # noqa: E402
-from pgm_jax.fit import (FrameAnalyzer, GasPhase, LiquidSamples, Objective, Param, ParameterSpace,  # noqa: E402
-                         RDFSpec, Target)
+from pgm_jax.fit import (  # noqa: E402
+    FrameAnalyzer,
+    GasPhase,
+    LiquidSamples,
+    Objective,
+    Param,
+    ParameterSpace,
+    RDFSpec,
+    Target,
+)
 from pgm_jax.fit.estimators import KB, KCAL  # noqa: E402
 from pgm_jax.fit.optimize import Estimate  # noqa: E402
 from pgm_jax.md.dipoles import CellDipole  # noqa: E402
 from pgm_jax.md.forcefield import PGMForceField  # noqa: E402
 from pgm_jax.units import DEBYE_E_NM, KE  # noqa: E402
-from test_grad import water  # noqa: E402
-from test_md import settings, small_box  # noqa: E402
 
 QTY = ["q", "cov", "alpha", "radius", "lj_r", "lj_eps"]
 

@@ -293,7 +293,7 @@ class System:
     def atom_slice(self, k: int) -> slice:
         return slice(int(self.offsets[k]), int(self.offsets[k + 1]))
 
-    def sub(self, mols: tuple[int, ...]) -> tuple["System", np.ndarray]:
+    def sub(self, mols: tuple[int, ...]) -> tuple[System, np.ndarray]:
         """Subsystem of the given molecules (same ParamTable) and the atom index map into this system."""
         idx = np.concatenate([np.arange(self.offsets[k], self.offsets[k + 1]) for k in mols])
         return System([self.molecules[k] for k in mols], table=self.table), idx

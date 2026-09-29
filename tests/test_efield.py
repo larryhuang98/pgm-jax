@@ -10,6 +10,9 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
+from test_grad import cluster, methanol  # noqa: E402
+from test_md import settings, small_box  # noqa: E402
+
 from pgm_jax import ElecChannel, Model, Molecule, System  # noqa: E402
 from pgm_jax.channels import molecular_polarizability  # noqa: E402
 from pgm_jax.md import efield as EF  # noqa: E402
@@ -18,8 +21,6 @@ from pgm_jax.md.forcefield import PGMForceField  # noqa: E402
 from pgm_jax.md.integrate import KB  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
 from pgm_jax.units import KE  # noqa: E402
-from test_grad import cluster, methanol  # noqa: E402
-from test_md import settings, small_box  # noqa: E402
 
 E1 = np.array([0.3, -0.5, 0.8])            # V/nm, deliberately strong and oblique
 
@@ -386,8 +387,9 @@ def test_field_replicas_batched_run_and_analysis(tmp_path):
 def test_mts_with_a_field_is_the_ordinary_integrator_at_one_fast_step(engine):
     """MTS(inner=1) with a time-dependent field = the ordinary step with it (field at the outer
     evaluations, the work booked the same way)."""
-    from pgm_jax.md.mts import MTS
     from test_mts import water_sim
+
+    from pgm_jax.md.mts import MTS
     fld = EF.ExternalField((0.2, 0.0, 0.8), omega=30.0)
     out = []
     for m in (None, MTS(inner=1, r_short=0.4, buffer=0.1, anchor=False)):
@@ -404,8 +406,9 @@ def test_mts_with_a_field_is_the_ordinary_integrator_at_one_fast_step(engine):
 def test_charge_flux_with_a_field(kind):
     """Charge flux (q(R), c(R)): the field's potential -E . r enters the charge pull-back; forces vs
     autodiff at fixed mu and vs differences of the energy with the dipoles re-solved."""
-    from pgm_jax.md.flexible import FlexibleSimulation, liquid_box
     from test_flux import flux_template, tight
+
+    from pgm_jax.md.flexible import FlexibleSimulation, liquid_box
     tpl, _ = flux_template()
     n = 16
     pos, H = liquid_box(tpl, n, 0.55, seed=0, min_dist=0.18)

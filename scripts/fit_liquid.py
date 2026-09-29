@@ -18,10 +18,16 @@ R*_i -> s_R R*_i, eps_i -> s_eps eps_i; or (--params type) one pair of scales pe
     python scripts/fit_liquid.py water    --start 0.0296,-0.357 --iters 6    # perturbed start
     python scripts/fit_liquid.py methanol --iters 6                         # from GAFF LJ
 """
-import argparse, json, os, sys, time
+import argparse
+import json
+import os
+import sys
+import time
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import jax
+
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np

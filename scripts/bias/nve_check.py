@@ -21,13 +21,14 @@ jax.config.update("jax_enable_x64", True)
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
+from test_grad import water  # noqa: E402
+from test_hmr import _cluster  # noqa: E402
+
 from pgm_jax import System  # noqa: E402
 from pgm_jax.bias import BiasSet, MetaD, UpperWall, cv  # noqa: E402
 from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
-from test_grad import water  # noqa: E402
-from test_hmr import _cluster  # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ps", type=float, default=2.0)

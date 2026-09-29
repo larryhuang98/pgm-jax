@@ -2,19 +2,19 @@
 (no silent fallback): multiple time stepping with an alchemical region, with virtual sites in the
 flexible engine or with charge flux in a fast pair model; an alchemical region with charge flux."""
 import jax
-import numpy as np
 import pytest
 
 jax.config.update("jax_enable_x64", True)
+
+from test_alchemy import alch_sim  # noqa: E402
+from test_flux import flux_template  # noqa: E402
+from test_vsites import _tip4pew_ideal  # noqa: E402
 
 from pgm_jax import System  # noqa: E402
 from pgm_jax.md.alchemy import Alchemy, alchemical_system  # noqa: E402
 from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate, liquid_box  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, ewald_beta_for  # noqa: E402
 from pgm_jax.md.mts import MTS  # noqa: E402
-from test_alchemy import alch_sim  # noqa: E402
-from test_flux import flux_template  # noqa: E402
-from test_vsites import _tip4pew_ideal  # noqa: E402
 
 FLUX_SETTINGS = MDSettings(cutoff=0.5, skin=0.05, ewald_beta=6.0, pme_grid=(32, 32, 32), lj_lrc=False,
                            precision="double")

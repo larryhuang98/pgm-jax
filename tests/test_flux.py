@@ -3,12 +3,14 @@
 differentiable path against finite differences with the dipoles re-solved; the cell dipole with
 q(R); rigid molecules (constant shift); refusals (pmemd-pgm export, stray flux parameters);
 energy conservation."""
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 jax.config.update("jax_enable_x64", True)
+
+from test_grad import methanol  # noqa: E402
 
 from pgm_jax.bonded import terms as T  # noqa: E402
 from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec  # noqa: E402
@@ -21,7 +23,6 @@ from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
 from pgm_jax.md.integrate import KB  # noqa: E402
 from pgm_jax.protein import write_pgm_prmtop  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
-from test_grad import methanol  # noqa: E402
 
 BONDS = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)]
 

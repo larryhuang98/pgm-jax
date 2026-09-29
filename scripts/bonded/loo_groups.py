@@ -1,6 +1,10 @@
 """Leave-one-out transfer by chemical group (energy MAE, kcal/mol)."""
-import glob, json, os
+import glob
+import json
+import os
+
 import numpy as np
+
 RES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "runs/bonded/results")
 G = {"carbonyl/carboxyl": ["acetaldehyde", "acetate", "formic_acid", "chloroformic_acid", "formamide"],
      "amine/ammonium/phosphate": ["methylamine", "methylammonium", "hydrogen_phosphate"],

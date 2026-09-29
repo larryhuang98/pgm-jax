@@ -12,7 +12,7 @@ from pgm_jax.ewald import PeriodicPGM  # noqa: E402
 from pgm_jax.lj import LJChannel  # noqa: E402
 from pgm_jax.model import Model  # noqa: E402
 from pgm_jax.periodic import PeriodicModel  # noqa: E402
-from pgm_jax.system import QUANTITIES, Molecule, ParamTable, System  # noqa: E402
+from pgm_jax.system import QUANTITIES, Molecule, System  # noqa: E402
 
 
 def water():

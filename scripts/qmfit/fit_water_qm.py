@@ -28,8 +28,24 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 
 from pgm_jax.param import read_prmtop_pgm, save_molecule  # noqa: E402
-from pgm_jax.qmfit import (ANG, DEBYE, KCAL, ClusterModel, FitWeights, ParamMap, QMFit, QMSet, error_table,  # noqa: E402
-                           Prepared, evaluate, format_table, label, rigid_minimize, rigid_water, superpose_monomers)
+from pgm_jax.qmfit import (  # noqa: E402
+    ANG,
+    DEBYE,
+    KCAL,
+    ClusterModel,
+    FitWeights,
+    ParamMap,
+    Prepared,
+    QMFit,
+    QMSet,
+    error_table,
+    evaluate,
+    format_table,
+    label,
+    rigid_minimize,
+    rigid_water,
+    superpose_monomers,
+)
 from pgm_jax.vdw import PGM3P_GVDW, set_gvdw  # noqa: E402
 
 MODELS = {"p25": ("/home8/larry/project/epsp/p25_512.prmtop", (0.9745, 103.64)),

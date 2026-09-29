@@ -173,7 +173,7 @@ class ChargeFlux:
 
     # ------------------------------------------------------------------ from fitted templates
     @classmethod
-    def from_templates(cls, sys, templates) -> "ChargeFlux | None":
+    def from_templates(cls, sys, templates) -> ChargeFlux | None:
         """The flux of a system of FlexibleTemplates (templates[k] belongs to sys.molecules[k], as
         in FlexibleSimulation); None when no template was fitted with flux.  Each template's
         parameters form one block of `params` (templates are identified by object, as the MD
@@ -244,6 +244,7 @@ def molecule_at(tpl, xyz=None, params=None, name: str | None = None):
     params: parameters of the template's System([tpl.pgm]) as for PGMForceField (None: initial
     values, flux from the fit)."""
     from dataclasses import replace
+
     from ..system import System
     mol = tpl.pgm
     sys = System([mol])

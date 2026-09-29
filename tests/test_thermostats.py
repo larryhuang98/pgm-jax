@@ -71,11 +71,12 @@ def test_gle_kernels_and_fdt_check():
 def test_constrained_nvt_runs_conserve_effective_energy():
     """Rigid water by constraints, 2 fs: every thermostat holds the constraints, keeps T near the
     target and conserves E_tot + |aux|^2/2 - heat as well as NVE conserves E_tot."""
+    from test_grad import water
     from test_md_macro import _water_box
+
     from pgm_jax import System
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
     from pgm_jax.md.forcefield import MDSettings
-    from test_grad import water
     pos, H, w = _water_box()
     wat = water()
     sys = System([wat] * (len(pos) // 3))

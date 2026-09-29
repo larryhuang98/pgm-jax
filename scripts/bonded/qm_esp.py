@@ -4,7 +4,11 @@ sampling minimum.  (Merz-Kollman shell code as in evoff/qm/psi4_monomer.py.)
 
     python scripts/bonded/qm_esp.py runs/bonded/pgm/<name> --threads 16
 In:  input.json {name, elements, types, xyz_A, charge}.  Out: esp.dat (py_resp format), qm.json."""
-import argparse, json, os, time
+import argparse
+import json
+import os
+import time
+
 import numpy as np
 
 BOHR = 0.52917721067

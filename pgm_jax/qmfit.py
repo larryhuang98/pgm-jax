@@ -58,7 +58,7 @@ class QMSet:
     about: dict = field(default_factory=dict)
 
     @classmethod
-    def load(cls, path: str) -> "QMSet":
+    def load(cls, path: str) -> QMSet:
         d = json.load(open(path))
         return cls(d["records"], d.get("monomer", {}), {k: v for k, v in d.items() if k not in ("records", "monomer")})
 
@@ -74,10 +74,10 @@ class QMSet:
     def ids(self):
         return [r["id"] for r in self.records]
 
-    def select(self, pred) -> "QMSet":
+    def select(self, pred) -> QMSet:
         return QMSet([r for r in self.records if pred(r)], self.monomer, self.about)
 
-    def split(self, is_test) -> tuple["QMSet", "QMSet"]:
+    def split(self, is_test) -> tuple[QMSet, QMSet]:
         return self.select(lambda r: not is_test(r)), self.select(is_test)
 
     def sets(self):

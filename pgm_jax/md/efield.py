@@ -112,7 +112,7 @@ class ExternalField:
         object.__setattr__(self, "phase", float(self.phase))
 
     @classmethod
-    def from_wavenumber(cls, E0, wavenumber_cm: float, phase: float = 0.0) -> "ExternalField":
+    def from_wavenumber(cls, E0, wavenumber_cm: float, phase: float = 0.0) -> ExternalField:
         return cls(E0, 2.0 * math.pi * C_CM_PS * float(wavenumber_cm), phase)
 
     @property

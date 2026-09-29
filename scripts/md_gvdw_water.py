@@ -3,12 +3,19 @@ PME 48^3 order 8, ew_coeff 0.4 A^-1, no dispersion tail, dipole tol 1e-4, 298 K,
 gamma 2/ps, MC barostat every 100 steps, dt 1 fs); density to compare with the pmemd-pgm runs
 (Table 1 of the manuscript: 0.997 Gaussian, 0.999 Slater g/cm^3).
     python scripts/md_gvdw_water.py slater|gauss|lj [--ps 100] [--equil 20] [--seed 0]"""
-import argparse, json, os, sys, time
+import argparse
+import json
+import os
+import sys
+import time
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import jax
+
 jax.config.update("jax_enable_x64", True)
 import numpy as np
+
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.io import box_from_cell, read_coordinates
 from pgm_jax.md.simulation import Simulation, _dedupe

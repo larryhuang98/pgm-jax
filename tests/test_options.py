@@ -9,13 +9,19 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
-from pgm_jax import System  # noqa: E402
-from pgm_jax.channels import ElecChannel  # noqa: E402
-from pgm_jax.multipole import (S_tensor, cbv_quadrupole_terms, multipole_field, multipole_pair_energy,  # noqa: E402
-                               quadrupoles, with_quadrupoles)
-from pgm_jax.vdw import C0, GVDWChannel, gvdw_G, gvdw_pair, set_gvdw  # noqa: E402
 from jax.scipy.special import erf  # noqa: E402
 from test_grad import cluster, methanol, water  # noqa: E402
+
+from pgm_jax import System  # noqa: E402
+from pgm_jax.channels import ElecChannel  # noqa: E402
+from pgm_jax.multipole import (  # noqa: E402
+    S_tensor,
+    multipole_field,
+    multipole_pair_energy,
+    quadrupoles,
+    with_quadrupoles,
+)
+from pgm_jax.vdw import C0, GVDWChannel, gvdw_G, gvdw_pair, set_gvdw  # noqa: E402
 
 
 def _rand_quad(rng, n):

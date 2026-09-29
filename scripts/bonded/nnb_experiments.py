@@ -5,14 +5,20 @@ Frames: MACE-OFF 500 K training frames (no torsion scans) and 298 K test frames,
     python scripts/bonded/nnb_experiments.py permol  [--ref geometry]
     python scripts/bonded/nnb_experiments.py loo     [--ref geometry|predicted]
 Results: runs/bonded/nnb/<mode>_<ref>.json"""
-import argparse, json, os, sys, time
+import argparse
+import json
+import os
+import sys
+import time
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
 import jax
+
 jax.config.update("jax_enable_x64", True)
 import numpy as np
-from experiments import FAMILY_SETS, families_of, load
-from pgm_jax.bonded import terms as T
+from experiments import families_of, load
+
 from pgm_jax.bonded.fit import Fitter
 from pgm_jax.bonded.model import BondedModel, BondedSettings
 

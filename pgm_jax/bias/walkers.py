@@ -32,7 +32,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..md.remd import MDReplicas, _broadcast, _nocount, _stack, _take
+from ..md.remd import MDReplicas, _broadcast, _nocount, _stack
 from .io import BiasOutput
 
 

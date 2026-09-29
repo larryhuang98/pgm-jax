@@ -96,6 +96,7 @@ def main():
     xyz, vel, box = read_coordinates(RST)
     if a.model == "pgm3p25":                                   # as water_dielectric.py --model pgm3p25
         import dataclasses
+
         from water_dielectric import paper_geometry
         xyz = paper_geometry(xyz, 0.9745, 103.64, [list(m.elements) for m in mols])
         sig, eps = 3.18156, 0.14473
@@ -122,8 +123,8 @@ def main():
     nvt.load(a.checkpoint)
     start = nvt.state
     if a.density:                                              # molecular scaling to the target density
-        from pgm_jax.md.rigid import RigidBody
         from pgm_jax.md.box import volume
+        from pgm_jax.md.rigid import RigidBody
         mass = float(np.sum(sys_.masses)) * 1.66053906660e-3
         f = (mass / a.density / float(volume(start.box))) ** (1.0 / 3.0)
         body = start.dyn.position

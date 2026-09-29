@@ -12,6 +12,8 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
+from test_grad import methanol, water  # noqa: E402
+
 from pgm_jax.md.box import lower_triangular_frame, reduce_box  # noqa: E402
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, RigidTemplate, liquid_box  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
@@ -22,7 +24,6 @@ from pgm_jax.md.topology import MDTopology, MoleculeRule  # noqa: E402
 from pgm_jax.md.vsites import VirtualSite, VirtualSites, amber_extra_points  # noqa: E402
 from pgm_jax.param import molecule_from_dict, molecule_to_dict, read_prmtop_pgm  # noqa: E402
 from pgm_jax.system import Molecule, System  # noqa: E402
-from test_grad import methanol, water  # noqa: E402
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
 TET = np.radians(54.735)
@@ -428,7 +429,7 @@ def test_flexible_molecule_with_sites_nvt_nve_and_hmr():
 
 
 def test_load_amber_protein_in_tip4pew():
-    from pgm_jax.protein.amber import load_amber, amber_template
+    from pgm_jax.protein.amber import amber_template, load_amber
     from pgm_jax.protein.pmemd import write_pgm_prmtop
     prm, crd = os.path.join(DATA, "pep_tip4pew.prmtop"), os.path.join(DATA, "pep_tip4pew.inpcrd")
     asys = load_amber(prm, crd)

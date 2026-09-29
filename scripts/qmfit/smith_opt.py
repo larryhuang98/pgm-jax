@@ -4,7 +4,11 @@ the point group, optimize at MP2/aug-cc-pVDZ with psi4 (optking keeps the point 
     python scripts/qmfit/smith_opt.py NAME OUTDIR [threads]
 Names: Cs_open Cs_planar Ci_cyclic C2_cyclic C2h_cyclic C2v_bifurcated C2v_planar_bifurcated
 """
-import json, os, sys, time
+import json
+import os
+import sys
+import time
+
 import numpy as np
 
 R, TH = 0.96, np.radians(104.5)

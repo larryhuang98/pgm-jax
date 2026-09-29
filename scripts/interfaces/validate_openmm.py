@@ -17,6 +17,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import jax
+
 jax.config.update("jax_enable_x64", True)
 import numpy as np  # noqa: E402
 import openmm  # noqa: E402

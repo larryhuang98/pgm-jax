@@ -9,15 +9,16 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
+from test_grad import methanol, water  # noqa: E402
+
 from pgm_jax import PeriodicPGM, System  # noqa: E402
-from pgm_jax.md.box import check_box, min_image, reduce_box  # noqa: E402
+from pgm_jax.md.box import min_image, reduce_box  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
 from pgm_jax.md.integrate import KB, Integrator  # noqa: E402
 from pgm_jax.md.io import NetCDFTrajectory, read_coordinates, write_restart  # noqa: E402
 from pgm_jax.md.neighbors import Neighbors  # noqa: E402
 from pgm_jax.md.rigid import RigidMolecules, matrix_to_quaternion  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
-from test_grad import methanol, water  # noqa: E402
 
 TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
 RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
@@ -192,8 +193,8 @@ def test_langevin_equipartition():
     ff, _ = ff_and_list(sys, pos, H)
     rig = RigidMolecules(sys, pos, H)
     integ = Integrator(ff, rig, Neighbors(sys.n, H, 0.6, 0.05), dt=0.002, ensemble="nvt", temperature=300.0, gamma=5.0)
-    from pgm_jax.md.integrate import Dynamics
     from pgm_jax.md._jaxmd import simulate
+    from pgm_jax.md.integrate import Dynamics
     zero = jax.tree_util.tree_map(jnp.zeros_like, rig.body0)
     dyn = simulate.canonicalize_mass(Dynamics(rig.body0, zero, zero, rig.mass, jax.random.PRNGKey(0)))
     aux = jnp.zeros((0, 2, sys.nmol, 3))

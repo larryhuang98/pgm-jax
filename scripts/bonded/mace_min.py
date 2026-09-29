@@ -1,9 +1,14 @@
 """MACE-OFF minimum of every molecule (lowest over the RDKit conformers): data/bonded/frames/<name>_min.npz."""
-import json, os, sys
-import numpy as np, torch
+import json
+import os
+import sys
+
+import numpy as np
+import torch
 from ase import Atoms
 from ase.optimize import BFGS
 from mace.calculators import mace_off
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 torch.set_num_threads(2)
 calc = mace_off(model=os.path.join(ROOT, "data/bonded/mace/MACE-OFF23_medium.model"), device="cpu", default_dtype="float64")

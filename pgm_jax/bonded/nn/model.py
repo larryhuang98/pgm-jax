@@ -43,7 +43,7 @@ class NNBConfig:
     context: bool = True              # sequence context (residues i-1, i, i+1) for CONTEXT_ATOMS families
 
     @classmethod
-    def from_settings(cls, s) -> "NNBConfig":
+    def from_settings(cls, s) -> NNBConfig:
         """From BondedSettings (nn_* fields)."""
         return cls(width=s.nn_width, layers=s.nn_layers, ref=s.nn_ref, basis=tuple(s.nn_basis), b_span=s.nn_b_span,
                    th_span=s.nn_th_span, out_scale=s.nn_out_scale, pgm_features=s.nn_pgm_features,
@@ -79,7 +79,7 @@ class NNBonded:
 
     # ------------------------------------------------------------------ molecules
     @classmethod
-    def for_molecules(cls, mols, config: NNBConfig = NNBConfig()) -> "NNBonded":
+    def for_molecules(cls, mols, config: NNBConfig = NNBConfig()) -> NNBonded:
         net = cls(config)
         for m in mols:
             net.add(m)

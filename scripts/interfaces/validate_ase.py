@@ -18,8 +18,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import jax
+
 jax.config.update("jax_enable_x64", True)
-import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 from ase import units  # noqa: E402
 from ase.md.langevin import Langevin  # noqa: E402

@@ -27,7 +27,7 @@ import jax.numpy as jnp
 import numpy as np
 
 if os.environ.get("PIMD_WAIT_GPU"):       # a GPU shared with jobs that retry when it is busy: take it as soon as
-    import ctypes                          # it is released (retain the primary context; JAX then uses it)
+    import ctypes  # it is released (retain the primary context; JAX then uses it)
     _cu = ctypes.CDLL("libcuda.so.1")
     if _cu.cuInit(0) != 0:
         sys.exit(75)
@@ -46,9 +46,8 @@ jax.config.update("jax_enable_x64", True)
 
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.integrate import KB  # noqa: E402
 from pgm_jax.md.io import box_from_cell, read_coordinates  # noqa: E402
-from pgm_jax.md.pimd import KJMOL_TO_MEV, PIMDSimulation, flexible_water  # noqa: E402
+from pgm_jax.md.pimd import PIMDSimulation, flexible_water  # noqa: E402
 from pgm_jax.param import read_prmtop_pgm  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
 

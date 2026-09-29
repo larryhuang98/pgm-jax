@@ -5,12 +5,17 @@
 Builds a dilute box (random orientations on a lattice), relaxes it with Langevin NVT, then runs
 Monte Carlo NPT; writes <prefix>.log (energies, temperatures, density), <prefix>.nc (Amber NetCDF
 trajectory) and <prefix>.chk, and prints the mean density of the second half of the run."""
-import argparse, os, sys
+import argparse
+import os
+import sys
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import jax
+
 jax.config.update("jax_enable_x64", True)
 import numpy as np
+
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.system import System

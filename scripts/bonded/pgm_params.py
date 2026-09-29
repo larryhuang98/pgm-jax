@@ -7,7 +7,11 @@ with the pGM-pol table; LJ from GAFF.  Geometry: the MACE-OFF minimum.
     sbatch runs/bonded/esp.sh                     # ESP (written by prep)
     python scripts/bonded/pgm_params.py fit      # data/bonded/params/<name>.json
 """
-import json, os, subprocess, sys
+import json
+import os
+import subprocess
+import sys
+
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

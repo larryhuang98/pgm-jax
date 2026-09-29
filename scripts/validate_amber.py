@@ -37,8 +37,8 @@ from pgm_jax.channels import ElecChannel
 from pgm_jax.ewald import PeriodicPGM, box_matrix
 from pgm_jax.lj import LJChannel, PeriodicLJ
 from pgm_jax.model import Model
-from pgm_jax.periodic import strain_derivative
 from pgm_jax.param import read_prmtop_pgm
+from pgm_jax.periodic import strain_derivative
 from pgm_jax.system import System
 from pgm_jax.units import KE, KE_AMBER_PGM
 

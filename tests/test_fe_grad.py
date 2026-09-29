@@ -12,15 +12,22 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
+from test_alchemy import alch_sim, frame, settings  # noqa: E402
+from test_grad import water  # noqa: E402
+
 from pgm_jax import System  # noqa: E402
 from pgm_jax.md import fe_grad as fg  # noqa: E402
 from pgm_jax.md import free_energy as fe  # noqa: E402
-from pgm_jax.md.alchemy import (Alchemy, FreeEnergyRun, GasPhaseLeg, LambdaWindows, alchemical_system,  # noqa: E402
-                                standard_schedule)
+from pgm_jax.md.alchemy import (  # noqa: E402
+    Alchemy,
+    FreeEnergyRun,
+    GasPhaseLeg,
+    LambdaWindows,
+    alchemical_system,
+    standard_schedule,
+)
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
-from test_alchemy import alch_sim, frame, settings  # noqa: E402
-from test_grad import water  # noqa: E402
 
 
 def direction(space, P, seed=0):
@@ -323,8 +330,9 @@ def test_flexible_solute_keep_sampler():
     electrostatic parameters at every lambda): batched = sequential = direct; the decoupled end
     state still depends on the solute's charges (its gas-phase electrostatics) and its LJ (its
     intramolecular pairs), not on the solute-water coupling."""
-    from pgm_jax.md.flexible import FlexibleSimulation
     from test_alchemy import flex_box
+
+    from pgm_jax.md.flexible import FlexibleSimulation
     tpl, sys0, tpls, X, H = flex_box()
     sysA, P = alchemical_system(sys0, 0)
     mk = lambda: FlexibleSimulation(sysA, tpls, X, H, settings(dipole_tol=1e-9), dt=0.001, log=None, params=P,   # noqa: E731

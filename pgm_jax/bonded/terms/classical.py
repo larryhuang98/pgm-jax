@@ -4,7 +4,7 @@ from __future__ import annotations
 import jax.numpy as jnp
 import numpy as np
 
-from .core import Family, _dihedral, _mask_n, _N, register
+from .core import _N, Family, _dihedral, _mask_n, register
 
 
 @register

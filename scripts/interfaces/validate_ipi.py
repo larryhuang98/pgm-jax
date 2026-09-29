@@ -21,10 +21,11 @@ sys.path[:0] = [ROOT, os.path.dirname(os.path.abspath(__file__))]
 os.environ.setdefault("IPI_ROOT", os.path.join(ROOT, "runs", "pylib"))
 
 import jax  # noqa: E402
+
 jax.config.update("jax_enable_x64", True)
+import ipi_tools as T  # noqa: E402
 import numpy as np  # noqa: E402
 
-import ipi_tools as T  # noqa: E402
 from pgm_jax.interfaces import PGMEngine  # noqa: E402
 from pgm_jax.interfaces.ipi import BOHR_NM, IPIClient  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
@@ -46,6 +47,7 @@ def ensure_quartic_bond():
     if "bond_quartic" in Tm.REGISTRY:
         return
     import jax.numpy as jnp
+
     from pgm_jax.bonded.terms.core import Family, register
 
     @register

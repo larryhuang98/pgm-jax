@@ -42,7 +42,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .efield import EPS_FACTOR, EPS0, E_CHARGE, finite_d_eps
+from .efield import E_CHARGE, EPS0, EPS_FACTOR, finite_d_eps
 from .remd import MDReplicas, _stack
 
 KB_SI = 1.380649e-23

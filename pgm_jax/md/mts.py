@@ -88,7 +88,6 @@ from .forcefield import _PRED
 from .integrate import Integrator, MDState
 from .kernels import erf_kernels_closed
 
-
 BETA_R = 2.3268                     # erfc(BETA_R) = 1e-3: default beta_short = BETA_R / r_short
 
 
@@ -223,7 +222,7 @@ class _MTSMixin:
             if not self.beta_s > 0:
                 raise ValueError(f"MTS beta_short must be positive, got {m.beta_short}")
         if m.split == "special":                        # rows of the special-pair model: flexible molecules
-            flex_rows = [np.asarray(r).ravel() for _, r in getattr(self, "flex").groups]
+            flex_rows = [np.asarray(r).ravel() for _, r in self.flex.groups]
             if not flex_rows:
                 raise ValueError("MTS(split='special') needs flexible molecules (FlexibleTemplate)")
             self._flex_rows = jnp.asarray(np.sort(np.concatenate(flex_rows)).astype(np.int32))

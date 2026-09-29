@@ -29,14 +29,15 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..channels import _dipole_tensor, _field_at_i, _pair_perm, perm_dipoles, quadrupole_field
-from ..md.kernels import erf_kernels
-from ..multipole import quadrupole_pair_terms, quadrupoles as build_quadrupoles
-from ..options import check_vdw, elec_flags
-from ..vdw import gvdw_pair
 from ..kernels import DENSITIES
+from ..md.kernels import erf_kernels
+from ..multipole import quadrupole_pair_terms
+from ..multipole import quadrupoles as build_quadrupoles
+from ..options import check_vdw, elec_flags
 from ..solver import solve_linear_induction
 from ..system import System
 from ..units import KE
+from ..vdw import gvdw_pair
 from . import terms as T
 from .topology import Topology, build_topology
 

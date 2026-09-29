@@ -11,15 +11,24 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
-from pgm_jax import System  # noqa: E402
-from pgm_jax.md.box import reduce_box  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.restraints import (AngleRestraint, COMDistanceRestraint, DihedralRestraint,  # noqa: E402
-                                   DistanceRestraint, PositionRestraint, Restraints, dihedral, harmonic,
-                                   nmr_energy)
 from test_grad import water  # noqa: E402
 from test_hmr import _cluster  # noqa: E402
 from test_md_macro import _water_box  # noqa: E402
+
+from pgm_jax import System  # noqa: E402
+from pgm_jax.md.box import reduce_box  # noqa: E402
+from pgm_jax.md.forcefield import MDSettings  # noqa: E402
+from pgm_jax.md.restraints import (  # noqa: E402
+    AngleRestraint,
+    COMDistanceRestraint,
+    DihedralRestraint,
+    DistanceRestraint,
+    PositionRestraint,
+    Restraints,
+    dihedral,
+    harmonic,
+    nmr_energy,
+)
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
 PRM, CRD = os.path.join(DATA, "pep_wat.prmtop"), os.path.join(DATA, "pep_wat.inpcrd")

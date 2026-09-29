@@ -11,12 +11,18 @@ to make them for a new molecule.  The fit uses pGM electrostatics with all pairs
 pairs on, i.e. exactly the model the MD engine runs, so the template is MD-ready.  With --flux the
 charges and covalent dipoles depend on the bond lengths (BondedSettings.flux; md/flux.py runs it in
 MD); --wmu weights the gas-phase dipoles in the loss, which the flux parameters mostly affect."""
-import argparse, os, sys, time
+import argparse
+import os
+import sys
+import time
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
 import jax
+
 jax.config.update("jax_enable_x64", True)
 from experiments import FAMILY_SETS, load
+
 from pgm_jax.bonded import terms as T
 from pgm_jax.bonded.fit import Fitter
 from pgm_jax.bonded.model import BondedModel, BondedSettings

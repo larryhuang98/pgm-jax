@@ -4,7 +4,11 @@ at 500 K (training) and 298 K (test), relaxed torsion scans.  Labels come from D
     python scripts/bonded/mace_sample.py NAME [--device cpu] [--what md,scan]
     python scripts/bonded/mace_sample.py alanine_dipeptide --what scan2d --rows 0:4
 Writes data/bonded/frames/<name>_<what>.npz (coordinates in Angstrom, MACE energies eV)."""
-import argparse, json, os, sys, time
+import argparse
+import json
+import os
+import time
+
 import numpy as np
 import torch
 from ase import Atoms, units

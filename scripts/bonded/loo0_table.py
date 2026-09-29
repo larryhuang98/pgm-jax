@@ -1,6 +1,10 @@
 """Leave-one-molecule-out with element-level typing (depth 0): held-out test errors."""
-import glob, json, os
+import glob
+import json
+import os
+
 import numpy as np
+
 RES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "runs/bonded/results")
 rows = {}
 for f in sorted(glob.glob(os.path.join(RES, "loo0_*.json"))):

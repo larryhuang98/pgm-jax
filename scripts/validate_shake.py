@@ -20,7 +20,6 @@ sys.path.insert(0, ROOT)
 import jax  # noqa: E402
 
 jax.config.update("jax_enable_x64", True)
-import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box  # noqa: E402

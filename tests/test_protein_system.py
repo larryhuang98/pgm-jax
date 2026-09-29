@@ -3,7 +3,6 @@ residue library, Amber-form bonded terms from ff19SB, a solvated peptide in MD w
 import os
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 
 jax.config.update("jax_enable_x64", True)

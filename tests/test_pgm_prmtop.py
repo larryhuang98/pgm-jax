@@ -16,7 +16,14 @@ from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.md.topology import MDTopology  # noqa: E402
 from pgm_jax.param import read_prmtop_pgm  # noqa: E402
 from pgm_jax.prmtop import Prmtop  # noqa: E402
-from pgm_jax.protein import ResidueLibrary, amber_template, load_amber, pmemd_grid, pmemd_mdin, write_pgm_prmtop  # noqa: E402
+from pgm_jax.protein import (  # noqa: E402
+    ResidueLibrary,
+    amber_template,
+    load_amber,
+    pmemd_grid,
+    pmemd_mdin,
+    write_pgm_prmtop,
+)
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
 PRM, CRD = os.path.join(DATA, "pep_wat.prmtop"), os.path.join(DATA, "pep_wat.inpcrd")   # ACE-ALA-SER-NME, TIP3P, NaCl

@@ -3,11 +3,15 @@ force groups sum to the full force and the fast forces are the gradient of the f
 range and special-pair splits, every fast induction model), the list rebuild, the NVE step is
 time-reversible, energy conservation, per-group kinetic temperatures with thermostats (two and
 three levels), NPT + restraints + checkpoints, and the settings that must be refused."""
-import numpy as np
 import jax
+import numpy as np
 import pytest
 
 jax.config.update("jax_enable_x64", True)
+
+from test_flexible import _box  # noqa: E402
+from test_grad import water  # noqa: E402
+from test_md_macro import _water_box  # noqa: E402
 
 from pgm_jax import System  # noqa: E402
 from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate  # noqa: E402
@@ -15,9 +19,6 @@ from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.md.integrate import KB  # noqa: E402
 from pgm_jax.md.mts import MTS  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
-from test_flexible import _box  # noqa: E402
-from test_grad import water  # noqa: E402
-from test_md_macro import _water_box  # noqa: E402
 
 S_WATER = MDSettings(precision="double", dipole_tol=1e-12, max_iter=300, cutoff=0.55, skin=0.05)
 

@@ -121,7 +121,7 @@ class GLE(Thermostat):
         self._cache = {}
 
     @classmethod
-    def band(cls, peak: float = 3.0, center: float = 20.0, width: float = 30.0, floor: float = 0.1) -> "GLE":
+    def band(cls, peak: float = 3.0, center: float = 20.0, width: float = 30.0, floor: float = 0.1) -> GLE:
         """Slow-band kernel: K(w) peaks at `center` (rad/ps) at about `peak` (1/ps), with width
         `width` (rad/ps) and K ~ peak width / w^2 at high frequency.  `floor` = K(0) (1/ps).
         - floor = 0 gives the pure band-pass. A is then singular: center v + a q is conserved
@@ -139,7 +139,7 @@ class GLE(Thermostat):
                    label=f"GLE band (peak {peak:g}/ps at {center:g} rad/ps, width {width:g}, floor {floor:g}/ps)")
 
     @classmethod
-    def lowpass(cls, gamma0: float = 1.0, cutoff: float = 50.0) -> "GLE":
+    def lowpass(cls, gamma0: float = 1.0, cutoff: float = 50.0) -> GLE:
         """Low-pass kernel K(w) = gamma0 cutoff^2 / (cutoff^2 + w^2): Langevin-like friction gamma0
         below `cutoff` (rad/ps), smooth noise."""
         a = np.sqrt(gamma0 * cutoff)

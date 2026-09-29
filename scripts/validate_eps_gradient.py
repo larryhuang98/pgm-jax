@@ -24,8 +24,8 @@ import jax  # noqa: E402
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
-
 from fit_multi import add_arguments, setup  # noqa: E402
+
 from pgm_jax.fit import FrameAnalyzer  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, elec_cutoff_settings  # noqa: E402
 from pgm_jax.md.remd import MDReplicas  # noqa: E402

@@ -24,7 +24,7 @@ sys.path.insert(0, ROOT)
 jax.config.update("jax_enable_x64", True)
 
 from pgm_jax.md.integrate import KB  # noqa: E402
-from pgm_jax.md.pimd import HBAR, KJMOL_TO_MEV, PIMDIntegrator, PotentialEngine, RingPolymer  # noqa: E402
+from pgm_jax.md.pimd import HBAR, PIMDIntegrator, PotentialEngine, RingPolymer  # noqa: E402
 
 OUT = os.path.join(ROOT, "validation/pimd")
 

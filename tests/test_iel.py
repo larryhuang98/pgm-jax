@@ -11,15 +11,16 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
+from test_grad import water  # noqa: E402
+from test_md import small_box  # noqa: E402
+from test_md_macro import _water_box  # noqa: E402
+
 from pgm_jax import System  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
 from pgm_jax.md.iel import spectral_radius  # noqa: E402
 from pgm_jax.md.integrate import KB  # noqa: E402
 from pgm_jax.md.neighbors import Neighbors  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
-from test_grad import water  # noqa: E402
-from test_md import small_box  # noqa: E402
-from test_md_macro import _water_box  # noqa: E402
 
 
 def _settings(**kw):

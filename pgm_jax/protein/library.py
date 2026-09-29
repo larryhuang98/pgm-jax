@@ -44,7 +44,7 @@ class ResidueLibrary:
         json.dump({"format": FORMAT, "note": self.note, "residues": self.residues}, open(path, "w"), indent=1)
 
     @classmethod
-    def load(cls, path: str) -> "ResidueLibrary":
+    def load(cls, path: str) -> ResidueLibrary:
         d = json.load(open(path))
         if d.get("format") != FORMAT:
             raise ValueError(f"{path}: not a {FORMAT!r} file")
@@ -62,7 +62,7 @@ class ResidueLibrary:
 
     # ------------------------------------------------------------------ builders
     @classmethod
-    def placeholder(cls, prmtop: str, pol_table: dict | None = None) -> "ResidueLibrary":
+    def placeholder(cls, prmtop: str, pol_table: dict | None = None) -> ResidueLibrary:
         """Amber charges and pGM polarizabilities / radii by atom type (GAFF equivalents, element
         defaults), no covalent dipoles; one entry per residue name of the prmtop (first instance).
         Amber extra points (type EP: virtual sites) keep their charge as a point charge
@@ -95,7 +95,7 @@ class ResidueLibrary:
         return cls(res, note=f"placeholder from {prmtop}: Amber charges, pGM-pol polarizabilities, no covalent dipoles")
 
     @classmethod
-    def from_fits(cls, fits) -> "ResidueLibrary":
+    def from_fits(cls, fits) -> ResidueLibrary:
         """fits: iterable of (Molecule, atom names, residue keys per atom, residue index per atom,
         residue keys to take).  Every taken residue's atoms get the mean q / alpha / radius over its instances and
         the mean covalent-dipole strengths per (atom, partner) name pair."""

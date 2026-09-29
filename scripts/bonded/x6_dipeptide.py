@@ -5,14 +5,21 @@ Nonbonded: pGM all pairs (or a control) + GAFF LJ from 1-5.
 
     python scripts/bonded/x6_dipeptide.py NAME --families paper [--elec 3] ...
 """
-import argparse, json, os, sys
+import argparse
+import json
+import os
+import sys
+
 import numpy as np
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
 import jax  # noqa: E402
+
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
-from experiments import FAMILY_SETS, families_of, concat  # noqa: E402
+from experiments import concat, families_of  # noqa: E402
+
 from pgm_jax.bonded.data import frames, mol_spec  # noqa: E402
 from pgm_jax.bonded.fit import KCAL, Fitter  # noqa: E402
 from pgm_jax.bonded.model import BondedModel, BondedSettings  # noqa: E402

@@ -15,7 +15,6 @@ bonded terms + CMAP, flexible engine, X-H constraints, Langevin 300 K, 2 fs.
 (kappa --kappa kJ/mol/rad^2, V = kappa/2 dphi^2), --nwin centres over the circle.  Outputs: the
 drivers' prefix.colvar / .hills / .log / .chk; analyze writes OUT_fes.json."""
 import argparse
-import glob
 import json
 import os
 import sys
@@ -29,9 +28,7 @@ jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from pgm_jax import System  # noqa: E402
 from pgm_jax.bias import OPES, BiasSet, Harmonic, MetaD, StaticBias, cv  # noqa: E402
-from pgm_jax.bias import analysis as A  # noqa: E402
 from pgm_jax.bias.core import KB  # noqa: E402
-from pgm_jax.bias.io import read_table  # noqa: E402
 from pgm_jax.md.flexible import FlexibleSimulation  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.protein import amber_template, load_amber  # noqa: E402

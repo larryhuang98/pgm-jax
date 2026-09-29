@@ -193,7 +193,7 @@ class ExchangeStatistics:
         return {k: (v.copy() if isinstance(v, np.ndarray) else v) for k, v in vars(self).items()}
 
     @classmethod
-    def from_dict(cls, d: dict) -> "ExchangeStatistics":
+    def from_dict(cls, d: dict) -> ExchangeStatistics:
         out = cls.__new__(cls)
         for k, v in d.items():
             setattr(out, k, np.array(v) if isinstance(v, np.ndarray) else v)

@@ -40,8 +40,8 @@ import numpy as np
 
 from ._jaxmd import dataclasses, rigid_body, simulate, space
 from .box import volume
-from .forcefield import InductionState, PGMForceField
 from .efield import as_field
+from .forcefield import InductionState, PGMForceField
 from .restraints import as_restraints, molecular_strain
 from .rigid import RigidBody, RigidMolecules
 from .thermostats import Thermostat, make_thermostat

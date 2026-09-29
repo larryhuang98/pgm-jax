@@ -1,11 +1,14 @@
 """Cell dipole, cell polarizability, dipole recording during MD and the dielectric analysis
 (pgm_jax/md/dipoles.py, pgm_jax/md/dielectric.py)."""
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 jax.config.update("jax_enable_x64", True)
+
+from test_grad import methanol, water  # noqa: E402
+from test_md import need_water_box, settings, small_box  # noqa: E402
 
 from pgm_jax import ElecChannel, Molecule, System  # noqa: E402
 from pgm_jax.channels import molecular_polarizability, perm_dipoles  # noqa: E402
@@ -14,8 +17,6 @@ from pgm_jax.md.dipoles import DIP_COLUMNS, CellDipole, DipoleRecorder, cell_dip
 from pgm_jax.md.forcefield import PGMForceField  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
 from pgm_jax.units import KE  # noqa: E402
-from test_grad import methanol, water  # noqa: E402
-from test_md import need_water_box, settings, small_box  # noqa: E402
 
 KB = 0.0083144626181532
 
@@ -218,8 +219,10 @@ def test_trajectory_dipoles_of_an_amber_trajectory(tmp_path):
     writes) re-solves the induced dipoles and reproduces the cell dipoles the run recorded."""
     import os
     import sys
-    from pgm_jax.md.forcefield import MDSettings
+
     from test_md import RST, TOP
+
+    from pgm_jax.md.forcefield import MDSettings
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
     import trajectory_dipoles
     s = MDSettings(cutoff=0.9, skin=0.1, ewald_beta=4.0, pme_grid=(48, 48, 48), pme_order=6, lj_lrc=True,

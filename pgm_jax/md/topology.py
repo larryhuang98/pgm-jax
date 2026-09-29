@@ -83,13 +83,13 @@ class MDTopology:
 
     # ------------------------------------------------------------------ builders
     @classmethod
-    def rigid(cls, sys) -> "MDTopology":
+    def rigid(cls, sys) -> MDTopology:
         """Groups = molecules, every intramolecular pair special with weight 0 (the rigid engine)."""
         rule = MoleculeRule(bonds=[], vdw="none")
         return cls.build(sys, [rule] * sys.nmol, max_single=10 ** 9)
 
     @classmethod
-    def build(cls, sys, rules, max_single: int = MAX_SINGLE) -> "MDTopology":
+    def build(cls, sys, rules, max_single: int = MAX_SINGLE) -> MDTopology:
         """rules[k]: MoleculeRule of sys.molecules[k] (rules shared by identical molecules are
         processed once)."""
         if len(rules) != sys.nmol:

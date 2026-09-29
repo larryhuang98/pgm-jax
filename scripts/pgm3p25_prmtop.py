@@ -39,9 +39,10 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from water_dielectric import RST, TOP, paper_geometry  # noqa: E402
+
 from pgm_jax.md.io import read_coordinates  # noqa: E402
 from pgm_jax.prmtop import Prmtop  # noqa: E402
-from water_dielectric import RST, TOP, paper_geometry  # noqa: E402
 
 L_OH, THETA = 0.9745, 103.64                          # A, deg
 LJ_A, LJ_B = 622716.376, 600.412                      # kcal A^12/mol, kcal A^6/mol

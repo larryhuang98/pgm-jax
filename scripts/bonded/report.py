@@ -1,7 +1,12 @@
 """Figures and tables for reports/bonded/ from runs/bonded/results/*.json."""
-import glob, json, os, sys
-import numpy as np
+import glob
+import json
+import os
+import sys
+
 import matplotlib
+import numpy as np
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 

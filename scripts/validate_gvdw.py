@@ -22,7 +22,8 @@ import numpy as np
 jax.config.update("jax_enable_x64", True)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, "scripts"))
-from validate_amber import PMEMD, REF, RST, TOP, KCAL, mdout_step0, read_nc_frames, read_restart  # noqa: E402
+from validate_amber import KCAL, PMEMD, REF, RST, TOP, mdout_step0, read_nc_frames, read_restart  # noqa: E402
+
 from pgm_jax.ewald import box_matrix  # noqa: E402
 from pgm_jax.lj import PeriodicLJ  # noqa: E402
 from pgm_jax.md.simulation import _dedupe  # noqa: E402

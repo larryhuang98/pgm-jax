@@ -26,16 +26,52 @@ To add a family: a Family with `index(top)` -> (arrays, keys), `params` {name: (
 """
 from __future__ import annotations
 
-# importing the modules registers their families; the names stay available as terms.<name>
-from .core import REGISTRY, Family, _dihedral, _mask_n, _N, _pair_index, geometry, morse_depth, register  # noqa: F401
-from .classical import (AngleCos, AngleCubic, AngleHarm, BondHarm, BondMorse, BondQuartic, Improper, ImproperAmber,  # noqa: F401
-                        Torsion, TorsionAmber)
-from .class2 import (AngleAngle, AngleAngleTorsion, AngleAngleX, BondAngle, BondAngleX, BondBond,  # noqa: F401
-                     TorsionAngle, TorsionBond, TorsionModulated)
-from .explore import (AngleHybrid, AngleHybridSC, Conjugation, HyperconjLone, HyperconjSigma, Pair13Exp,  # noqa: F401
-                      Pair13Harm, Pair13Ovl, Pair13Tanh, Pair14Exp, Pair14Ovl, Pair14Tanh, Pyramid, TorsionOOP,
-                      Twist, Volume, pi_axes)
+from .class2 import (  # noqa: F401
+                        AngleAngle,
+                        AngleAngleTorsion,
+                        AngleAngleX,
+                        BondAngle,
+                        BondAngleX,
+                        BondBond,
+                        TorsionAngle,
+                        TorsionBond,
+                        TorsionModulated,
+)
+from .classical import (  # noqa: F401
+                        AngleCos,
+                        AngleCubic,
+                        AngleHarm,
+                        BondHarm,
+                        BondMorse,
+                        BondQuartic,
+                        Improper,
+                        ImproperAmber,
+                        Torsion,
+                        TorsionAmber,
+)
 from .cmap import CMAPFourier, CMAPFourier6, cmap_basis, cmap_grid, phi_psi  # noqa: F401
+
+# importing the modules registers their families; the names stay available as terms.<name>
+from .core import _N, REGISTRY, Family, _dihedral, _mask_n, _pair_index, geometry, morse_depth, register  # noqa: F401
+from .explore import (  # noqa: F401
+                        AngleHybrid,
+                        AngleHybridSC,
+                        Conjugation,
+                        HyperconjLone,
+                        HyperconjSigma,
+                        Pair13Exp,
+                        Pair13Harm,
+                        Pair13Ovl,
+                        Pair13Tanh,
+                        Pair14Exp,
+                        Pair14Ovl,
+                        Pair14Tanh,
+                        Pyramid,
+                        TorsionOOP,
+                        Twist,
+                        Volume,
+                        pi_axes,
+)
 
 AMBER = ("bond_harm", "angle_harm", "torsion_amber", "improper_amber")
 PAPER = ("bond_morse", "angle_cos", "bond_bond", "bond_angle", "angle_angle", "torsion", "torsion_bond",

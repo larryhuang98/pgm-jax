@@ -172,10 +172,10 @@ class VirtualSite:
         return [self.site, self.kind, list(self.atoms), _lists(self.params)]
 
     @classmethod
-    def from_list(cls, x) -> "VirtualSite":
+    def from_list(cls, x) -> VirtualSite:
         return cls(int(x[0]), str(x[1]), tuple(x[2]), x[3])
 
-    def shifted(self, offset: int) -> "VirtualSite":
+    def shifted(self, offset: int) -> VirtualSite:
         """The same site with atom indices shifted by `offset` (local -> global, and back)."""
         return VirtualSite(self.site + offset, self.kind, tuple(a + offset for a in self.atoms), self.params)
 
@@ -317,7 +317,7 @@ class VirtualSites:
         self._order = np.concatenate([idx for _, idx, _ in self._kernels])
 
     @classmethod
-    def of(cls, sys) -> "VirtualSites | None":
+    def of(cls, sys) -> VirtualSites | None:
         """The system's virtual sites, or None when no molecule has any."""
         if not any(getattr(m, "vsites", None) for m in sys.molecules):
             return None

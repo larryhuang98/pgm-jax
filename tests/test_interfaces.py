@@ -15,11 +15,10 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
-from pgm_jax.interfaces import GasPhaseEngine, PGMEngine, standard_cell  # noqa: E402
-from pgm_jax.md.box import reduce_box  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
 from test_md import small_box  # noqa: E402
 
+from pgm_jax.interfaces import GasPhaseEngine, PGMEngine  # noqa: E402
+from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
 
 
 def settings(**kw):
@@ -94,8 +93,9 @@ def test_molecular_virial_trace_matches_native(box):
 
 
 def test_flexible_templates_match_flexible_simulation():
-    from pgm_jax.md.flexible import FlexibleSimulation
     from test_flexible import _box
+
+    from pgm_jax.md.flexible import FlexibleSimulation
     tpl, sysm, pos, H = _box()
     s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=0.6, skin=0.05, lj_lrc=False)
     sim = FlexibleSimulation(sysm, [tpl] * sysm.nmol, pos, H, s, ensemble="nve", log=None)
@@ -174,8 +174,9 @@ def test_compute_batch_matches_single_structures():
 
 
 def test_gas_phase_engine():
-    from pgm_jax import ElecChannel, LJChannel, Model, System
     from test_grad import cluster
+
+    from pgm_jax import ElecChannel, LJChannel, Model
     sysm, pos = cluster(np.random.default_rng(0))
     model = Model([ElecChannel(), LJChannel()])
     eng = GasPhaseEngine(model, sysm)
@@ -193,6 +194,7 @@ ase = pytest.importorskip("ase")
 
 def test_ase_calculator_units_stress_and_dipoles(box):
     from ase import units
+
     from pgm_jax.interfaces.ase import PGMCalculator, atoms_from_system
     KJMOL_EV = units.kJ / units.mol                  # ASE's constants (CODATA 2014)
     sysm, pos, H, s, eng = box
@@ -228,6 +230,7 @@ def test_ase_rigid_water_nve():
     from ase import units
     from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
     from ase.md.verlet import VelocityVerlet
+
     from pgm_jax.interfaces.ase import PGMCalculator, atoms_from_system, rigid_constraints
     sysm, pos, H = water_box(0)
     s = settings(dipole_tol=1e-8)
@@ -250,6 +253,7 @@ def test_ase_rigid_water_nve():
 
 def test_fix_rigid_molecules_equals_fix_bond_lengths():
     from ase.constraints import FixBondLengths
+
     from pgm_jax.interfaces.ase import atoms_from_system, rigid_blocks, rigid_constraints
     sysm, pos, H = water_box(2)
     rng = np.random.default_rng(3)
@@ -328,6 +332,7 @@ class FakeIPI:
 
 def test_ipi_client_protocol_and_units(tmp_path):
     import json
+
     from pgm_jax.interfaces.ipi import BOHR_NM, HARTREE_KJMOL, IPIClient
     sysm, pos, H = water_box(3)
     s = settings()
@@ -380,8 +385,9 @@ def test_ipi_real_server_short_nvt(tmp_path):
     """A real i-PI server (classical NVT, then 2 beads batched) driven by the pgm_jax client: the
     step-0 potential is the engine's energy; the conserved quantity is conserved."""
     import ipi_tools as T
-    from pgm_jax.interfaces.ipi import IPIClient
     from test_flexible import _box
+
+    from pgm_jax.interfaces.ipi import IPIClient
     tpl, sysm, pos, H = _box()
     s = MDSettings(precision="double", dipole_tol=1e-8, cutoff=0.6, skin=0.05, lj_lrc=False)
     tpls = [tpl] * sysm.nmol
@@ -412,6 +418,7 @@ def _openmm():
 def test_openmm_pythonforce_energy_forces_and_nve():
     import openmm
     from openmm import unit
+
     from pgm_jax.interfaces.openmm import PGMOpenMM
     sysm, pos, H = water_box(4)
     s = settings(dipole_tol=1e-8)

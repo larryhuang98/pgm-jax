@@ -8,10 +8,11 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
+from test_md import settings, small_box  # noqa: E402
+
 from pgm_jax import PeriodicModel, PeriodicPGM, System, set_gvdw  # noqa: E402
 from pgm_jax.md.forcefield import PGMForceField  # noqa: E402
 from pgm_jax.md.neighbors import Neighbors  # noqa: E402
-from test_md import settings, small_box  # noqa: E402
 
 GV = {"OW": (60.0, 0.05, 4.0), "c3": (40.0, 0.06, 3.5), "oh": (55.0, 0.05, 4.2), "h1": (8.0, 0.01, 3.0)}
 
@@ -80,14 +81,15 @@ def test_gvdw_tail_and_virial():
 
 def test_flexible_gvdw_single_molecule_and_settings_check():
     from test_flexible import template
+
     from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate
     from pgm_jax.md.forcefield import MDSettings
     tpl0, x = template(vdw="gvdw")
     spec = tpl0.specs[0]
     from dataclasses import replace
     spec = replace(spec, pgm=set_gvdw(spec.pgm, GV))
-    from pgm_jax.bonded.model import BondedModel, BondedSettings
     from pgm_jax.bonded import terms as T
+    from pgm_jax.bonded.model import BondedModel, BondedSettings
     model = BondedModel([spec], BondedSettings(families=T.PAPER, lj14_scale=0.5, vdw="gvdw"))
     tpl = FlexibleTemplate.from_fit(model, model.init_params())
     assert len(tpl.lj_pairs()[0]) == 3

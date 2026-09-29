@@ -27,8 +27,22 @@ target-version = "py310"
 extend-exclude = ["paper", "runs", ".tools"]
 
 [tool.ruff.lint]
-# pyflakes, isort, pyupgrade (docs/api_design.md, "Style and tooling")
-select = ["F", "I", "UP"]
+# docs/api_design.md, decision D11: pycodestyle, pyflakes, isort, pyupgrade, bugbear (subset);
+# pydocstyle (D, numpy convention) is added with the docstring phases (P8, P9)
+select = ["E", "W", "F", "I", "UP", "B"]
+# E741: l / I / O are physics notation (angular index, identity); B905: zip(strict=) not wanted;
+# B008: defaults are frozen dataclasses (MDSettings()); B023: flagged closures are jitted and
+# called within the same loop iteration
+ignore = ["E741", "B905", "B008", "B023"]
+
+[tool.ruff.lint.per-file-ignores]
+# sys.path edits before the imports: removed in P3
+"scripts/**" = ["E402"]
+"examples/**" = ["E402"]
+"tests/**" = ["E402"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
 
 [tool.ruff.lint.isort]
 known-first-party = ["pgm_jax"]

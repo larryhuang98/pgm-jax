@@ -55,17 +55,18 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..system import System
-from ..md.box import check_box, max_cutoff, min_image, reduce_box, volume, inv3
+from ..md.box import check_box, inv3, max_cutoff, min_image, reduce_box
 from ..md.forcefield import MDSettings, PGMForceField
 from ..md.neighbors import AtomNeighbors, MoleculeNeighbors
 from ..md.topology import MDTopology
+from ..system import System
 
 __all__ = ["PGMEngine", "GasPhaseEngine", "EngineResult", "standard_cell"]
 
 # neighbour-list error bits that make a list invalid (as md/neighbors._failed; JAX-MD's MALFORMED_BOX
 # bit is set for valid boxes by JAX-MD 0.2.29 and is ignored there too)
 from ..md._jaxmd import partition as _partition  # noqa: E402
+
 _PEC = _partition.PartitionErrorCode
 _LIST_ERRORS = int(_PEC.NEIGHBOR_LIST_OVERFLOW | _PEC.CELL_LIST_OVERFLOW | _PEC.CELL_SIZE_TOO_SMALL)
 
@@ -283,7 +284,7 @@ class PGMEngine:
 
     # ------------------------------------------------------------------ constructors
     @classmethod
-    def from_amber(cls, prmtop: str, coords: str, charges: str = "pgm", **kw) -> "PGMEngine":
+    def from_amber(cls, prmtop: str, coords: str, charges: str = "pgm", **kw) -> PGMEngine:
         """Rigid-molecule model from a pGM prmtop and coordinates (as Simulation.from_amber)."""
         from ..md.io import box_from_cell, read_coordinates
         from ..md.simulation import _dedupe
@@ -296,7 +297,7 @@ class PGMEngine:
         return cls(sys, xyz * 0.1, box_from_cell(*box) * 0.1, **kw)
 
     @classmethod
-    def from_simulation(cls, sim, **kw) -> "PGMEngine":
+    def from_simulation(cls, sim, **kw) -> PGMEngine:
         """The model of a native Simulation / FlexibleSimulation at its current state (same system,
         settings, parameters and templates; restraints included)."""
         templates = kw.pop("templates", None)

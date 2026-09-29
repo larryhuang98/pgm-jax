@@ -88,8 +88,8 @@ def part_box1():
     """One pGM3P-25 water in cubic boxes of growing edge, rigid engine force field (float64, tight
     tolerance): d(sum mu)/dE vs the gas-phase polarizability; the difference is the Ewald field of the
     images, ~ 1/V."""
-    from pgm_jax.md.forcefield import MDSettings, PGMForceField
     from pgm_jax.md.dipoles import CellDipole
+    from pgm_jax.md.forcefield import MDSettings, PGMForceField
     sys_, x = _water_and_methanol()["pGM3P-25 water"]
     x = np.asarray(x) - np.asarray(x).mean(0)
     A_gas = np.asarray(molecular_polarizability(jnp.asarray(x), sys_))
@@ -166,8 +166,8 @@ def part_nve(ps: float = 20.0, only=None):
 def part_speed(nsteps: int = 5000):
     """ms/step of 512 pGM3P-25 waters (rigid, 2 fs, NVT Bussi, mixed) without and with fields, and of
     batched field replicas."""
-    from pgm_jax.md.forcefield import MDSettings
     from pgm_jax.md.finite_field import FieldReplicas
+    from pgm_jax.md.forcefield import MDSettings
     from pgm_jax.md.io import box_from_cell, read_coordinates
     from pgm_jax.md.simulation import Simulation, _dedupe
     sys.path.insert(0, os.path.join(ROOT, "scripts"))
@@ -211,7 +211,6 @@ def part_speed(nsteps: int = 5000):
 def part_fluct(files, seg_ns: float, skip_ps: float):
     """Fluctuation eps of zero-field .dip series (each file an independent run), and the scatter of
     the estimate over segments of seg_ns: the measured statistical error of a run of that length."""
-    from pgm_jax.md import dielectric as D
     from pgm_jax.md.dipoles import read_dipoles
     from pgm_jax.md.finite_field import correlation_time, fluctuation_eps
     out, segs = {}, []

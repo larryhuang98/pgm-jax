@@ -38,12 +38,12 @@ import jax  # noqa: E402
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
+from validate_shake import compare_rows, hist_frame, new_acc, save_blocks  # noqa: E402
 
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.protein import amber_template, load_amber, pmemd_mdin, write_pgm_prmtop  # noqa: E402
 from pgm_jax.protein.pmemd import pmemd_grid  # noqa: E402
 from pgm_jax.units import KE, KE_AMBER_PGM  # noqa: E402
-from validate_shake import compare_rows, hist_frame, new_acc, save_blocks  # noqa: E402
 
 KCAL = 4.184
 T0 = 298.0

@@ -13,14 +13,19 @@ and gradients against finite differences, in float64 with the dipoles solved to 
    molecular and atomic strain derivatives vs differences of the energy under box scaling;
    differentiable path (forces and dipoles differentiated w.r.t. parameters incl. jb/jc/jc2,
    positions, box) and dE/d(flux parameters) vs central differences."""
-import os, sys, time
+import os
+import sys
+import time
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import jax
+
 jax.config.update("jax_enable_x64", True)
+from dataclasses import replace
+
 import jax.numpy as jnp
 import numpy as np
-from dataclasses import replace
 
 from pgm_jax.channels import ElecChannel
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box

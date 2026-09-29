@@ -11,15 +11,27 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
+from test_grad import water  # noqa: E402
+
 from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec  # noqa: E402
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.md.integrate import KB  # noqa: E402
-from pgm_jax.md.pimd import (HBAR, PIMDIntegrator, PIMDSimulation, PotentialEngine,  # noqa: E402
-                             RingPolymer, WATER_FAMILIES, contraction_matrix, flexible_water,
-                             harmonic_frequencies, normal_modes, qtip4pf_intra, water_geometry)
+from pgm_jax.md.pimd import (  # noqa: E402
+    HBAR,
+    WATER_FAMILIES,
+    PIMDIntegrator,
+    PIMDSimulation,
+    PotentialEngine,
+    RingPolymer,
+    contraction_matrix,
+    flexible_water,
+    harmonic_frequencies,
+    normal_modes,
+    qtip4pf_intra,
+    water_geometry,
+)
 from pgm_jax.system import System  # noqa: E402
-from test_grad import water  # noqa: E402
 
 T = 300.0
 

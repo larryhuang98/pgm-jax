@@ -9,15 +9,16 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
+from test_grad import water  # noqa: E402
+from test_hmr import _cluster  # noqa: E402
+from test_md import settings, small_box  # noqa: E402
+
 from pgm_jax import System  # noqa: E402
 from pgm_jax.bias import BiasSet, Harmonic, cv  # noqa: E402
 from pgm_jax.md import efield as EF  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
 from pgm_jax.md.integrate import KB  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
-from test_grad import water  # noqa: E402
-from test_hmr import _cluster  # noqa: E402
-from test_md import settings, small_box  # noqa: E402
 
 E1 = np.array([0.3, -0.5, 0.8])            # V/nm
 DD = np.array([1.0, -2.0, 3.0])            # D / eps0, V/nm
@@ -181,9 +182,10 @@ def test_walkers_book_the_work_of_a_time_dependent_field():
 
 # ----------------------------------------------------------------------------- other paths
 def test_flexible_minimize_with_mts():
+    from test_md_macro import _water_box
+
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
     from pgm_jax.md.mts import MTS
-    from test_md_macro import _water_box
     pos, H, w = _water_box(n_side=4, spacing=0.31)
     wat = water()
     sys = System([wat] * (len(pos) // 3))
@@ -197,10 +199,11 @@ def test_flexible_minimize_with_mts():
 
 
 def test_refused_combinations():
+    from test_pimd import T, _water_box
+
     from pgm_jax.interfaces.engine import PGMEngine
     from pgm_jax.md.flexible import FlexibleSimulation
     from pgm_jax.md.pimd import PIMDSimulation
-    from test_pimd import T, _water_box
     tpl, sys, pos, H = _water_box()
     s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=0.5, skin=0.05, lj_lrc=False, max_iter=200)
 

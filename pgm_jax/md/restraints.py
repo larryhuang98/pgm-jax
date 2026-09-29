@@ -338,7 +338,7 @@ class Restraints:
         for t in terms:
             self.add(t)
 
-    def add(self, term: Restraint) -> "Restraints":
+    def add(self, term: Restraint) -> Restraints:
         if not isinstance(term, Restraint):
             raise TypeError(f"not a restraint: {term!r}")
         self.terms.append(term)

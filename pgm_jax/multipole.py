@@ -51,7 +51,6 @@ from __future__ import annotations
 from dataclasses import replace
 
 import jax.numpy as jnp
-import numpy as np
 
 from .md.kernels import erf_kernels
 

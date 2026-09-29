@@ -16,7 +16,6 @@ bias=... adds biases on collective variables (pgm_jax.bias: metadynamics, OPES, 
 run() then writes prefix.colvar, prefix.hills and, with the restarts, prefix.bias (bias/io.py)."""
 from __future__ import annotations
 
-import os
 import pickle
 import sys
 import time
@@ -106,7 +105,7 @@ class Simulation:
 
     @classmethod
     def from_amber(cls, prmtop: str, coords: str, use_velocities: bool = True, charges: str = "pgm",
-                   **kw) -> "Simulation":
+                   **kw) -> Simulation:
         """charges: "pgm" (a pGM prmtop) or "amber" (the point charges of a classical prmtop, e.g.
         TIP4P-Ew; with MDSettings(elec="q")); extra points become virtual sites (read_prmtop_pgm)."""
         mols = _dedupe(read_prmtop_pgm(prmtop, first_residue_only=False, charges=charges))

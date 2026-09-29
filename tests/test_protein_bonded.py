@@ -7,10 +7,11 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
+from test_bonded_sets import _fd_check  # noqa: E402
+
 from pgm_jax.bonded import terms as T  # noqa: E402
 from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec  # noqa: E402
 from pgm_jax.bonded.topology import build_topology  # noqa: E402
-from test_bonded_sets import _fd_check  # noqa: E402
 
 ACE_ALA_NME = "CC(=O)N[C@@H](C)C(=O)NC"
 ACE_ALA_GLY_NME = "CC(=O)N[C@@H](C)C(=O)NCC(=O)NC"

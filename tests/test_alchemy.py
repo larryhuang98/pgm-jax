@@ -13,15 +13,22 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
+from test_grad import water  # noqa: E402
+from test_md_macro import _water_box  # noqa: E402
+
 from pgm_jax import System  # noqa: E402
 from pgm_jax.md import free_energy as fe  # noqa: E402
-from pgm_jax.md.alchemy import (Alchemy, FreeEnergyRun, GasPhaseLeg, LambdaWindows, alchemical_system,  # noqa: E402
-                                standard_schedule)
+from pgm_jax.md.alchemy import (  # noqa: E402
+    Alchemy,
+    FreeEnergyRun,
+    GasPhaseLeg,
+    LambdaWindows,
+    alchemical_system,
+    standard_schedule,
+)
 from pgm_jax.md.box import min_image  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
-from test_grad import water  # noqa: E402
-from test_md_macro import _water_box  # noqa: E402
 
 
 def settings(**kw):
@@ -298,8 +305,9 @@ def test_refused_setups():
 def flex_box():
     """Flexible methanol (the class II template of test_flexible, scaled 1-4 LJ) at the centre of a
     box of rigid waters (constraints), the waters within 0.25 nm of it removed."""
-    from pgm_jax.md.flexible import RigidTemplate
     from test_flexible import template
+
+    from pgm_jax.md.flexible import RigidTemplate
     tpl, xm = template()
     pos, H, w = _water_box(4, 0.31)
     L = H[0, 0]

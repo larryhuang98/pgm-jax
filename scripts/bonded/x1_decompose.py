@@ -2,13 +2,19 @@
 spread of the residual E_DFT - E_nb (pGM all pairs vs classical 1-2/1-3/1-4 exclusion, LJ 1-5+),
 the pGM force at the reference minimum, and the pGM dipole error (fixed charges and covalent
 dipoles from the ESP fit).  -> runs/bonded/results/x1.json"""
-import json, os, sys
+import json
+import os
+import sys
+
 import numpy as np
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 import jax  # noqa: E402
+
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
+
 from pgm_jax.bonded.data import frames, mol_spec  # noqa: E402
 from pgm_jax.bonded.fit import KCAL  # noqa: E402
 from pgm_jax.bonded.model import BondedModel, BondedSettings  # noqa: E402

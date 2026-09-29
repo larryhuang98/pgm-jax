@@ -1,5 +1,8 @@
 """Build the molecule set: data/bonded/molecules/<name>.json (elements, bonds, RDKit conformers)."""
-import json, os, sys
+import json
+import os
+import sys
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 from pgm_jax.bonded.molecules import MOLECULES, build  # noqa: E402

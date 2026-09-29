@@ -97,15 +97,15 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..lj import lj_long_range
-from .topology import MDTopology
 from ..options import check_vdw, elec_flags
 from ..system import System
-from ..vdw import gvdw_long_range, gvdw_pair
 from ..units import KE
+from ..vdw import gvdw_long_range, gvdw_pair
 from ._jaxmd import dataclasses
 from .box import min_image, volume
 from .kernels import erf_kernels, erf_kernels_closed
 from .pme import PME, grid_size
+from .topology import MDTopology
 
 _SQRT_PI = math.sqrt(math.pi)
 

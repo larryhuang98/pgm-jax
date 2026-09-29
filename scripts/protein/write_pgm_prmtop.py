@@ -33,7 +33,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from pgm_jax.md.flexible import FlexibleTemplate  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.param import load_molecule  # noqa: E402
-from pgm_jax.protein import ResidueLibrary, amber_template, load_amber, pmemd_grid, pmemd_mdin, write_pgm_prmtop  # noqa: E402
+from pgm_jax.protein import (  # noqa: E402
+    ResidueLibrary,
+    amber_template,
+    load_amber,
+    pmemd_grid,
+    pmemd_mdin,
+    write_pgm_prmtop,
+)
 
 ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 ap.add_argument("prmtop")

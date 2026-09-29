@@ -14,16 +14,24 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
+from test_grad import water  # noqa: E402
+from test_md_macro import _water_box  # noqa: E402
+
 from pgm_jax import System  # noqa: E402
 from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.md.integrate import BAR, KB  # noqa: E402
-from pgm_jax.md.remd import (ReplicaExchange, _broadcast, exchange_pairs, geometric_ladder, metropolis,  # noqa: E402
-                             read_exchange_log, temperature_reduced_energies)
+from pgm_jax.md.remd import (  # noqa: E402
+    ReplicaExchange,
+    _broadcast,
+    exchange_pairs,
+    geometric_ladder,
+    metropolis,
+    read_exchange_log,
+    temperature_reduced_energies,
+)
 from pgm_jax.md.simulation import Simulation  # noqa: E402
 from pgm_jax.md.thermostats import GLE, Bussi, Langevin  # noqa: E402
-from test_grad import water  # noqa: E402
-from test_md_macro import _water_box  # noqa: E402
 
 
 # ----------------------------------------------------------------------------- toy replica engines

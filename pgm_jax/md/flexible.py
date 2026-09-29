@@ -48,10 +48,10 @@ from .constraints import Constraints, hmr_masses
 from .flux import ChargeFlux
 from .forcefield import MDSettings, PGMForceField
 from .integrate import KB, Dynamics, Integrator, MDState, field_state, upgrade_state
-from .thermostats import Bussi
 from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .rigid import _unwrap
 from .simulation import Simulation
+from .thermostats import Bussi
 from .topology import MDTopology, MoleculeRule
 from .vsites import VirtualSites
 
@@ -86,7 +86,7 @@ class FlexibleTemplate:
         self._model = self._terms = None
 
     @classmethod
-    def from_fit(cls, model, P, index: int = 0) -> "FlexibleTemplate":
+    def from_fit(cls, model, P, index: int = 0) -> FlexibleTemplate:
         """From a fitted BondedModel and its parameters (molecule `index` of the model).  Neural
         bonded terms ("nnb") are frozen: their stage-1 coefficients are evaluated once here."""
         if getattr(model, "nnb", None) is not None and "coef" not in P["nnb"]:
@@ -95,7 +95,7 @@ class FlexibleTemplate:
         return cls(model.mols, asdict(model.s), P, index)
 
     @classmethod
-    def from_network(cls, net, P, spec, **settings) -> "FlexibleTemplate":
+    def from_network(cls, net, P, spec, **settings) -> FlexibleTemplate:
         """Template of any molecule from a trained neural bonded model (bonded.nn.NNBonded and its
         parameters, e.g. NNBonded.load): stage 1 is evaluated for this molecule and frozen.
         settings: the BondedSettings the network was trained with (lj14_scale, lj_min_sep, elec, ...)."""
@@ -197,7 +197,7 @@ class FlexibleTemplate:
             pickle.dump({"specs": self.specs, "settings": self.settings, "P": self.P, "index": self.index}, fh)
 
     @classmethod
-    def load(cls, path: str) -> "FlexibleTemplate":
+    def load(cls, path: str) -> FlexibleTemplate:
         with open(path, "rb") as fh:
             d = pickle.load(fh)
         return cls(d["specs"], d["settings"], d["P"], d["index"])
