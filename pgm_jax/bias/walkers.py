@@ -109,7 +109,7 @@ class Walkers(MDReplicas):
         ax = self._axes()
         W = self.n
         S = S.set(max_iters=jnp.zeros(W, jnp.int32), resid=jnp.zeros(W), overflow=jnp.zeros(W, bool))
-        step = jax.vmap(integ._step, in_axes=(ax,), out_axes=ax)
+        step = jax.vmap(lambda s: integ._book_field(s, integ._step(s)), in_axes=(ax,), out_axes=ax)   # E(t) work (efield.py)
         if integ.bias.stride == 0:
             return jax.lax.fori_loop(0, n, lambda _, s: step(s), S)
         post = jax.vmap(integ._bias_post, in_axes=(ax,), out_axes=ax)
@@ -121,7 +121,7 @@ class Walkers(MDReplicas):
         W = self.n
         z = jnp.zeros(W)
         S = S.set(max_iters=jnp.zeros(W, jnp.int32), resid=z, overflow=jnp.zeros(W, bool))
-        step = jax.vmap(integ._step, in_axes=(ax,), out_axes=ax)
+        step = jax.vmap(lambda s: integ._book_field(s, integ._step(s)), in_axes=(ax,), out_axes=ax)   # E(t) work (efield.py)
         grad = jax.vmap(jax.value_and_grad(bias.energy, argnums=1), in_axes=(None, 0, 0))
         to_engine = jax.vmap(integ._map_atom_forces)
         atoms = jax.vmap(integ._bias_atoms)

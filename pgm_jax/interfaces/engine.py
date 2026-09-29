@@ -299,6 +299,9 @@ class PGMEngine:
         templates = kw.pop("templates", None)
         if templates is None and hasattr(sim, "flex"):
             raise ValueError("FlexibleSimulation: pass its templates, PGMEngine.from_simulation(sim, templates=...)")
+        if getattr(sim.integ, "efield", None) is not None or getattr(sim.integ, "bias", None) is not None:
+            raise NotImplementedError("the external-code interfaces do not carry the external field (efield=) or "
+                                      "the biases (bias=) of a simulation; use the native engine")
         kw.setdefault("params", sim.integ.params)
         kw.setdefault("restraints", sim.integ.restraints)
         return cls(sim.sys, sim.positions_nm(), np.asarray(sim.state.box), sim.settings, templates=templates, **kw)

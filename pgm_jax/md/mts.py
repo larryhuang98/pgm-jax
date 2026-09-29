@@ -604,9 +604,9 @@ class _MTSMixin:
             st = s.set(induction=s.induction.set(count=jnp.ones_like(s.induction.count)))
         return super()._run(st, n)
 
-    def init(self, x, box, key, momentum=None) -> MDState:
+    def init(self, x, box, key, momentum=None, bias=None) -> MDState:
         self._size_list(x, box)
-        return super().init(x, box, key, momentum)
+        return super().init(x, box, key, momentum, bias=bias)
 
 
 class MTSIntegrator(_MTSMixin, Integrator):
