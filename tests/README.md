@@ -37,7 +37,7 @@ Registered in `pyproject.toml` (`--strict-markers`):
 
 | Marker | Meaning |
 |---|---|
-| `slow` | takes more than about 20 s on 32 CPU cores (63 tests, about 60 % of the run time) |
+| `slow` | takes more than about 20 s on 32 CPU cores (63 test functions, 76 of 376 tests, about 60 % of the run time) |
 | `needs_data` | needs data outside the repository: the pGM3P-25 box (`PGM_GVDW_DATA`), the Amber `pgm_4wat` test (`AMBERHOME`), the QM set `data/qm/` |
 | `needs_external` | needs an external program: `pmemd.pgm` (`PGM_PMEMD_BIN`), i-PI (`IPI_ROOT`), OpenMM >= 8.4 |
 | `optional_deps` | needs an optional Python package: RDKit (peptides), ASE, networkx |
