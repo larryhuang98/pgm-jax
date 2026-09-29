@@ -13,6 +13,7 @@ jax.config.update("jax_enable_x64", True)
 from pgm_jax.bonded import terms as T  # noqa: E402
 from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec  # noqa: E402
 from pgm_jax.channels import ElecChannel, perm_dipoles  # noqa: E402
+from pgm_jax.md.box import lower_triangular_frame  # noqa: E402
 from pgm_jax.md.dipoles import CellDipole  # noqa: E402
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box  # noqa: E402
 from pgm_jax.md.flux import ChargeFlux, molecule_at  # noqa: E402
@@ -131,10 +132,12 @@ def test_flux_forces_and_strain_derivatives(box):
     fd = (float(es(1e-6)) - float(es(-1e-6))) / 2e-6
     assert abs(fd - float(jnp.trace(W))) < 1e-7 * abs(fd), (fd, float(jnp.trace(W)))
     Wa = ff.strain_derivative(pos, H, idx, mu, molecular=False)                  # bonds stretch: flux active
-    ea = jax.jit(lambda s: ff.energy(pos @ (jnp.eye(3) + s).T, H @ (jnp.eye(3) + s).T, idx, res.induction)[0])
-    for a, b in ((0, 0), (2, 1)):
+    # the engine assumes a lower-triangular box: strained boxes are rotated back (box.lower_triangular_frame)
+    ea = jax.jit(lambda x, h: ff.energy(x, h, idx, res.induction)[0])
+    eas = lambda s: float(ea(*lower_triangular_frame(np.asarray(pos) @ (np.eye(3) + s).T, np.asarray(H) @ (np.eye(3) + s).T)))  # noqa: E731
+    for a, b in ((0, 0), (2, 1), (1, 2)):
         E = np.zeros((3, 3)); E[a, b] = 1e-6
-        fd = (float(ea(E)) - float(ea(-E))) / 2e-6
+        fd = (eas(E) - eas(-E)) / 2e-6
         assert abs(fd - float(Wa[a, b])) < 1e-6 * max(1.0, abs(fd)), (a, b, fd, float(Wa[a, b]))
 
 

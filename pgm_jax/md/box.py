@@ -24,6 +24,16 @@ def reduce_box(H) -> np.ndarray:
     return np.array([a, b, c])
 
 
+def lower_triangular_frame(x, H, *vectors):
+    """Host-side: rotate positions x (n, 3), a box H (rows: lattice vectors) and any further row
+    vectors so that the box is lower triangular with a positive diagonal (the form the engine
+    assumes); returns (x Q, H Q, *(v Q)).  A strained box H (1 + eps)^T with eps_ab != 0 for a > b is
+    not lower triangular: evaluate its energy in this frame (the energy is rotation invariant)."""
+    Q, R = np.linalg.qr(np.asarray(H, float).T)
+    Q = Q @ np.diag(np.sign(np.diag(R)))
+    return (np.asarray(x, float) @ Q, np.asarray(H, float) @ Q) + tuple(np.asarray(v, float) @ Q for v in vectors)
+
+
 def max_cutoff(H) -> float:
     """Largest cutoff for which the sequential minimum image is exact."""
     H = np.asarray(H, float)

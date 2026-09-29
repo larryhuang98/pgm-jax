@@ -12,7 +12,7 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
-from pgm_jax.md.box import reduce_box  # noqa: E402
+from pgm_jax.md.box import lower_triangular_frame, reduce_box  # noqa: E402
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, RigidTemplate, liquid_box  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
 from pgm_jax.md.integrate import KB  # noqa: E402
@@ -293,7 +293,8 @@ def test_pgm_forces_and_strain_derivative_with_sites():
     tail = float(lj_long_range(ff._atoms(None), abs(np.linalg.det(H)), 0.6))
     for (i, j) in [(0, 0), (1, 2), (2, 0)]:
         eps = np.zeros((3, 3)); eps[i, j] = h
-        ee = lambda s: float(e(pos + (com @ (s * eps).T)[sys.mol], H @ (np.eye(3) + s * eps).T))   # noqa: E731
+        # the engine assumes a lower-triangular box: strained boxes are rotated back
+        ee = lambda s: float(e(*lower_triangular_frame(pos + (com @ (s * eps).T)[sys.mol], H @ (np.eye(3) + s * eps).T)))  # noqa: E731
         fd = (ee(1.0) - ee(-1.0)) / (2 * h) - (tail if i == j else 0.0)
         assert abs(fd - W[i, j]) < 1e-5 * max(1.0, abs(fd)), (i, j, fd, W[i, j])
     with pytest.raises(NotImplementedError):
