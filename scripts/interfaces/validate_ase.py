@@ -1,4 +1,4 @@
-"""ASE + pgm_jax (pgm_jax.interfaces.ase) on the 512-water pGM box of the README.
+"""Validate ASE + pgm_jax (pgm_jax.interfaces.ase) on the 512-water pGM box of the README (docs/interfaces.md).
 
 1. single points against the native engine (Simulation.from_amber): energy, atomic forces, centre-of-
    mass forces of the rigid bodies, pressure (molecular virial), double and mixed precision;
@@ -7,7 +7,15 @@
 3. NVT: ASE Langevin vs native Langevin (gamma 1/ps): temperature and <U>;
 4. cost per step: native, ASE (engine call, constraints, ASE bookkeeping).
 
-  python scripts/interfaces/validate_ase.py --out validation/interfaces/ase.json [--ps-nve 10 --ps-nvt 20]
+Usage:
+
+    python scripts/interfaces/validate_ase.py --out data/validation/interfaces/ase.json [--nve-ps 10 --nvt-ps 20]
+    python scripts/interfaces/validate_ase.py --help
+
+Inputs: PGM_GVDW_DATA (pgm_jax.paths); ASE installed.
+Outputs: the JSON (--out, default data/validation/interfaces/ase.json); printed results.
+Units: --dt-fs fs, durations in ps, --temperature-K K; energies kJ/mol, forces kJ/mol/nm, pressure bar.
+Runtime: GPU or CPU, minutes (ASE's Python loop dominates the cost per step).  Sets jax_enable_x64.
 """
 
 import argparse
@@ -17,28 +25,32 @@ import time
 
 import jax
 import numpy as np
-from ase import units
-from ase.md.langevin import Langevin
-from ase.md.verlet import VelocityVerlet
 
-from pgm_jax.cli.args import setup_logging
+try:  # ASE is optional: without it only --help works
+    from ase import units
+    from ase.md.langevin import Langevin
+    from ase.md.verlet import VelocityVerlet
+
+    from pgm_jax.interfaces.ase import PGMCalculator, atoms_from_system, rigid_constraints
+except ImportError:  # pragma: no cover
+    units = Langevin = VelocityVerlet = None
+
+from pgm_jax.cli.args import add_dt_arg, add_precision_arg, add_temperature_arg, setup_logging
 from pgm_jax.interfaces import PGMEngine
-from pgm_jax.interfaces.ase import PGMCalculator, atoms_from_system, rigid_constraints
 from pgm_jax.md.box import volume
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.simulation import Simulation
 from pgm_jax.md.thermostats import Langevin as LangevinThermostat
-from pgm_jax.paths import resource
+from pgm_jax.paths import pgm3p25_files, repo_path
 from pgm_jax.units import BAR_PER_KJMOL_NM3, KB
 
 jax.config.update("jax_enable_x64", True)
-TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
-RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
-KJ = units.kJ / units.mol
+TOP, RST = pgm3p25_files()
+KJ = units.kJ / units.mol if units is not None else None  # ASE energy unit of 1 kJ/mol
 
 
-def native_atomic(sim):
-    """Atomic forces and dipoles of the native force field at the native state (its own lists)."""
+def native_atomic(sim: Simulation) -> tuple[np.ndarray, np.ndarray, float, np.ndarray]:
+    """Return positions [nm], forces [kJ/mol/nm], energy [kJ/mol] and induced dipoles [e nm] of the native state."""
     st = sim.state
     pos = sim.rigid.positions(st.dyn.position)
     idx = sim.nb.candidates(st.nbr, st.dyn.position.center, st.box, pos)[0]
@@ -46,7 +58,8 @@ def native_atomic(sim):
     return np.asarray(pos), np.asarray(res.forces), float(res.energy["total"]), np.asarray(res.induction.mu)
 
 
-def single_point(prec, tol):
+def single_point(prec: str, tol: float) -> dict:
+    """Compare energy, forces, dipoles and pressure of ASE's calculator with the native engine at one precision."""
     s = MDSettings().replace(precision=prec, dipole_tol=tol)
     sim = Simulation.from_amber(TOP, RST, settings=s, thermostat=None, log=None)
     pos, F_nat, E_nat, mu_nat = native_atomic(sim)
@@ -86,7 +99,8 @@ def single_point(prec, tol):
     return out
 
 
-def drift(t_ps, e, dof, T):
+def drift(t_ps: list, e: list, dof: int, T: float) -> dict:
+    """Return the drift [kT/ns/dof] and fluctuation of an energy series e [kJ/mol] at times t_ps [ps]."""
     slope = np.polyfit(np.asarray(t_ps) / 1000.0, np.asarray(e), 1)[0]  # kJ/mol/ns
     return {
         "drift_kT_per_ns_per_dof": float(slope / (KB * T) / dof),
@@ -95,16 +109,21 @@ def drift(t_ps, e, dof, T):
     }
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="validation/interfaces/ase.json")
-    ap.add_argument("--ps-eq", type=float, default=5.0)
-    ap.add_argument("--ps-nve", type=float, default=10.0)
-    ap.add_argument("--ps-nvt", type=float, default=20.0)
-    ap.add_argument("--dt", type=float, default=0.001)
-    ap.add_argument("--precision", default="mixed")
-    ap.add_argument("--T", type=float, default=298.0)
-    args = ap.parse_args()
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line, run the four checks and write the JSON (see the module docstring)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument(
+        "-o", "--out", default=repo_path("data", "validation", "interfaces", "ase.json"), help="JSON output"
+    )
+    ap.add_argument("--equil-ps", type=float, default=5.0, help="native NVT equilibration [ps]")
+    ap.add_argument("--nve-ps", type=float, default=10.0, help="NVE comparison [ps]")
+    ap.add_argument("--nvt-ps", type=float, default=20.0, help="NVT comparison [ps]")
+    add_dt_arg(ap, 1.0)
+    add_precision_arg(ap)
+    add_temperature_arg(ap, 298.0)
+    args = ap.parse_args(argv)
+    if units is None:
+        raise SystemExit("validate_ase.py needs ASE (pip install ase)")
     setup_logging()
     res = {"device": str(jax.devices()[0])}
     res["single_point_double"] = single_point("double", 1e-10)
@@ -113,8 +132,8 @@ def main():
     print(json.dumps(res["single_point_mixed"], indent=1), flush=True)
 
     s = MDSettings(precision=args.precision)
-    dt, T = args.dt, args.T
-    n_eq, n_nve, n_nvt = (int(round(x / dt)) for x in (args.ps_eq, args.ps_nve, args.ps_nvt))
+    dt, T = args.dt_fs / 1000, args.temperature_K
+    n_eq, n_nve, n_nvt = (int(round(x / dt)) for x in (args.equil_ps, args.nve_ps, args.nvt_ps))
     rep = 100
     sim = Simulation.from_amber(
         TOP, RST, settings=s, thermostat=LangevinThermostat(1.0), temperature=T, dt=dt, log=None
@@ -235,7 +254,7 @@ def main():
         "T_native_rot": float(np.mean(Trot[skip:])),
         "ms_per_step_ase_langevin": 1e3 * t_lang,
         "ms_per_step_native_langevin": 1e3 * t_natv,
-        "ps": args.ps_nvt,
+        "ps": args.nvt_ps,
     }
     print(json.dumps(res["nvt"], indent=1), flush=True)
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)

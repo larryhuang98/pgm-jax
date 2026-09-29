@@ -1,4 +1,4 @@
-"""OpenMM (>= 8.4, PythonForce) + pgm_jax (pgm_jax.interfaces.openmm) on the 512-water pGM box.
+"""Validate OpenMM (>= 8.4, PythonForce) + pgm_jax (pgm_jax.interfaces.openmm) on the 512-water pGM box.
 
 1. single point: OpenMM's energy and forces (State) vs the engine and the native force field;
 2. NVE: OpenMM VerletIntegrator + SETTLE vs the native rigid-body NVE (same start, same dt);
@@ -6,8 +6,20 @@
 4. NPT: MonteCarloBarostat vs the native Monte Carlo barostat: density;
 5. cost per step on OpenMM's CPU and (if present) CUDA platforms vs native.
 
-  PYTHONPATH=runs/ommlib python scripts/interfaces/validate_openmm.py --out validation/interfaces/openmm.json
+See docs/interfaces.md.
+
+Usage:
+
+    PYTHONPATH=runs/ommlib python scripts/interfaces/validate_openmm.py --out data/validation/interfaces/openmm.json
+    python scripts/interfaces/validate_openmm.py --help
+
+Inputs: PGM_GVDW_DATA (pgm_jax.paths); OpenMM >= 8.4 importable.
+Outputs: the JSON (--out, default data/validation/interfaces/openmm.json); printed results.
+Units: --dt-fs fs, durations in ps, --temperature-K K; energies kJ/mol, density g/cm^3.
+Runtime: GPU or CPU, tens of minutes (the NPT comparison dominates).  Sets jax_enable_x64.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -16,29 +28,36 @@ import time
 
 import jax
 import numpy as np
-import openmm
-from openmm import unit
 
-from pgm_jax.cli.args import setup_logging
+try:  # OpenMM is optional: without it only --help works
+    import openmm
+    from openmm import unit
+
+    from pgm_jax.interfaces.openmm import PGMOpenMM
+except ImportError:  # pragma: no cover
+    openmm = unit = None
+
+from pgm_jax.cli.args import add_dt_arg, add_temperature_arg, setup_logging
 from pgm_jax.interfaces import PGMEngine
-from pgm_jax.interfaces.openmm import PGMOpenMM
 from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.simulation import Simulation
 from pgm_jax.md.thermostats import Langevin
-from pgm_jax.paths import resource
+from pgm_jax.paths import pgm3p25_files, repo_path
 from pgm_jax.units import AMU_NM3_TO_G_CM3, KB
 
 jax.config.update("jax_enable_x64", True)
-TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
-RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
-PS = unit.picosecond
-KJ = unit.kilojoule_per_mole
+TOP, RST = pgm3p25_files()
+PS = unit.picosecond if unit is not None else None
+KJ = unit.kilojoule_per_mole if unit is not None else None
 
 
 def platforms():
-    """Usable platforms: a context must open (OpenMM's CUDA platform cannot open a context on a GPU in
-    exclusive-process mode that JAX already uses)."""
+    """Return the usable OpenMM platforms: those on which a context opens.
+
+    OpenMM's CUDA platform cannot open a context on a GPU in exclusive-process mode that JAX
+    already uses.
+    """
     names = [openmm.Platform.getPlatform(i).getName() for i in range(openmm.Platform.getNumPlatforms())]
     ok = []
     for p in ("CUDA", "CPU"):
@@ -54,7 +73,15 @@ def platforms():
     return ok
 
 
-def context(om, integrator, platform, pos, vel=None, barostat=None):
+def context(
+    om: PGMOpenMM,
+    integrator: object,
+    platform: str,
+    pos: np.ndarray,
+    vel: np.ndarray | None = None,
+    barostat: object = None,
+) -> tuple[object, object]:
+    """Return an OpenMM context (rigid water, constraints applied) and its System for the pGM force."""
     system = om.system(rigid=True)
     if barostat is not None:
         system.addForce(barostat)
@@ -70,26 +97,32 @@ def context(om, integrator, platform, pos, vel=None, barostat=None):
     return ctx, system
 
 
-def blockerr(x, nb=5):
+def blockerr(x: np.ndarray, nb: int = 5) -> float:
+    """Return the standard error of the mean of x from nb contiguous blocks."""
     x = np.asarray(x)
     return float(np.std([np.mean(y) for y in np.array_split(x, nb)], ddof=1) / np.sqrt(nb))
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="validation/interfaces/openmm.json")
-    ap.add_argument("--ps-eq", type=float, default=5.0)
-    ap.add_argument("--ps-nve", type=float, default=10.0)
-    ap.add_argument("--ps-nvt", type=float, default=20.0)
-    ap.add_argument("--ps-npt", type=float, default=50.0)
-    ap.add_argument("--dt", type=float, default=0.001)
-    ap.add_argument("--T", type=float, default=298.0)
-    ap.add_argument("--platform", default=None)
-    args = ap.parse_args()
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line, run the five checks and write the JSON (see the module docstring)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument(
+        "-o", "--out", default=repo_path("data", "validation", "interfaces", "openmm.json"), help="JSON output"
+    )
+    ap.add_argument("--equil-ps", type=float, default=5.0, help="equilibration [ps]")
+    ap.add_argument("--nve-ps", type=float, default=10.0, help="NVE comparison [ps]")
+    ap.add_argument("--nvt-ps", type=float, default=20.0, help="NVT comparison [ps]")
+    ap.add_argument("--npt-ps", type=float, default=50.0, help="NPT comparison [ps]")
+    add_dt_arg(ap, 1.0)
+    add_temperature_arg(ap, 298.0)
+    ap.add_argument("--platform", default=None, help="OpenMM platform (default: every usable one)")
+    args = ap.parse_args(argv)
+    if openmm is None:
+        raise SystemExit("validate_openmm.py needs OpenMM >= 8.4")
     setup_logging()
     plats = platforms() if args.platform is None else [args.platform]
     res = {"device": str(jax.devices()[0]), "openmm": openmm.__version__, "platforms": plats}
-    dt, T = args.dt, args.T
+    dt, T = args.dt_fs / 1000, args.temperature_K
     rep = 100
 
     # ---- single point, double precision
@@ -121,10 +154,10 @@ def main():
     # ---- equilibrate natively, then NVE / NVT / NPT
     s = MDSettings()
     sim = Simulation.from_amber(TOP, RST, settings=s, thermostat=Langevin(1.0), temperature=T, dt=dt, log=None)
-    sim.advance(int(round(args.ps_eq / dt)))
+    sim.advance(int(round(args.equil_ps / dt)))
     pos0, vel0, H = sim.positions(), sim.velocities(), np.asarray(sim.state.box)
     sysm = sim.sys
-    n_nve, n_nvt, n_npt = (int(round(x / dt)) for x in (args.ps_nve, args.ps_nvt, args.ps_npt))
+    n_nve, n_nvt, n_npt = (int(round(x / dt)) for x in (args.nve_ps, args.nvt_ps, args.npt_ps))
 
     nat = Simulation(sysm, pos0, H, s, dt=dt, thermostat=None, velocities=vel0, log=None)
     dof = nat.integ.dof
@@ -259,7 +292,7 @@ def main():
             "rho_openmm": float(np.mean(ro[sk:])),
             "rho_openmm_err": blockerr(ro[sk:]),
             "ms_per_step": ms,
-            "ps": args.ps_npt,
+            "ps": args.npt_ps,
             "engine_rebuilds": eng.stats["rebuilds"],
             "engine_repeats": eng.stats["repeats"],
             "calls_per_step": eng.stats["calls"] / (n_npt // rep * rep),
