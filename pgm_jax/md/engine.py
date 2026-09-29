@@ -1,7 +1,9 @@
-"""The part of the MD drivers shared by the rigid-body engine (simulation.Simulation) and the
-atomistic engine (flexible.FlexibleSimulation): neighbour lists and static sizes, blocks of steps
-with overflow handling, observables, pressure, restraints, biases, external fields, the run loop
-with its output files, and checkpoints.
+"""The host-side MD driver shared by the rigid-body and the atomistic engine (`MDEngine`).
+
+`MDEngine` is the base of simulation.Simulation (rigid bodies) and flexible.FlexibleSimulation
+(atoms): neighbour lists and static sizes, blocks of steps with overflow handling, observables,
+pressure, restraints, biases, external fields, the run loop with its output files, and
+checkpoints.  `OPTIONAL_STATE` lists the parts of MDState that depend on the options of a run.
 
 An engine subclass builds, in its constructor, the system (`sys`), settings, force field (`ff`),
 integrator (`integ`), the molecule representation (`rigid`: rigid bodies, or flexible molecules
@@ -20,11 +22,14 @@ Output: `run` writes the log table (observables) to prefix.log and, when the eng
 with log=<text stream>, to that stream too; diagnostics (the header describing the setup, list
 rebuilds, resizes) go to the Python logger of the engine's module ("pgm_jax.md.simulation",
 "pgm_jax.md.flexible", ...; see pgm_jax.cli.args.setup_logging for scripts).
+
+Units: nm, ps, K, bar, kJ/mol (library units); Amber files in Angstrom.
 """
 
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING, Any
 
 import jax
 import jax.numpy as jnp
@@ -49,31 +54,72 @@ from .integrate import field_state, upgrade_state
 from .io import NetCDFTrajectory, write_restart
 from .neighbors import AtomNeighbors, MoleculeNeighbors
 
+if TYPE_CHECKING:
+    from jax.typing import ArrayLike
+
+    from ._jaxmd import partition
+    from .alchemy import Alchemy
+    from .integrate import MDState
+    from .mts import MTS
+    from .restraints import Restraint, Restraints
+
 # parts of MDState that depend on the options of a run (see tree_from_arrays)
 OPTIONAL_STATE = (".bias", ".efield", ".fshift", ".fdip")
 
 
 class MDEngine:
-    """Base class of the MD engines (see the module docstring for what subclasses provide)."""
+    """Base class of the MD engines (see the module docstring for what subclasses provide).
 
-    _recorder = None  # DipoleRecorder while run(dipoles=...) is running
+    Not instantiated itself.  A mutable host object; the compiled steps are the integrator's.
+
+    Attributes
+    ----------
+    sys : System
+        The system.
+    settings : MDSettings
+        Settings.
+    ff : PGMForceField
+        Force field.
+    integ : Integrator
+        Integrator (compiled steps).
+    rigid : RigidMolecules or flexible counterpart
+        Molecule representation (`positions`, `wrap`).
+    nb : AtomNeighbors or MoleculeNeighbors
+        Neighbour-list object.
+    state : MDState
+        Current state.
+    time_ps : float
+        Simulation time [ps].
+    dt : float
+        Time step [ps].
+    ensemble : {"nve", "nvt", "npt"}
+        Ensemble.
+    T0 : float
+        Temperature [K].
+    log : text stream or None
+        Echo of the log table.
+    checkpoint_kind : str
+        Kind written into checkpoints (class attribute).
+    """
+
+    _recorder = None  # DipoleRecorder while run(dipoles_every=...) is running
     checkpoint_kind = "md"
 
     # ----------------------------------------------------------------- hooks
     def _list_groups(self) -> tuple[np.ndarray, int]:
-        """(group index of every atom, number of groups) for the molecular neighbour list."""
+        """Return (group index of every atom, number of groups) for the molecular neighbour list."""
         raise NotImplementedError
 
-    def _list_centers(self, dynpos):
-        """Centres (G, 3) nm of the neighbour-list groups at the integrator's positions `dynpos`."""
+    def _list_centers(self, dynpos: Any) -> jax.Array:
+        """Return the centres (G, 3) [nm] of the neighbour-list groups at the integrator's positions."""
         raise NotImplementedError
 
-    def _atom_positions(self, dynpos):
-        """Atom positions (N, 3) nm at the integrator's positions `dynpos`."""
+    def _atom_positions(self, dynpos: Any) -> jax.Array:
+        """Return the atom positions (N, 3) [nm] at the integrator's positions (bodies or atoms)."""
         return self.rigid.positions(dynpos)
 
     def _after_block(self) -> None:
-        """Checks after a block of steps (none by default)."""
+        """Check the state after a block of steps (nothing by default)."""
 
     # ----------------------------------------------------------------- log header
     @property
@@ -81,9 +127,10 @@ class MDEngine:
         """The logger for diagnostics: that of the engine's module (e.g. "pgm_jax.md.simulation")."""
         return logging.getLogger(type(self).__module__)
 
-    def _describe_options(self, alchemy=None, mts=None) -> None:
-        """Log the optional parts of the model: restraints, charge flux, alchemical region, multiple
-        time stepping, external field, biases.
+    def _describe_options(self, alchemy: Alchemy | None = None, mts: MTS | None = None) -> None:
+        """Log the optional parts of the model.
+
+        Restraints, charge flux, alchemical region, multiple time stepping, external field, biases.
 
         Parameters
         ----------
@@ -110,8 +157,10 @@ class MDEngine:
             self._log.info(f"biases: {self.integ.bias.describe()}")
 
     def _describe_coupling(self) -> str:
-        """The ensemble with its thermostat and barostat for the log header, e.g. "NPT (Bussi tau
-        1 ps, Monte Carlo barostat 1 bar every 100 steps)"."""
+        """Return the ensemble with its thermostat and barostat for the log header.
+
+        E.g. "NPT (Bussi tau 1 ps, Monte Carlo barostat 1 bar every 100 steps)".
+        """
         parts = [x.describe() for x in (self.integ.thermostat, self.integ.barostat) if x is not None]
         return self.ensemble.upper() + (f" ({', '.join(parts)})" if parts else "")
 
@@ -122,7 +171,7 @@ class MDEngine:
 
     # ----------------------------------------------------------------- observables
     def observables(self) -> dict:
-        """Observables of the current state (one row of the log table).
+        """Return the observables of the current state (one row of the log table).
 
         Returns
         -------
@@ -181,8 +230,13 @@ class MDEngine:
                 out.update(Emac_x=float(Emac[0]), Emac_y=float(Emac[1]), Emac_z=float(Emac[2]))
         return out
 
-    def _pressure(self, st):
-        """Instantaneous pressure [bar] of state `st` (traced; see `pressure`)."""
+    def _pressure(self, st: MDState) -> jax.Array:
+        """Return the instantaneous pressure [bar] of state `st` (traced; see `pressure`).
+
+        P = (2 K_com - tr W) / (3 V), W = dE/d eps the molecular strain derivative at the converged
+        dipoles (force field or alchemical Hamiltonian, plus restraints and biases), K_com the
+        centre-of-mass kinetic energy; converted with BAR_PER_KJMOL_NM3.
+        """
         pos = self._atom_positions(st.dyn.position)
         idx = self.nb.candidates(st.nbr, self._list_centers(st.dyn.position), st.box, pos)[0]
         if self.integ.alchemy is None:
@@ -198,19 +252,22 @@ class MDEngine:
         return (2.0 * ke_t - jnp.trace(W)) / (3.0 * volume(st.box)) * BAR_PER_KJMOL_NM3
 
     def pressure(self) -> float:
-        """Instantaneous pressure [bar]: molecular virial (at the converged dipoles; with the
-        restraints and biases) and the centre-of-mass kinetic energy."""
+        """Return the instantaneous pressure [bar] of the current state (jitted `_pressure`).
+
+        Molecular virial (at the converged dipoles; with the restraints and biases) and the
+        centre-of-mass kinetic energy.
+        """
         if not hasattr(self, "_pressure_jit"):
             self._pressure_jit = jax.jit(self._pressure)
         return float(self._pressure_jit(self.state))
 
     # ----------------------------------------------------------------- restraints, fields, biases
-    def set_field(self, E0) -> None:
+    def set_field(self, E0: ArrayLike) -> None:
         """Set the amplitude of the external field of a simulation created with `efield=`.
 
         Parameters
         ----------
-        E0 : sequence of 3 floats
+        E0 : ArrayLike (3,)
             Field amplitude [V/nm].  No recompilation; the forces are recomputed and epot / econs
             jump by the change of the field energy (the work of the switch).
 
@@ -227,7 +284,7 @@ class MDEngine:
         self.state = new.set(induction=new.induction.set(count=jnp.zeros_like(new.induction.count)))
 
     def restraint_energies(self) -> dict:
-        """Restraint energy by kind [kJ/mol] at the current state ({} without restraints)."""
+        """Return the restraint energy by kind [kJ/mol] at the current state ({} without restraints)."""
         if self.integ.restraints is None:
             return {}
         if getattr(self, "_restraint_jit", None) is None:
@@ -235,10 +292,18 @@ class MDEngine:
         st = self.state
         return {k: float(v) for k, v in self._restraint_jit(self._atom_positions(st.dyn.position), st.box).items()}
 
-    def set_restraints(self, restraints) -> None:
-        """Replace the restraints (md/restraints.py; None removes them), e.g. to release positional
-        restraints in stages: recompiles the step and recomputes the forces of the current state;
-        epot and econs jump by the change of the restraint energy (the work of the switch)."""
+    def set_restraints(self, restraints: Restraints | Restraint | list | None) -> None:
+        """Replace the restraints (md/restraints.py; None removes them).
+
+        E.g. to release positional restraints in stages: recompiles the step and recomputes the
+        forces of the current state; epot and econs jump by the change of the restraint energy
+        (the work of the switch).
+
+        Raises
+        ------
+        ValueError
+            An atom index out of range (Restraints.check).
+        """
         from .restraints import as_restraints
 
         r = as_restraints(restraints)
@@ -252,27 +317,30 @@ class MDEngine:
         self.state = self.integ.forces(st, False).set(induction=st.induction)
 
     def bias_energies(self) -> np.ndarray:
-        """Energy of each bias [kJ/mol] at the current state (empty without biases)."""
+        """Return the energy of each bias [kJ/mol] at the current state (empty without biases)."""
         if self.integ.bias is None:
             return np.zeros(0)
         if getattr(self, "_bias_jit", None) is None or self._bias_jit[0] is not self.integ.bias:
             b = self.integ.bias
 
-            def energies(st):
-                """Bias energies of state st."""
+            def energies(st: MDState) -> jax.Array:
+                """Return the bias energies of state st."""
                 return b.energies(st.bias, self._atom_positions(st.dyn.position), st.box)
 
             self._bias_jit = (b, jax.jit(energies))
         return np.asarray(self._bias_jit[1](self.state))
 
     def cv_values(self) -> list:
-        """The collective-variable vectors of each bias at the current state."""
+        """Return the collective-variable vectors of each bias at the current state."""
         st = self.state
         return [np.asarray(v) for v in self.integ.bias.cv_values(self._atom_positions(st.dyn.position), st.box)]
 
-    def set_bias_state(self, bias_state) -> None:
-        """Replace the bias state (e.g. BiasSet.load of a converged bias for a static run) and
-        recompute the forces; epot and econs jump by the change of the bias energy."""
+    def set_bias_state(self, bias_state: Any) -> None:
+        """Replace the bias state and recompute the forces.
+
+        E.g. BiasSet.load of a converged bias for a static run; epot and econs jump by the change
+        of the bias energy.
+        """
         st = self.state
         self.state = self.integ.forces(st.set(bias=bias_state), False).set(induction=st.induction)
 
@@ -281,17 +349,23 @@ class MDEngine:
         self.set_bias_state(self.integ.bias.load(path))
 
     def bias_rows(self) -> np.ndarray:
-        """COLVAR rows collected since the last call (step, CVs, bias energies), when not writing files."""
+        """Return the COLVAR rows (step, CVs, bias energies) collected since the last call.
+
+        The rows of `advance` calls (without files); the buffer is emptied.
+        """
         rows = getattr(self, "_bias_rows", [])
         self._bias_rows = []
         return np.concatenate(rows) if rows else np.zeros((0, self.integ.bias.ncol))
 
     # ----------------------------------------------------------------- neighbour lists and sizes
-    def _make_neighbors(self, H) -> None:
-        """Neighbour-list object for box H [nm]: molecular-centre list when the box is large enough
-        for the groups' radius (MDSettings.neighbors.mode "auto" / "molecule"), else an atom list.  JAX-MD's
-        cell list is laid out for one box shape, so it is rebuilt when the volume drifts by 10 %
-        or a block keeps overflowing (driver.advance_with_rebuilds)."""
+    def _make_neighbors(self, H: ArrayLike) -> None:
+        """Create the neighbour-list object `nb` for box H [nm].
+
+        A molecular-centre list when the box is large enough for the groups' radius
+        (MDSettings.neighbors.mode "auto" / "molecule"), else an atom list.  JAX-MD's cell list is
+        laid out for one box shape, so it is rebuilt when the volume drifts by 10 % or a block
+        keeps overflowing (driver.advance_with_rebuilds).
+        """
         s = self.settings
         mode = s.neighbors.mode
         if mode == "auto":
@@ -303,24 +377,27 @@ class MDEngine:
             self.nb = AtomNeighbors(self.sys.n, H, s.pair_cutoff, s.neighbors.skin)
         self._nb_volume = float(volume(jnp.asarray(H)))
 
-    def _size_lists(self, dynpos, H, factor: float = 1.2, nbr=None):
+    def _size_lists(
+        self, dynpos: Any, H: ArrayLike, factor: float = 1.2, nbr: partition.NeighborList | None = None
+    ) -> partition.NeighborList:
         """Allocate (or reuse) a neighbour list at `dynpos` and size the static capacities.
 
         Parameters
         ----------
-        dynpos
-            The integrator's positions (rigid bodies or atom positions).
-        H : (3, 3) array
+        dynpos : RigidBody or jax.Array (N, 3)
+            The integrator's positions (rigid bodies or atom positions [nm]).
+        H : ArrayLike (3, 3)
             Box [nm].
         factor : float
             Head-room above the current maxima of the molecules per list row and the pairs per
             force-field row (PGMForceField.size_rows).
-        nbr : optional
+        nbr : partition.NeighborList, optional
             A neighbour list to reuse instead of allocating one.
 
         Returns
         -------
-        The neighbour list.
+        partition.NeighborList
+            The neighbour list.
         """
         pos = self._atom_positions(dynpos)
         c = self._list_centers(dynpos)
@@ -332,7 +409,7 @@ class MDEngine:
         return nbr
 
     def _rebuild_neighbors(self) -> None:
-        """New neighbour-list layout for the current box; recompile and recompute the forces."""
+        """Build a new neighbour-list layout for the current box; recompile and recompute the forces."""
         self.n_rebuilds = getattr(self, "n_rebuilds", 0) + 1
         st = self.state
         self._log.info(f"step {int(st.step)}: neighbour lists rebuilt for volume {float(volume(st.box)):.3f} nm^3")
@@ -370,16 +447,24 @@ class MDEngine:
         )
         self._after_block()
 
-    def _run_block(self, start, n: int):
-        """One compiled block of n steps (through the dipole recorder while one is active)."""
+    def _run_block(self, start: MDState, n: int) -> MDState:
+        """Return the state after one compiled block of n steps (via the dipole recorder if active).
+
+        Blocks until the block is done and runs the integrator's block checks.
+        """
         new = self.integ.run(start, n) if self._recorder is None else self._recorder.run(start, n)
         jax.block_until_ready(new.epot)
         self.integ.check_block(new)
         return new
 
-    def _resize(self, start, n: int, list_bad: bool, rows_bad: bool):
-        """Enlarge the list and row capacities after an overflow in the block of n steps from `start`,
-        recompile, and return `start` with its forces evaluated at the new sizes."""
+    def _resize(self, start: MDState, n: int, list_bad: bool, rows_bad: bool) -> MDState:
+        """Enlarge the list and row capacities after an overflow and return `start` re-evaluated.
+
+        After an overflow in the block of n steps from `start` (list_bad: the neighbour list,
+        rows_bad: the pair rows), the sizes are re-fitted with 30 % head-room (never below what
+        overflowed), the step recompiled, and `start` returned with its forces evaluated at the new
+        sizes (its induction state kept).
+        """
         old = (self.ff.capacity, getattr(self.nb, "cap", None))
         nbr = self._size_lists(start.dyn.position, start.box, 1.3, None if list_bad else start.nbr)
         if rows_bad:  # never shrink below what overflowed
@@ -394,8 +479,16 @@ class MDEngine:
         return self.integ.forces(start.set(nbr=nbr), False).set(induction=start.induction)
 
     def _advance_block(self, n: int) -> None:
-        """n steps as one compiled block: overflow handling, then re-wrapping of the molecules into
-        the box, the itinerant dipole of re-wrapped charged molecules, the bias output rows."""
+        """Advance n steps as one compiled block, then re-wrap and collect the block's outputs.
+
+        Overflow handling (driver.retry_block), then re-wrapping of the molecules into the box, the
+        itinerant dipole of re-wrapped charged molecules (MDState.fshift), the bias output rows.
+
+        Raises
+        ------
+        FloatingPointError
+            A non-finite energy.
+        """
         start = self.state
         bias = self.integ.bias
         if bias is not None and start.bias is not None:  # room for the block's hills and COLVAR rows
@@ -516,14 +609,14 @@ class MDEngine:
 
     # ----------------------------------------------------------------- checkpoints
     def _write_checkpoint_files(self, prefix: str) -> None:
-        """The files of run's checkpoints: prefix.chk, prefix.rst7 and, with biases, prefix.bias."""
+        """Write the files of run's checkpoints: prefix.chk, prefix.rst7 and, with biases, prefix.bias."""
         self.save_checkpoint(prefix + ".chk")
         self.write_restart(prefix + ".rst7")
         if self.integ.bias is not None and self.state.bias is not None:
             self.integ.bias.save(self.state.bias, prefix + ".bias")
 
     def write_restart(self, path: str) -> None:
-        """Amber NetCDF restart (positions, velocities, box, time; Angstrom units) at `path`."""
+        """Write an Amber NetCDF restart (positions, velocities, box, time; Angstrom units) to `path`."""
         write_restart(
             path,
             self.positions() * 10.0,
@@ -553,8 +646,11 @@ class MDEngine:
             {"time_ps": self.time_ps, "engine": type(self).__name__, "state": self.state.set(nbr=None)},
         )
 
-    def _bias_of_checkpoint(self, st):
-        """A legacy checkpoint's bias state if this simulation has biases (a fresh one if it had none)."""
+    def _bias_of_checkpoint(self, st: MDState) -> MDState:
+        """Return a legacy checkpoint's state with a bias state that fits this simulation.
+
+        Kept if this simulation has biases (a fresh one if the checkpoint had none), dropped if not.
+        """
         if self.integ.bias is None:
             return st.set(bias=None) if getattr(st, "bias", None) is not None else st
         if getattr(st, "bias", None) is None:
@@ -562,8 +658,10 @@ class MDEngine:
         return st
 
     def load_checkpoint(self, path: str) -> None:
-        """Continue from a checkpoint written by `save_checkpoint` (same system and settings), or from
-        a legacy pickle checkpoint of pgm_jax up to commit e72c57c (save again to convert it).
+        """Continue from a checkpoint written by `save_checkpoint` (same system and settings).
+
+        Legacy pickle checkpoints of pgm_jax up to commit e72c57c are read too (save again to
+        convert them).
 
         Parts of the state that depend on options (a bias, the external field) may differ: a bias
         missing from the checkpoint starts fresh, one in it that this run does not have is dropped,

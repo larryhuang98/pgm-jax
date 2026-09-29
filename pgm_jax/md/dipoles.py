@@ -49,8 +49,8 @@ every step but eps = eps_inf > 1.  For water eps_inf - 1 is about 0.7, one per c
 `CellDipole.polarizability` solves A m_a = e_a for a = x, y, z with the force field's induction
 operator A = alpha^-1 - T and CG, and returns alpha_ab = sum_i (m_b)_{i,a}.
 
-Recording during Simulation.run (arguments dipoles=, induced=; the Amber trajectory and restart
-files are unchanged):
+Recording during Simulation.run (arguments dipoles_every=, induced_every=; the Amber trajectory
+and restart files are unchanged):
   * DipoleRecorder, prefix.dip: every `dipoles` steps M_q, M_perm, M_ind, the volume, the kinetic
     temperature and the mean molecular dipole, and every `alpha_every`-th sample the cell
     polarizability; a text table with a commented header (read_dipoles).  Samples are taken on the
@@ -244,7 +244,7 @@ def cell_dipole(sim: Any, params: dict | None = None) -> dict:
 class DipoleRecorder:
     """Cell-dipole time series of a running Simulation / FlexibleSimulation, written to a .dip file.
 
-    Created by the driver for run(dipoles=n).  The driver calls run(state, n) instead of
+    Created by the driver for run(dipoles_every=n).  The driver calls run(state, n) instead of
     Integrator.run for each block, keep() once the block is accepted, flush() after each block.
     Samples are taken on the device inside a lax.scan over sub-blocks of the integrator.
 
