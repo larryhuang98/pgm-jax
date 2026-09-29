@@ -105,7 +105,8 @@ def load_script(path: str) -> ModuleType:
     Returns
     -------
     module
-        The imported module, named "pgm_jax_script_<file name>" (not entered in sys.modules).
+        The imported module, entered in sys.modules as "pgm_jax_script_<file name>" (dataclasses
+        and pickling look a class's module up there); a later load of the same file replaces it.
 
     Raises
     ------
@@ -119,7 +120,12 @@ def load_script(path: str) -> ModuleType:
     name = "pgm_jax_script_" + os.path.splitext(os.path.basename(path))[0]
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
     return module
 
 
