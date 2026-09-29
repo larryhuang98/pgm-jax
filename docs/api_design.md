@@ -351,7 +351,7 @@ Names:
 
 ```python
 MDSettings(
-    model=Model(elec="qpi", vdw="lj", gvdw_rep="gauss", lj_lrc=True),
+    terms=Terms(elec="qpi", vdw="lj", gvdw_rep="gauss", lj_lrc=True),   # not "model": clashes with pgm_jax.Model
     cutoffs=Cutoffs(cutoff=0.9, elec_cutoff=None, skin=0.1),
     pme=PME(ewald_beta=4.0, grid=None, spacing=0.08, order=6),
     induction=Induction(tol=1e-5, max_iter=50, predictor="mu4", fused=True, norm_refresh=1000,
@@ -552,7 +552,7 @@ bias classes, `PGMForceField.compute/rows_for/strain_derivative/init_induction`.
 
 | Old (`MDSettings` flat field) | New |
 |---|---|
-| `elec`, `vdw`, `gvdw_rep`, `lj_lrc` | `model.elec`, `model.vdw`, `model.gvdw_rep`, `model.lj_lrc` |
+| `elec`, `vdw`, `gvdw_rep`, `lj_lrc` | `terms.elec`, `terms.vdw`, `terms.gvdw_rep`, `terms.lj_lrc` |
 | `cutoff`, `elec_cutoff`, `skin` | `cutoffs.cutoff`, `cutoffs.elec_cutoff`, `cutoffs.skin` |
 | `ewald_beta`, `pme_grid`, `pme_spacing`, `pme_order` | `pme.ewald_beta`, `pme.grid`, `pme.spacing`, `pme.order` |
 | `dipole_tol`, `max_iter`, `predictor`, `fused`, `norm_refresh`, `local_cut`, `local_niter`, `peek`, `extrap_order`, `extrap_steps` | `induction.tol`, `.max_iter`, `.predictor`, `.fused`, `.norm_refresh`, `.local_cut`, `.local_niter`, `.peek`, `.extrap_order`, `.extrap_steps` |
@@ -604,7 +604,8 @@ bias classes, `PGMForceField.compute/rows_for/strain_derivative/init_induction`.
 Every phase is a short series of small commits on `cleanup`, each of which passes:
 
 - **pytest**: the full suite (`python -m pytest -q tests`, CPU, 32 cores; plus the GPU subset the
-  owner runs today),
+  owner runs today). Baseline at P0 (CPU, 32 cores): 354 passed, 3 skipped (two tests needing
+  external codes, and the opt-in harness module) in 68 min,
 - **harness**: `python tests/regression/regress.py check` on the CPU (16 threads): bitwise
   (`--rtol 0 --atol 0`) unless the phase says otherwise; the harness code itself is updated in the
   same commit when an API it calls changes (its calls are concentrated in the "API adapter" section
