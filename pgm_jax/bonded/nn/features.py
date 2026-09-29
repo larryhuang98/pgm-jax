@@ -1,15 +1,28 @@
-"""Graph inputs of the neural bonded model: atom and bond features, reference values of bonds and
-angles, residues.  Everything here depends on the molecule only (not on the network)."""
+"""Build the graph inputs of the neural bonded model: atom and bond features, reference values, residues.
+
+Everything here depends on the molecule only (not on the network).  Atom features (N_FEAT):
+one-hot element (ELEMENTS), one-hot degree 1-4, bond-order sum / 4, ring flag, aromatic flag
+(a bond of order 1.5), and four pGM parameters (charge, polarizability, Gaussian radius, sum of
+|covalent dipoles|, scaled to O(1); zeros without pGM parameters or with pgm_features=False).
+Edge features (N_EDGE): one-hot bond order 1, 1.5, 2, 3.
+
+Units: reference values nm and rad; RCOV in A (Pyykko covalent radii).
+"""
 
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
 import numpy as np
 
 from .. import terms as T
 from ..topology import _ring_bonds
+
+if TYPE_CHECKING:
+    from ..model import MolSpec
+    from ..topology import Topology
 
 ELEMENTS = ("H", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I")
 N_FEAT = len(ELEMENTS) + 4 + 3 + 4  # element, degree 1-4, bond-order sum / ring / aromatic, pGM
@@ -30,6 +43,11 @@ RCOV = {
 
 
 def rcov(e: str, order: float) -> float:
+    """Return the covalent radius [A] of element `e` in a bond of order `order`.
+
+    Single, double, triple radii from RCOV (0.9, 0.85, 0.8 A for elements not in the table);
+    orders between 1 and 2 interpolate linearly (aromatic 1.5).
+    """
     r1, r2, r3 = RCOV.get(e, (0.9, 0.85, 0.8))
     if order <= 1:
         return r1
@@ -38,13 +56,39 @@ def rcov(e: str, order: float) -> float:
     return r2 if order < 3 else r3
 
 
-def bond_orders(spec) -> dict:
+def bond_orders(spec: MolSpec) -> dict:
+    """Return {sorted atom pair: bond order} of a MolSpec."""
     return {tuple(sorted(b)): float(o) for b, o in zip(spec.bonds, spec.bond_orders)}
 
 
-def graph_inputs(spec, top, ref: str = "geometry", pgm_features: bool = True) -> dict:
-    """Atom features X (n, N_FEAT), directed edges (src, dst) with bond-order features ef, bond and
-    angle reference values (nm, rad), residues (Topology.residue) of one molecule."""
+def graph_inputs(spec: MolSpec, top: Topology, ref: str = "geometry", pgm_features: bool = True) -> dict:
+    """Return the graph inputs of one molecule.
+
+    Parameters
+    ----------
+    spec : MolSpec
+        The molecule (pGM parameters optional).
+    top : Topology
+        Its topology.
+    ref : {"geometry", "predicted"}
+        Reference values from the minimum geometry `spec.ref_xyz`, or predicted from covalent
+        radii (bonds) and hybridisation (angles: 180 deg at 2-coordinated centres and 120 deg at
+        3-coordinated centres with a bond-order sum >= 3.5, else tetrahedral).
+    pgm_features : bool
+        Include the pGM atom features.
+
+    Returns
+    -------
+    dict
+        "X" (n, N_FEAT) atom features, "src", "dst" (2 nb,) directed edges, "ef" (2 nb, N_EDGE)
+        edge features, "n", "top", "bonds" (nb, 2), "angles" (na, 3), "b_ref" (nb,) [nm],
+        "th_ref" (na,) [rad], "residue" (n,), "n_res", "De" (nb,) Morse depths [kJ/mol].
+
+    Raises
+    ------
+    ValueError
+        For an unknown `ref`.
+    """
     n = len(spec.elements)
     order = bond_orders(spec)
     nbr = [[] for _ in range(n)]
@@ -73,6 +117,7 @@ def graph_inputs(spec, top, ref: str = "geometry", pgm_features: bool = True) ->
             1.0 if any(abs(order.get(tuple(sorted((i, j))), 1) - 1.5) < 1e-6 for j in nbr[i]) else 0.0,
         ]
         f += (
+            # pGM features scaled to O(1): q [e], alpha [nm^3] x 1e3, radius [nm] x 10, |covalent dipoles| [e nm] x 50
             [float(pg.q[i]), float(pg.alpha[i]) * 1e3, float(pg.radius[i]) * 10.0, cov_abs[i] * 50.0]
             if (pg is not None and pgm_features)
             else [0.0] * 4
@@ -93,7 +138,7 @@ def graph_inputs(spec, top, ref: str = "geometry", pgm_features: bool = True) ->
                 for k, (i, j) in enumerate(top.bonds)
             ]
         )
-        tet = math.acos(-1 / 3)
+        tet = math.acos(-1 / 3)  # tetrahedral angle; 120 deg (sp2) and 180 deg (sp) below
         th_ref = np.array(
             [
                 math.pi

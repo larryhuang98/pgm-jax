@@ -1,4 +1,8 @@
-"""Amber / GAFF bonded parameters for the "amber" term set (terms.AMBER).
+"""Read, initialise from and export Amber / GAFF bonded parameters for the "amber" term set.
+
+Contents: `read_bonded` (bonded sections of a prmtop), `with_amber_impropers`,
+`init_from_prmtop` (initial values), `fit_cmap_fourier` (import of CMAP grids),
+`instance_parameters` and `export_bonded` (write a fitted model into a prmtop).
 
 Amber's bonded energy with our families (bond_harm, angle_harm, torsion_amber, improper_amber):
 
@@ -25,32 +29,54 @@ molecule's atoms: bonds, angles, proper and improper dihedrals (with the 1-4 fla
 per 1-4 pair computes the 1-4 interactions), and CMAP.  Terms of other atoms (water, ions) and
 every other section (pGM's POL_GAUSS_*, LJ, exclusions) are kept, so the result runs in
 sander / pmemd(-pgm) with the fitted bonded terms.
+
+Units: library units (kJ/mol, nm, rad) in the model; Amber units (kcal/mol, A, rad) in the
+prmtop and in `read_bonded`'s output.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
 import numpy as np
+from numpy.typing import ArrayLike
 
 from ..prmtop import Prmtop
 from ..units import KCAL
 from . import terms as T
 
+if TYPE_CHECKING:
+    from .model import BondedTerms, MolSpec
+
 _A2 = 100.0  # A^2 per nm^2
 
 
 def read_bonded(path: str) -> dict:
-    """Bonded terms of an Amber prmtop (0-based atoms, Amber units: kcal/mol, A, rad): bonds
-    (i, j, K, r0), angles (i, j, k, K, th0), dihedrals (i, j, k, l, PK, n, phase, improper),
-    cmap (i, j, k, l, m, type) and cmap_grids (per type, (res, res) kcal/mol, phi rows)."""
+    """Return the bonded terms of an Amber prmtop (0-based atoms, Amber units: kcal/mol, A, rad).
+
+    Parameters
+    ----------
+    path : str
+        The prmtop.
+
+    Returns
+    -------
+    dict
+        "bonds" [(i, j, K, r0)], "angles" [(i, j, k, K, th0)], "dihedrals" [(i, j, k, l, PK, n,
+        phase, improper)] (improper: bool from the sign of the fourth index), "cmap" [(i, j, k, l,
+        m, type)] (0-based type) and "cmap_grids" (per type, (res, res) kcal/mol, phi rows).
+    """
     top = Prmtop.read(path)
 
-    def f(k):
+    def f(k: str) -> np.ndarray:
+        """Return prmtop section k as floats (empty if absent)."""
         return top.get(k).astype(float) if k in top else np.zeros(0)
 
-    def i(k):
+    def i(k: str) -> np.ndarray:
+        """Return prmtop section k as ints (empty if absent)."""
         return top.get(k).astype(int) if k in top else np.zeros(0, int)
 
     bk, br = f("BOND_FORCE_CONSTANT"), f("BOND_EQUIL_VALUE")
@@ -71,7 +97,8 @@ def read_bonded(path: str) -> dict:
     return out
 
 
-def _read_cmap(top: Prmtop):
+def _read_cmap(top: Prmtop) -> tuple[list[tuple[int, ...]], list[np.ndarray]]:
+    """Return the CMAP entries (5 atoms and the type, 0-based) and the grids (res, res) [kcal/mol] of a prmtop."""
     if "CMAP_INDEX" not in top:
         return [], []
     res = top.get("CMAP_RESOLUTION").astype(int)
@@ -80,9 +107,24 @@ def _read_cmap(top: Prmtop):
     return [tuple(int(a) - 1 for a in row[:5]) + (int(row[5]) - 1,) for row in idx], grids
 
 
-def fit_cmap_fourier(grid_kcal, order: int = T.cmap.ORDER):
-    """Coefficients (kJ/mol) of the Fourier map closest to an Amber CMAP grid (least squares on
-    the grid points; phi rows, psi columns, from -180 deg)."""
+def fit_cmap_fourier(grid_kcal: np.ndarray, order: int = T.cmap.ORDER) -> np.ndarray:
+    """Return the coefficients [kJ/mol] of the Fourier map closest to an Amber CMAP grid.
+
+    Least squares on the grid points (phi rows, psi columns, from -180 deg), after removing the
+    grid mean (the Fourier basis has no constant).
+
+    Parameters
+    ----------
+    grid_kcal : np.ndarray (res, res)
+        Amber CMAP grid [kcal/mol].
+    order : int
+        Fourier order of the map.
+
+    Returns
+    -------
+    np.ndarray (nbasis,)
+        Coefficients in `terms.cmap.basis_orders` order [kJ/mol].
+    """
     res = grid_kcal.shape[0]
     g = -np.pi + 2.0 * np.pi * np.arange(res) / res
     Pg, Sg = np.meshgrid(g, g, indexing="ij")
@@ -91,16 +133,21 @@ def fit_cmap_fourier(grid_kcal, order: int = T.cmap.ORDER):
     return np.linalg.lstsq(B, y - y.mean(), rcond=None)[0]
 
 
-def _local(amb: dict, offset: int, n: int) -> dict:
-    """The terms of atoms offset .. offset + n of a prmtop, renumbered from 0 (a molecule of a
-    larger system; terms of other molecules dropped)."""
+def _local(amb: dict, offset: int, n: int | None) -> dict:
+    """Return the terms of atoms offset .. offset + n of a prmtop, renumbered from 0.
+
+    For a molecule of a larger system: terms of other molecules are dropped (the CMAP grids are
+    kept as they are).  `amb` is the output of `read_bonded`.
+    """
     if offset == 0 and n is None:
         return amb
 
-    def ok(atoms):
+    def ok(atoms: Sequence[int]) -> bool:
+        """Return whether every atom lies in the molecule's range."""
         return all(offset <= a < offset + n for a in atoms)
 
-    def sh(atoms):
+    def sh(atoms: Sequence[int]) -> tuple[int, ...]:
+        """Return the atoms renumbered from the molecule's first atom."""
         return tuple(a - offset for a in atoms)
 
     return {
@@ -112,10 +159,26 @@ def _local(amb: dict, offset: int, n: int) -> dict:
     }
 
 
-def with_amber_impropers(spec, path: str, offset: int = 0):
-    """Give a MolSpec Amber's impropers (atom order of the prmtop, centre third), so that
-    improper_amber evaluates exactly Amber's dihedrals.  Call before building the BondedModel.
-    offset: index of the molecule's first atom in the prmtop (a molecule of a solvated system)."""
+def with_amber_impropers(spec: MolSpec, path: str, offset: int = 0) -> MolSpec:
+    """Give a MolSpec Amber's impropers (atom order of the prmtop, centre third).
+
+    So that improper_amber evaluates exactly Amber's dihedrals.  Call before building the
+    BondedModel; builds the topology if needed.
+
+    Parameters
+    ----------
+    spec : MolSpec
+        The molecule (modified in place: `spec.top.amber_impropers`).
+    path : str
+        The prmtop.
+    offset : int
+        Index of the molecule's first atom in the prmtop (a molecule of a solvated system).
+
+    Returns
+    -------
+    MolSpec
+        `spec`.
+    """
     from .topology import build_topology
 
     if spec.top is None:
@@ -126,15 +189,39 @@ def with_amber_impropers(spec, path: str, offset: int = 0):
     return spec
 
 
-def _assign(acc, key, value):
+def _assign(acc: dict, key: tuple, value: float | np.ndarray) -> None:
+    """Append `value` to the list of `key` in `acc` (values averaged per parameter row later)."""
     acc.setdefault(key, []).append(value)
 
 
-def init_from_prmtop(model, P: dict, prmtops: dict) -> dict:
-    """Initial values of the amber families, the backbone maps (Fourier fit of the prmtop's CMAP
-    grids) and the reference values from prmtops {molecule index: path or (path, offset)} (atom
-    order = the molecule's, starting at offset in the prmtop).  Families of the model outside
-    terms.PROTEIN keep their values."""
+def init_from_prmtop(model: BondedTerms, P: dict, prmtops: dict) -> dict:
+    """Return parameters with the Amber families, backbone maps and reference values taken from prmtops.
+
+    Values are converted to library units (see the module docstring) and averaged over the
+    instances that share a key.  Families of the model outside terms.PROTEIN (and cmap6) keep their
+    values.
+
+    Parameters
+    ----------
+    model : BondedTerms
+        The model (its molecules and index sets).
+    P : dict
+        Parameters to start from (copied, not modified).
+    prmtops : dict
+        {molecule index: path or (path, offset)}: the atom order is the molecule's, starting at
+        offset in the prmtop.
+
+    Returns
+    -------
+    dict
+        The new parameters.
+
+    Raises
+    ------
+    ValueError
+        If a prmtop bond is not a bond of the molecule, a torsion has periodicity > 4 or a phase
+        other than 0 / 180 deg, or an improper has periodicity other than 2 or such a phase.
+    """
     P = {k: (dict(v) if isinstance(v, dict) else v) for k, v in P.items()}
     acc = {}
     for m, path in prmtops.items():
@@ -208,13 +295,34 @@ def init_from_prmtop(model, P: dict, prmtops: dict) -> dict:
 
 
 # ------------------------------------------------------------------ export
-EXPORTABLE = set(T.PROTEIN) | {"cmap6"}
+EXPORTABLE = set(T.PROTEIN) | {"cmap6"}  # families with an Amber form
 
 
-def instance_parameters(terms, P: dict, m: int = 0) -> dict:
-    """Per-instance parameters of molecule m of a BondedTerms / BondedModel: {"b0", "th0",
-    family: {name: (instances, ...)}}, from the typed families or from the neural bonded terms
-    (live network or frozen {"coef": ...})."""
+def instance_parameters(terms: BondedTerms, P: dict, m: int = 0) -> dict:
+    """Return the per-instance parameters of molecule m of a BondedTerms / BondedModel.
+
+    From the typed families (key rows gathered per instance) or from the neural bonded terms (live
+    network or frozen {"coef": ...}).
+
+    Parameters
+    ----------
+    terms : BondedTerms
+        The model.
+    P : dict
+        Its parameters.
+    m : int
+        Molecule index.
+
+    Returns
+    -------
+    dict
+        {"b0" (nb,) [nm], "th0" (na,) [rad], family: {name: (instances, ...)}}.
+
+    Raises
+    ------
+    ValueError
+        If a family (or the bond / angle references) comes from both typed and neural terms.
+    """
     out = {}
     if terms.fams:
         Im = terms.I[m]
@@ -234,8 +342,8 @@ def instance_parameters(terms, P: dict, m: int = 0) -> dict:
     return out
 
 
-def _dedupe(params, ndigits=8):
-    """Type index per entry (1-based) and the list of unique parameter tuples."""
+def _dedupe(params: Sequence[ArrayLike], ndigits: int = 8) -> tuple[list[int], list[tuple]]:
+    """Return the type index per entry (1-based) and the list of unique parameter tuples (rounded to `ndigits`)."""
     types, table = [], {}
     for p in params:
         key = tuple(round(float(x), ndigits) for x in p)
@@ -245,7 +353,8 @@ def _dedupe(params, ndigits=8):
     return types, list(table)
 
 
-def _common(values, default):
+def _common(values: Sequence[float], default: float) -> float:
+    """Return the most common value (rounded to 6 digits), or `default` for no values."""
     v = [round(float(x), 6) for x in values]
     return max(set(v), key=v.count) if v else default
 
@@ -253,7 +362,7 @@ def _common(values, default):
 def export_bonded(
     prmtop_in: str,
     prmtop_out: str,
-    terms,
+    terms: BondedTerms,
     P: dict,
     m: int = 0,
     offset: int = 0,
@@ -262,10 +371,52 @@ def export_bonded(
     resolution: int = 24,
     zero: float = 1e-10,
 ) -> dict:
-    """Write prmtop_out = prmtop_in with the bonded terms of molecule m (atoms offset .. offset + n
-    of the prmtop) replaced by the model's.  Families: bond_harm, angle_harm, torsion_amber,
-    improper_amber, cmap (terms.PROTEIN).  scee / scnb: 1-4 scale factors of the new dihedral types
-    (default: the most common values of the input).  Returns counts of what was written."""
+    """Write prmtop_out = prmtop_in with the bonded terms of molecule m replaced by the model's.
+
+    The molecule occupies atoms offset .. offset + n of the prmtop (checked by element).  Families:
+    bond_harm, angle_harm, torsion_amber, improper_amber, cmap / cmap6 (terms.PROTEIN).  Parameters
+    are converted to Amber units, the parameter types rebuilt without duplicates, and the POINTERS
+    updated.
+
+    Parameters
+    ----------
+    prmtop_in : str
+        Input prmtop.
+    prmtop_out : str
+        Output prmtop.
+    terms : BondedTerms
+        The fitted model.
+    P : dict
+        Its parameters.
+    m : int
+        Molecule index in the model.
+    offset : int
+        Index of the molecule's first atom in the prmtop.
+    scee, scnb : float, optional
+        1-4 scale factors of the new dihedral types; None: the most common values of the input.
+    resolution : int
+        Grid points per torsion of exported CMAP grids.
+    zero : float
+        Torsion amplitudes below this [kJ/mol] are not written.
+
+    Returns
+    -------
+    dict
+        Counts per section: (new terms, kept terms of other atoms, parameter types).
+
+    Raises
+    ------
+    ValueError
+        For families without an Amber form, atoms that do not match, missing families for terms
+        the input has for the molecule, atom 0 in a position Amber cannot sign, or two map
+        families.
+
+    Notes
+    -----
+    Each 1-4 pair is computed by exactly one dihedral (the first term of the first torsion of the
+    pair; a zero-amplitude term is added if the torsion has none); the others carry a negative
+    third index.  Negative K_n are written with phase 180 deg.
+    """
     mol = terms.mols[m]
     top = mol.top
     n = top.n
@@ -276,20 +427,27 @@ def export_bonded(
         raise ValueError(f"families {bad} have no Amber form; export supports {sorted(EXPORTABLE)}")
     pt = Prmtop.read(prmtop_in)
     Z = pt.get("ATOMIC_NUMBER")
-    el = {1: "H", 6: "C", 7: "N", 8: "O", 16: "S", 15: "P"}
+    el = {1: "H", 6: "C", 7: "N", 8: "O", 16: "S", 15: "P"}  # elements checked; others compare as "?"
     got = [el.get(int(z), "?") for z in Z[offset : offset + n]]
     if len(got) != n or got != [e if e in el.values() else "?" for e in mol.elements]:
         raise ValueError("the prmtop atoms at the offset are not the molecule's (elements differ)")
     isH = Z == 1
 
-    def ours(atoms):
+    def ours(atoms: Sequence[int]) -> bool:
+        """Return whether every atom belongs to the molecule."""
         return all(offset <= a < offset + n for a in atoms)
 
     old = read_bonded(prmtop_in)
     counts = {}
 
     # ---------------------------------------------------------------- bonds and angles
-    def write_simple(kind, flag_k, flag_x, sec_h, sec_n, width, new):
+    def write_simple(
+        kind: str, flag_k: str, flag_x: str, sec_h: str, sec_n: str, width: int, new: list
+    ) -> tuple[int, int, int]:
+        """Replace a bond or angle section: keep other atoms' terms, add `new`, rebuild the types.
+
+        Returns (entries with hydrogen, entries without, types) for the POINTERS.
+        """
         kept = [(tuple(e[:width]), (e[width], e[width + 1])) for e in old[kind] if not ours(e[:width])]
         entries = kept + new
         types, table = _dedupe([p for _, p in entries])

@@ -1,28 +1,45 @@
-"""Flexible-molecule model: bonded families + gas-phase pGM (all pairs, induced dipoles) + LJ.
+"""Define the flexible-molecule model: bonded families + gas-phase pGM (all pairs, induced dipoles) + LJ.
 
     E(R) = sum_f E_f(internal coordinates; theta_f) + E_pGM(R; q(R), c(R)) + E_LJ(R)|dist >= lj_min_sep
 
+Contents: `BondedSettings` (options), `MolSpec` (one molecule), `BondedTerms` (the bonded half:
+families, tying keys, parameters, bonded energy; used by the MD templates of any size) and
+`BondedModel` (adds the intramolecular pGM electrostatics and van der Waals for fitting,
+bonded/fit.py).
+
 Options (BondedSettings):
-  families       bonded families from terms.REGISTRY (and "flux": geometry-dependent charges and
-                 covalent-dipole strengths, F6)
-  typing         "molecule": parameters tied by symmetry within each molecule (the paper);
-                 "type": tied across molecules by the atom environment to `depth` bonds (transfer);
-                 "amber": tied by Amber / GAFF atom types (the molecules' pGM types), as Amber
-  Bonded term sets (terms.SETS): "amber" (Amber forms, with lj14_scale 0.5 and typing "amber";
-  initial values from GAFF with bonded/amber.py), "explore" (the class II set of the bonded study
-  and the families of terms.REGISTRY), "nn" (bonded/nn.py: fast neural bonded terms)
-  elec, quadrupoles, vdw, gvdw_rep   nonbonded model options (options.py), as in the MD engine
-  elec_exclude   0 = pGM (every pair); 3 = classical control (1-2, 1-3, 1-4 pairs removed from
-                 permanent and induced electrostatics)
-  lj_min_sep     LJ between atoms at least this many bonds apart (4 = 1-5 and beyond, the paper)
-  lj14_scale     LJ on 1-4 pairs with this scale (0 = off)
-  elec14_scale   scale of 1-4 electrostatics (with elec_exclude = 2: the Amber/OPLS-like control)
-Units nm, kJ/mol, e; dipoles e nm.
+
+    families       bonded families from terms.REGISTRY (and "flux": geometry-dependent charges and
+                   covalent-dipole strengths, F6; "nnb": the neural bonded terms, bonded/nn)
+    typing         "molecule": parameters tied by symmetry within each molecule (the paper);
+                   "type": tied across molecules by the atom environment to `depth` bonds (transfer);
+                   "amber": tied by Amber / GAFF atom types (the molecules' pGM types), as Amber
+    elec, quadrupoles, vdw, gvdw_rep   nonbonded model options (options.py), as in the MD engine
+    elec_exclude   0 = pGM (every pair); 3 = classical control (1-2, 1-3, 1-4 pairs removed from
+                   permanent and induced electrostatics)
+    lj_min_sep     LJ between atoms at least this many bonds apart (4 = 1-5 and beyond, the paper)
+    lj14_scale     LJ on 1-4 pairs with this scale (0 = off)
+    elec14_scale   scale of 1-4 electrostatics (with elec_exclude = 2: the Amber/OPLS-like control)
+
+Bonded term sets (terms.SETS): "amber" (Amber forms, with lj14_scale 0.5 and typing "amber";
+initial values from GAFF with bonded/amber.py), "explore" (the class II set of the bonded study
+and the families of terms.REGISTRY), "nn" (bonded/nn: fast neural bonded terms).
+
+Parameters are a nested dict P: P["ref"] = {"b0" (bond keys,) [nm], "th0" (angle keys,) [rad]},
+P[family] = {name: (keys, *shape)}, and optionally P["flux"], P["escale"], P["bci"], P["elec"],
+P["nnb"] (see `BondedModel.init_params`).
+
+    model = BondedModel([mol_spec("methanol")], BondedSettings(families=T.PAPER))
+    P = model.init_params()
+    E, dipole = model.energy(0, R, P)
+
+Units: nm, kJ/mol, e; dipoles e nm; ESP hartree/e.
 """
 
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import jax
@@ -45,6 +62,70 @@ from .topology import Topology, build_topology
 
 @dataclass(frozen=True)
 class BondedSettings:
+    """Options of the bonded model (a frozen dataclass; see the module docstring for the groups).
+
+    Parameters
+    ----------
+    families : tuple of str
+        Term families (terms.REGISTRY names), plus "flux" and / or "nnb".
+    typing : {"molecule", "type", "amber"}
+        How parameters are tied (per-molecule symmetry, atom environment, Amber types).
+    depth : int
+        Atom-environment depth [bonds] of typing="type".
+    elec_exclude : int
+        Permanent pGM pairs up to this graph distance are excluded (0: none).
+    lj_min_sep : int
+        LJ only between atoms at least this many bonds apart.
+    lj14_scale : float
+        Scale of LJ on 1-4 pairs (0: off).
+    elec14_scale : float
+        Scale of 1-4 electrostatics when not excluded (Amber 1/1.2, OPLS 0.5).
+    ind_exclude : int
+        Exclusion for the induction (fields and dipole-dipole couplings); -1: elec_exclude.
+    flux : int
+        0: none; 1: charge + covalent-dipole flux (linear in db); 2: + quadratic dipole flux.
+    qfit : int
+        >= 0: pGM charges and covalent dipoles typed by atom environment to this depth (shared
+        across molecules) and fitted with the bonded terms; total charge kept by a uniform shift
+        per molecule.  -1: off.
+    qbci : int
+        >= 0: typed bond-charge increments and covalent-dipole corrections (atom environments to
+        this depth) added to each molecule's ESP charges / dipoles and fitted; neutral by
+        construction, zero = ESP.  -1: off.
+    escale : tuple of int
+        Separations (1 = 1-2, 2 = 1-3, 3 = 1-4) whose permanent pGM pair energies get a learned
+        scale kappa per pair type (added to the fixed weight): learned partial exclusion.
+    elec : {"q", "qp", "qi", "qpi"}
+        Electrostatics level (options.py).
+    quadrupoles : bool
+        Permanent Gaussian quadrupoles (the molecules' quad terms).
+    vdw : {"lj", "gvdw", "none"}
+        van der Waals form (vdw.py).
+    gvdw_rep : {"gauss", "slater"}
+        GVDW repulsion.
+    nn_width, nn_layers : int
+        "nnb": embedding width and message-passing layers.
+    nn_ref : {"geometry", "predicted"}
+        "nnb" reference values: minimum geometry + learned corrections, or covalent radii /
+        hybridization.
+    nn_basis : tuple of str
+        Families whose per-instance parameters the network predicts.
+    nn_th_span : float
+        Largest learned shift of reference angles [rad].
+    nn_b_span : float
+        Largest learned shift of bond lengths [nm].
+    nn_out_scale : float
+        Head output -> parameter change, in units of fit.SCALES.
+    nn_pgm_features : bool
+        Atom features include the pGM q, alpha, radius, |covalent dipoles|.
+    nn_table_depth : int or None
+        Typed table (atom environments to this depth; 0 = elements) + network residual; None: off.
+    nn_resid_l2 : float
+        Shrinkage of the network residual towards the typed table.
+    nn_context : bool
+        Sequence context (residues i-1, i, i+1) for the backbone map (cmap).
+    """
+
     families: tuple = T.PAPER
     typing: str = "molecule"
     depth: int = 2
@@ -83,6 +164,30 @@ class BondedSettings:
 
 @dataclass
 class MolSpec:
+    """One molecule of the model (a mutable dataclass; `top` is filled in by BondedTerms if None).
+
+    Parameters
+    ----------
+    name : str
+        Name (prefix of the per-molecule tying keys).
+    elements : list of str
+        Element symbols.
+    bonds : list of (int, int)
+        Bonds.
+    bond_orders : list of float
+        Bond order of each bond (1, 1.5, 2, 3).
+    charge : int
+        Total charge [e].
+    ref_xyz : np.ndarray (n, 3)
+        A minimum geometry [nm] (reference values, planarity of centres).
+    pgm : Molecule or None
+        pGM parameters (pgm_jax.system.Molecule, same atom order); None: no nonbonded model.
+    top : Topology or None
+        Valence topology; None: built from the bonds.
+    atom_names, residue_names : list of str or None
+        Optional labels (Amber atom / residue names of proteins).
+    """
+
     name: str
     elements: list
     bonds: list
@@ -95,9 +200,12 @@ class MolSpec:
     residue_names: list = None
 
 
-def _classes(elements, bonds, depth):
-    """Atom environment strings: element and neighbours to `depth` bonds (canonical, comparable
-    across molecules)."""
+def _classes(elements: Sequence[str], bonds: Sequence[tuple[int, int]], depth: int) -> list[str]:
+    """Return atom environment strings: element and neighbours to `depth` bonds.
+
+    Canonical and comparable across molecules: "<md5 prefix>:<element>" of the nested environment
+    string (sorted neighbour environments).
+    """
     n = len(elements)
     nbr = [[] for _ in range(n)]
     for i, j in bonds:
@@ -110,11 +218,48 @@ def _classes(elements, bonds, depth):
 
 
 class BondedTerms:
-    """The bonded half of the model: families, tying keys, index sets, parameters and the bonded
-    energy (and the neural bonded terms).  No gas-phase nonbonded setup, so it serves MD templates
-    of any size; BondedModel adds the pGM + van der Waals intramolecular model for fitting."""
+    """The bonded half of the model: families, tying keys, index sets, parameters and the bonded energy.
 
-    def __init__(self, mols: list[MolSpec], settings: BondedSettings = BondedSettings()):
+    Includes the neural bonded terms ("nnb").  No gas-phase nonbonded setup, so it serves MD
+    templates of any size; BondedModel adds the pGM + van der Waals intramolecular model for
+    fitting.
+
+    Attributes
+    ----------
+    s : BondedSettings
+        The settings.
+    mols : list of MolSpec
+        The molecules (their topologies built).
+    fams : list of str
+        Registry families in use (without "flux" and "nnb").
+    nnb : NNBonded or None
+        The neural bonded terms.
+    keyf : list of callable
+        Per molecule, keyf(atoms, kind) -> tying key (kind "atom": the atom class).
+    ref_keys : dict
+        {"b0": bond keys, "th0": angle keys} of the shared reference values.
+    I : list of dict
+        Per molecule: "bond", "angle" (reference-key index per bond / angle) and, per family, its
+        index arrays with "k" (key index per instance), "_keys" and extras ("De", "bij").
+    keys : dict
+        {family: list of its keys} (row order of the parameter arrays).
+    """
+
+    def __init__(self, mols: list[MolSpec], settings: BondedSettings = BondedSettings()) -> None:
+        """Build the topologies, tying keys and index sets of the molecules.
+
+        Parameters
+        ----------
+        mols : list of MolSpec
+            The molecules.
+        settings : BondedSettings
+            Options.
+
+        Raises
+        ------
+        ValueError
+            With typing="amber" for a molecule without pGM parameters (its atom types).
+        """
         self.s = settings
         self.mols = mols
         self.fams = [f for f in settings.families if f not in ("flux", "nnb")]
@@ -166,14 +311,21 @@ class BondedTerms:
                 Im[f]["k"] = np.array([pos[k] for k in Im[f]["_keys"]], int)
         self._static_extras()
 
-    def _key(self, which, key):
+    def _key(self, which: str, key: str) -> int:
+        """Return the row of reference key `key` in P["ref"][which] ("b0" or "th0"), adding it if new."""
         pos = self.__dict__.setdefault("_ref_pos", {"b0": {}, "th0": {}})[which]
         if key not in pos:
             pos[key] = len(self.ref_keys[which])
             self.ref_keys[which].append(key)
         return pos[key]
 
-    def _static_extras(self):
+    def _static_extras(self) -> None:
+        """Add the fixed per-instance extras to the index sets.
+
+        Gaussian pair exponents "bij" [1/nm] for the overlap families (pGM radii, 0.08 nm without pGM
+        parameters) and Morse depths "De" [kJ/mol] per bond (mean over the instances of a key of
+        `morse_depth`).
+        """
         # pGM Gaussian pair exponents for the overlap families
         for f in self.fams:
             fam = T.REGISTRY[f]
@@ -202,9 +354,25 @@ class BondedTerms:
                 Im["bond_morse"]["De"] = De[Im["bond_morse"]["k"]]
 
     # ------------------------------------------------------------------ parameters
-    def init_params(self, rng_scale: float = 0.0, hold=()) -> dict:
-        """Reference values from the reference geometries (key means), force constants at the
-        families' defaults, the neural bonded network's initial weights."""
+    def init_params(self, rng_scale: float = 0.0, hold: Sequence[int] = ()) -> dict:
+        """Return initial parameters: reference values, family defaults and the network's initial weights.
+
+        Reference values b0 [nm] and th0 [rad] are the key means over the reference geometries;
+        parameters with init None come from `init_from_geometry` or, for pair families, r0 from the
+        geometry (key means); the others start at the families' defaults.
+
+        Parameters
+        ----------
+        rng_scale : float
+            Unused.
+        hold : sequence of int
+            Unused here (see BondedModel.init_params).
+
+        Returns
+        -------
+        dict
+            The parameter pytree (see the module docstring).
+        """
         b0 = np.zeros(len(self.ref_keys["b0"]))
         nb = np.zeros_like(b0)
         th0 = np.zeros(len(self.ref_keys["th0"]))
@@ -243,8 +411,8 @@ class BondedTerms:
             P["nnb"] = self.nnb.init_params()
         return P
 
-    def linear_mask(self, P) -> dict:
-        """Pytree of booleans: True for parameters entering the energy linearly."""
+    def linear_mask(self, P: dict) -> dict:
+        """Return a pytree like P of booleans: True for parameters entering the energy linearly."""
         out = jax.tree_util.tree_map(lambda x: False, P)
         for f in self.fams:
             for pname in T.REGISTRY[f].linear:
@@ -252,7 +420,23 @@ class BondedTerms:
         return out
 
     # ------------------------------------------------------------------ energies
-    def bonded_energy(self, m: int, R, P):
+    def bonded_energy(self, m: int, R: jax.Array, P: dict) -> jax.Array:
+        """Return the bonded energy of molecule m at positions R [kJ/mol] (differentiable in R and P).
+
+        Parameters
+        ----------
+        m : int
+            Molecule index.
+        R : jax.Array (n, 3)
+            Positions [nm].
+        P : dict
+            Parameters.
+
+        Returns
+        -------
+        jax.Array ()
+            Sum of the family energies (and of the neural bonded terms) [kJ/mol].
+        """
         mol, Im = self.mols[m], self.I[m]
         G = T.geometry(R, mol.top)
         b0 = P["ref"]["b0"][Im["bond"]]
@@ -270,25 +454,69 @@ class BondedTerms:
             e = e + self.nnb.energy(P["nnb"], m, R)
         return e
 
-    def n_params(self, P, only_linear: bool = False) -> int:
+    def n_params(self, P: dict, only_linear: bool = False) -> int:
+        """Return the number of parameters (leaf entries of P); `only_linear` is ignored."""
         leaves = jax.tree_util.tree_leaves(P)
         return int(sum(np.size(x) for x in leaves))
 
 
 class BondedModel(BondedTerms):
-    """Bonded terms + gas-phase pGM (all pairs, induced dipoles) + intramolecular van der Waals:
-    the model the bonded terms are fitted with (Fitter)."""
+    """Bonded terms + gas-phase pGM (all pairs, induced dipoles) + intramolecular van der Waals.
 
-    def __init__(self, mols: list[MolSpec], settings: BondedSettings = BondedSettings()):
+    The model the bonded terms are fitted with (Fitter).  Per molecule, `nb` holds the static
+    pair data: the pGM System, pair weights of the permanent ("w_pair"), induction ("w_pind",
+    "w_ord" on ordered pairs) and LJ ("lj") terms from the graph distances, the bond of each
+    covalent dipole, and the index maps of the optional fitted charges, bond-charge increments and
+    learned pair scales.
+
+    Attributes
+    ----------
+    pd, ind : bool
+        Permanent dipoles / induction on (from `elec`).
+    nb : list of dict or None
+        Static nonbonded data per molecule (None without pGM parameters).
+    """
+
+    def __init__(self, mols: list[MolSpec], settings: BondedSettings = BondedSettings()) -> None:
+        """Build the bonded terms and the static nonbonded data.
+
+        Parameters
+        ----------
+        mols : list of MolSpec
+            The molecules.
+        settings : BondedSettings
+            Options.
+
+        Raises
+        ------
+        ValueError
+            For an unknown electrostatics level or van der Waals form.
+        """
         super().__init__(mols, settings)
         self.pd, self.ind = elec_flags(settings.elec)
         check_vdw(settings.vdw, settings.gvdw_rep)
         self._nonbonded_setup()
 
-    def init_params(self, rng_scale: float = 0.0, hold=()) -> dict:
-        """BondedTerms.init_params plus charge / dipole flux, learned pair scales and fitted
-        charges or bond-charge increments when the settings ask for them (fitted pGM charges /
-        covalent dipoles start at the type means of the ESP fits over the molecules not in `hold`)."""
+    def init_params(self, rng_scale: float = 0.0, hold: Sequence[int] = ()) -> dict:
+        """Return BondedTerms.init_params plus the parameters of the nonbonded options that are on.
+
+        "flux": {"jb" charge flux [e/nm], "jc" covalent-dipole flux [e], "jc2" (flux 2) [e/nm]} per
+        bond reference key, zero; "escale": {"kappa"} per pair class, zero; "bci": {"t" [e], "dc"
+        [e nm]}, zero; "elec" (qfit): {"q" [e], "c" [e nm]} per type, starting at the type means of
+        the ESP-fitted values over the molecules not in `hold`.
+
+        Parameters
+        ----------
+        rng_scale : float
+            Unused.
+        hold : sequence of int
+            Molecule indices left out of the type means (held-out molecules).
+
+        Returns
+        -------
+        dict
+            The parameter pytree.
+        """
         P = super().init_params(rng_scale, hold)
         if self.s.flux:
             P["flux"] = {"jb": jnp.zeros(len(self.ref_keys["b0"])), "jc": jnp.zeros(len(self.ref_keys["b0"]))}
@@ -300,7 +528,8 @@ class BondedModel(BondedTerms):
             P["bci"] = {"t": jnp.zeros(len(self.t_pos)), "dc": jnp.zeros(len(self.dc_pos))}
         if self.s.qfit >= 0:  # start from the ESP-fitted values, averaged per type
 
-            def mean(v):
+            def mean(v: list[tuple[int, float]]) -> float:
+                """Return the mean value of the molecules not held out (of all if every one is held out)."""
                 w = [x for i, x in v if i not in hold]
                 return np.mean(w if w else [x for _, x in v])
 
@@ -310,13 +539,15 @@ class BondedModel(BondedTerms):
             }
         return P
 
-    def linear_mask(self, P) -> dict:
+    def linear_mask(self, P: dict) -> dict:
+        """Return BondedTerms.linear_mask with the learned pair scales marked linear."""
         out = super().linear_mask(P)
         if "escale" in P:
             out["escale"]["kappa"] = True
         return out
 
-    def _nonbonded_setup(self):
+    def _nonbonded_setup(self) -> None:
+        """Build the static nonbonded data of every molecule (`nb`) and the type maps of the fitted charges."""
         dens = DENSITIES["gaussian"]
         self._phi, self._bij = dens["coulomb"], dens["pair_exponent"]
         self.nb = []
@@ -331,19 +562,21 @@ class BondedModel(BondedTerms):
             D = m.top.dist
             ii, jj = sys.pair_i, sys.pair_j
 
-            def w_of(d):
+            def w_of(d: np.ndarray) -> np.ndarray:  # weight of the permanent pair energy by graph distance
                 return (d > self.s.elec_exclude) * np.where(d == 3, self.s.elec14_scale, 1.0)
 
             w_pair = w_of(D[ii, jj]).astype(float)
-            oi, oj = np.nonzero(~np.eye(sys.n, dtype=bool))
+            oi, oj = np.nonzero(~np.eye(sys.n, dtype=bool))  # ordered pairs i != j: field at i from j
             ie = self.s.elec_exclude if self.s.ind_exclude < 0 else self.s.ind_exclude
 
-            def w_ind(d):
+            def w_ind(d: np.ndarray) -> np.ndarray:  # weight of the induction fields and dipole couplings
                 return (d > ie) * np.where(d == 3, self.s.elec14_scale, 1.0)
 
             w_ord = w_ind(D[oi, oj]).astype(float)
             w_pind = w_ind(D[ii, jj]).astype(float)
-            lj = (D[ii, jj] >= self.s.lj_min_sep).astype(float) + self.s.lj14_scale * (D[ii, jj] == 3)
+            lj = (D[ii, jj] >= self.s.lj_min_sep).astype(float) + self.s.lj14_scale * (
+                D[ii, jj] == 3
+            )  # LJ pair weights
             # covalent dipoles along bonds: their bond reference index (for dipole flux)
             bidx = {tuple(sorted(b)): k for k, b in enumerate(m.top.bonds)}
             cov_bond = np.array([bidx.get(tuple(sorted((i, j))), -1) for i, j in zip(sys.cov_i, sys.cov_j)], int)
@@ -414,12 +647,44 @@ class BondedModel(BondedTerms):
 
     @property
     def nb_dynamic(self) -> bool:
-        """True when the nonbonded part depends on fitted parameters (no per-frame cache)."""
+        """Whether the nonbonded part depends on fitted parameters (flux, qfit, qbci: no per-frame cache)."""
         return bool(self.s.flux or self.s.qfit >= 0 or self.s.qbci >= 0)
 
-    def nonbonded(self, m: int, R, P=None, eparams=None, state=False):
-        """pGM electrostatics + LJ: (energy kJ/mol, molecular dipole (3,) e nm about the origin)
-        [, {q, p, mu, radius} with state=True]."""
+    def nonbonded(
+        self, m: int, R: jax.Array, P: dict | None = None, eparams: dict | None = None, state: bool = False
+    ) -> tuple:
+        """Return the pGM electrostatics + van der Waals energy of molecule m and its dipole.
+
+        Parameters
+        ----------
+        m : int
+            Molecule index.
+        R : jax.Array (n, 3)
+            Positions [nm].
+        P : dict, optional
+            Model parameters (for fitted charges, bond-charge increments, flux); None: the ESP values.
+        eparams : dict, optional
+            pGM parameter table for `System.expand`; None: the molecule's own.
+        state : bool
+            Also return the electrostatic state.
+
+        Returns
+        -------
+        energy : jax.Array ()
+            KE (E_perm + E_ind) + E_vdW [kJ/mol].
+        dipole : jax.Array (3,)
+            Molecular dipole about the origin (charges, permanent and induced dipoles) [e nm].
+        state : dict
+            Only with state=True: "q" (n,) [e], "p" (n, 3) and "mu" (n, 3) [e nm], "radius" (n,)
+            [nm], "Theta" quadrupoles or None.  A molecule without pGM parameters returns (0.0, zeros)
+            without a state.
+
+        Notes
+        -----
+        Permanent pairs are weighted by graph distance (elec_exclude, elec14_scale; learned scales are
+        added in `energy`); the induced dipoles solve the linear induction equations with dense dipole
+        tensors, fields and couplings weighted by ind_exclude; E_ind = -1/2 mu . F.
+        """
         d = self.nb[m]
         if d is None:
             return 0.0, jnp.zeros(3)
@@ -469,18 +734,20 @@ class BondedModel(BondedTerms):
                 * d["w_pind"][:, None, None]
             )
             Tm = jnp.zeros((sys.n, sys.n, 3, 3)).at[ii, jj].set(Tp).at[jj, ii].set(jnp.swapaxes(Tp, 1, 2))
-            mu = solve_linear_induction(Tm, Q["alpha"], F)
-            e_ind = -0.5 * jnp.sum(mu * F)
+            mu = solve_linear_induction(Tm, Q["alpha"], F)  # dense solve (gas phase, one molecule)
+            e_ind = -0.5 * jnp.sum(mu * F)  # induction energy at self-consistency
         else:
             mu, e_ind = jnp.zeros((sys.n, 3)), 0.0
         e_lj = self._vdw(R, Q, d["lj"], ii, jj, b_pair)
-        dip = jnp.sum(q[:, None] * R, 0) + jnp.sum(p, 0) + jnp.sum(mu, 0)
+        dip = jnp.sum(q[:, None] * R, 0) + jnp.sum(p, 0) + jnp.sum(mu, 0)  # about the origin (neutral: origin-free)
         if state:
             return KE * (e_perm + e_ind) + e_lj, dip, {"q": q, "p": p, "mu": mu, "radius": R_, "Theta": Th}
         return KE * (e_perm + e_ind) + e_lj, dip
 
-    def _vdw(self, R, Q, w, ii, jj, b_pair):
-        """Intramolecular van der Waals with pair weights w (lj_min_sep, lj14_scale), kJ/mol."""
+    def _vdw(
+        self, R: jax.Array, Q: dict, w: np.ndarray, ii: np.ndarray, jj: np.ndarray, b_pair: jax.Array
+    ) -> jax.Array | float:
+        """Return the intramolecular van der Waals energy with pair weights `w` [kJ/mol] ("lj", "gvdw" or "none")."""
         if self.s.vdw == "none":
             return 0.0
         r = jnp.linalg.norm(R[ii] - R[jj], axis=-1)
@@ -492,20 +759,47 @@ class BondedModel(BondedTerms):
         B = 0.5 * (Q["gvdw_b"][ii] + Q["gvdw_b"][jj])
         return jnp.sum(w * gvdw_pair(r, b_pair, A, C6, B, self.s.gvdw_rep))
 
-    def esp(self, m: int, R, grid, P=None, eparams=None):
-        """Electrostatic potential (hartree/e) of the polarised pGM molecule at grid points (k, 3) nm:
-        Gaussian charges and permanent + induced dipoles, as in the py_resp pGM-perm fit."""
+    def esp(
+        self, m: int, R: jax.Array, grid: jax.Array, P: dict | None = None, eparams: dict | None = None
+    ) -> jax.Array:
+        """Return the electrostatic potential of the polarised pGM molecule at grid points [hartree/e].
+
+        Gaussian charges and permanent + induced dipoles (and quadrupoles if on), as in the py_resp
+        pGM-perm fit.
+
+        Parameters
+        ----------
+        m : int
+            Molecule index.
+        R : jax.Array (n, 3)
+            Positions [nm].
+        grid : jax.Array (k, 3)
+            Grid points [nm].
+        P : dict, optional
+            Model parameters (see `nonbonded`).
+        eparams : dict, optional
+            pGM parameter table.
+
+        Returns
+        -------
+        jax.Array (k,)
+            Potential [hartree/e].
+        """
         _, _, st = self.nonbonded(m, R, P, eparams, state=True)
         b = self._bij(st["radius"], 0.0)
         phi = self._phi
 
-        def f(a, c, bb):
+        def f(a: jax.Array, c: jax.Array, bb: jax.Array) -> jax.Array:
+            """Return the Gaussian Coulomb kernel between points a and c."""
             return phi(jnp.linalg.norm(a - c), bb)
 
         pt = st["p"] + st["mu"]
 
-        def at(g):
-            def one(rj, qj, pj, bb):
+        def at(g: jax.Array) -> jax.Array:
+            """Return the potential at grid point g (charges, dipoles, quadrupoles) [e/nm]."""
+
+            def one(rj: jax.Array, qj: jax.Array, pj: jax.Array, bb: jax.Array) -> jax.Array:
+                """Return the potential of atom j's charge and dipole at g."""
                 return qj * f(g, rj, bb) + pj @ jax.grad(f, 1)(g, rj, bb)
 
             v = jnp.sum(jax.vmap(one)(R, st["q"], pt, b))
@@ -517,13 +811,18 @@ class BondedModel(BondedTerms):
 
         return KE * jax.vmap(at)(grid) / HARTREE_KJMOL
 
-    def _flux(self, m, R, P, q, cov):
-        """Bond charge flux (charge moves along a bond as it stretches, from the first atom of
-        the bond key's canonical order to the second) and covalent-dipole flux c = c0 + jc db."""
+    def _flux(self, m: int, R: jax.Array, P: dict, q: jax.Array, cov: jax.Array) -> tuple[jax.Array, jax.Array]:
+        """Return charges and covalent dipoles with bond charge flux and covalent-dipole flux applied.
+
+        Charge t = jb db moves along each bond (from the first atom of the bond key's canonical order
+        to the second; none between atoms of the same class); covalent dipoles c = c0 + jc db
+        (+ jc2 db^2 with flux 2), db = b - b0 of the dipole's bond.  q (n,) [e], cov (n_cov,) [e nm].
+        """
         mol, Im, d = self.mols[m], self.I[m], self.nb[m]
         G = T.geometry(R, mol.top)
         db = G["b"] - P["ref"]["b0"][Im["bond"]]
         cl = self.keyf[m]
+        # direction of the flux by the atom keys, so that it is the same for every bond of a type
         sign = np.array([1.0 if cl([i], "atom") <= cl([j], "atom") else -1.0 for i, j in mol.top.bonds])
         same = np.array([cl([i], "atom") == cl([j], "atom") for i, j in mol.top.bonds])
         t = jnp.where(same, 0.0, sign * P["flux"]["jb"][Im["bond"]] * db)
@@ -539,8 +838,12 @@ class BondedModel(BondedTerms):
             cov = cov + dcov
         return q, cov
 
-    def escale_terms(self, m: int, R, eparams=None):
-        """Permanent pGM pair energies (kJ/mol) summed per local pair class of the learned scales."""
+    def escale_terms(self, m: int, R: jax.Array, eparams: dict | None = None) -> jax.Array:
+        """Return the permanent pGM pair energies summed per local pair class of the learned scales [kJ/mol].
+
+        Uses the ESP charges and dipoles (not fitted charges or flux); raises TypeError for a molecule
+        without pGM parameters (callers check).
+        """
         d = self.nb[m]
         sys = d["sys"]
         Q = sys.expand(eparams)
@@ -554,7 +857,11 @@ class BondedModel(BondedTerms):
         )
         return KE * jax.ops.segment_sum(e, d["es_loc"], num_segments=d["es_n"])
 
-    def energy(self, m: int, R, P, eparams=None):
+    def energy(self, m: int, R: jax.Array, P: dict, eparams: dict | None = None) -> tuple[jax.Array, jax.Array]:
+        """Return the total energy of molecule m [kJ/mol] and its dipole [e nm] (differentiable in R and P).
+
+        Bonded energy + `nonbonded` + learned pair scales (sum kappa x pair-class energies).
+        """
         e_nb, dip = self.nonbonded(m, R, P, eparams)
         e = self.bonded_energy(m, R, P) + e_nb
         if self.s.escale and "escale" in P and self.nb[m] is not None:

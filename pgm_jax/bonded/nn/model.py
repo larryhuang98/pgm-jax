@@ -1,4 +1,4 @@
-"""The neural bonded model: configuration, vocabulary, stage 1 (parameters) and stage 2 (energy).
+"""Define the neural bonded model: configuration, vocabulary, stage 1 (parameters), stage 2 (energy).
 
 Separation that makes a trained network reusable on new molecules (train on peptides, apply to a
 protein): the *configuration* (widths, basis families, options) and the *vocabulary* (key
@@ -11,12 +11,17 @@ are built for any molecule against a frozen vocabulary (`prepare`).
     net.save("nnb.pkl", P)
     net, P = NNBonded.load("nnb.pkl")
     C = net.coefficients(P, net.prepare(protein_spec))    # frozen per-instance parameters
+
+Units: reference values nm and rad, energies kJ/mol; family parameters in the units of their
+families (terms/).
 """
 
 from __future__ import annotations
 
 import pickle
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
+from typing import TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
@@ -28,9 +33,40 @@ from .features import N_EDGE, N_FEAT, graph_inputs
 from .instances import CONTEXT_ATOMS, SLOT, decompose, readout, typed_keys
 from .layers import embeddings, init_message_passing, init_mlp, mlp
 
+if TYPE_CHECKING:
+    from ..model import BondedSettings, MolSpec
+
 
 @dataclass(frozen=True)
 class NNBConfig:
+    """Configuration of the neural bonded network (a frozen dataclass, saved with the weights).
+
+    Parameters
+    ----------
+    width : int
+        Embedding width W.
+    layers : int
+        Message-passing layers.
+    ref : {"geometry", "predicted"}
+        Reference values: minimum geometry + learned shift, or covalent radii / hybridisation.
+    basis : tuple of str
+        Families whose per-instance parameters the network predicts.
+    b_span : float
+        Largest learned shift of bond reference values [nm].
+    th_span : float
+        Largest learned shift of angle reference values [rad].
+    out_scale : float
+        Head output -> parameter change, in units of fit.SCALES.
+    pgm_features : bool
+        Atom features include the pGM q, alpha, radius, |covalent dipoles|.
+    table_depth : int or None
+        Typed table (atom environments to this depth; 0 = elements) + residual; None: network only.
+    resid_l2 : float
+        Shrinkage of the residual towards the typed table (training loss).
+    context : bool
+        Sequence context (residues i-1, i, i+1) for CONTEXT_ATOMS families.
+    """
+
     width: int = 32  # embedding width W
     layers: int = 3  # message-passing layers
     ref: str = "geometry"  # reference values: "geometry" (minimum + learned shift) | "predicted"
@@ -44,8 +80,8 @@ class NNBConfig:
     context: bool = True  # sequence context (residues i-1, i, i+1) for CONTEXT_ATOMS families
 
     @classmethod
-    def from_settings(cls, s) -> NNBConfig:
-        """From BondedSettings (nn_* fields)."""
+    def from_settings(cls, s: BondedSettings) -> NNBConfig:
+        """Return the configuration from BondedSettings (its nn_* fields)."""
         return cls(
             width=s.nn_width,
             layers=s.nn_layers,
@@ -63,8 +99,22 @@ class NNBConfig:
 
 @dataclass
 class Vocabulary:
-    """Everything that fixes the parameter shapes; grows while training molecules are added,
-    frozen by init_params (later molecules must fit it)."""
+    """Everything that fixes the parameter shapes (a mutable dataclass, saved with the weights).
+
+    It grows while training molecules are added and is frozen by `NNBonded.init_params` (later
+    molecules must fit it).
+
+    Parameters
+    ----------
+    skeletons : dict
+        {family: [skeleton, ...]}: key skeletons seen (one-hot inputs of the heads).
+    slots : dict
+        {family: components per key}.
+    table : dict
+        {family / "b0" / "th0": {typed key: row}}: rows of the typed tables.
+    frozen : bool
+        No more growth.
+    """
 
     skeletons: dict = field(default_factory=dict)  # family -> [skeleton, ...]
     slots: dict = field(default_factory=dict)  # family -> components per key
@@ -73,11 +123,46 @@ class Vocabulary:
 
 
 def _n_out(f: str) -> int:
+    """Return the number of scalar parameters of family f (output width of its head)."""
     return int(sum(int(np.prod(shape)) if shape else 1 for shape, _ in T.REGISTRY[f].params.values()))
 
 
 class NNBonded:
-    def __init__(self, config: NNBConfig = NNBConfig(), vocab: Vocabulary | None = None):
+    """The neural bonded model: topology -> per-instance parameters (stage 1) -> energy (stage 2).
+
+    See bonded/nn/__init__.py for the design.  Parameters P are a dict pytree of MLP weights:
+    "embed", "mp{l}" (message passing), "ref_bond", "ref_angle" (reference-value heads), "head_<f>"
+    per basis family, "res" (sequence context) and "tab_<name>" (typed tables); or the frozen form
+    {"coef": [stage-1 output per registered molecule]}.
+
+    Attributes
+    ----------
+    config : NNBConfig
+        Configuration.
+    vocab : Vocabulary
+        Vocabulary.
+    mols : list of MolSpec
+        Registered molecules.
+    data : list of dict
+        Their tables (`prepare`).
+    """
+
+    def __init__(self, config: NNBConfig = NNBConfig(), vocab: Vocabulary | None = None) -> None:
+        """Set up an empty network (no molecules).
+
+        Parameters
+        ----------
+        config : NNBConfig
+            Configuration.
+        vocab : Vocabulary, optional
+            A saved vocabulary; None: an empty, growing one.
+
+        Raises
+        ------
+        ValueError
+            For an unknown basis family, a family that initialises from the geometry, or an unknown
+            `ref`.
+        """
         for f in config.basis:
             if f not in T.REGISTRY:
                 raise ValueError(f"unknown family {f!r}")
@@ -91,21 +176,47 @@ class NNBonded:
 
     # ------------------------------------------------------------------ molecules
     @classmethod
-    def for_molecules(cls, mols, config: NNBConfig = NNBConfig()) -> NNBonded:
+    def for_molecules(cls, mols: Sequence[MolSpec], config: NNBConfig = NNBConfig()) -> NNBonded:
+        """Return a network whose vocabulary is built from `mols` (all registered)."""
         net = cls(config)
         for m in mols:
             net.add(m)
         return net
 
-    def add(self, spec) -> int:
-        """Register a molecule (index for coefficients / energy); grows the vocabulary unless frozen."""
+    def add(self, spec: MolSpec) -> int:
+        """Register a molecule and return its index; grows the vocabulary unless frozen.
+
+        The index is the `m` of `coefficients` and `energy`.
+        """
         self.mols.append(spec)
         self.data.append(self.prepare(spec, grow=not self.vocab.frozen))
         return len(self.data) - 1
 
-    def prepare(self, spec, grow: bool = False) -> dict:
-        """Tables of one molecule (its topology must be built): graph inputs, instances with their
-        skeleton indices, typed-table rows (-1: key not in the table), residue context atoms."""
+    def prepare(self, spec: MolSpec, grow: bool = False) -> dict:
+        """Return the tables of one molecule (its topology must be built).
+
+        Graph inputs (`graph_inputs`), per basis family its instances (`decompose`) with skeleton
+        indices and, for context families, the residues of the context atoms ("ctx_res"), and the
+        typed-table rows "tid" (-1: key not in the table).
+
+        Parameters
+        ----------
+        spec : MolSpec
+            The molecule.
+        grow : bool
+            Add unseen skeletons, slots and table keys to the vocabulary.
+
+        Returns
+        -------
+        dict
+            The tables.
+
+        Raises
+        ------
+        ValueError
+            Without a topology, or (grow=False) for an instance kind or key width not in the training
+            set.
+        """
         c, v = self.config, self.vocab
         top = spec.top
         if top is None:
@@ -138,16 +249,22 @@ class NNBonded:
                 d["tid"][name] = np.array([tab.get(k, -1) for k in keys], int)
         return d
 
-    def _tables(self, m):
+    def _tables(self, m: int | dict) -> dict:
+        """Return the tables of registered molecule m, or m itself if it already is a table dict."""
         return self.data[m] if isinstance(m, (int, np.integer)) else m
 
     # ------------------------------------------------------------------ parameters
-    def _uses_context(self, f) -> bool:
+    def _uses_context(self, f: str) -> bool:
+        """Return whether family f gets the sequence context."""
         return self.config.context and f in CONTEXT_ATOMS
 
     def init_params(self, seed: int = 0) -> dict:
-        """Network weights; output layers start at zero (the untrained model is the basis at its
-        default parameters).  Freezes the vocabulary."""
+        """Return initial network weights and freeze the vocabulary.
+
+        Output layers of the heads start at zero, so the untrained model is the basis at its default
+        parameters (and the reference values at the graph inputs' b_ref / th_ref).  `seed` seeds the
+        PRNG.
+        """
         c, v = self.config, self.vocab
         W, L = c.width, c.layers
         v.frozen = True
@@ -165,12 +282,16 @@ class NNBonded:
         return P
 
     # ------------------------------------------------------------------ stage 1
-    def embeddings(self, P, m):
+    def embeddings(self, P: dict, m: int | dict) -> jax.Array:
+        """Return the atom embeddings (n, W) of molecule m."""
         d = self._tables(m)
         return embeddings(P, d["X"], d["src"], d["dst"], d["ef"], d["n"], self.config.layers)
 
-    def _typed(self, P, d, name, out, res):
-        """Typed-table row (zero for keys not in the table) + network residual `out`."""
+    def _typed(self, P: dict, d: dict, name: str, out: jax.Array, res: list) -> jax.Array:
+        """Return the typed-table row (zero for keys not in the table) + network residual `out`.
+
+        Appends mean(out^2) to `res` (the residual penalty); without a table for `name` returns `out`.
+        """
         res.append(jnp.mean(out**2) if out.size else 0.0)
         if "tab_" + name not in P:
             return out
@@ -178,7 +299,18 @@ class NNBonded:
         row = P["tab_" + name][np.maximum(tid, 0)]
         return jnp.where((tid >= 0)[:, None], row, 0.0) + out
 
-    def _coefficients(self, P, d):
+    def _coefficients(self, P: dict, d: dict) -> tuple[dict, list]:
+        """Return stage 1 for tables d: the coefficients and the list of residual means.
+
+        Returns
+        -------
+        C : dict
+            "b0" (nb,) [nm] = b_ref + b_span tanh(head); "th0" (na,) [rad] = th_ref + th_span
+            tanh(head); per basis family {name: (instances, *shape)} = init + out_scale * SCALES[name]
+            * head output.
+        res : list
+            mean(residual^2) of every head (for `penalty`).
+        """
         c, v = self.config, self.vocab
         W = c.width
         res = []
@@ -187,16 +319,18 @@ class NNBonded:
         # the reference heads also see the reference value (in the geometry mode it distinguishes
         # graph-equivalent bonds / angles that the minimum geometry does not treat alike)
         br, tr = jnp.asarray(d["b_ref"]), jnp.asarray(d["th_ref"])
+        # reference value as an extra input, centred and scaled to O(1) (bonds ~0.12 +- 0.03 nm)
         fb = jnp.concatenate([readout("bond", h, b), ((br - 0.12) / 0.03)[:, None]], -1)
         C = {"b0": br + c.b_span * jnp.tanh(self._typed(P, d, "b0", mlp(P["ref_bond"], fb), res)[:, 0])}
         if len(a):
+            # angles ~1.91 +- 0.2 rad (tetrahedral 109.5 deg)
             fa = jnp.concatenate([readout("angle", h, a), ((tr - 1.91) / 0.2)[:, None]], -1)
             C["th0"] = tr + c.th_span * jnp.tanh(self._typed(P, d, "th0", mlp(P["ref_angle"], fa), res)[:, 0])
         else:
             C["th0"] = jnp.zeros(0)
         r_emb = None
         if "res" in P:
-            hm = (
+            hm = (  # (n_res, W) mean atom embedding per residue
                 jax.ops.segment_sum(h, d["residue"], d["n_res"])
                 / jnp.maximum(jax.ops.segment_sum(jnp.ones(d["n"]), d["residue"], d["n_res"]), 1.0)[:, None]
             )
@@ -224,13 +358,15 @@ class NNBonded:
             C[f] = p
         return C, res
 
-    def coefficients(self, P, m) -> dict:
-        """Stage 1: reference values and per-instance family parameters of molecule m (index of a
-        registered molecule, or tables from `prepare`)."""
+    def coefficients(self, P: dict, m: int | dict) -> dict:
+        """Return stage 1: reference values and per-instance family parameters of molecule m.
+
+        `m` is the index of a registered molecule, or tables from `prepare`.
+        """
         return self._coefficients(P, self._tables(m))[0]
 
-    def penalty(self, P, mols) -> float:
-        """resid_l2 * mean over the molecules and heads of mean(residual^2) (the typed-table mode)."""
+    def penalty(self, P: dict, mols: Sequence[int | dict]) -> jax.Array | float:
+        """Return resid_l2 x (mean over the molecules and heads of mean(residual^2)); 0.0 if off."""
         if not self.config.resid_l2 or not len(mols):
             return 0.0
         tot = 0.0
@@ -240,8 +376,8 @@ class NNBonded:
         return self.config.resid_l2 * tot / len(mols)
 
     # ------------------------------------------------------------------ stage 2
-    def energy_from(self, C, m, R):
-        """Stage 2: bonded energy (kJ/mol) of coordinates R (n, 3) nm with stage-1 output C."""
+    def energy_from(self, C: dict, m: int | dict, R: jax.Array) -> jax.Array:
+        """Return stage 2: the bonded energy [kJ/mol] of coordinates R (n, 3) [nm] with stage-1 output C."""
         d = self._tables(m)
         G = T.geometry(R, d["top"])
         dev = {"db": G["b"] - C["b0"], "dc": G["cos"] - jnp.cos(C["th0"]), "dth": G["th"] - C["th0"]}
@@ -253,17 +389,18 @@ class NNBonded:
                 e = e + T.REGISTRY[f].energy(G, dev, I, C[f])
         return e
 
-    def energy(self, P, m, R):
-        """Bonded energy with the network parameters P (or frozen tables {"coef": [...]})."""
+    def energy(self, P: dict, m: int | dict, R: jax.Array) -> jax.Array:
+        """Return the bonded energy [kJ/mol] with the network parameters P (or frozen tables {"coef": [...]})."""
         C = P["coef"][m] if "coef" in P else self.coefficients(P, m)
         return self.energy_from(C, m, R)
 
-    def freeze(self, P) -> dict:
-        """Stage 1 evaluated once for the registered molecules: {"coef": [...]} (MD speed)."""
+    def freeze(self, P: dict) -> dict:
+        """Return stage 1 evaluated once for the registered molecules: {"coef": [...]} (MD speed)."""
         return {"coef": [self.coefficients(P, m) for m in range(len(self.data))]}
 
     # ------------------------------------------------------------------ persistence
-    def save(self, path: str, P: dict):
+    def save(self, path: str, P: dict) -> None:
+        """Write the configuration, vocabulary and parameters P (as numpy arrays) to `path` (pickle)."""
         with open(path, "wb") as fh:
             pickle.dump(
                 {
@@ -275,8 +412,11 @@ class NNBonded:
             )
 
     @classmethod
-    def load(cls, path: str):
-        """(network with a frozen vocabulary, parameters)."""
+    def load(cls, path: str) -> tuple[NNBonded, dict]:
+        """Return (network with a frozen vocabulary, parameters) read from a file written by `save`.
+
+        The file is a pickle: load only trusted files.
+        """
         with open(path, "rb") as fh:
             d = pickle.load(fh)
         cfg = dict(d["config"])
@@ -287,21 +427,26 @@ class NNBonded:
 
     # ------------------------------------------------------------------ compatibility
     @property
-    def W(self):
+    def W(self) -> int:
+        """Embedding width (compatibility alias of config.width)."""
         return self.config.width
 
     @property
-    def basis(self):
+    def basis(self) -> tuple:
+        """Basis families (compatibility alias of config.basis)."""
         return self.config.basis
 
     @property
-    def tvoc(self):
+    def tvoc(self) -> dict:
+        """Typed-table vocabulary (compatibility alias of vocab.table)."""
         return self.vocab.table
 
     @property
-    def slots(self):
+    def slots(self) -> dict:
+        """Component slots per family (compatibility alias of vocab.slots)."""
         return self.vocab.slots
 
     @property
-    def skel(self):
+    def skel(self) -> dict:
+        """Key skeletons per family (compatibility alias of vocab.skeletons)."""
         return self.vocab.skeletons
