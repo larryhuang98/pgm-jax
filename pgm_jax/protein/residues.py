@@ -1,11 +1,17 @@
-"""Residue chemistry of proteins that the bond graph of an Amber topology does not carry: bond
-orders (carbonyls, carboxylates, amides, guanidinium, aromatic rings), water and ion names.
+"""Provide the residue chemistry of proteins that the bond graph of an Amber topology does not carry.
+
+That is bond orders (carbonyls, carboxylates, amides, guanidinium, aromatic rings) and water and
+ion names.  Contents: WATER, IONS, SIDE_CHAIN (side-chain bond orders by residue), base_name,
+bond_order, residue_key.
 
 Bond orders enter the neural bonded model (atom and edge features) and the backbone detection
 (carbonyl carbons); they are resonance-averaged where Amber's residue has one protonation state
-for several Lewis structures (1.5 for carboxylates, guanidinium and aromatic rings)."""
+for several Lewis structures (1.5 for carboxylates, guanidinium and aromatic rings).
+"""
 
 from __future__ import annotations
+
+from collections.abc import Iterable
 
 WATER = {"WAT", "HOH", "TIP3", "TP3", "SOL", "T3P", "OPC", "SPC", "PGM"}
 IONS = {
@@ -62,13 +68,14 @@ SIDE_CHAIN = {
 
 
 def base_name(resname: str) -> str:
-    """Residue name without the terminal prefix of Amber's terminal libraries (NALA -> ALA)."""
+    """Return the residue name without the prefix of Amber's terminal libraries (NALA -> ALA, CGLY -> GLY)."""
     r = resname.strip()
     if len(r) == 4 and r[0] in "NC" and (r[1:] in SIDE_CHAIN or r[1:] in _PLAIN):
         return r[1:]
     return r
 
 
+# residues without side-chain bond orders (known to base_name)
 _PLAIN = {
     "ALA",
     "GLY",
@@ -94,8 +101,24 @@ _PLAIN = {
 def bond_order(
     res_a: str, name_a: str, res_b: str, name_b: str, same_residue: bool, terminal_carboxylate: bool = False
 ) -> float:
-    """Order of the bond between atoms (residue name, atom name); 1 unless listed.  The backbone
-    carbonyl C=O is 2 (1.5 for both C-O bonds of a C-terminal carboxylate)."""
+    """Return the order of the bond between two atoms given by (residue name, atom name).
+
+    Parameters
+    ----------
+    res_a, name_a, res_b, name_b : str
+        Residue and atom names of the two atoms (Amber names; terminal variants allowed).
+    same_residue : bool
+        Whether the atoms are in the same residue (inter-residue bonds, peptide C-N and disulfide
+        S-S, are single).
+    terminal_carboxylate : bool
+        The residue is a C-terminus (OXT present).
+
+    Returns
+    -------
+    float
+        1 unless listed: the backbone carbonyl C=O is 2 (1.5 for both C-O bonds of a C-terminal
+        carboxylate); side-chain orders from SIDE_CHAIN.
+    """
     a, b = name_a.strip(), name_b.strip()
     if not same_residue:
         return 1.0  # peptide C-N, disulfide S-S
@@ -105,10 +128,13 @@ def bond_order(
     return table.get((a, b), table.get((b, a), 1.0))
 
 
-def residue_key(label: str, atom_names) -> str:
-    """Library key of a residue: Amber's terminal library names for termini (NMET, CGLY), which
-    prmtops label with the plain name; detected from the atoms (H1/H2/H3 on the N-terminus, OXT
-    on the C-terminus)."""
+def residue_key(label: str, atom_names: Iterable[str]) -> str:
+    """Return the library key of a residue: Amber's terminal library names for termini (NMET, CGLY).
+
+    prmtops label termini with the plain name; they are detected from the atoms (OXT on the
+    C-terminus, H1 and H2 with N on the N-terminus).  Water, ions and four-letter labels are
+    returned unchanged.
+    """
     names = set(n.strip() for n in atom_names)
     lab = label.strip()
     if lab in WATER or lab in IONS or len(lab) == 4:

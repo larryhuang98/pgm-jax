@@ -1,4 +1,7 @@
-"""Proteins with pGM and fitted (or neural) bonded terms.
+"""Set up proteins with pGM electrostatics and fitted (or neural) bonded terms.
+
+Contents (AmberSystem, LoadedMolecule, amber_template, load_amber, ResidueLibrary, pmemd_grid,
+pmemd_mdin and write_pgm_prmtop are re-exported here):
 
   residues   bond orders and names that Amber topologies do not carry (carbonyls, carboxylates,
              aromatic rings; water and ion names)
@@ -10,12 +13,17 @@
              pmemd.pgm.cuda); pmemd_mdin, pmemd_grid: the matching nonbonded settings
 
 The route from a structure to MD:
+
     pdb4amber / tleap (protein.pdb -> protein.prmtop, protein.inpcrd; solvent, ions)
     asys = load_amber(prmtop, inpcrd, electrostatics=library)          # pGM molecules
     tpl = FlexibleTemplate.from_network(net, P, asys.molecules[0].spec)  # neural bonded terms
           (or amber_template(asys.molecules[0], prmtop): ff19SB-form bonded terms)
     FlexibleSimulation(asys.system(), asys.templates({0: tpl}), asys.system_positions(), asys.box,
                        settings, dt=0.002, constraints="h-bonds", hmr=3.024)
+
+Units: nm, e, amu (Amber files: Angstrom, kcal/mol).
+
+See also docs/protein_ff.md.
 """
 
 from .amber import AmberSystem, LoadedMolecule, amber_template, load_amber  # noqa: F401

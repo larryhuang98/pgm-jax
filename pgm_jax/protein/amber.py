@@ -1,5 +1,9 @@
-"""Proteins from Amber topologies: tleap builds the system (residues, hydrogens, termini,
-solvent, ions) and this module turns it into pgm_jax molecules.
+"""Turn an Amber (tleap) system into pgm_jax molecules with pGM electrostatics.
+
+tleap builds the system (residues, hydrogens, termini, solvent, ions) and this module turns it
+into pgm_jax molecules.  Contents: load_amber, AmberSystem (the loaded system: System,
+positions, selections, restraints, MD templates), LoadedMolecule, amber_template (Amber-form
+bonded terms from the prmtop), _components.
 
     asys = load_amber("protein.prmtop", "protein.inpcrd", electrostatics=ResidueLibrary.load("pgm_residues.json"))
     prot = asys.molecules[0]                        # kind "protein": .molecule (pGM), .spec (bonded model input)
@@ -18,11 +22,21 @@ of their molecule (Molecule.vsites, Amber's frames: md/vsites.py); outside water
 electrostatics come from a ResidueLibrary, from the prmtop itself when it is a pGM prmtop
 (POL_GAUSS_* sections; electrostatics="prmtop"), or from `ResidueLibrary.placeholder(prmtop)`.
 Water can be replaced by a given pGM water model (`water=`: Molecule, atoms in the prmtop's order).
-Units nm, e."""
+
+AmberSystem.positions are in the prmtop's atom order; system_positions() are in the order of
+system() (molecules concatenated), which is the same when every molecule is contiguous in the
+prmtop (tleap systems).
+
+Units: nm, e, amu (prmtop values converted from Angstrom).
+
+See also docs/protein_ff.md.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -34,6 +48,11 @@ from ..system import Molecule, System
 from .library import ResidueLibrary
 from .residues import IONS, WATER, bond_order, residue_key
 
+if TYPE_CHECKING:
+    from ..md.flexible import FlexibleTemplate
+    from ..md.restraints import Restraints
+
+# atomic number -> element
 _EL = {
     1: "H",
     3: "Li",
@@ -58,6 +77,28 @@ _EL = {
 
 @dataclass
 class LoadedMolecule:
+    """One molecule (connected component of the bond graph) of a loaded Amber system (a mutable dataclass).
+
+    Parameters
+    ----------
+    kind : {"protein", "water", "ion", "other"}
+        Molecule kind (module docstring).
+    atoms : np.ndarray (n,) int
+        Atom indices in the prmtop.
+    molecule : Molecule
+        pGM electrostatics + van der Waals, local atom order (shared between identical solvent
+        molecules).
+    spec : MolSpec or None
+        Input of the bonded models (flexible molecules: kinds "protein" and "other"); None for water
+        and ions.
+    atom_names : list of str (n,)
+        Amber atom names.
+    residue_names : list of str (n,)
+        Residue name per atom.
+    residue_index : np.ndarray (n,) int
+        Residue index per atom (prmtop residue numbering, 0-based).
+    """
+
     kind: str  # "protein" | "water" | "ion" | "other"
     atoms: np.ndarray  # indices in the prmtop
     molecule: Molecule  # pGM electrostatics + van der Waals, local atom order
@@ -68,11 +109,28 @@ class LoadedMolecule:
 
     @property
     def n(self) -> int:
+        """Number of atoms."""
         return len(self.atoms)
 
 
 @dataclass
 class AmberSystem:
+    """A loaded Amber system: molecules, coordinates and box (a mutable dataclass).
+
+    Parameters
+    ----------
+    molecules : list of LoadedMolecule
+        In order of their first atom's connected component.
+    positions : np.ndarray (N, 3)
+        Coordinates [nm] in the prmtop's atom order.
+    box : np.ndarray (3, 3) or None
+        Box [nm], lattice vectors as rows (None without a box).
+    prmtop : str
+        The prmtop path.
+    order : np.ndarray (N,) int
+        prmtop atom index of every atom of system() (molecules concatenated).
+    """
+
     molecules: list
     positions: np.ndarray  # (N, 3) nm, the prmtop's atom order
     box: np.ndarray | None  # (3, 3) nm
@@ -80,18 +138,38 @@ class AmberSystem:
     order: np.ndarray = field(default=None)  # prmtop atom index of every atom of system() (molecules concatenated)
 
     def system(self) -> System:
+        """Return the System of the molecules (a new System, ParamTable built from them)."""
         return System([m.molecule for m in self.molecules])
 
     def system_positions(self) -> np.ndarray:
+        """Return the positions (N, 3) [nm] in the atom order of system()."""
         return self.positions[self.order]
 
+    # molecule kinds, and the backbone atom names of the "backbone" selection
     KINDS = ("protein", "water", "ion", "other")
     BACKBONE = ("N", "CA", "C", "O")
 
-    def hmr(self, masses: dict) -> list:
-        """Per-molecule hydrogen masses for FlexibleSimulation(hmr=...) from one mass (amu) per
-        molecule kind, e.g. {"water": 4.0, "protein": 3.024, "ion": None} (None: masses unchanged).
-        Every kind present with hydrogen atoms must be given."""
+    def hmr(self, masses: dict[str, float | None]) -> list[float | None]:
+        """Return per-molecule hydrogen masses for FlexibleSimulation(hmr=...) from one mass per molecule kind.
+
+        Parameters
+        ----------
+        masses : dict of str to float or None
+            {kind: hydrogen mass [amu] or None (masses unchanged)}, e.g. {"water": 4.0, "protein":
+            3.024, "ion": None}.
+
+        Returns
+        -------
+        list of float or None
+            One entry per molecule.
+
+        Raises
+        ------
+        ValueError
+            An unknown kind.
+        KeyError
+            A kind present with hydrogen atoms but not given.
+        """
         bad = set(masses) - set(self.KINDS)
         if bad:
             raise ValueError(f"unknown molecule kinds {sorted(bad)}; kinds are {self.KINDS}")
@@ -105,7 +183,17 @@ class AmberSystem:
                 out.append(None)
         return out
 
-    def _local_selection(self, m: LoadedMolecule, selection) -> np.ndarray:
+    def _local_selection(self, m: LoadedMolecule, selection: str | Collection[str]) -> np.ndarray:
+        """Return the local atom indices of a selection in one molecule.
+
+        `selection`: "heavy" (non-hydrogen atoms), "backbone" (N, CA, C, O), "ca", or a collection of
+        atom names.
+
+        Raises
+        ------
+        ValueError
+            An unknown selection string.
+        """
         el = m.molecule.elements
         if isinstance(selection, str):
             if selection == "heavy":
@@ -117,10 +205,13 @@ class AmberSystem:
             names = tuple(selection)
         return np.array([a for a in range(m.n) if m.atom_names[a] in names], int)
 
-    def select(self, selection="heavy", kinds=("protein",)) -> np.ndarray:
-        """System atom indices (the order of system() / system_positions()) of the selected atoms
-        of the molecules of the given kinds: "heavy" (every non-hydrogen atom), "backbone" (N, CA,
-        C, O by Amber atom name; ACE / NME caps included), "ca", or a collection of atom names."""
+    def select(self, selection: str | Collection[str] = "heavy", kinds: Collection[str] = ("protein",)) -> np.ndarray:
+        """Return system atom indices (the order of system() / system_positions()) of selected atoms.
+
+        The atoms are those of the molecules of the given kinds: "heavy" (every non-hydrogen atom),
+        "backbone" (N, CA, C, O by Amber atom name; ACE / NME caps included), "ca", or a collection of
+        atom names.
+        """
         out, off = [], 0
         for m in self.molecules:
             if m.kind in kinds:
@@ -131,19 +222,46 @@ class AmberSystem:
     def position_restraints(
         self,
         k: float,
-        selection="heavy",
-        positions=None,
-        box=None,
+        selection: str | Collection[str] = "heavy",
+        positions: np.ndarray | None = None,
+        box: np.ndarray | None = None,
         r0: float = 0.0,
         scaling: str = "com",
-        kinds=("protein",),
-    ):
-        """Positional restraints (md/restraints.py) holding the selected atoms (see `select`) of each
-        molecule of the given kinds at `positions` (system order, nm; default the loaded
-        coordinates, e.g. sim.positions() after minimisation) with box `box` (default the
-        loaded box, e.g. sim.state.box).  One PositionRestraint per molecule; with scaling "com"
-        (default) its reference centroid is mass-weighted, so under NPT the reference moves with
-        the molecule.  k in kJ/mol/nm^2 with Amber's E = k d^2 (1 kcal/mol/A^2 = 418.4)."""
+        kinds: Collection[str] = ("protein",),
+    ) -> Restraints:
+        """Return positional restraints (md/restraints.py) holding selected atoms at reference positions.
+
+        One PositionRestraint per molecule of the given kinds with selected atoms; with scaling "com"
+        (default) its reference centroid is mass-weighted, so under NPT the reference moves with the
+        molecule.
+
+        Parameters
+        ----------
+        k : float
+            Force constant [kJ/mol/nm^2] with Amber's E = k d^2 (1 kcal/mol/A^2 = 418.4).
+        selection : str or collection of str
+            As `select`.
+        positions : np.ndarray (N, 3), optional
+            Reference positions in system order [nm]; None: the loaded coordinates (e.g. pass
+            sim.positions() after minimisation).
+        box : np.ndarray (3, 3), optional
+            Box of the reference [nm]; None: the loaded box (e.g. sim.state.box).
+        r0 : float
+            Flat-bottom radius [nm].
+        scaling : str
+            Reference scaling under NPT (PositionRestraint).
+        kinds : collection of str
+            Molecule kinds.
+
+        Returns
+        -------
+        Restraints
+
+        Raises
+        ------
+        ValueError
+            If no atom is selected.
+        """
         from ..md.restraints import PositionRestraint, Restraints
 
         pos = self.system_positions() if positions is None else np.asarray(positions, float)
@@ -170,9 +288,17 @@ class AmberSystem:
             raise ValueError(f"no atoms selected ({selection!r} in {kinds})")
         return Restraints(terms)
 
-    def templates(self, flexible: dict | None = None) -> list:
-        """One MD template per molecule: RigidTemplate for water and ions (geometry of the first
-        instance), `flexible[k]` for the others (FlexibleTemplate)."""
+    def templates(self, flexible: dict[int, FlexibleTemplate] | None = None) -> list:
+        """Return one MD template per molecule.
+
+        RigidTemplate for water and ions (geometry of the first instance of each kind and atom names,
+        shared), `flexible[k]` (a FlexibleTemplate) for molecule k.
+
+        Raises
+        ------
+        ValueError
+            If a molecule that is not water or an ion has no flexible template.
+        """
         from ..md.flexible import RigidTemplate
 
         flexible = flexible or {}
@@ -190,7 +316,8 @@ class AmberSystem:
         return out
 
 
-def _components(n, bonds):
+def _components(n: int, bonds: Sequence[tuple[int, int]]) -> tuple[np.ndarray, int]:
+    """Return the connected-component index of every atom (n,) and the number of components (iterative DFS)."""
     nbr = [[] for _ in range(n)]
     for i, j in bonds:
         nbr[i].append(j)
@@ -212,9 +339,43 @@ def _components(n, bonds):
     return comp, c
 
 
-def load_amber(prmtop: str, inpcrd: str, electrostatics="placeholder", water: Molecule | None = None) -> AmberSystem:
-    """Molecules of an Amber topology with pGM electrostatics (ResidueLibrary, "prmtop" for a pGM
-    prmtop, or "placeholder") and the prmtop's Lennard-Jones parameters."""
+def load_amber(
+    prmtop: str, inpcrd: str, electrostatics: ResidueLibrary | str = "placeholder", water: Molecule | None = None
+) -> AmberSystem:
+    """Load the molecules of an Amber topology with pGM electrostatics and the prmtop's Lennard-Jones.
+
+    Parameters
+    ----------
+    prmtop : str
+        Amber prmtop (tleap).
+    inpcrd : str
+        Coordinates (inpcrd / restart; read_coordinates_nm).
+    electrostatics : ResidueLibrary or {"prmtop", "placeholder"}
+        Source of the pGM parameters: a ResidueLibrary (by residue key and atom name), "prmtop" (the
+        POL_GAUSS_* sections of a pGM prmtop) or "placeholder" (ResidueLibrary.placeholder).
+    water : Molecule, optional
+        pGM water model replacing every water molecule (atoms in the prmtop's order).
+
+    Returns
+    -------
+    AmberSystem
+
+    Raises
+    ------
+    ValueError
+        An unknown electrostatics source.
+    KeyError
+        A library without an atom or covalent-dipole atom of a residue.
+    NotImplementedError
+        Extra points outside water.
+
+    Notes
+    -----
+    Covalent-dipole partners "-X" / "+X" of a library are searched among the atoms bonded to the
+    residue and their neighbours in the previous / next residue; a missing partner (chain end) drops
+    the dipole.  Water and ions with identical names and charges share one Molecule.  A molecule of
+    kind "other" whose bonded topology has backbone torsions or CMAP quintuples becomes "protein".
+    """
     pt = Prmtop.read(prmtop)
     names = pt.get("ATOM_NAME")
     n = len(names)
@@ -360,10 +521,40 @@ def load_amber(prmtop: str, inpcrd: str, electrostatics="placeholder", water: Mo
     return AmberSystem(mols, pos, H, prmtop, order=np.concatenate(order))
 
 
-def amber_template(loaded: LoadedMolecule, prmtop: str, families=None, lj14_scale: float = 0.5, **settings):
-    """FlexibleTemplate of a protein (or any molecule) with the Amber-form bonded terms and CMAP
-    initialised from the prmtop (e.g. ff19SB): the classical bonded model on top of pGM, the
-    starting point for refitting."""
+def amber_template(
+    loaded: LoadedMolecule,
+    prmtop: str,
+    families: Sequence[str] | None = None,
+    lj14_scale: float = 0.5,
+    **settings: Any,
+) -> FlexibleTemplate:
+    """Return a FlexibleTemplate with Amber-form bonded terms and CMAP initialised from the prmtop.
+
+    The classical bonded model (e.g. ff19SB) on top of pGM, the starting point for refitting.  The
+    molecule's impropers are added to its spec from the prmtop (bonded/amber.with_amber_impropers).
+
+    Parameters
+    ----------
+    loaded : LoadedMolecule
+        A flexible molecule (with a spec), contiguous in the prmtop.
+    prmtop : str
+        The prmtop it was loaded from.
+    families : sequence of str, optional
+        Bonded families; None: bonded.terms.PROTEIN.
+    lj14_scale : float
+        Scale of the 1-4 Lennard-Jones (Amber: 1 / SCNB = 0.5).
+    **settings
+        Further BondedSettings fields.
+
+    Returns
+    -------
+    FlexibleTemplate
+
+    Raises
+    ------
+    ValueError
+        If the molecule's atoms are not contiguous in the prmtop.
+    """
     from ..bonded import terms as T
     from ..bonded.amber import init_from_prmtop, with_amber_impropers
     from ..bonded.model import BondedSettings, BondedTerms

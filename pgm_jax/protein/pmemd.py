@@ -1,6 +1,11 @@
-"""pmemd-pgm topologies of pgm_jax systems: the tleap prmtop of a system rewritten so that
-pmemd.pgm / pmemd.pgm.cuda run the model of the MD engine (pGM electrostatics, Lennard-Jones,
-exclusions, 1-4 pairs, bonded terms, masses), for production MD of large systems.
+"""Write pmemd-pgm topologies and inputs that run the model of the pgm_jax MD engine.
+
+The tleap prmtop of a system is rewritten so that pmemd.pgm / pmemd.pgm.cuda run the model of
+the MD engine (pGM electrostatics, Lennard-Jones, exclusions, 1-4 pairs, bonded terms, masses),
+for production MD of large systems.  Contents: write_pgm_prmtop (the topology), pmemd_mdin (the
+matching mdin), pmemd_grid (a PME grid both codes accept), molecule_rules and pair_classes (the
+engine's exclusions and 1-4 pairs), and private helpers for the LJ tables, 1-4 flags, rigid
+bonds and CHARMM-form 1-4 tables.
 
     asys = load_amber("sys.prmtop", "sys.inpcrd", electrostatics=library)        # or "placeholder"
     k = [i for i, m in enumerate(asys.molecules) if m.kind == "protein"][0]
@@ -61,12 +66,19 @@ What a prmtop cannot carry, measured by scripts/protein/check_pgm_prmtop.py (doc
     quadrupoles or charge flux (md/flux.py; refused); Amber's number formats (9 significant
     digits, CMAP grids to 1e-5 kcal/mol).
 Everything else agrees to pmemd's print precision (1e-4 kcal/mol) and the forces to 2e-5 kcal/mol/A.
+
+Units: library units in the arguments (nm, e, kJ/mol); Amber units in the files (Angstrom,
+kcal/mol, e x 18.2223).
+
+See also docs/protein_ff.md.
 """
 
 from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -76,7 +88,13 @@ from ..md.topology import MoleculeRule
 from ..prmtop import Prmtop
 from ..units import KCAL
 
+if TYPE_CHECKING:
+    from ..md.forcefield import MDSettings
+    from ..system import System
+    from .amber import AmberSystem
+
 AMBER_CHARGE = 18.2223  # e -> Amber's charge unit (sqrt(kcal/mol A))
+# FORCE_FIELD_TYPE text of the CHARMM-form 1-4 tables, and the sections of that form
 CHARMM_TAG = "CHARMM-form 1-4 LJ tables only (pgm_jax pGM, lj14_scale {:g})"
 CHARMM_SECTIONS = (
     "FORCE_FIELD_TYPE",
@@ -92,6 +110,7 @@ CHARMM_SECTIONS = (
     "CHARMM_IMPROPER_FORCE_CONSTANT",
     "CHARMM_IMPROPER_PHASE",
 )
+# the pGM sections that write_pgm_prmtop replaces
 POL_GAUSS = (
     "POL_GAUSS_FORCEFIELD",
     "POL_GAUSS_COVALENT_POINTERS_LIST",
@@ -103,10 +122,20 @@ POL_GAUSS = (
 )
 
 
-def molecule_rules(asys, templates=None, lj14_scale: float = 0.5, lj_min_sep: int = 4) -> list:
-    """The engine's MoleculeRule of every molecule of an AmberSystem: templates[k].md_rule() (as
-    FlexibleSimulation), or without templates: water and ions rigid, every other molecule flexible
-    with Amber's pairs (lj_min_sep 4, lj14_scale 1/2) and its bonded terms left to the prmtop."""
+def molecule_rules(
+    asys: AmberSystem, templates: Sequence[Any] | None = None, lj14_scale: float = 0.5, lj_min_sep: int = 4
+) -> list[MoleculeRule]:
+    """Return the engine's MoleculeRule of every molecule of an AmberSystem.
+
+    With templates: templates[k].md_rule("none") (as FlexibleSimulation).  Without: water and ions
+    rigid (every intramolecular pair excluded), every other molecule flexible with Amber's pairs
+    (`lj_min_sep` bonds, 1-4 LJ scaled by `lj14_scale`) and its bonded terms left to the prmtop.
+
+    Raises
+    ------
+    ValueError
+        If the number of templates differs from the number of molecules.
+    """
     if templates is not None:
         if len(templates) != len(asys.molecules):
             raise ValueError("one template per molecule of the AmberSystem")
@@ -124,8 +153,17 @@ def molecule_rules(asys, templates=None, lj14_scale: float = 0.5, lj_min_sep: in
     return out
 
 
-def pair_classes(n: int, rule: MoleculeRule):
-    """(excluded pairs, 1-4 pairs) of one molecule, local indices i < j."""
+def pair_classes(n: int, rule: MoleculeRule) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Return (excluded pairs, 1-4 pairs) of one molecule of n atoms, local indices i < j.
+
+    A rigid rule (vdw "none") excludes every pair; a "graph" rule excludes pairs fewer than
+    lj_min_sep bonds apart (shortest path) and lists the pairs exactly 3 bonds apart as 1-4.
+
+    Raises
+    ------
+    ValueError
+        An unknown van der Waals rule.
+    """
     if rule.vdw == "none":
         return [(i, j) for i in range(n) for j in range(i + 1, n)], []
     if rule.vdw != "graph":
@@ -139,8 +177,13 @@ def pair_classes(n: int, rule: MoleculeRule):
     return excl, sorted(p for p, d in near.items() if d == 3)
 
 
-def _lj_tables(rh_nm, se):
-    """LJ types (1-based, per atom) and Amber tables from per-atom R* (nm) and sqrt(eps) (sqrt(kJ/mol))."""
+def _lj_tables(rh_nm: np.ndarray, se: np.ndarray) -> tuple[list[int], int, np.ndarray, np.ndarray, np.ndarray]:
+    """Return Amber LJ types and tables from per-atom R* [nm] and sqrt(eps) [sqrt(kJ/mol)].
+
+    One type per distinct (R*, sqrt(eps)) pair, in order of first appearance.  Returns (type per
+    atom, 1-based; number of types; NONBONDED_PARM_INDEX (nt * nt,); ACOEF; BCOEF), with Lorentz-
+    Berthelot pairs A = eps r_min^12, B = 2 eps r_min^6 in kcal/mol and Angstrom.
+    """
     types, ti = {}, []
     for key in zip(np.asarray(rh_nm, float).tolist(), np.asarray(se, float).tolist()):
         ti.append(types.setdefault(key, len(types)) + 1)
@@ -159,16 +202,46 @@ def _lj_tables(rh_nm, se):
     return ti, nt, ico.ravel(), np.array(A), np.array(B)
 
 
-def _dihedral_rows(pt):
+def _dihedral_rows(pt: Prmtop) -> list[tuple[int, int, int, int, int]]:
+    """Return the dihedral rows (a, b, c, d, type) of both dihedral sections, in Amber's encoding.
+
+    Atom entries are 3 x (0-based index), a negative c means "no 1-4 pair", a negative d an
+    improper; type is 1-based.
+    """
     rows = []
     for sec in ("DIHEDRALS_INC_HYDROGEN", "DIHEDRALS_WITHOUT_HYDROGEN"):
         rows += [tuple(int(x) for x in r) for r in pt.get(sec).reshape(-1, 5)]
     return rows
 
 
-def _set_14_flags(pt, pairs14: set, isH) -> int:
-    """Exactly one proper dihedral with the 1-4 flag per pair in pairs14 (0-based atoms, i < j),
-    none for any other pair; returns the number of flagged dihedrals."""
+def _set_14_flags(pt: Prmtop, pairs14: set, isH: np.ndarray) -> int:
+    """Flag exactly one proper dihedral per 1-4 pair and none for any other pair; return the count.
+
+    Parameters
+    ----------
+    pt : Prmtop
+        Topology, modified in place (both dihedral sections rewritten, rows re-sorted by whether
+        they contain hydrogen).
+    pairs14 : set of (int, int)
+        1-4 pairs, 0-based atoms, i < j.
+    isH : np.ndarray (N,) bool
+        Hydrogen atoms.
+
+    Returns
+    -------
+    int
+        Number of flagged dihedrals (= len(pairs14)).
+
+    Raises
+    ------
+    ValueError
+        If a 1-4 pair has no proper dihedral with nonzero periodicity.
+
+    Notes
+    -----
+    A dihedral whose third atom is atom 0 cannot carry the "no 1-4" sign (-0), so it is written
+    reversed.  pmemd never takes 1-4 pairs from impropers.
+    """
     per = pt.get("DIHEDRAL_PERIODICITY")
     done, rows_h, rows_n = set(), [], []
     for a, b, c, d, t in _dihedral_rows(pt):
@@ -198,9 +271,17 @@ def _set_14_flags(pt, pairs14: set, isH) -> int:
     return len(done)
 
 
-def _input_lj14_scale(pt) -> float:
-    """1 / SCNB of the dihedrals that carry 1-4 pairs in an Amber prmtop (2 when the section is
-    absent, Amber's default); several values raise (pass lj14_scale)."""
+def _input_lj14_scale(pt: Prmtop) -> float:
+    """Return 1 / SCNB of the dihedrals that carry 1-4 pairs in an Amber prmtop.
+
+    SCNB is 2 (Amber's default) when the SCNB_SCALE_FACTOR section is absent; 0.5 is returned when
+    no dihedral carries a 1-4 pair.
+
+    Raises
+    ------
+    ValueError
+        If the 1-4 dihedrals have several SCNB values or a nonpositive one (pass lj14_scale).
+    """
     rows = [r for r in _dihedral_rows(pt) if r[2] >= 0 and r[3] >= 0]
     if not rows:
         return 0.5
@@ -211,10 +292,18 @@ def _input_lj14_scale(pt) -> float:
     return 1.0 / vals[0]
 
 
-def _rigid_bonds(pt, asys, templates, isH) -> float:
-    """Bond lengths of rigid molecules = their templates' distances (the engine's constraints; SHAKE
-    and SETTLE read them from the bonds).  Every pair of a rigid molecule must be a prmtop bond.
-    Bond types are rebuilt (deduplicated); returns the largest change of a length (A)."""
+def _rigid_bonds(pt: Prmtop, asys: AmberSystem, templates: Sequence[Any], isH: np.ndarray) -> float:
+    """Set the bond lengths of rigid molecules to their templates' distances; return the largest change.
+
+    The distances are the engine's constraints (SHAKE and SETTLE read them from the bonds); every
+    constrained pair of a rigid molecule must be a prmtop bond.  Bond types are rebuilt
+    (deduplicated) and the bond sections and pointers rewritten in `pt`.  The change is in Angstrom.
+
+    Raises
+    ------
+    ValueError
+        If a constrained pair of a rigid molecule is not a prmtop bond.
+    """
     B = np.concatenate([pt.get("BONDS_INC_HYDROGEN"), pt.get("BONDS_WITHOUT_HYDROGEN")]).reshape(-1, 3)
     K, r0 = pt.get("BOND_FORCE_CONSTANT"), pt.get("BOND_EQUIL_VALUE")
     params = {tuple(sorted((int(a) // 3, int(b) // 3))): [K[t - 1], r0[t - 1]] for a, b, t in B}
@@ -244,28 +333,55 @@ def _rigid_bonds(pt, asys, templates, isH) -> float:
 
 
 def write_pgm_prmtop(
-    asys,
+    asys: AmberSystem,
     out: str,
-    templates=None,
-    params=None,
-    system=None,
+    templates: Sequence[Any] | None = None,
+    params: dict | None = None,
+    system: System | None = None,
     lj14_scale: float | None = None,
     lj_min_sep: int | None = None,
     hmr: float | None = None,
-) -> dict:
-    """Write `out`: asys.prmtop (the tleap topology load_amber read) with the pGM model of the MD engine.
+) -> dict[str, Any]:
+    """Write asys.prmtop (the tleap topology load_amber read) with the pGM model of the MD engine.
 
-    asys       AmberSystem (protein.load_amber): molecules, their prmtop atoms and pGM parameters
-    templates  one per molecule, as passed to FlexibleSimulation (asys.templates({k: tpl})): the
-               FlexibleTemplates' bonded terms are exported and their lj14_scale / lj_min_sep
-               used; the RigidTemplates' distances become the lengths of their bonds.
-               None: the prmtop's bonded terms are kept, water and ions rigid, other molecules
-               flexible with lj14_scale (default: 1 / the prmtop's SCNB, 1/2 for ff19SB) and
-               lj_min_sep (default 4)
-    params     the parameter pytree the engine runs with (default: system.params0)
-    system     the System of those parameters (default: asys.system(), molecules in asys order)
-    hmr        hydrogen mass (amu) for mass repartitioning, as FlexibleSimulation(hmr=...)
-    Returns a summary (counts, 1-4 mode, bonded export counts)."""
+    Parameters
+    ----------
+    asys : AmberSystem
+        Molecules (protein.load_amber), their prmtop atoms and pGM parameters.
+    out : str
+        Output prmtop path.
+    templates : sequence, optional
+        One per molecule, as passed to FlexibleSimulation (asys.templates({k: tpl})): the
+        FlexibleTemplates' bonded terms are exported and their lj14_scale / lj_min_sep used; the
+        RigidTemplates' distances become the lengths of their bonds.  None: the prmtop's bonded terms
+        are kept, water and ions rigid, other molecules flexible with lj14_scale and lj_min_sep.
+    params : dict, optional
+        The parameter pytree the engine runs with; None: system.params0.
+    system : System, optional
+        The System of those parameters; None: asys.system() (molecules in asys order).
+    lj14_scale : float, optional
+        Without templates: 1-4 LJ scale; None: 1 / the prmtop's SCNB (1/2 for ff19SB).
+    lj_min_sep : int, optional
+        Without templates: bond separation below which LJ is excluded; None: 4.
+    hmr : float, optional
+        Hydrogen mass [amu] for mass repartitioning, as FlexibleSimulation(hmr=...); None: masses
+        unchanged.
+
+    Returns
+    -------
+    dict
+        Summary: atoms, lj_types, excluded_pairs, pairs_14, dihedrals_14, lj14_scale, lj14_mode,
+        covalent_dipoles, exported (bonded export counts per molecule), rigid_length_change_A, hmr.
+
+    Raises
+    ------
+    ValueError
+        Charge flux, a CHARMM (chamber) input, atoms not covered or not contiguous, lj14_scale /
+        lj_min_sep given with templates, several lj14_scale values, or differing elements / atom
+        counts between system and prmtop.
+    NotImplementedError
+        Virtual sites (pmemd.pgm.cuda does not spread extra-point forces).
+    """
     from ..bonded.amber import export_bonded
     from ..md.flux import template_flux_order
 
@@ -448,8 +564,12 @@ def write_pgm_prmtop(
     }
 
 
-def _charmm_14(pt, scale: float, A, B):
-    """1-4 LJ = scale x LJ through the CHARMM 1-4 tables (see the module docstring)."""
+def _charmm_14(pt: Prmtop, scale: float, A: np.ndarray, B: np.ndarray) -> None:
+    """Write 1-4 LJ = scale x LJ through the CHARMM 1-4 tables (see the module docstring).
+
+    Adds FORCE_FIELD_TYPE naming CHARMM, LENNARD_JONES_14_ACOEF / BCOEF = scale x (A, B) and empty
+    Urey-Bradley and CHARMM-improper sections to `pt`.
+    """
     after = "LENNARD_JONES_BCOEF"
     pt.set(
         "FORCE_FIELD_TYPE",
@@ -481,6 +601,7 @@ def _charmm_14(pt, scale: float, A, B):
 
 # ------------------------------------------------------------------ mdin
 def _pmemd_fft_ok(n: int) -> bool:
+    """Return whether n is a multiple of 4 with prime factors 2, 3 and 5 only (pmemd's FFT sizes)."""
     if n % 4:
         return False
     for f in (2, 3, 5):
@@ -489,10 +610,14 @@ def _pmemd_fft_ok(n: int) -> bool:
     return n == 1
 
 
-def pmemd_grid(H_nm, spacing: float = 0.08) -> tuple:
-    """Smallest PME grid with at most `spacing` nm between planes that pmemd.pgm and
-    pmemd.pgm.cuda both accept (multiples of 4, prime factors 2, 3, 5): run the engine with
-    MDSettings().replace(pme_grid=pmemd_grid(H)) so that both codes use the same grid."""
+def pmemd_grid(H_nm: np.ndarray, spacing: float = 0.08) -> tuple[int, int, int]:
+    """Return the smallest PME grid that pmemd.pgm and pmemd.pgm.cuda both accept.
+
+    At most `spacing` [nm] between lattice planes along each box vector (plane distance V / |a x b|),
+    sizes multiples of 4 with prime factors 2, 3, 5.  Run the engine with
+    MDSettings().replace(pme_grid=pmemd_grid(H)) so that both codes use the same grid.  `H_nm` is
+    the box (3, 3) [nm], lattice vectors as rows.
+    """
     H = np.asarray(H_nm, float)
     V = abs(np.linalg.det(H))
     heights = [V / np.linalg.norm(np.cross(H[(i + 1) % 3], H[(i + 2) % 3])) for i in range(3)]
@@ -506,8 +631,8 @@ def pmemd_grid(H_nm, spacing: float = 0.08) -> tuple:
 
 
 def pmemd_mdin(
-    settings,
-    H_nm,
+    settings: MDSettings,
+    H_nm: np.ndarray,
     nstlim: int = 0,
     dt: float = 0.002,
     ensemble: str = "nvt",
@@ -527,23 +652,72 @@ def pmemd_mdin(
     tempi: float | None = None,
     title: str = "pgm_jax model",
 ) -> str:
-    """pmemd-pgm mdin with the nonbonded model of MDSettings: cut = ee_dsum_cut = cutoff (one
-    cutoff for LJ and the pGM direct sum), ew_coeff = ewald_beta, the PME grid (pme_grid, or from
-    pme_spacing and the box H_nm; pmemd needs pmemd_grid's sizes) and order, vdwmeth =
-    lj_lrc, dipole_scf_tol = dipole_tol.  pmemd's influence function has an extra factor
-    (factor_lambda in pme_recip_dat.F90) that the engine's Euler-spline moduli do not: at 0.8 A
-    grid spacing and order 6 the electrostatic energies differ by ~3e-7 relative, at 0.4 A and
-    order 8 by 2e-9 (validation/check_pgm_prmtop.json).
-    Dynamics: dt (ps), ensemble "nve" | "nvt" | "npt" (Monte Carlo barostat), thermostat
-    "langevin" (ntt=3, gamma 1/ps) | "bussi" (ntt=11, tau_t ps), tempi (initial velocities, K;
-    default: temperature; pmemd draws them for every degree of freedom before SHAKE, so a
-    constrained system starts ~1.5x hotter); constraints "h-bonds" (ntc=2,
-    ntf=2: SHAKE on X-H bonds, rigid water by SETTLE; the engine's constraints="h-bonds") or "none"
-    (ntc=1, ntf=1: every bond flexible, water too, unlike the engine, which always keeps water
-    rigid; for single points).  maxcyc > 0: an energy minimisation instead (imin=1, 100 steepest-descent
-    steps then conjugate gradients, no constraints), e.g. for tleap structures with clashes.  The
-    induced-dipole solver is left at pmemd-pgm's defaults (its PCG with local preconditioner); the
-    GPU predictor is set by the environment (PGM_GPU_PRED)."""
+    """Return a pmemd-pgm mdin with the nonbonded model of MDSettings.
+
+    cut = ee_dsum_cut = cutoff (one cutoff for LJ and the pGM direct sum), ew_coeff = ewald_beta,
+    the PME grid (pme_grid, or from pme_spacing and the box; pmemd needs pmemd_grid's sizes) and
+    order, skinnb = the neighbour-list skin, vdwmeth = lj_lrc, dipole_scf_tol = dipole_tol and
+    scf_cg_niter = the engine's CG iteration limit; the rest of pmemd-pgm's induced-dipole solver
+    (its PCG with local preconditioner) is left at its defaults, and the GPU predictor is set by the
+    environment (PGM_GPU_PRED).  pmemd's influence function has an extra factor (factor_lambda in
+    pme_recip_dat.F90) that the engine's Euler-spline moduli do not: at 0.8 A grid spacing and
+    order 6 the electrostatic energies differ by ~3e-7 relative, at 0.4 A and order 8 by 2e-9
+    (validation/check_pgm_prmtop.json).
+
+    Parameters
+    ----------
+    settings : MDSettings
+        The engine's settings (LJ and elec "qpi" only).
+    H_nm : np.ndarray (3, 3)
+        Box [nm] (for the grid when settings has none).
+    nstlim : int
+        Number of MD steps.
+    dt : float
+        Time step [ps].
+    ensemble : {"nve", "nvt", "npt"}
+        "npt" uses the Monte Carlo barostat (every 100 steps); any other value than "nve" / "npt"
+        gives NVT.
+    temperature : float
+        Thermostat temperature [K].
+    thermostat : {"langevin", "bussi"}
+        Langevin (ntt=3, friction `gamma`) or Bussi (ntt=11, time constant `tau_t`).
+    gamma : float
+        Langevin friction [1/ps].
+    tau_t : float
+        Bussi time constant [ps].
+    pressure : float
+        Barostat pressure [bar].
+    constraints : {"h-bonds", "none"}
+        "h-bonds" (ntc=2, ntf=2: SHAKE on X-H bonds, rigid water by SETTLE; the engine's
+        constraints="h-bonds") or "none" (ntc=1, ntf=1: every bond flexible, water too, unlike the
+        engine, which always keeps water rigid; for single points).
+    irest : int
+        1: restart with velocities (ntx=5); 0: new velocities (ntx=1).
+    ntpr, ntwx, ntwr, ntwf : int
+        Output intervals [steps] (energies, coordinates, restart, forces; NetCDF).
+    ig : int
+        Random seed (-1: from the clock).
+    maxcyc : int
+        > 0: an energy minimisation instead (imin=1, 100 steepest-descent steps then conjugate
+        gradients, no constraints), e.g. for tleap structures with clashes.
+    tempi : float, optional
+        Temperature of the initial velocities [K]; None: `temperature`.  pmemd draws them for every
+        degree of freedom before SHAKE, so a constrained system starts ~1.5x hotter.
+    title : str
+        First line of the mdin.
+
+    Returns
+    -------
+    str
+        The mdin text (&cntrl, &ewald, &pol_gauss namelists).
+
+    Raises
+    ------
+    ValueError
+        A grid pmemd cannot use, a model other than LJ + "qpi", or an unknown thermostat.
+    KeyError
+        An unknown `constraints` value.
+    """
     from ..md.pme import grid_size
 
     H = np.asarray(H_nm, float)
