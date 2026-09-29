@@ -43,16 +43,15 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..system import System
-from ..units import AMU_NM3_TO_G_CM3, BAR_PER_KJMOL_NM3, KB
+from ..units import AMU_NM3_TO_G_CM3, KB
 from ._jaxmd import simulate
 from .box import check_box, inv3, reduce_box, volume
 from .constraints import Constraints, hmr_masses
+from .engine import MDEngine
 from .flux import ChargeFlux
 from .forcefield import MDSettings, PGMForceField
-from .integrate import Dynamics, Integrator, MDState, field_state, upgrade_state
-from .neighbors import AtomNeighbors, MoleculeNeighbors
+from .integrate import Dynamics, Integrator, MDState, field_state
 from .rigid import _unwrap
-from .simulation import Simulation
 from .thermostats import Bussi
 from .topology import MDTopology, MoleculeRule
 from .vsites import VirtualSites
@@ -615,13 +614,15 @@ class FlexibleIntegrator(Integrator):
 
 
 # ----------------------------------------------------------------------------- driver
-class FlexibleSimulation(Simulation):
-    """Simulation driver for flexible molecules (same reporting, trajectories and checkpoints as
-    `Simulation`); `templates[k]` (FlexibleTemplate or RigidTemplate) belongs to `sys.molecules[k]`.
+class FlexibleSimulation(MDEngine):
+    """Molecular dynamics of flexible molecules (atoms integrated individually; bonded terms, X-H or
+    all-bond constraints, virtual sites rebuilt every step, charge flux).  The shared machinery
+    (blocks, observables, run loop, checkpoints) is MDEngine's (md/engine.py).
+    `templates[k]` (FlexibleTemplate or RigidTemplate) belongs to `sys.molecules[k]`.
     constraints: "none" | "h-bonds" (X-H bonds of the flexible templates) | "all-bonds" (every bond;
     rigid templates are always constrained; md/constraints.py, docs/shake.md); hmr: hydrogen mass (amu) for mass
-    repartitioning (the mass comes from the
-    bonded heavy atom), None, or one value (or None) per molecule, e.g. AmberSystem.hmr({"water":
+    repartitioning (the mass comes from the bonded heavy atom), None, or one value (or None) per molecule, e.g.
+    AmberSystem.hmr({"water":
     4.0, "protein": 3.024}) (constraints.hmr_masses); restraints: md/restraints.py; alchemy: an
     alchemical region (md/alchemy.py); mts: multiple time stepping (md/mts.py: MTS settings; dt is
     then the outer step); bias: biases on collective variables (pgm_jax.bias); constraint_options:
@@ -727,17 +728,7 @@ class FlexibleSimulation(Simulation):
             self._print(
                 f"# constraints ({constraints}): {self.constraints.describe()}; {self.integ.dof} degrees of freedom"
             )
-        if self.integ.restraints is not None:
-            self._print(f"# restraints: {self.integ.restraints.describe()}")
-        if self.ff.flux is not None:
-            self._print(f"# {self.ff.flux.describe()}")
-        if alchemy is not None:
-            self._print(f"# alchemical region: {alchemy.describe()}")
-        if mts is not None:
-            self._print(f"# {self.integ.describe_mts()}")
-        self._describe_bias()
-        if self.integ.efield is not None:
-            self._print(f"# {self.integ.efield.describe()}")
+        self._describe_options(alchemy, mts)
 
     def minimize(self, steps: int = 500, max_step: float = 0.01, ftol: float = 50.0, seed: int = 1) -> dict:
         """Steepest descent (adaptive step, at most max_step nm per atom, constraints kept by SHAKE)
@@ -783,30 +774,25 @@ class FlexibleSimulation(Simulation):
         self._print(f"# minimised: {out}")
         return out
 
-    def _make_neighbors(self, H):
-        s = self.settings
-        mode = self._nb_mode
-        if mode == "auto":
-            mode = "molecule" if MoleculeNeighbors.fits(H, s.pair_cutoff, s.skin, self._r_list) else "atom"
-        if mode == "molecule":
-            self.nb = MoleculeNeighbors(
-                self.topology.group, self.topology.n_group, self._r_list, H, s.pair_cutoff, s.skin
-            )
-        else:
-            self.nb = AtomNeighbors(self.sys.n, H, s.pair_cutoff, s.skin)
-        self._nb_volume = float(volume(jnp.asarray(H)))
+    # ----------------------------------------------------------------- MDEngine hooks
+    checkpoint_kind = "md-flexible"
 
-    def _size_lists(self, pos, H, factor: float = 1.2, nbr=None):
-        c = self.flex.list_centers(pos)
-        nbr = self.nb.allocate(pos, c, H) if nbr is None else nbr
-        if self.nb.kind == "molecule":
-            self.nb.size(nbr, c, H, pos, factor)
-        idx = self.nb.candidates(nbr, c, H, pos)[0]
-        self.ff.size_rows(pos, H, idx, factor)
-        return nbr
+    def _list_groups(self) -> tuple[np.ndarray, int]:
+        """The groups of the molecular neighbour list: md/topology.py splits large molecules."""
+        return self.topology.group, self.topology.n_group
 
-    def _advance(self, n: int):
-        super()._advance(n)
+    def _list_centers(self, dynpos):
+        """Centres of mass of the neighbour-list groups at atom positions `dynpos` [nm]."""
+        return self.flex.list_centers(dynpos)
+
+    def _after_block(self) -> None:
+        """Every atom must stay within the list radius of its group's centre.
+
+        Raises
+        ------
+        RuntimeError
+            An atom beyond the radius (increase r_margin).
+        """
         ext = float(self.flex.extent(self.state.dyn.position))
         if self.nb.kind == "molecule" and ext > self.r_list:
             raise RuntimeError(
@@ -854,36 +840,11 @@ class FlexibleSimulation(Simulation):
             )
         return out
 
-    def _pressure(self, st):
-        pos = st.dyn.position
-        c = self.flex.list_centers(pos)
-        idx = self.nb.candidates(st.nbr, c, st.box, pos)[0]
-        if self.integ.alchemy is None:
-            W = self.ff.strain_derivative(
-                pos, st.box, idx, st.induction.mu, self.integ.params, efield=self.integ.field_at(st, st.step)
-            )
-        else:
-            W = self.integ.alchemy.strain_derivative(
-                self.ff, pos, st.box, idx, st.induction.mu, self.integ.params, st.lam
-            )
-        W = W + self.integ.restraint_strain(pos, st.box, st.bias)
-        ke_t = self.integ.kinetic(st)[1]
-        return (2.0 * ke_t - jnp.trace(W)) / (3.0 * volume(st.box)) * BAR_PER_KJMOL_NM3
-
     def positions_nm(self):
         return np.asarray(self.state.dyn.position)
 
     def velocities_nm_ps(self):
         return np.asarray(self.state.dyn.momentum / self.flex.mass)
-
-    def load(self, path: str):
-        with open(path, "rb") as fh:
-            d = pickle.load(fh)
-        st = upgrade_state(jax.tree_util.tree_map(jnp.asarray, d["state"]), self.state.aux)
-        st = field_state(self._bias_of_checkpoint(st), self.integ.efield)
-        pos = st.dyn.position
-        self.state = st.set(nbr=self.nb.allocate(pos, self.flex.list_centers(pos), st.box))
-        self.time_ps = d["time_ps"]
 
 
 # ----------------------------------------------------------------------------- building a box
