@@ -2,7 +2,8 @@
 (tests/data/legacy_checkpoints, written by make_legacy_checkpoints.py there with that code) load
 and continue as the old code continued them, and the current npz format continues a run exactly.
 
-The systems below are those of make_legacy_checkpoints.py, built with the current API."""
+The systems below are those of make_legacy_checkpoints.py, built with the current API; real_npt.chk
+is a checkpoint of a real run of the old code (test_real_old_checkpoint)."""
 
 import os
 
@@ -15,7 +16,7 @@ from pgm_jax.bias.walkers import Walkers
 from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
 from pgm_jax.md.alchemy import Alchemy, FreeEnergyRun, LambdaWindows, alchemical_system
 from pgm_jax.md.barostats import MonteCarloBarostat
-from pgm_jax.md.driver import is_legacy_checkpoint, read_checkpoint
+from pgm_jax.md.driver import is_legacy_checkpoint, read_checkpoint, read_legacy_checkpoint
 from pgm_jax.md.finite_field import FieldReplicas
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, RigidTemplate
 from pgm_jax.md.forcefield import MDSettings
@@ -282,3 +283,29 @@ def test_walkers_checkpoint(expected, tmp_path):
     wk.load_checkpoint(str(tmp_path / "new.walkers.chk"))
     wk.advance(10)
     same(wk.S.set(nbr=None), first)
+
+
+def test_real_old_checkpoint(tmp_path):
+    """A checkpoint of a real run of the old code (512 rigid pGM waters, NPT; runs/npt_check/npt.chk
+    of the main repository, 2026-09-24, older than e72c57c: MDState without the thermostat fields)
+    loads into a 512-water rigid simulation (the state is upgraded), and after conversion to the npz
+    format the continuation is bitwise the same."""
+    path = os.path.join(LEGACY, "real_npt.chk")
+    old = read_legacy_checkpoint(path)["state"]
+    H = np.asarray(old.box)
+    pos, _, _ = water_lattice(8, spacing=float(H[0, 0]) / 8)  # replaced by the checkpoint's positions
+    sim = Simulation(
+        System([water()] * 512), pos, H, MDSettings(), dt=0.001, thermostat="bussi", barostat=MonteCarloBarostat()
+    )
+    sim.load_checkpoint(path)
+    assert np.array_equal(np.asarray(sim.state.dyn.position.center), np.asarray(old.dyn.position.center))
+    assert np.array_equal(np.asarray(sim.state.induction.mu), np.asarray(old.induction.mu))
+    sim.advance(5)
+    new = str(tmp_path / "new.chk")
+    sim.save_checkpoint(new)
+    sim.advance(5)
+    first = sim.state.set(nbr=None)
+    sim.load_checkpoint(new)
+    sim.advance(5)
+    same(sim.state.set(nbr=None), first)
+    assert np.isfinite(float(sim.state.epot))
