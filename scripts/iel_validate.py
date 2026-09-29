@@ -32,6 +32,7 @@ jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from pgm_jax.analysis.stats import block_mean  # noqa: E402
 from pgm_jax.md.box import box_from_cell  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
 from pgm_jax.md.iel import add_iel_arguments, iel_settings  # noqa: E402
@@ -52,12 +53,8 @@ def min_image(d, H):
 
 
 def block_err(x, nb=5):
-    x = np.asarray(x, float)
-    m = len(x) // nb * nb
-    if m < nb:
-        return float("nan")
-    b = x[len(x) - m :].reshape(nb, -1).mean(1)
-    return float(b.std(ddof=1) / np.sqrt(nb))
+    """Standard error of the mean of x from nb contiguous blocks (nan with fewer than nb samples)."""
+    return block_mean(x, nb)[1] if len(x) >= nb else float("nan")
 
 
 def main():

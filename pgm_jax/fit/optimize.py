@@ -36,7 +36,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .estimators import GAS, LIQUID, jackknife_cov
+from ..analysis.stats import jackknife_cov
+from .estimators import GAS, LIQUID
 
 
 @dataclass

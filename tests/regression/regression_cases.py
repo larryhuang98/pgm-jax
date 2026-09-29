@@ -997,8 +997,9 @@ def qmfit_synthetic():
 def analysis_estimators():
     """Pure analysis code on synthetic data: dielectric fluctuation formula and jackknife, BAR,
     MBAR, TI, statistical inefficiency, WHAM, liquid-fit jackknife covariance, finite-field fits."""
+    from pgm_jax.analysis import stats
+    from pgm_jax.analysis.stats import jackknife_cov
     from pgm_jax.bias import analysis as A
-    from pgm_jax.fit.estimators import jackknife_cov
     from pgm_jax.md import dielectric as D
     from pgm_jax.md import finite_field as FF
     from pgm_jax.md import free_energy as fe
@@ -1012,8 +1013,8 @@ def analysis_estimators():
     out["eps_fluct"] = np.asarray(D.fluctuation(M, 15.6, 298.0))
     out["eps_jack"] = np.asarray(D.jackknife(M, 15.6, 298.0, nblocks=8))
     _put(out, "eps_static", D.static_dielectric(M, 15.6, 298.0, eps_inf_value=1.8, nblocks=8))
-    out["g"] = np.asarray(fe.statistical_inefficiency(x))
-    out["equil"] = np.asarray(fe.detect_equilibration(x[:1000], nskip=10))
+    out["g"] = np.asarray(stats.statistical_inefficiency(x))
+    out["equil"] = np.asarray(stats.detect_equilibration(x[:1000], nskip=10))
     out["bar"] = np.asarray(fe.bar(rng.normal(1.0, 1.0, 500), rng.normal(-0.5, 1.0, 400)))
     K, N = 4, 300
     xs = [rng.normal(0.3 * k, 1.0, N) for k in range(K)]
@@ -1028,7 +1029,7 @@ def analysis_estimators():
     Fw, fk = A.wham(samples, cs, np.full(5, 200.0), axis, 2.479)
     out["wham_F"], out["wham_f"] = _np(Fw), _np(fk)
     out["jk_cov"] = _np(jackknife_cov(rng.normal(size=(10, 3))))
-    out["ff_block"] = np.asarray(FF.block_mean(x, 8))
-    out["ff_tau"] = np.asarray(FF.correlation_time(x, 0.01))
+    out["ff_block"] = np.asarray(stats.block_mean(x, 8))
+    out["ff_tau"] = np.asarray(stats.integrated_correlation_time(x, 0.01))
     _put(out, "ff_pred", FF.predicted_errors(34.0, 1.8, 15.6, 298.0, 0.1, 5.0, 1000.0))
     return out

@@ -298,8 +298,9 @@ def part_speed(nsteps: int = 5000):
 def part_fluct(files, seg_ns: float, skip_ps: float):
     """Fluctuation eps of zero-field .dip series (each file an independent run), and the scatter of
     the estimate over segments of seg_ns: the measured statistical error of a run of that length."""
+    from pgm_jax.analysis.stats import integrated_correlation_time
     from pgm_jax.md.dipoles import read_dipoles
-    from pgm_jax.md.finite_field import correlation_time, fluctuation_eps
+    from pgm_jax.md.finite_field import fluctuation_eps
 
     out, segs = {}, []
     for f in files:
@@ -312,7 +313,7 @@ def part_fluct(files, seg_ns: float, skip_ps: float):
         eps_inf = 1.0 + 4 * np.pi * float(np.mean(a)) / V if len(a) else 1.0
         eps, err = fluctuation_eps(M, V, T, eps_inf, 10)
         dt = float(np.median(np.diff(t)))
-        tau = correlation_time(M[:, 2], dt)
+        tau = integrated_correlation_time(M[:, 2], dt)
         n = int(round(seg_ns * 1000 / dt))
         e_seg = [fluctuation_eps(M[i : i + n], V, T, eps_inf, 5)[0] for i in range(0, len(M) - n + 1, n)]
         segs += e_seg

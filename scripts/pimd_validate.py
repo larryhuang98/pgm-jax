@@ -24,6 +24,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 jax.config.update("jax_enable_x64", True)
 
+from pgm_jax.analysis.stats import block_mean  # noqa: E402
 from pgm_jax.md.pimd import PIMDIntegrator, PotentialEngine, RingPolymer  # noqa: E402
 from pgm_jax.units import HBAR_KJMOL_PS, KB
 
@@ -31,10 +32,8 @@ OUT = os.path.join(ROOT, "validation/pimd")
 
 
 def block_err(x, nb=20):
-    x = np.asarray(x)
-    m = len(x) // nb * nb
-    b = x[len(x) - m :].reshape(nb, -1).mean(1)
-    return float(b.std(ddof=1) / math.sqrt(nb))
+    """Standard error of the mean of x from nb contiguous blocks."""
+    return block_mean(x, nb)[1]
 
 
 def sample(integ, st, nsamp, every):

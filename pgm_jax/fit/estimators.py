@@ -175,14 +175,6 @@ class LiquidSamples:
         return c[:, self.block].astype(float)
 
 
-def jackknife_cov(values):
-    """Jackknife covariance of the leave-one-out estimates values (B, ...) flattened: (m, m)."""
-    x = np.asarray(values, float).reshape(len(values), -1)
-    B = len(x)
-    d = x - x.mean(0)
-    return (B - 1) / B * d.T @ d
-
-
 class GasPhase:
     """One rigid molecule in the gas phase (the monomer of the liquid, same ParamTable): energy
     (kJ/mol, the MD engine's intramolecular energy of the isolated molecule: pGM with every pair,

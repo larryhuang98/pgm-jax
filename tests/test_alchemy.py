@@ -15,6 +15,7 @@ from test_grad import water
 from test_md_macro import _water_box
 
 from pgm_jax import System
+from pgm_jax.analysis import stats
 from pgm_jax.md import free_energy as fe
 from pgm_jax.md.alchemy import (
     Alchemy,
@@ -555,10 +556,10 @@ def test_statistical_inefficiency_and_equilibration():
         e = rng.normal(size=a.size)
         for i in range(1, a.size):
             a[i] = phi * a[i - 1] + e[i]
-        g = fe.statistical_inefficiency(a)
+        g = stats.statistical_inefficiency(a)
         exact = (1 + phi) / (1 - phi)
         assert abs(g - exact) < 0.1 * exact, (phi, g, exact)
     a = np.concatenate([np.linspace(8.0, 0.0, 300), rng.normal(size=3000)])
-    t0, g, neff = fe.detect_equilibration(a, nskip=10)
+    t0, g, neff = stats.detect_equilibration(a, nskip=10)
     assert 200 <= t0 <= 400 and neff > 2000
-    assert list(fe.subsample(10, 2.3)) == [0, 3, 6, 9]
+    assert list(stats.subsample(10, 2.3)) == [0, 3, 6, 9]

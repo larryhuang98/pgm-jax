@@ -52,6 +52,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ..analysis.stats import jackknife_error
 from ..system import QUANTITIES
 from ..units import KCAL
 from . import free_energy as fe
@@ -272,13 +273,6 @@ def gas_leg_gradient(gas, params, space: ParamSpace) -> tuple:
 
 
 # ----------------------------------------------------------------------------- estimators
-def jackknife_error(rep) -> np.ndarray:
-    """Standard error from delete-one-block jackknife replicates rep (B, ...)."""
-    r = np.asarray(rep, float)
-    B = r.shape[0]
-    return np.sqrt((B - 1) / B * np.sum((r - r.mean(0)) ** 2, axis=0))
-
-
 @_dc.dataclass
 class FEGradient:
     """A free energy (kJ/mol), its gradient over the parameter entries `names` (kJ/mol per unit), their

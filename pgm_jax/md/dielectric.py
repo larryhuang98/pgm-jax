@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..analysis.stats import jackknife_error
 from ..units import C_LIGHT_M_S, E_NM_C_M, EPS0_SI, KB_SI
 
 
@@ -79,7 +80,7 @@ def jackknife(M, V, T: float, nblocks: int = 10) -> tuple[float, float]:
 
     full = f(n.sum(), s1.sum(0), s2.sum(), sv.sum())
     loo = f(n.sum() - n, s1.sum(0) - s1, s2.sum() - s2, sv.sum() - sv)
-    err = np.sqrt((nblocks - 1) / nblocks * np.sum((loo - loo.mean()) ** 2))
+    err = jackknife_error(loo)
     return float(full), float(err)
 
 

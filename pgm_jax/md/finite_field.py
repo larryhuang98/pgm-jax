@@ -43,6 +43,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ..analysis.stats import block_mean, integrated_correlation_time, jackknife_error
 from ..units import E_CHARGE_C, EPS0_SI, KB_SI
 from .efield import EPS_FACTOR, finite_d_eps
 from .remd import MDReplicas, _stack
@@ -221,26 +222,6 @@ def read_series(paths) -> tuple[dict, dict]:
     return meta, {"step": x[:, 0].astype(np.int64), "time_ps": x[:, 1], "M": x[:, 2:].reshape(len(x), R, 3)}
 
 
-def block_mean(x, nblocks: int = 10):
-    """Mean and its standard error from `nblocks` contiguous block means."""
-    x = np.asarray(x, float)
-    n = len(x) // nblocks * nblocks
-    b = x[len(x) - n :].reshape(nblocks, -1).mean(1)
-    return float(x.mean()), float(b.std(ddof=1) / np.sqrt(nblocks))
-
-
-def correlation_time(x, dt: float) -> float:
-    """Integrated autocorrelation time (ps) of a series sampled every dt ps (sum of the normalised
-    autocorrelation up to its first zero crossing)."""
-    x = np.asarray(x, float) - np.mean(x)
-    n = len(x)
-    f = np.fft.rfft(x, 2 * n)
-    c = np.fft.irfft(f * np.conj(f))[:n] / np.arange(n, 0, -1)
-    c = c / c[0]
-    stop = np.argmax(c <= 0) if np.any(c <= 0) else n
-    return float(dt * (0.5 + np.sum(c[1:stop])))
-
-
 def fluctuation_eps(M, V, T, eps_inf: float = 1.0, nblocks: int = 10):
     """eps = eps_inf + (<M.M> - <M>.<M>) / (3 eps0 V kB T) (tin-foil) and its jackknife error over
     contiguous blocks; M (F, 3) e nm, V nm^3."""
@@ -253,7 +234,7 @@ def fluctuation_eps(M, V, T, eps_inf: float = 1.0, nblocks: int = 10):
     n = len(M) // nblocks * nblocks
     Mb = M[len(M) - n :].reshape(nblocks, -1, 3)
     jk = np.array([est(np.concatenate([Mb[j] for j in range(nblocks) if j != i])) for i in range(nblocks)])
-    return float(est(M)), float(np.sqrt((nblocks - 1) / nblocks * np.sum((jk - jk.mean()) ** 2)))
+    return float(est(M)), float(jackknife_error(jk))
 
 
 def analyse(meta: dict, data: dict, skip_ps: float = 50.0, nblocks: int = 10, eps_inf: float | None = None) -> dict:
@@ -296,14 +277,14 @@ def analyse(meta: dict, data: dict, skip_ps: float = 50.0, nblocks: int = 10, ep
                     "replica": k,
                     "eps": eps,
                     "err": err,
-                    "tau_ps": correlation_time(M[:, k, 2], dt),
+                    "tau_ps": integrated_correlation_time(M[:, k, 2], dt),
                     "M_mean": M[:, k].mean(0).tolist(),
                 }
             )
             continue
         e = E / mag
         m, err = block_mean(M[:, k] @ e, nblocks)
-        tau = correlation_time(M[:, k] @ e, dt)
+        tau = integrated_correlation_time(M[:, k] @ e, dt)
         eps, eerr = eps_of(m, err, mag)
         out["single"].append(
             {
@@ -330,7 +311,13 @@ def analyse(meta: dict, data: dict, skip_ps: float = 50.0, nblocks: int = 10, ep
             m, err = block_mean(d, nblocks)
             eps, eerr = eps_of(m, err, mag)
             out["pairs"].append(
-                {"replicas": (i, j), "E_mag": mag, "eps": eps, "err": eerr, "tau_ps": correlation_time(d, dt)}
+                {
+                    "replicas": (i, j),
+                    "E_mag": mag,
+                    "eps": eps,
+                    "err": eerr,
+                    "tau_ps": integrated_correlation_time(d, dt),
+                }
             )
     out["fits"] = []
     mags = sorted({p["E_mag"] for p in out["pairs"]})
