@@ -6,6 +6,7 @@ inefficiency) compute solvation free energies of small molecules, rigid (`Simula
 (`FlexibleSimulation`, e.g. a fitted methanol among rigid waters).
 `scripts/solvation_free_energy.py` runs the whole protocol (`run`), analyses it (`analyze`) and
 measures its cost (`bench`). Units: nm, ps, kJ/mol, K, e (results also in kcal/mol).
+Parameter gradients of these free energies (fitting targets): `docs/fe_gradients.md`.
 
 ```python
 from pgm_jax.md import free_energy as fe

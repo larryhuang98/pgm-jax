@@ -34,7 +34,17 @@ flexible engine runs everything (rigid waters by constraints, X-H bonds of the s
 2 fs).  Its intramolecular electrostatics is kept at every lambda by the gas-phase correction
 (--intramolecular keep, the default for them): the decoupled state is the gas-phase molecule, so
 Delta G_hyd = -Delta G(1 -> 0) with no separate gas leg.  Rigid solutes default to annihilation with
-the exact gas-phase leg (--intramolecular annihilate); both modes give the same free energy."""
+the exact gas-phase leg (--intramolecular annihilate); both modes give the same free energy.
+
+Parameter gradients (pgm_jax/md/fe_grad.py, docs/fe_gradients.md): `run --grad` also samples
+dU/dP of the two end-state Hamiltonians at every window's configuration, and `analyze` prints
+d DeltaG_hyd / dP (MBAR-weighted and end-state estimators, block jackknife errors), with the
+derivatives along scale directions of the solute's and the environment's parameters (charge =
+charges and covalent dipoles, eps, rmin, alpha, radius).  --solute-scale charge=1.05,eps=0.9 runs
+at scaled solute parameters (finite-difference checks: scripts/fe_gradient_check.py);
+--start-from prefix.fe.chk starts the windows from another run's configurations (no NPT);
+--elec-only runs only the electrostatics stage (its free energy is the whole dependence on the
+solute's electrostatic parameters: the van der Waals stage runs at lambda_elec = 0)."""
 from __future__ import annotations
 
 import argparse
@@ -50,6 +60,7 @@ import numpy as np
 jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from pgm_jax.md import fe_grad as fg  # noqa: E402
 from pgm_jax.md import free_energy as fe  # noqa: E402
 from pgm_jax.md.alchemy import (KCAL, Alchemy, FreeEnergyRun, GasPhaseLeg, LambdaWindows,  # noqa: E402
                                 alchemical_system, standard_schedule)
@@ -90,6 +101,21 @@ def water_model(model: str):
     return mols, xyz, vel, box, elec
 
 
+def lattice_box(mols, xyz, n: int, seed: int = 0):
+    """n^3 copies of the first molecule (its geometry in xyz, A) on a cubic lattice at 1 g/cm^3,
+    randomly rotated: a small box for cheap checks (equilibrate it with --npt-ps)."""
+    m = mols[0]
+    x = np.asarray(xyz[:m.n], float)
+    x = x - x.mean(axis=0)
+    rng = np.random.default_rng(seed)
+    a = (float(np.sum(m.masses)) * 1.66053906660 / 1.0) ** (1.0 / 3.0)          # A per molecule at 1 g/cm^3
+    pos = [x @ np.linalg.qr(rng.normal(size=(3, 3)))[0].T + (np.array([i, j, k]) + 0.5) * a
+           for i in range(n) for j in range(n) for k in range(n)]
+    L = n * a
+    print(f"# lattice box: {n ** 3} x {m.name}, {L:.3f} A", flush=True)
+    return [m] * n ** 3, np.concatenate(pos), (np.full(3, L), np.full(3, 90.0))
+
+
 def insert_solute(tpl, mols, xyz_nm, H, clear: float):
     """The template's molecule at the centre of the box (its reference geometry), waters with an atom
     within `clear` nm of it removed: (molecules, positions nm, templates) with the solute first."""
@@ -121,6 +147,9 @@ def build(a):
         elec = a.elec
     else:
         mols, xyz, vel, box, elec = water_model(a.model)
+    if getattr(a, "lattice", 0):
+        mols, xyz, box = lattice_box(mols, xyz, a.lattice, a.seed)
+        vel = None
     if box is None:
         raise ValueError("coordinates have no periodic box")
     H = box_from_cell(*box) * 0.1
@@ -168,10 +197,18 @@ def cmd_run(a):
         raise ValueError("a flexible pGM solute needs --intramolecular keep: its bonded terms were fitted with its "
                          "intramolecular electrostatics")
     alch = Alchemy(sysA, a.solute, sc_alpha=a.sc_alpha, intramolecular=mode)
+    quant = None if not a.grad_quantities else a.grad_quantities.split(",")
+    space = fg.ParamSpace(sysA.table, quant)
+    scales = parse_scales(a.solute_scale)
+    if scales:
+        P = fg.scaled_params(space, P, scales, solute=True)
+        print(f"# solute parameters scaled: {scales}", flush=True)
     kw = dict(settings=settings, dt=a.dt / 1000.0, temperature=a.temp, thermostat="bussi", tau_t=1.0, params=P,
               alchemy=alch, log=sys.stdout, seed=a.seed)
     lam = standard_schedule(a.n_elec, None if a.vdw is None else [float(x) for x in a.vdw.split(",")])
-    if a.checkpoint is None and a.npt_ps > 0:
+    if a.elec_only:
+        lam = lam[:a.n_elec]
+    if a.checkpoint is None and a.start_from is None and a.npt_ps > 0:
         npt = engine(sysA, templates, pos, H, ensemble="npt", pressure=1.0, barostat_interval=100, vel_nm_ps=vel, **kw)
         n = int(round(a.npt_ps / (a.dt / 1000.0)))
         rep = max(n // 20, 1)
@@ -189,23 +226,31 @@ def cmd_run(a):
     meta = {"model": a.model if not a.prmtop else a.prmtop, "solute": a.solute, "elec": elec,
             "settings": dataclasses.asdict(settings), "dt_fs": a.dt, "temperature": a.temp,
             "volume_nm3": float(volume(sim.state.box)), "sc_alpha": a.sc_alpha, "alpha_floor": alch.alpha_floor,
-            "intramolecular": mode}
+            "intramolecular": mode, "solute_scale": scales, "elec_only": bool(a.elec_only)}
     if templates is not None:
         meta["solute_template"] = os.path.abspath(a.solute_template)
     if mode == "annihilate":                                  # rigid solute: exact gas-phase leg
         gas = GasPhaseLeg(alch, sim.positions_nm()[sysA.atom_slice(a.solute)], elec)
         meta.update(gas_delta_g=gas.delta_g(P), gas_e1=gas.energy(1.0, P), gas_dudl=[gas.dudl(le, P) for le in lam[:, 0]])
+        if a.grad:
+            meta["gas_grad"] = fg.gas_leg_gradient(gas, P, space)[1].tolist()
         print(f"# gas-phase leg: E_gas(1) = {meta['gas_e1']:.4f} kJ/mol, Delta G_gas(1 -> 0) = "
               f"{meta['gas_delta_g']:.4f} kJ/mol", flush=True)
     else:                                                     # the gas-phase leg is in the Hamiltonian
         meta.update(gas_delta_g=0.0, gas_dudl=[0.0] * len(lam))
+        if a.grad:
+            meta["gas_grad"] = [0.0] * space.n
     t0 = time.time()
     win = LambdaWindows(sim, lam, batched=not a.sequential, seed=a.seed + 1)
     to_steps = lambda ps: int(round(ps / (a.dt / 1000.0)))                      # noqa: E731
+    pg = fg.ParamGradients(win, quantities=quant) if a.grad else None
     run = FreeEnergyRun(win, sample_every=to_steps(a.sample_ps), exchange_every=to_steps(a.exchange_ps),
-                        seed=a.seed, meta=meta)
+                        seed=a.seed, meta=meta, param_grad=pg)
     if a.checkpoint:
         run.load(a.checkpoint)
+    elif a.start_from:
+        run.load_windows(a.start_from)
+        print(f"# windows start from {a.start_from}", flush=True)
     total = to_steps(a.ns * 1000.0)
     summary = run.run(total - run.step, prefix=a.out, report=to_steps(a.report_ps), restart=to_steps(a.restart_ps))
     summary["wall_s"] = time.time() - t0
@@ -249,10 +294,54 @@ def report(d, discard_ps):
             print(f"# halves ({discard_ps:g}-{mid:g} ps | {mid:g}-{t[-1]:g} ps), MBAR: "
                   f"{k(h1['dG_hyd_mbar']):.3f} +- {k(h1['dG_hyd_mbar_err']):.3f} | "
                   f"{k(h2['dG_hyd_mbar']):.3f} +- {k(h2['dG_hyd_mbar_err']):.3f} kcal/mol")
+    if "dudp" in d:
+        grad_report(d, discard_ps)
     teq = fe.equilibration_times(d)
     print(f"# equilibration detected (ps after the windows start): max {teq.max():.0f}, per window "
           + " ".join(f"{x:.0f}" for x in teq))
     return r
+
+
+def parse_scales(text):
+    """'charge=1.05,eps=0.9' -> {'charge': 1.05, 'eps': 0.9}."""
+    out = {}
+    for item in (text or "").split(","):
+        if item.strip():
+            k, v = item.split("=")
+            out[k.strip()] = float(v)
+    return out
+
+
+def grad_report(d, discard_ps, n_blocks=10):
+    """Parameter gradients of the hydration free energy (or of the solution leg without a gas leg):
+    MBAR-weighted and end-state estimators, block jackknife errors; derivatives along the scale
+    directions of the solute's and of the environment's parameters, and per solute entry."""
+    meta = d["meta"]
+    gas = {"delta_g": meta["gas_delta_g"], "grad": meta.get("gas_grad")} if "gas_delta_g" in meta else None
+    r = fg.gradient_estimate(d, discard_ps=discard_ps, gas=gas, n_blocks=n_blocks)
+    leg = "hyd" if "hyd" in r else "solv"
+    space = fg.ParamSpace.from_names(r["names"])
+    p = np.asarray(meta["params_flat"], float)
+    k = lambda x: x / KCAL                                                    # noqa: E731
+    m, e = r[leg]["mbar"], r[leg]["end"]
+    print(f"# parameter gradients of {'the hydration free energy' if leg == 'hyd' else 'Delta G(first -> last)'}, "
+          f"block jackknife over {n_blocks} blocks: value {k(m.value):.3f} +- {k(m.value_err):.3f} kcal/mol")
+    print("#  d/d ln s (kcal/mol)           MBAR               end states")
+    out = {"value_kcal": k(m.value), "value_err_kcal": k(m.value_err), "scale": {}}
+    for who, sol in (("solute", True), ("environment", False)):
+        for g in fg.SCALE_GROUPS:
+            v = space.scale_direction(p, g, sol)
+            if not np.any(v):
+                continue
+            (a1, b1), (a2, b2) = m.project(v), e.project(v)
+            out["scale"][f"{who}:{g}"] = {"mbar": [k(a1), k(b1)], "end": [k(a2), k(b2)]}
+            print(f"  {who:12s} {g:7s} {k(a1):9.3f} +- {k(b1):.3f}   {k(a2):9.3f} +- {k(b2):.3f}")
+    print("#  solute entries: dG/dp (kJ/mol per unit; MBAR | end states)")
+    for i in space.select(solute=True):
+        if p[i] != 0.0 or m.grad[i] != 0.0:
+            print(f"  {r['names'][i]:28s} p = {p[i]:11.6f}  {m.grad[i]:12.4f} +- {m.grad_err[i]:.4f} | "
+                  f"{e.grad[i]:12.4f} +- {e.grad_err[i]:.4f}")
+    return r, out
 
 
 def cmd_bench(a):
@@ -298,6 +387,9 @@ def cmd_bench(a):
         ts = timed(lambda: win.sample(), reps=2)
         out[f"batched_{len(idx)}_ms_per_window_step"] = t / n / len(idx) * 1e3
         out[f"batched_{len(idx)}_sample_ms"] = ts * 1e3
+        if a.grad:                                    # parameter gradients of the end states at every window
+            pg = fg.ParamGradients(win)
+            out[f"batched_{len(idx)}_grad_sample_ms"] = timed(lambda: pg.sample(), reps=2) * 1e3
         del win
     for k, v in out.items():
         print(f"{k:40s} {v:.4f}" if isinstance(v, float) else f"{k:40s} {v}")
@@ -347,6 +439,8 @@ def main():
     r.add_argument("--coords")
     r.add_argument("--elec", default="qpi", help="electrostatics level for --prmtop")
     r.add_argument("--solute", type=int, default=0, help="molecule (residue) index of the solute")
+    r.add_argument("--lattice", type=int, default=0, help="n: a small box of n^3 copies of the model's first "
+                   "molecule on a lattice (cheap checks; with --npt-ps, --cut, --nfft for the small box)")
     r.add_argument("--solute-template", help="flexible solute (FlexibleTemplate file) inserted into the water box")
     r.add_argument("--clear", type=float, default=0.25, help="nm: waters this close to the inserted solute are removed")
     r.add_argument("--rigid-solute", action="store_true",
@@ -374,14 +468,22 @@ def main():
     r.add_argument("--sequential", action="store_true", help="windows one after the other (not batched)")
     r.add_argument("--seed", type=int, default=0)
     r.add_argument("--checkpoint", help="continue from prefix.fe.chk")
+    r.add_argument("--start-from", help="start the windows from the configurations of another run's prefix.fe.chk "
+                   "(no NPT, no samples taken over; windows matched by lambda)")
+    r.add_argument("--grad", action="store_true", help="sample parameter gradients of the end states (fe_grad.py)")
+    r.add_argument("--grad-quantities", help="comma-separated parameter quantities for --grad (default: all)")
+    r.add_argument("--solute-scale", help="scale solute parameters, e.g. charge=1.05,eps=0.9 (charge: q and "
+                   "covalent dipoles; eps, rmin, alpha, radius)")
+    r.add_argument("--elec-only", action="store_true", help="only the electrostatics windows (lambda_vdw = 1)")
     b = sub.add_parser("bench")
     b.add_argument("--model", default="pgm", choices=["pgm", "pgm3p25", "tip3p"])
     b.add_argument("--windows", default="1,4,8,19", help="numbers of batched windows")
     b.add_argument("--steps", type=int, default=1000)
     b.add_argument("--n-elec", type=int, default=8)
+    b.add_argument("--grad", action="store_true", help="also time the parameter-gradient samples")
     for x in r._actions:
         if x.dest in ("prmtop", "coords", "elec", "solute", "dt", "temp", "tol", "cut", "ew_coeff", "nfft", "order",
-                      "precision", "seed", "solute_template", "clear"):
+                      "precision", "seed", "solute_template", "clear", "lattice"):
             b._add_action(x)
     fs = sub.add_parser("finite-size")
     fs.add_argument("--model", default="pgm", choices=["pgm", "pgm3p25", "tip3p"])

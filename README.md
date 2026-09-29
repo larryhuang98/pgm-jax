@@ -25,7 +25,9 @@ any order. Validated against Amber (sander, pmemd-pgm) and PyRESP.
   integrators, constraints and barostat with pGM forces), all on one device-resident engine.
 - **Parameterization:** gradients of QM losses (energies, forces, dipoles, ESP) by autodiff;
   gradients of liquid properties (density, heat of vaporization) by fluctuation formulas over MD
-  frames; bonded terms for flexible pGM molecules (`pgm_jax.bonded`).
+  frames; **hydration (alchemical) free energies as fitting targets**: dDeltaG/dtheta for every
+  parameter of solute and solvent from the lambda windows (`pgm_jax/md/fe_grad.py`,
+  `docs/fe_gradients.md`); bonded terms for flexible pGM molecules (`pgm_jax.bonded`).
 - **Fitting to QM cluster data** (`pgm_jax.qmfit`, `docs/qmfit.md`): pGM parameters (charges,
   covalent dipoles, radii, polarizabilities, LJ or GVDW) fitted by least squares with exact Jacobians to
   interaction energies, SAPT components, 3-body energies and rigid-body forces of clusters; a psi4
@@ -522,6 +524,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/md/alchemy.py` | alchemical free energies: `Alchemy` (lambda Hamiltonian of one solute: annihilated electrostatics with a polarizability floor, soft-core van der Waals rows), `alchemical_system`, `LambdaWindows` (windows batched with `jax.vmap`), `FreeEnergyRun` (samples of u_k(x_n) and dU/dlambda, Hamiltonian replica exchange, outputs, checkpoints), `GasPhaseLeg`, `standard_schedule` |
 | `pgm_jax/bias/` | enhanced sampling: `cv.py` (collective variables), `core.py` (`StaticBias`, `Harmonic`, walls, `MetaD` + `HillGrid`, `OPES`, `BiasSet`), `walkers.py` (`Walkers`: independent or shared-bias walkers in one vmapped program), `analysis.py` (FES, c(t), weights, histograms, WHAM), `io.py` (COLVAR / HILLS), `toy.py` (Langevin on model potentials); `scripts/bias/` (validations, benchmark) |
 | `pgm_jax/md/free_energy.py` | estimators: MBAR (covariance), BAR, TI along a lambda path, statistical inefficiency, equilibration detection, `estimate` (hydration free energy from `FreeEnergyRun` samples) |
+| `pgm_jax/md/fe_grad.py` | parameter gradients of alchemical free energies: `ParamGradients` (dU/dP of the end states at every window's configuration, re-solved dipoles, batched), `gradient_estimate` (MBAR-weighted and end-state estimators, block jackknife), `gas_leg_gradient`, `FreeEnergyTarget` (value, gradient, errors, chain rule, chi^2, fit layout), `combine`, `ParamSpace`, `alchemical_map`; `scripts/fe_gradient_check.py` (finite differences over independent runs) |
 | `scripts/solvation_free_energy.py` | hydration free energy of a rigid molecule: `run` (NPT at full coupling, batched windows, exchange), `analyze` (TI / BAR / MBAR, halves, equilibration), `bench` (cost per window) |
 | `pgm_jax/protein/` | proteins: `residues` (bond orders, terminal keys), `library` (`ResidueLibrary`: pGM parameters by residue and atom name, JSON), `amber` (`load_amber`: tleap system -> pgm_jax molecules; `amber_template`: ff19SB-form bonded terms + CMAP; `AmberSystem.hmr` per-kind hydrogen masses, `select` / `position_restraints`), `pmemd` (`write_pgm_prmtop`: the engine's model as a pmemd-pgm prmtop; `pmemd_mdin`, `pmemd_grid`) |
 | `scripts/protein/` | `build_amber.py` (PDB or residue sequence -> solvated tleap topology), `bench_protein.py` (speed of a solvated protein; `--elec-cut`, `--hmr-water`, `--prod-ps`: stability and <U> with block errors), `write_pgm_prmtop.py` (pmemd-pgm prmtop + mdin), `check_pgm_prmtop.py` (single points and MD against pmemd-pgm), `elec_accuracy.py` (electrostatic error of real-space cutoffs), `remd_peptide.py` (replica exchange of a solvated peptide vs plain MD: acceptance, round trips, phi/psi populations, replica speed) |
