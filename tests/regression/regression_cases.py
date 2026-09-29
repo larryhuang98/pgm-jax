@@ -20,6 +20,9 @@ import jax.numpy as jnp
 import numpy as np
 import regression_systems as S
 
+from pgm_jax.md.barostats import MonteCarloBarostat
+from pgm_jax.md.thermostats import Bussi, Langevin
+
 CASES: dict = {}
 
 
@@ -97,7 +100,7 @@ def rigid_template(mol, xyz):
 
 def advance(sim, n: int):
     """n steps without files (the driver's block loop: overflow checks, re-wrapping)."""
-    sim._advance(n)
+    sim.advance(n)
 
 
 def snapshot(sim, out: dict, tag: str, mu: bool = True):
@@ -105,8 +108,8 @@ def snapshot(sim, out: dict, tag: str, mu: bool = True):
     for k, v in sim.observables().items():
         if isinstance(v, (bool, int, float, np.integer, np.floating)):
             out[f"{tag}.obs.{k}"] = np.asarray(v)
-    out[f"{tag}.pos"] = _np(sim.positions_nm())
-    out[f"{tag}.vel"] = _np(sim.velocities_nm_ps())
+    out[f"{tag}.pos"] = _np(sim.positions())
+    out[f"{tag}.vel"] = _np(sim.velocities())
     out[f"{tag}.box"] = _np(sim.state.box)
     if mu:
         out[f"{tag}.mu"] = _np(sim.state.induction.mu)
@@ -299,7 +302,8 @@ def iel_point():
 
 
 # ============================================================================= rigid engine
-def _rigid_water(ensemble, thermostat="langevin", dt=0.001, seed=3, settings=None, **kw):
+def _rigid_water(thermostat, barostat=None, dt=0.001, seed=3, settings=None, **kw):
+    """Rigid pGM3P-25 water (64 molecules) at 298 K with the given thermostat and barostat."""
     sys, pos, H, w, _ = water_system(pgm3p25=True)
     return rigid_sim(
         sys,
@@ -307,8 +311,8 @@ def _rigid_water(ensemble, thermostat="langevin", dt=0.001, seed=3, settings=Non
         H,
         settings or tight(),
         dt=dt,
-        ensemble=ensemble,
         thermostat=thermostat,
+        barostat=barostat,
         temperature=298.0,
         seed=seed,
         **kw,
@@ -318,31 +322,31 @@ def _rigid_water(ensemble, thermostat="langevin", dt=0.001, seed=3, settings=Non
 @case("md_rigid_nve", needs="pgm3p25")
 def md_rigid_nve():
     """Rigid pGM3P-25 water (64, rigid bodies), NVE 200 steps of 1 fs."""
-    return trajectory(_rigid_water("nve"), {})
+    return trajectory(_rigid_water(None), {})
 
 
 @case("md_rigid_langevin", needs="pgm3p25")
 def md_rigid_langevin():
     """Rigid pGM3P-25 water, NVT Langevin (gamma 5/ps), 200 steps."""
-    return trajectory(_rigid_water("nvt", "langevin", gamma=5.0), {})
+    return trajectory(_rigid_water(Langevin(5.0)), {})
 
 
 @case("md_rigid_bussi", needs="pgm3p25")
 def md_rigid_bussi():
     """Rigid pGM3P-25 water, NVT Bussi (tau 0.1 ps), 200 steps."""
-    return trajectory(_rigid_water("nvt", "bussi", tau_t=0.1), {})
+    return trajectory(_rigid_water(Bussi(0.1)), {})
 
 
 @case("md_rigid_gle", needs="pgm3p25", group="b")
 def md_rigid_gle():
     """Rigid pGM3P-25 water, NVT smooth GLE, 200 steps."""
-    return trajectory(_rigid_water("nvt", "gle"), {})
+    return trajectory(_rigid_water("gle"), {})
 
 
 @case("md_rigid_npt", needs="pgm3p25", group="b")
 def md_rigid_npt():
     """Rigid pGM3P-25 water, NPT (Bussi + Monte Carlo barostat every 10 steps), 200 steps; pressure."""
-    sim = _rigid_water("npt", "bussi", tau_t=0.1, barostat_interval=10, pressure=1.0)
+    sim = _rigid_water(Bussi(0.1), MonteCarloBarostat(1.0, every=10))
     out = trajectory(sim, {})
     out["pressure"] = np.asarray(sim.pressure())
     return out
@@ -352,7 +356,7 @@ def md_rigid_npt():
 def md_rigid_mixed():
     """Rigid pGM3P-25 water in mixed precision with production defaults (tol 1e-5, mu4 predictor)."""
     s = md_settings(cutoff=0.55, skin=0.05)
-    return trajectory(_rigid_water("nvt", "bussi", settings=s, dt=0.002), {})
+    return trajectory(_rigid_water("bussi", settings=s, dt=0.002), {})
 
 
 @case("md_rigid_run_files", needs="pgm3p25", group="c")
@@ -365,8 +369,17 @@ def md_rigid_run_files():
     out = {}
     with tempfile.TemporaryDirectory() as d:
         prefix = os.path.join(d, "md")
-        sim = _rigid_water("nvt", "bussi", tau_t=0.1)
-        sim.run(100, report=20, traj=20, restart=50, prefix=prefix, dipoles=10, induced=50, pressure_every_report=True)
+        sim = _rigid_water(Bussi(0.1))
+        sim.run(
+            100,
+            report_every=20,
+            traj_every=20,
+            checkpoint_every=50,
+            prefix=prefix,
+            dipoles_every=10,
+            induced_every=50,
+            report_pressure=True,
+        )
         rows = [line.split() for line in open(prefix + ".log") if not line.startswith("#")]
         cols = [line.split()[1:] for line in open(prefix + ".log") if line.startswith("#")][0]
         tab = np.array(rows, float)
@@ -382,8 +395,8 @@ def md_rigid_run_files():
         # continue: 50 steps from the 100-step checkpoint in a new simulation = 50 more steps here
         advance(sim, 50)
         snapshot(sim, out, "cont_a")
-        sim2 = _rigid_water("nvt", "bussi", tau_t=0.1)
-        sim2.load(prefix + ".chk")
+        sim2 = _rigid_water(Bussi(0.1))
+        sim2.load_checkpoint(prefix + ".chk")
         advance(sim2, 50)
         snapshot(sim2, out, "cont_b")
     return out
@@ -394,7 +407,7 @@ def md_rigid_mts():
     """Rigid pGM3P-25 water, r-RESPA (short-range split, 2 inner steps), outer step 2 fs, Bussi."""
     from pgm_jax.md.mts import MTS
 
-    sim = _rigid_water("nvt", "bussi", dt=0.002, tau_t=0.1, mts=MTS(inner=2, r_short=0.4, buffer=0.1))
+    sim = _rigid_water(Bussi(0.1), dt=0.002, mts=MTS(inner=2, r_short=0.4, buffer=0.1))
     return trajectory(sim, {}, nsteps=100, every=25)
 
 
@@ -402,7 +415,7 @@ def md_rigid_mts():
 def md_iel():
     """iEL/0-SCF dynamics of toy pGM water (rigid bodies), NVE 200 steps of 1 fs."""
     sys, pos, H, w, _ = water_system()
-    sim = rigid_sim(sys, pos, H, tight(iel="0scf", pme_grid=(24, 24, 24)), dt=0.001, ensemble="nve", seed=3)
+    sim = rigid_sim(sys, pos, H, tight(iel="0scf", pme_grid=(24, 24, 24)), dt=0.001, thermostat=None, seed=3)
     return trajectory(sim, {})
 
 
@@ -418,10 +431,10 @@ def md_vsites():
     )
     prm, crd = os.path.join(S.DATA, "tip4pew_small.prmtop"), os.path.join(S.DATA, "tip4pew_small.inpcrd")
     rig = Simulation.from_amber(
-        prm, crd, charges="amber", settings=s, dt=0.001, ensemble="nvt", thermostat="bussi", tau_t=0.1, seed=1, log=None
+        prm, crd, charges="amber", settings=s, dt=0.001, thermostat=Bussi(0.1), seed=1, log=None
     )
     out = trajectory(rig, {}, nsteps=100, every=50, tag="rigid")
-    pos = rig.positions_nm()
+    pos = rig.positions()
     tpl = rigid_template(rig.sys.molecules[0], pos[:4])
     flx = flexible_sim(
         rig.sys,
@@ -430,8 +443,8 @@ def md_vsites():
         np.asarray(rig.state.box),
         s,
         dt=0.001,
-        ensemble="nve",
-        vel_nm_ps=rig.velocities_nm_ps(),
+        thermostat=None,
+        velocities=rig.velocities(),
     )
     out["flex.force0"] = _np(flx.state.dyn.force)
     return trajectory(flx, out, nsteps=100, every=50, tag="flex")
@@ -445,9 +458,9 @@ def md_efield():
     sys, pos, H = S.small_box(13, nm=0)
     s = tight(cutoff=0.6, dipole_tol=1e-8)
     out = {}
-    sim = rigid_sim(sys, pos, H, s, dt=0.001, ensemble="nvt", thermostat="bussi", seed=2, efield=(0.0, 0.2, 0.6))
+    sim = rigid_sim(sys, pos, H, s, dt=0.001, thermostat="bussi", seed=2, efield=(0.0, 0.2, 0.6))
     trajectory(sim, out, nsteps=100, every=50, tag="E")
-    sim = rigid_sim(sys, pos, H, s, dt=0.001, ensemble="nve", seed=5, efield=EF.displacement((0.0, 0.0, 2.0)))
+    sim = rigid_sim(sys, pos, H, s, dt=0.001, thermostat=None, seed=5, efield=EF.displacement((0.0, 0.0, 2.0)))
     return trajectory(sim, out, nsteps=100, every=50, tag="D")
 
 
@@ -467,19 +480,7 @@ def flex_methanol_hbonds():
     minimize first."""
     tpl, sys, pos, H = _methanol_box()
     s = tight(cutoff=0.6, lj_lrc=False, dipole_tol=1e-10)
-    sim = flexible_sim(
-        sys,
-        [tpl] * sys.nmol,
-        pos,
-        H,
-        s,
-        dt=0.001,
-        ensemble="nvt",
-        thermostat="bussi",
-        tau_t=0.1,
-        constraints="h-bonds",
-        seed=4,
-    )
+    sim = flexible_sim(sys, [tpl] * sys.nmol, pos, H, s, dt=0.001, thermostat=Bussi(0.1), constraints="h-bonds", seed=4)
     out = {}
     _put(out, "minimize", {k: v for k, v in sim.minimize(30).items()})
     return trajectory(sim, out)
@@ -497,10 +498,8 @@ def flex_methanol_npt():
         H,
         s,
         dt=0.0005,
-        ensemble="npt",
-        thermostat="langevin",
-        gamma=5.0,
-        barostat_interval=10,
+        thermostat=Langevin(5.0),
+        barostat=MonteCarloBarostat(every=10),
         seed=6,
     )
     out = trajectory(sim, {})
@@ -512,9 +511,7 @@ def flex_methanol_npt():
 def flex_water_constraints():
     """Toy pGM water held rigid by SHAKE / RATTLE (flexible engine), 2 fs, GLE, 200 steps."""
     sys, pos, H, w, geo = water_system()
-    sim = flexible_sim(
-        sys, [rigid_template(w, geo)] * sys.nmol, pos, H, tight(), dt=0.002, ensemble="nvt", thermostat="gle", seed=1
-    )
+    sim = flexible_sim(sys, [rigid_template(w, geo)] * sys.nmol, pos, H, tight(), dt=0.002, thermostat="gle", seed=1)
     return trajectory(sim, {})
 
 
@@ -533,7 +530,7 @@ def flex_flux():
         max_iter=500,
         peek=0.0,
     )
-    sim = flexible_sim(sys, [tpl] * sys.nmol, pos, H, s, dt=0.0005, ensemble="nve", seed=2)
+    sim = flexible_sim(sys, [tpl] * sys.nmol, pos, H, s, dt=0.0005, thermostat=None, seed=2)
     out = {"force0": _np(sim.state.dyn.force)}
     return trajectory(sim, out, nsteps=100, every=50)
 
@@ -546,17 +543,7 @@ def flex_mts():
     tpl, sys, pos, H = _methanol_box()
     s = tight(cutoff=0.6, lj_lrc=False)
     sim = flexible_sim(
-        sys,
-        [tpl] * sys.nmol,
-        pos,
-        H,
-        s,
-        dt=0.001,
-        ensemble="nvt",
-        thermostat="bussi",
-        tau_t=0.1,
-        seed=3,
-        mts=MTS(inner=2, split="special"),
+        sys, [tpl] * sys.nmol, pos, H, s, dt=0.001, thermostat=Bussi(0.1), seed=3, mts=MTS(inner=2, split="special")
     )
     return trajectory(sim, {}, nsteps=100, every=50)
 
@@ -571,18 +558,16 @@ def pimd():
     tpl, pos, H = S.flexible_water_box()
     sys = System([tpl.pgm] * (len(pos) // 3))
     s = tight(dipole_tol=1e-10, cutoff=0.5, lj_lrc=False, max_iter=200)
-    sim = flexible_sim(
-        sys, [tpl] * sys.nmol, pos, H, s, dt=0.0002, ensemble="nvt", temperature=300.0, thermostat="bussi"
-    )
+    sim = flexible_sim(sys, [tpl] * sys.nmol, pos, H, s, dt=0.0002, thermostat="bussi", temperature=300.0)
     pi = PIMDSimulation(sim, beads=4, log=None, seed=1)
     out = {}
     for s_ in range(4):
-        pi._advance(25)
+        pi.advance(25)
         _put(out, f"t{s_}.obs", {k: v for k, v in pi.observables().items()})
         out[f"t{s_}.q"], out[f"t{s_}.p"] = _np(pi.state.q), _np(pi.state.p)
     out["pressure"] = np.asarray(pi.pressure())
     pi.set_mode("trpmd")
-    pi._advance(40)
+    pi.advance(40)
     _put(out, "trpmd.obs", pi.observables())
     out["trpmd.q"] = _np(pi.state.q)
     return out
@@ -638,7 +623,7 @@ def bias_metad():
     sys = System([S.water()] * (len(pos) // 3))
     s = md_settings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, d = _cluster_bias(10, 1.0)
-    sim = rigid_sim(sys, pos, H, s, dt=0.0005, ensemble="nve", bias=BiasSet([m, Harmonic(d, 0.30, 2000.0)], colvar=5))
+    sim = rigid_sim(sys, pos, H, s, dt=0.0005, thermostat=None, bias=BiasSet([m, Harmonic(d, 0.30, 2000.0)], colvar=5))
     out = trajectory(sim, {})
     out["hills.centers"] = (
         _np(sim.state.bias.parts[0].centers) if hasattr(sim.state.bias.parts[0], "centers") else np.zeros(0)
@@ -660,9 +645,7 @@ def bias_walkers():
     sys = System([S.water()] * (len(pos) // 3))
     s = md_settings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, _ = _cluster_bias(10, 1.0)
-    sim = rigid_sim(
-        sys, pos, H, s, dt=0.001, ensemble="nvt", thermostat="bussi", temperature=300.0, bias=BiasSet([m], colvar=5)
-    )
+    sim = rigid_sim(sys, pos, H, s, dt=0.001, thermostat="bussi", temperature=300.0, bias=BiasSet([m], colvar=5))
     wk = Walkers(sim, 3, shared=True, seed=4)
     wk.advance(100)
     out = {"heights": _np(wk.S.bias.parts[0].heights), "n": _np(wk.S.bias.parts[0].n)}
@@ -680,19 +663,12 @@ def field_replicas():
 
     sys, pos, H = S.small_box(13, nm=0)
     sim = rigid_sim(
-        sys,
-        pos,
-        H,
-        tight(cutoff=0.6, dipole_tol=1e-6),
-        dt=0.001,
-        ensemble="nvt",
-        thermostat="bussi",
-        efield=(0.0, 0.0, 0.0),
+        sys, pos, H, tight(cutoff=0.6, dipole_tol=1e-6), dt=0.001, thermostat="bussi", efield=(0.0, 0.0, 0.0)
     )
     rep = FieldReplicas(sim, [(0.0, 0.0, 0.5), (0.0, 0.0, -0.5), (0.0, 0.0, 0.0)], seed=1)
     out = {}
     with tempfile.TemporaryDirectory() as d:
-        rep.run(40, every=10, prefix=os.path.join(d, "ff"), report=20, log=None)
+        rep.run(40, sample_every=10, prefix=os.path.join(d, "ff"), report_every=20)
         meta, data = read_series(os.path.join(d, "ff.ffd"))
     _put(out, "ffd", {k: v for k, v in data.items()})
     for k in range(3):
@@ -708,7 +684,7 @@ def _alch_windows(batched=True, seed=1, dipole_tol=1e-9):
     sysA, P = alchemical_system(sys0, 0)
     alch = Alchemy(sysA, 0)
     s = tight(dipole_tol=dipole_tol, max_iter=400, ewald_beta=5.0, pme_grid=(32, 32, 32), peek=0.0)
-    sim = rigid_sim(sysA, pos, H, s, dt=0.001, params=P, alchemy=alch, thermostat="bussi", ensemble="nvt")
+    sim = rigid_sim(sysA, pos, H, s, dt=0.001, params=P, alchemy=alch, thermostat="bussi")
     return LambdaWindows(sim, standard_schedule(3, [0.5, 0.0]), batched=batched, seed=seed), P, sim, alch
 
 
@@ -869,7 +845,7 @@ def md_restraints_npt():
             COMDistanceRestraint([0, 1, 2], [33, 34, 35], (0.1, 0.25, 0.3, 0.4), k=300.0, masses=m),
         ]
     )
-    sim = _rigid_water("npt", "bussi", tau_t=0.1, barostat_interval=10, restraints=rs)
+    sim = _rigid_water(Bussi(0.1), MonteCarloBarostat(every=10), restraints=rs)
     out = trajectory(sim, {})
     _put(out, "erestraint", sim.restraint_energies())
     out["pressure"] = np.asarray(sim.pressure())
@@ -904,9 +880,7 @@ def protein_peptide():
         asys.box,
         s,
         dt=0.002,
-        ensemble="nvt",
-        thermostat="bussi",
-        tau_t=0.1,
+        thermostat=Bussi(0.1),
         constraints="h-bonds",
         hmr=3.024,
         seed=7,

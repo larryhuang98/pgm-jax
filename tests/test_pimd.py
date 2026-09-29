@@ -12,9 +12,11 @@ import pytest
 from test_grad import water
 
 from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.pimd import (
+    PILE,
     PIMDIntegrator,
     PIMDSimulation,
     PotentialEngine,
@@ -122,7 +124,7 @@ def test_harmonic_oscillator_estimators(thermostat):
     w, m, n = 100.0, 1.0, 64
     for P in (1, 8):
         eng = PotentialEngine(lambda x, box: 0.5 * m * w**2 * jnp.sum(x * x))
-        integ = PIMDIntegrator(eng, np.full(n, m), P, T, 0.0005, "pimd", thermostat, tau0=0.02)
+        integ = PIMDIntegrator(eng, np.full(n, m), P, T, 0.0005, "pimd", PILE(thermostat, tau_centroid=0.02))
         st = integ.run(integ.init(jnp.zeros((n, 3)), jnp.eye(3), jax.random.PRNGKey(P)), 2000)
         est = jax.jit(integ.estimators)
 
@@ -149,7 +151,7 @@ def test_free_particle_mode_temperatures():
     momentum alone."""
     P, n, m = 8, 128, 1.008
     eng = PotentialEngine(lambda x, box: 0.0 * jnp.sum(x))
-    integ = PIMDIntegrator(eng, np.full(n, m), P, T, 0.0005, "pimd", "pile-l", tau0=0.05)
+    integ = PIMDIntegrator(eng, np.full(n, m), P, T, 0.0005, "pimd", PILE("l", tau_centroid=0.05))
     st = integ.run(integ.init(jnp.zeros((n, 3)), jnp.eye(3), jax.random.PRNGKey(0)), 500)
     r = integ.ring
 
@@ -218,7 +220,7 @@ def _sim(**kw):
     tpl, sys, pos, H = _water_box()
     s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=0.5, skin=0.05, lj_lrc=False, max_iter=200)
     return FlexibleSimulation(
-        sys, [tpl] * sys.nmol, pos, H, s, dt=0.0002, ensemble="nvt", temperature=T, thermostat="bussi", log=None, **kw
+        sys, [tpl] * sys.nmol, pos, H, s, dt=0.0002, thermostat="bussi", temperature=T, log=None, **kw
     )
 
 
@@ -241,8 +243,8 @@ def test_bead_chunks_match_vmap():
     a = PIMDSimulation(sim, beads=4, log=None, seed=5)
     b = PIMDSimulation(sim, beads=4, log=None, seed=5, bead_chunk=2)
     assert np.allclose(a.state.f, b.state.f, atol=1e-9) and abs(float(a.state.upot - b.state.upot)) < 1e-8
-    a._advance(20)
-    b._advance(20)
+    a.advance(20)
+    b.advance(20)
     assert np.allclose(a.state.q, b.state.q, atol=1e-9)
     assert int(a.state.eng.induction.count) == int(b.state.eng.induction.count) == 21
 
@@ -277,7 +279,7 @@ def test_pgm_rpmd_conserves_ring_polymer_energy():
         pi = PIMDSimulation(_sim(), beads=4, mode="rpmd", log=None, seed=3, dt=dt)
         E = []
         for _ in range(4):
-            pi._advance(int(round(4e-3 / dt / 4)))
+            pi.advance(int(round(4e-3 / dt / 4)))
             E.append(pi.observables()["econs"])
         sd.append(np.std(E))
     ke = 1.5 * pi.sim.sys.n * 4 * 4 * KB * T
@@ -294,11 +296,8 @@ def test_pgm_npt_barostat():
         beads=2,
         log=None,
         seed=4,
-        ensemble="npt",
-        pressure=3000.0,
-        barostat_interval=5,
-        thermostat="pile-g",
-        tau0=0.05,
+        barostat=MonteCarloBarostat(3000.0, every=5),
+        thermostat=PILE("g", tau_centroid=0.05),
         bead_margin=0.05,
     )
     st = pi.state
@@ -309,7 +308,7 @@ def test_pgm_npt_barostat():
     X, X2 = qc.reshape(-1, 3, 3), qc2.reshape(-1, 3, 3)
     assert np.allclose(np.linalg.norm(X[:, 1] - X[:, 0], axis=1), np.linalg.norm(X2[:, 1] - X2[:, 0], axis=1))
     V0 = pi.observables()["volume_nm3"]
-    pi._advance(400)
+    pi.advance(400)
     o = pi.observables()
     assert o["mc_accept"] > 0 and o["volume_nm3"] < V0, (o["mc_accept"], V0, o["volume_nm3"])
 

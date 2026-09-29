@@ -36,10 +36,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from pgm_jax.cli.args import setup_logging
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.box import box_from_cell
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.md.io import read_coordinates
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.md.thermostats import Bussi
 from pgm_jax.md.vsites import VirtualSites
 from pgm_jax.param import read_prmtop_molecules
 from pgm_jax.paths import resource
@@ -197,14 +200,13 @@ def equil(a):
         H,
         settings(),
         dt=0.002,
-        ensemble="npt",
+        thermostat=Bussi(0.5),
+        barostat=MonteCarloBarostat(),
         temperature=298.0,
-        thermostat="bussi",
-        tau_t=0.5,
         seed=3,
         log=open(os.path.join(OUT, "equil.out"), "w"),
     )
-    sim.run(int(a.ps / 0.002), report=500, restart=int(a.ps / 0.002), prefix=os.path.join(OUT, "equil"))
+    sim.run(int(a.ps / 0.002), report_every=500, checkpoint_every=int(a.ps / 0.002), prefix=os.path.join(OUT, "equil"))
     o = sim.observables()
     print(f"equilibrated {a.ps} ps: density {o['density_g_cm3']:.4f} g/cm^3, T {o['temp_K']:.1f} K")
 
@@ -326,17 +328,17 @@ def nve(a):
         for dt in (0.001, 0.002):
             s = settings()
             if engine == "rigid":
-                sim = Simulation(sys_, pos, H, s, dt=dt, ensemble="nve", vel_nm_ps=vel, log=None)
+                sim = Simulation(sys_, pos, H, s, dt=dt, thermostat=None, velocities=vel, log=None)
             else:
                 tpl = RigidTemplate(sys_.molecules[0], pos[:4])
                 sim = FlexibleSimulation(
-                    sys_, [tpl] * sys_.nmol, pos, H, s, dt=dt, ensemble="nve", vel_nm_ps=vel, log=None
+                    sys_, [tpl] * sys_.nmol, pos, H, s, dt=dt, thermostat=None, velocities=vel, log=None
                 )
             nrep = int(round(1.0 / dt)) // 10  # 0.1 ps
             t, E, T = [], [], []
             t0 = time.time()
             for _k in range(int(a.ps * 10)):
-                sim._advance(nrep)
+                sim.advance(nrep)
                 o = sim.observables()
                 t.append(o["time_ps"])
                 E.append(o["etot"])
@@ -363,12 +365,10 @@ def npt(a):
     prefix = os.path.join(OUT, f"npt_{a.engine}" + ("" if a.dt == 2.0 else f"_{a.dt:g}fs"))
     kw = dict(
         dt=dt,
-        ensemble="npt",
+        thermostat=Bussi(1.0),
+        barostat=MonteCarloBarostat(1.01325),
         temperature=298.0,
-        pressure=1.01325,
-        thermostat="bussi",
-        tau_t=1.0,
-        vel_nm_ps=vel,
+        velocities=vel,
         seed=11,
         log=open(prefix + ".out", "w"),
     )
@@ -378,7 +378,7 @@ def npt(a):
         tpl = RigidTemplate(sys_.molecules[0], pos[:4])
         sim = FlexibleSimulation(sys_, [tpl] * sys_.nmol, pos, H, settings(), **kw)
     n = int(round(a.ns * 1000 / dt))
-    sim.run(n, report=int(round(1.0 / dt)), restart=int(round(100.0 / dt)), prefix=prefix)
+    sim.run(n, report_every=int(round(1.0 / dt)), checkpoint_every=int(round(100.0 / dt)), prefix=prefix)
 
 
 def _log(path):
@@ -429,10 +429,10 @@ def analyse(a):
 
 
 def _timed(sim, steps):
-    sim._advance(200)  # compile + warm up
+    sim.advance(200)  # compile + warm up
     jax.block_until_ready(sim.state.epot)
     t0 = time.time()
-    sim._advance(steps)
+    sim.advance(steps)
     jax.block_until_ready(sim.state.epot)
     return (time.time() - t0) / steps * 1000.0
 
@@ -472,7 +472,7 @@ def bench(a):
     out = {}
     for label, S, P in (("tip4pew (4 sites, 1 virtual)", sys4, pos4), ("3-site control (M charge on O)", sys3, pos3)):
         for engine in ("rigid", "constraints"):
-            kw = dict(dt=0.002, ensemble="nvt", temperature=298.0, thermostat="bussi", tau_t=1.0, log=None)
+            kw = dict(dt=0.002, thermostat=Bussi(1.0), temperature=298.0, log=None)
             if engine == "rigid":
                 sim = Simulation(S, P, H, settings(), **kw)
             else:
@@ -629,7 +629,7 @@ for prec in ("mixed", "double"):
     sim = Simulation(sys_, xyz * 0.1, H, MDSettings(precision=prec),
                      dt=0.001, ensemble="npt", seed=5, log=None)
     sim.run(200, report=0, prefix=sys.argv[2] + prec)
-    out[prec + "_pos"] = sim.positions_nm(); out[prec + "_mu"] = np.asarray(sim.state.induction.mu)
+    out[prec + "_pos"] = sim.positions(); out[prec + "_mu"] = np.asarray(sim.state.induction.mu)
     out[prec + "_epot"] = np.array(sim.state.epot)
 from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
 mols = read_prmtop_molecules(top); sysf = System(mols)
@@ -637,7 +637,7 @@ tpl = RigidTemplate(mols[0], xyz[:3] * 0.1)
 fs = FlexibleSimulation(sysf, [tpl] * sysf.nmol, xyz * 0.1, H, MDSettings(), dt=0.002, ensemble="nvt",
                         constraints="none",
                         thermostat="langevin", seed=5, log=None)
-fs._advance(100); out["flex_pos"] = fs.positions_nm()
+fs.advance(100); out["flex_pos"] = fs.positions()
 np.savez(sys.argv[2] + ".npz", **out)
 """
     path = os.path.join(OUT, "identical.py")
@@ -672,6 +672,7 @@ def main():
     ap.add_argument("--replicate", type=int, default=1)
     ap.add_argument("--base", default=None)
     a = ap.parse_args()
+    setup_logging()
     os.makedirs(OUT, exist_ok=True)
     globals()[a.step](a)
 

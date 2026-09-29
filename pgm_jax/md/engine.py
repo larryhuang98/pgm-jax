@@ -15,9 +15,16 @@ initial state, and provides four hooks:
 
 Everything here runs on the host between compiled blocks; the compiled steps are the
 integrators' own.
+
+Output: `run` writes the log table (observables) to prefix.log and, when the engine was created
+with log=<text stream>, to that stream too; diagnostics (the header describing the setup, list
+rebuilds, resizes) go to the Python logger of the engine's module ("pgm_jax.md.simulation",
+"pgm_jax.md.flexible", ...; see pgm_jax.cli.args.setup_logging for scripts).
 """
 
 from __future__ import annotations
+
+import logging
 
 import jax
 import jax.numpy as jnp
@@ -69,30 +76,49 @@ class MDEngine:
         """Checks after a block of steps (none by default)."""
 
     # ----------------------------------------------------------------- log header
-    def _print(self, s: str) -> None:
-        """Write a diagnostic line to the log stream (if any)."""
-        if self.log is not None:
-            print(s, file=self.log, flush=True)
+    @property
+    def _log(self) -> logging.Logger:
+        """The logger for diagnostics: that of the engine's module (e.g. "pgm_jax.md.simulation")."""
+        return logging.getLogger(type(self).__module__)
 
     def _describe_options(self, alchemy=None, mts=None) -> None:
-        """Log lines for the optional parts of the model: restraints, charge flux, alchemical region,
-        multiple time stepping, external field, biases."""
+        """Log the optional parts of the model: restraints, charge flux, alchemical region, multiple
+        time stepping, external field, biases.
+
+        Parameters
+        ----------
+        alchemy : Alchemy, optional
+            The alchemical region (if any).
+        mts : MTS, optional
+            The multiple-time-stepping settings (if any).
+        """
         if self.integ.restraints is not None:
-            self._print(f"# restraints: {self.integ.restraints.describe()}")
+            self._log.info(f"restraints: {self.integ.restraints.describe()}")
         if getattr(self.ff, "flux", None) is not None:
-            self._print(f"# {self.ff.flux.describe()}")
+            self._log.info(self.ff.flux.describe())
         if alchemy is not None:
-            self._print(f"# alchemical region: {alchemy.describe()}")
+            self._log.info(f"alchemical region: {alchemy.describe()}")
         if mts is not None:
-            self._print(f"# {self.integ.describe_mts()}")
+            self._log.info(self.integ.describe_mts())
         if self.integ.efield is not None:
-            self._print(f"# {self.integ.efield.describe()}")
+            self._log.info(self.integ.efield.describe())
         self._describe_bias()
 
     def _describe_bias(self) -> None:
-        """Log line describing the biases (if any)."""
+        """Log the biases (if any)."""
         if self.integ.bias is not None:
-            self._print(f"# biases: {self.integ.bias.describe()}")
+            self._log.info(f"biases: {self.integ.bias.describe()}")
+
+    def _describe_coupling(self) -> str:
+        """The ensemble with its thermostat and barostat for the log header, e.g. "NPT (Bussi tau
+        1 ps, Monte Carlo barostat 1 bar every 100 steps)"."""
+        parts = [x.describe() for x in (self.integ.thermostat, self.integ.barostat) if x is not None]
+        return self.ensemble.upper() + (f" ({', '.join(parts)})" if parts else "")
+
+    # ----------------------------------------------------------------- state access
+    def box(self) -> np.ndarray:
+        """Box (3, 3) [nm] of the current state (lattice vectors as rows)."""
+        return np.asarray(self.state.box)
 
     # ----------------------------------------------------------------- observables
     def observables(self) -> dict:
@@ -309,7 +335,7 @@ class MDEngine:
         """New neighbour-list layout for the current box; recompile and recompute the forces."""
         self.n_rebuilds = getattr(self, "n_rebuilds", 0) + 1
         st = self.state
-        self._print(f"# step {int(st.step)}: neighbour lists rebuilt for volume {float(volume(st.box)):.3f} nm^3")
+        self._log.info(f"step {int(st.step)}: neighbour lists rebuilt for volume {float(volume(st.box)):.3f} nm^3")
         H = np.asarray(st.box)
         self._make_neighbors(H)
         nbr = self._size_lists(st.dyn.position, H)
@@ -318,9 +344,24 @@ class MDEngine:
         self.state = self.integ.forces(st.set(nbr=nbr), False).set(induction=st.induction)
 
     # ----------------------------------------------------------------- blocks of steps
-    def _advance(self, n: int) -> None:
-        """Advance n steps without writing files (lists rebuilt for a changed box, blocks split when
-        they keep overflowing)."""
+    def advance(self, n: int) -> None:
+        """Advance n steps without writing files.
+
+        Neighbour lists are rebuilt for a changed box and blocks split when they keep overflowing
+        (driver.advance_with_rebuilds).  Bias output rows of these steps are kept for `bias_rows`.
+
+        Parameters
+        ----------
+        n : int
+            Steps.
+
+        Raises
+        ------
+        FloatingPointError
+            A non-finite energy (a crashed trajectory).
+        RuntimeError
+            A block that keeps overflowing, or (flexible engine) an atom beyond the list radius.
+        """
         advance_with_rebuilds(
             n,
             self._advance_block,
@@ -346,8 +387,8 @@ class MDEngine:
             if getattr(self.nb, "cap", None) is not None and old[1] is not None:
                 self.nb.cap = max(self.nb.cap, old[1] + 4)
         self.integ.compile()
-        self._print(
-            f"# {'neighbour list' if list_bad else 'row capacity'} overflow in steps {int(start.step)}-"
+        self._log.info(
+            f"{'neighbour list' if list_bad else 'row capacity'} overflow in steps {int(start.step)}-"
             f"{int(start.step) + n}: resized (rows {self.ff.mc or self.nb.cap}, list {nbr.idx.shape[1]}), repeating"
         )
         return self.integ.forces(start.set(nbr=nbr), False).set(induction=start.induction)
@@ -385,14 +426,15 @@ class MDEngine:
     def run(
         self,
         nsteps: int,
-        report: int = 1000,
-        traj: int = 0,
-        restart: int = 0,
+        *,
         prefix: str = "md",
-        pressure_every_report: bool = False,
+        report_every: int = 1000,
+        traj_every: int = 0,
+        checkpoint_every: int = 0,
+        report_pressure: bool = False,
         append: bool = False,
-        dipoles: int = 0,
-        induced: int = 0,
+        dipoles_every: int = 0,
+        induced_every: int = 0,
     ) -> None:
         """Advance nsteps with output files.
 
@@ -400,23 +442,23 @@ class MDEngine:
         ----------
         nsteps : int
             Steps.
-        report : int
-            Steps between rows of the log table prefix.log (0: none).
-        traj : int
-            Steps between frames of the NetCDF trajectory prefix.nc (0: none).
-        restart : int
-            Steps between an Amber restart prefix.rst7 plus a checkpoint prefix.chk (0: none; with
-            restarts also at the end).
         prefix : str
             Path prefix of the files.
-        pressure_every_report : bool
+        report_every : int
+            Steps between rows of the log table prefix.log (`observables`; 0: none).
+        traj_every : int
+            Steps between frames of the NetCDF trajectory prefix.nc (0: none).
+        checkpoint_every : int
+            Steps between checkpoints prefix.chk plus Amber restarts prefix.rst7 (and prefix.bias
+            with biases); 0: none; with checkpoints also at the end.
+        report_pressure : bool
             Add the instantaneous pressure [bar] to every log row.
         append : bool
             Append to existing files (a continuation).
-        dipoles : int
+        dipoles_every : int
             Steps between samples of the cell dipole, written to prefix.dip (sampled inside the
             blocks; does not shorten them).
-        induced : int
+        induced_every : int
             Steps between frames of the per-atom induced dipoles prefix.mu.nc.
 
         Raises
@@ -424,9 +466,16 @@ class MDEngine:
         NotImplementedError
             Cell dipoles with an alchemical region (its charges are not scaled).
         """
+        report, traj, restart, dipoles, induced = (
+            report_every,
+            traj_every,
+            checkpoint_every,
+            dipoles_every,
+            induced_every,
+        )
         block = block_length(nsteps, report, traj, restart, induced)
         if dipoles and self.integ.alchemy is not None:
-            raise NotImplementedError("the cell dipole (dipoles=) does not scale an alchemical region's charges")
+            raise NotImplementedError("the cell dipole (dipoles_every) does not scale an alchemical region's charges")
         tfile = NetCDFTrajectory(prefix + ".nc", self.sys.n, append=append) if traj else None
         self._recorder = DipoleRecorder(self, prefix + ".dip", dipoles, append=append) if dipoles else None
         mufile = InducedDipoleFile(prefix + ".mu.nc", self.sys.n, append=append) if induced else None
@@ -434,14 +483,14 @@ class MDEngine:
         if self.integ.bias is not None:
             from ..bias.io import BiasOutput
 
-            self.bias_rows()  # rows of earlier _advance calls
+            self.bias_rows()  # rows of earlier advance calls
             bout = BiasOutput(self.integ.bias, prefix, self.dt, self.T0, append=append, state=self.state.bias)
         table = LogTable(prefix + ".log", append=append, echo=self.log)
         clock = Stopwatch(int(self.state.step), self.dt)
         done = 0
         while done < nsteps:
             n = min(block, nsteps - done)
-            self._advance(n)
+            self.advance(n)
             done += n
             step = int(self.state.step)
             if self._recorder is not None:
@@ -452,43 +501,57 @@ class MDEngine:
                 mufile.write(step, self.time_ps, self.state.induction.mu)
             if report and step % report == 0:
                 obs = self.observables()
-                if pressure_every_report:
+                if report_pressure:
                     obs["press_bar"] = self.pressure()
                 obs["ns_per_day"] = clock.ns_per_day(step)
                 table.write(obs)
             if tfile is not None and step % traj == 0:
-                tfile.write(self.time_ps, self.positions_nm() * 10.0, np.asarray(self.state.box) * 10.0)
+                tfile.write(self.time_ps, self.positions() * 10.0, np.asarray(self.state.box) * 10.0)
             if restart and step % restart == 0:
-                self.save(prefix)
+                self._write_checkpoint_files(prefix)
         table.close()
         self._recorder = None
         if restart:
-            self.save(prefix)
+            self._write_checkpoint_files(prefix)
 
     # ----------------------------------------------------------------- checkpoints
-    def save(self, prefix: str) -> None:
-        """Amber NetCDF restart (prefix.rst7) and a checkpoint of the complete state (prefix.chk).
+    def _write_checkpoint_files(self, prefix: str) -> None:
+        """The files of run's checkpoints: prefix.chk, prefix.rst7 and, with biases, prefix.bias."""
+        self.save_checkpoint(prefix + ".chk")
+        self.write_restart(prefix + ".rst7")
+        if self.integ.bias is not None and self.state.bias is not None:
+            self.integ.bias.save(self.state.bias, prefix + ".bias")
 
-        The checkpoint (driver.write_checkpoint: npz + JSON header) holds coordinates and momenta,
-        forces, box, induced dipoles and predictor history, random state, barostat and thermostat
-        state, bias state and field amplitude; continuing from it reproduces the run up to
-        floating-point summation order (bitwise on the CPU).  The bias state is also written to
-        prefix.bias (BiasSet.save).
-        """
+    def write_restart(self, path: str) -> None:
+        """Amber NetCDF restart (positions, velocities, box, time; Angstrom units) at `path`."""
         write_restart(
-            prefix + ".rst7",
-            self.positions_nm() * 10.0,
-            self.velocities_nm_ps() * 10.0,
+            path,
+            self.positions() * 10.0,
+            self.velocities() * 10.0,
             np.asarray(self.state.box) * 10.0,
             self.time_ps,
         )
+
+    def save_checkpoint(self, path: str) -> None:
+        """Write a checkpoint of the complete state (driver.write_checkpoint).
+
+        Parameters
+        ----------
+        path : str
+            The file (prefix.chk in `run`).
+
+        Notes
+        -----
+        The checkpoint holds coordinates and momenta, forces, box, induced dipoles and predictor
+        history, random state, barostat and thermostat state, bias state and field amplitude;
+        continuing from it reproduces the run up to floating-point summation order (bitwise on
+        the CPU).
+        """
         write_checkpoint(
-            prefix + ".chk",
+            path,
             self.checkpoint_kind,
             {"time_ps": self.time_ps, "engine": type(self).__name__, "state": self.state.set(nbr=None)},
         )
-        if self.integ.bias is not None and self.state.bias is not None:
-            self.integ.bias.save(self.state.bias, prefix + ".bias")
 
     def _bias_of_checkpoint(self, st):
         """A legacy checkpoint's bias state if this simulation has biases (a fresh one if it had none)."""
@@ -498,13 +561,18 @@ class MDEngine:
             return st.set(bias=self.integ.bias.init())
         return st
 
-    def load(self, path: str) -> None:
-        """Continue from a checkpoint written by `save` (same system and settings), or from a legacy
-        pickle checkpoint of pgm_jax up to commit e72c57c (save again to convert it).
+    def load_checkpoint(self, path: str) -> None:
+        """Continue from a checkpoint written by `save_checkpoint` (same system and settings), or from
+        a legacy pickle checkpoint of pgm_jax up to commit e72c57c (save again to convert it).
 
         Parts of the state that depend on options (a bias, the external field) may differ: a bias
         missing from the checkpoint starts fresh, one in it that this run does not have is dropped,
         a field amplitude in it is taken over.
+
+        Parameters
+        ----------
+        path : str
+            The checkpoint file.
 
         Raises
         ------

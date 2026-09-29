@@ -70,7 +70,7 @@ print(
 )
 s1 = MDSettings(precision="double", dipole_tol=1e-12, max_iter=500, peek=0.0, cutoff=2.4, skin=0.05, lj_lrc=False)
 L = 5.0
-sim_f = FlexibleSimulation(sys1, [tpl], x + L / 2, np.eye(3) * L, s1, ensemble="nve", log=None)
+sim_f = FlexibleSimulation(sys1, [tpl], x + L / 2, np.eye(3) * L, s1, thermostat=None, log=None)
 Hb = jnp.eye(3) * L
 xb = sim_f.flex.pos0
 idx = sim_f.ff.rows_for(xb, Hb)
@@ -94,7 +94,7 @@ tpl0 = FlexibleTemplate(
     tpl.specs, tpl.settings, dict(tpl.P, flux={k: 0.0 * v for k, v in tpl.P["flux"].items()}), tpl.index
 )
 F0 = np.asarray(
-    FlexibleSimulation(sys1, [tpl0], x + L / 2, np.eye(3) * L, s1, ensemble="nve", log=None).state.dyn.force
+    FlexibleSimulation(sys1, [tpl0], x + L / 2, np.eye(3) * L, s1, thermostat=None, log=None).state.dyn.force
 )
 print(
     f"1d MD forces vs gradient of the gas-phase model: max |F + g| {np.abs(F + g).max():.2e} kJ/mol/nm "
@@ -119,7 +119,7 @@ s = MDSettings(
     peek=0.0,
     precision="double",
 )
-sim = FlexibleSimulation(sysn, [tpl] * n, pos, H, s, ensemble="nve", log=None)
+sim = FlexibleSimulation(sysn, [tpl] * n, pos, H, s, thermostat=None, log=None)
 pos = sim.flex.pos0
 H = jnp.asarray(H)
 ff = PGMForceField(sysn, H, s, topology=sim.topology, flux=sim.ff.flux)

@@ -19,6 +19,7 @@ import numpy as np
 
 from pgm_jax import System
 from pgm_jax.bias import BiasSet, MetaD, UpperWall, cv
+from pgm_jax.cli.args import setup_logging
 from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.simulation import Simulation
@@ -31,6 +32,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--ps", type=float, default=2.0)
 ap.add_argument("--out", default="runs/bias/nve.json")
 a = ap.parse_args()
+setup_logging()
 pos, H, w = water_cluster_box()
 wat = water()
 sys_ = System([wat] * (len(pos) // 3))
@@ -44,7 +46,7 @@ for engine in ("rigid", "atoms"):
         for dt in (0.001, 0.0005):
             m = MetaD([d, phi], sigma=[0.03, 0.1], height=1.0, pace=200, biasfactor=5.0, temperature=300.0)
             bs = BiasSet([m, UpperWall(d, 0.6, 1000.0)], colvar=0)
-            kw = dict(dt=dt, ensemble="nve", bias=None if mode == "none" else bs, log=None, temperature=300.0, seed=3)
+            kw = dict(dt=dt, thermostat=None, bias=None if mode == "none" else bs, log=None, temperature=300.0, seed=3)
             sim = (
                 Simulation(sys_, pos, H, s, **kw)
                 if engine == "rigid"
@@ -62,7 +64,7 @@ for engine in ("rigid", "atoms"):
             blk = int(round(0.02 / dt))
             E, C, B, Wk = [], [], [], []
             for _ in range(n // blk):
-                sim._advance(blk)
+                sim.advance(blk)
                 o = sim.observables()
                 E.append(o["etot"])
                 C.append(o["econs"])

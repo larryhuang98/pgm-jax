@@ -384,9 +384,9 @@ def test_md_bias_forces_and_static_nve(engine):
     for k in range(30):
         st = m.update(st, jnp.asarray(s0 + [0.03 * rng.normal(), 0.5 * rng.normal()]), k)
     bs = BiasSet([m, UpperWall(d, 0.6, 1000.0)], colvar=10)
-    sim = _water_sim(engine, pos, H, w, s, dt=0.0005, ensemble="nve", bias=bs)
+    sim = _water_sim(engine, pos, H, w, s, dt=0.0005, thermostat=None, bias=bs)
     sim.set_bias_state(bs.init()._replace(parts=(st, bs.biases[1].init())))
-    ref = _water_sim(engine, pos, H, w, s, dt=0.0005, ensemble="nve")
+    ref = _water_sim(engine, pos, H, w, s, dt=0.0005, thermostat=None)
     x = sim.rigid.positions(sim.state.dyn.position)
     g = jax.grad(lambda p: bs.energy(sim.state.bias, p, H))(x)
     fd = _fd_grad(lambda p: bs.energy(sim.state.bias, jnp.asarray(p), H), np.asarray(x), h=1e-6)
@@ -402,7 +402,7 @@ def test_md_bias_forces_and_static_nve(engine):
     assert abs(o["epot"] - ref.observables()["epot"] - o["ebias"]) < 1e-6 and o["ebias"] > 5.0
     E, B = [o["etot"]], [o["ebias"]]
     for _ in range(10):
-        sim._advance(40)
+        sim.advance(40)
         o = sim.observables()
         E.append(o["etot"])
         B.append(o["ebias"])
@@ -425,10 +425,10 @@ def test_md_deposition_in_loop(engine, tmp_path):
     s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, d, phi = _cluster_bias(pace=10, height=1.0)
     bs = BiasSet([m, Harmonic(d, 0.30, 2000.0)], colvar=5)
-    sim = _water_sim(engine, pos, H, w, s, dt=0.0005, ensemble="nve", bias=bs)
+    sim = _water_sim(engine, pos, H, w, s, dt=0.0005, thermostat=None, bias=bs)
     o0 = sim.observables()
     prefix = str(tmp_path / "md")
-    sim.run(200, report=100, restart=100, prefix=prefix)
+    sim.run(200, report_every=100, checkpoint_every=100, prefix=prefix)
     o = sim.observables()
     assert o["hills"] == 20 and o["bias_work"] > 5.0
     assert abs(o["econs"] - o0["econs"]) < 2e-3 * o["bias_work"], (o0["econs"], o["econs"], o["bias_work"])
@@ -454,10 +454,10 @@ def test_md_deposition_in_loop(engine, tmp_path):
         w,
         s,
         dt=0.0005,
-        ensemble="nve",
+        thermostat=None,
         bias=BiasSet([_cluster_bias(10, 1.0)[0], Harmonic(d, 0.30, 2000.0)], colvar=5),
     )
-    sim2.load(prefix + ".chk")
+    sim2.load_checkpoint(prefix + ".chk")
     b_ = sim2.integ.run(sim2.state, 20)
     assert int(a.bias.parts[0].n) == int(b_.bias.parts[0].n) == 22
     assert abs(float(a.epot) - float(b_.epot)) < 1e-6
@@ -476,18 +476,9 @@ def test_md_opes_nvt_pressure_and_mts():
     d = cv.Distance(0, 9)
     op = OPES(d, sigma=0.02, pace=20, barrier=15.0)
     sim = _water_sim(
-        "rigid",
-        pos,
-        H,
-        w,
-        s,
-        dt=0.001,
-        ensemble="nvt",
-        thermostat="bussi",
-        temperature=300.0,
-        bias=[op, UpperWall(d, 0.7, 500.0)],
+        "rigid", pos, H, w, s, dt=0.001, thermostat="bussi", temperature=300.0, bias=[op, UpperWall(d, 0.7, 500.0)]
     )
-    sim._advance(200)
+    sim.advance(200)
     o = sim.observables()
     assert o["kernels"] >= 1 and o["neff"] > 1.0
     st = sim.state
@@ -496,15 +487,15 @@ def test_md_opes_nvt_pressure_and_mts():
         lambda p, h: sim.integ.bias.energy(st.bias, p, h), x, st.box, sim.ff.mol, sim.ff.masses, sim.sys.nmol
     )
     p_with = sim.pressure()
-    ref = _water_sim("rigid", pos, H, w, s, dt=0.001, ensemble="nvt", temperature=300.0)
+    ref = _water_sim("rigid", pos, H, w, s, dt=0.001, temperature=300.0)
     ref.state = st.set(bias=None)
     dP = -float(jnp.trace(W)) / (3.0 * float(jnp.linalg.det(st.box))) * BAR_PER_KJMOL_NM3
     assert abs(p_with - ref.pressure() - dP) < 1e-6 * max(1.0, abs(dP))
     # multiple time stepping: the bias is part of the slow force
     m, _, _ = _cluster_bias(pace=5, height=1.0)
-    sim = _water_sim("atoms", pos, H, w, s, dt=0.002, ensemble="nve", bias=m, mts=MTS(inner=2, split="bonded"))
+    sim = _water_sim("atoms", pos, H, w, s, dt=0.002, thermostat=None, bias=m, mts=MTS(inner=2, split="bonded"))
     E0 = sim.observables()["econs"]
-    sim._advance(40)
+    sim.advance(40)
     o = sim.observables()
     assert o["hills"] == 8 and abs(o["econs"] - E0) < 0.05 * max(o["bias_work"], 1.0), (E0, o)
 
@@ -538,10 +529,10 @@ def test_flexible_peptide_dihedral_bias():
         bias=m,
         log=None,
     )
-    sim._advance(20)
+    sim.advance(20)
     o = sim.observables()
     assert o["hills"] == 4 and np.isfinite(o["econs"])
-    x = sim.positions_nm()[: prot.n][None]
+    x = sim.positions()[: prot.n][None]
     ph, ps = backbone_torsions(x, top)
     v = sim.cv_values()[0]
     assert (
@@ -556,7 +547,7 @@ def test_remd_refuses_dynamic_bias():
     pos, H, w = _cluster()
     s = MDSettings(precision="double", dipole_tol=1e-8, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, _, _ = _cluster_bias(pace=10)
-    sim = _water_sim("rigid", pos, H, w, s, dt=0.001, ensemble="nvt", temperature=300.0, bias=m)
+    sim = _water_sim("rigid", pos, H, w, s, dt=0.001, temperature=300.0, bias=m)
     with pytest.raises(NotImplementedError):
         ReplicaExchange(sim, [300.0, 320.0], exchange_every=10)
 
@@ -663,21 +654,12 @@ def test_walkers(shared, tmp_path):
     s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, d, phi = _cluster_bias(pace=10, height=1.0)
     sim = _water_sim(
-        "rigid",
-        pos,
-        H,
-        w,
-        s,
-        dt=0.001,
-        ensemble="nvt",
-        thermostat="bussi",
-        temperature=300.0,
-        bias=BiasSet([m], colvar=5),
+        "rigid", pos, H, w, s, dt=0.001, thermostat="bussi", temperature=300.0, bias=BiasSet([m], colvar=5)
     )
     W = 3
     wk = Walkers(sim, W, shared=shared, seed=4)
     prefix = str(tmp_path / "wk")
-    wk.run(100, report=50, restart=100, prefix=prefix, log=None)
+    wk.run(100, report_every=50, checkpoint_every=100, prefix=prefix)
     if shared:
         assert int(wk.S.bias.parts[0].n) == W * 10
         _, hills = read_table(prefix + ".hills")
@@ -697,7 +679,6 @@ def test_walkers(shared, tmp_path):
             w,
             s,
             dt=0.001,
-            ensemble="nvt",
             thermostat="bussi",
             temperature=300.0,
             bias=BiasSet([_cluster_bias(pace=10, height=1.0)[0]], colvar=5),
@@ -705,7 +686,7 @@ def test_walkers(shared, tmp_path):
         wk2 = Walkers(sim, W, shared=False, seed=4)
         st0 = wk2.state(0)
         one.state = st0.set(nbr=one.state.nbr)
-        one._advance(100)
+        one.advance(100)
         wk2.advance(100)
         assert abs(float(one.state.epot) - float(np.asarray(wk2.S.epot)[0])) < 1e-6
     for k in range(W):
@@ -713,7 +694,7 @@ def test_walkers(shared, tmp_path):
         assert np.array_equal(cvs["step"], np.arange(5, 105, 5))
     E = wk.bias_energies()
     wk3 = Walkers(sim, W, shared=shared, seed=9)
-    wk3.load(prefix + ".walkers.chk")
+    wk3.load_checkpoint(prefix + ".walkers.chk")
     assert np.allclose(wk3.bias_energies(), E, atol=1e-10)
 
 

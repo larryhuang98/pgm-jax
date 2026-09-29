@@ -93,7 +93,7 @@ def test_flexible_simulation_per_molecule_hmr():
     hmr = [4.0, None] * (nmol // 2)
     s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     sim = FlexibleSimulation(
-        sys, [RigidTemplate(wat, w)] * nmol, pos, H, s, dt=0.002, ensemble="nve", hmr=hmr, temperature=300.0, log=None
+        sys, [RigidTemplate(wat, w)] * nmol, pos, H, s, dt=0.002, thermostat=None, hmr=hmr, temperature=300.0, log=None
     )
     m, m0 = np.asarray(sim.flex.masses), np.asarray(sys.masses)
     assert abs(m.sum() - m0.sum()) < 1e-9
@@ -110,7 +110,7 @@ def test_flexible_simulation_per_molecule_hmr():
     e0 = sim.observables()["etot"]
     dev = 0.0
     for _ in range(5):
-        sim._advance(40)
+        sim.advance(40)
         o = sim.observables()
         dev = max(dev, abs(o["etot"] - e0))
         assert o["shake_err"] < 1e-9

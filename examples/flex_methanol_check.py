@@ -12,8 +12,10 @@ from pgm_jax.bonded import terms as T
 from pgm_jax.bonded.fit import Fitter
 from pgm_jax.bonded.model import BondedModel, BondedSettings
 from pgm_jax.bonded.study.data import load
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
 from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.thermostats import Langevin
 from pgm_jax.system import System
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -38,7 +40,7 @@ sim = FlexibleSimulation(
     x + 2.0,
     H,
     MDSettings(precision="double", dipole_tol=1e-8, cutoff=1.8, skin=0.05),
-    ensemble="nve",
+    thermostat=None,
     log=None,
 )
 F_md = np.asarray(sim.state.dyn.force)
@@ -56,23 +58,23 @@ print(
 pos, H = liquid_box(tpl, 216, 0.55, seed=1, min_dist=0.18)
 st = MDSettings(precision="mixed", dipole_tol=1e-5)
 sim = FlexibleSimulation(
-    System([tpl.pgm] * 216), [tpl] * 216, pos, H, st, dt=0.0005, ensemble="nvt", temperature=298.0, gamma=5.0, log=None
+    System([tpl.pgm] * 216), [tpl] * 216, pos, H, st, dt=0.0005, thermostat=Langevin(5.0), temperature=298.0, log=None
 )
-sim.run(4000, report=4000, prefix=os.path.join(out, "equil"))
+sim.run(4000, report_every=4000, prefix=os.path.join(out, "equil"))
 sim2 = FlexibleSimulation(
     System([tpl.pgm] * 216),
     [tpl] * 216,
-    sim.positions_nm(),
+    sim.positions(),
     np.asarray(sim.state.box),
     st,
     dt=0.0005,
-    ensemble="nve",
-    vel_nm_ps=sim.velocities_nm_ps(),
+    thermostat=None,
+    velocities=sim.velocities(),
     log=None,
 )
 E = []
 for _ in range(10):
-    sim2.run(400, report=400, prefix=os.path.join(out, "nve"))
+    sim2.run(400, report_every=400, prefix=os.path.join(out, "nve"))
     o = sim2.observables()
     E.append(o["etot"])
 E = np.array(E)
@@ -88,18 +90,17 @@ t0 = time.time()
 sim3 = FlexibleSimulation(
     System([tpl.pgm] * 216),
     [tpl] * 216,
-    sim.positions_nm(),
+    sim.positions(),
     np.asarray(sim.state.box),
     st,
     dt=0.0005,
-    ensemble="npt",
+    thermostat=Langevin(1.0),
+    barostat=MonteCarloBarostat(every=50),
     temperature=298.0,
-    gamma=1.0,
-    vel_nm_ps=sim.velocities_nm_ps(),
-    barostat_interval=50,
+    velocities=sim.velocities(),
     log=None,
 )
-sim3.run(100000, report=2000, prefix=os.path.join(out, "npt"))
+sim3.run(100000, report_every=2000, prefix=os.path.join(out, "npt"))
 print(
     "NPT 50 ps:",
     {k: round(v, 3) for k, v in sim3.observables().items() if isinstance(v, float)},

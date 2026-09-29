@@ -138,7 +138,7 @@ def test_peptide_forces_match_gas_phase_model():
     tpl, model, P, x = _peptide_template()
     y = x + 0.003 * np.random.default_rng(0).normal(size=x.shape)
     s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=2.2, skin=0.05, lj_lrc=False)
-    sim = FlexibleSimulation(System([tpl.pgm]), [tpl], y + 3.0, np.eye(3) * 6.0, s, ensemble="nve", log=None)
+    sim = FlexibleSimulation(System([tpl.pgm]), [tpl], y + 3.0, np.eye(3) * 6.0, s, thermostat=None, log=None)
     assert sim.topology.n_group > 1
     F = np.asarray(sim.state.dyn.force)
     g = np.asarray(jax.grad(lambda R: model.energy(0, R, P)[0])(jnp.asarray(y)))
@@ -168,20 +168,20 @@ def test_rigid_water_by_constraints_matches_rigid_bodies():
     wat = water()
     sys = System([wat] * (len(pos) // 3))
     s = MDSettings(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
-    rig = Simulation(sys, pos, H, s, dt=0.001, ensemble="nve", log=None)
+    rig = Simulation(sys, pos, H, s, dt=0.001, thermostat=None, log=None)
     tpl = RigidTemplate(wat, w)
-    flex = FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=0.002, ensemble="nve", log=None)
+    flex = FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=0.002, thermostat=None, log=None)
     assert flex.constraints.nc == 3 * sys.nmol
     e_r, e_f = float(rig.state.epot), float(flex.state.epot)
     assert abs(e_r - e_f) < 1e-8 * abs(e_r), (e_r, e_f)
     # NVE with SHAKE / RATTLE at 2 fs: constraints held; the energy fluctuates (hard cutoff in a
     # small box, lattice start) no more than with the rigid-body integrator
-    rig2 = Simulation(sys, pos, H, s, dt=0.002, ensemble="nve", log=None)
+    rig2 = Simulation(sys, pos, H, s, dt=0.002, thermostat=None, log=None)
     dev = {}
     for name, sim in (("constraints", flex), ("rigid", rig2)):
         e0, d = sim.observables()["etot"], 0.0
         for _ in range(5):
-            sim._advance(40)
+            sim.advance(40)
             d = max(d, abs(sim.observables()["etot"] - e0))
         dev[name] = d
     assert flex.observables()["shake_err"] < 1e-10
@@ -211,7 +211,7 @@ def test_peptide_in_water_hbond_constraints_hmr():
         H,
         s,
         dt=0.002,
-        ensemble="nve",
+        thermostat=None,
         constraints="h-bonds",
         hmr=3.024,
         log=None,
@@ -220,7 +220,7 @@ def test_peptide_in_water_hbond_constraints_hmr():
     n_h = sum(e == "H" for e in tpl.spec.elements)
     assert sim.constraints.nc == n_h + 3 * len(keep)
     e0 = sim.observables()["etot"]
-    sim._advance(100)
+    sim.advance(100)
     obs = sim.observables()
     assert obs["shake_err"] < 1e-9
     # bounded (the hard cutoff and the lattice start make the energy fluctuate by ~0.5 % of KE)

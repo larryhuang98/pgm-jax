@@ -16,6 +16,7 @@ from test_grad import water
 from test_md_macro import _water_box
 
 from pgm_jax import System
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.remd import (
@@ -180,13 +181,13 @@ def test_harmonic_distributions_at_every_temperature():
 def test_driver_restart_reproduces_toy_run(tmp_path):
     T = geometric_ladder(300.0, 500.0, 5)
     ref = ReplicaExchange(Harmonic(T, seed=4), exchange_every=3, seed=9, log=None)
-    ref.run(60, report=6, prefix=None)
+    ref.run(60, report_every=6, prefix=None)
     x_ref, rep_ref = ref.replicas.x.copy(), ref.stats.replica.copy()
     a = ReplicaExchange(Harmonic(T, seed=4), exchange_every=3, seed=9, log=None)
-    a.run(30, report=6, restart=30, prefix=str(tmp_path / "toy"))
+    a.run(30, report_every=6, checkpoint_every=30, prefix=str(tmp_path / "toy"))
     b = ReplicaExchange(Harmonic(T, seed=77), exchange_every=3, seed=0, log=None)
-    b.load(str(tmp_path / "toy.remd.chk"))
-    b.run(30, report=6, prefix=str(tmp_path / "toy2"))
+    b.load_checkpoint(str(tmp_path / "toy.remd.chk"))
+    b.run(30, report_every=6, prefix=str(tmp_path / "toy2"))
     assert b.step == 60 and np.array_equal(b.stats.replica, rep_ref) and np.array_equal(b.replicas.x, x_ref)
     assert b.stats.n_exchanges == ref.stats.n_exchanges and np.array_equal(b.stats.accepts, ref.stats.accepts)
     steps, reps, outs = read_exchange_log(str(tmp_path / "toy_remd.log"))
@@ -319,26 +320,26 @@ def test_md_npt_sequential_restart(tmp_path):
     sys = System([water()] * (len(pos) // 3))
     s = MDSettings(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
     sim = Simulation(
-        sys, pos, H, s, dt=0.001, ensemble="npt", thermostat="bussi", tau_t=0.1, barostat_interval=5, log=None, seed=2
+        sys, pos, H, s, dt=0.001, thermostat=Bussi(0.1), barostat=MonteCarloBarostat(every=5), log=None, seed=2
     )
     with pytest.raises(ValueError):
         ReplicaExchange(sim, [300.0, 310.0], batched=True, log=None)  # NPT needs the sequential engine
     T = [300.0, 303.0, 306.0]
     rex = ReplicaExchange(sim, T, exchange_every=5, batched=False, seed=3, log=None)
     p = str(tmp_path / "w")
-    rex.run(20, report=10, traj=10, restart=20, prefix=p)
-    rex.run(20, report=10, prefix=str(tmp_path / "w_cont"))
-    X_ref = [rex.replicas.positions_nm(k) for k in range(3)]
+    rex.run(20, report_every=10, traj_every=10, checkpoint_every=20, prefix=p)
+    rex.run(20, report_every=10, prefix=str(tmp_path / "w_cont"))
+    X_ref = [rex.replicas.positions(k) for k in range(3)]
     B_ref = [np.asarray(rex.replicas.state(k).box) for k in range(3)]
     trace_ref, acc_ref = rex.stats.replica.copy(), rex.stats.accepts.copy()
     for suffix in ("_T00.log", "_T02.nc", "_T01.rst7", "_remd.log", "_remd.json", ".remd.chk"):
         assert os.path.exists(p + suffix), suffix
-    rex.load(p + ".remd.chk")
+    rex.load_checkpoint(p + ".remd.chk")
     assert rex.step == 20
-    rex.run(20, report=10, prefix=str(tmp_path / "w_again"))
+    rex.run(20, report_every=10, prefix=str(tmp_path / "w_again"))
     assert np.array_equal(rex.stats.replica, trace_ref) and np.array_equal(rex.stats.accepts, acc_ref)
     for k in range(3):
-        assert np.abs(rex.replicas.positions_nm(k) - X_ref[k]).max() < 1e-7
+        assert np.abs(rex.replicas.positions(k) - X_ref[k]).max() < 1e-7
         assert np.abs(np.asarray(rex.replicas.state(k).box) - B_ref[k]).max() < 1e-9
     log = open(p + "_T01.log").read().splitlines()
     assert log[0].startswith("# T = 303") and "replica" in log[1] and len(log) == 4
@@ -350,19 +351,19 @@ def test_md_rigid_batched_checkpoint_continues_sequentially(tmp_path):
     pos, H, _ = _water_box()
     sys = System([water()] * (len(pos) // 3))
     s = MDSettings(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
-    sim = Simulation(sys, pos, H, s, dt=0.001, ensemble="nvt", thermostat="langevin", gamma=5.0, log=None, seed=4)
+    sim = Simulation(sys, pos, H, s, dt=0.001, thermostat=Langevin(5.0), log=None, seed=4)
     T = [300.0, 304.0, 308.0, 312.0]
     rb = ReplicaExchange(sim, T, exchange_every=5, batched=True, seed=6, log=None)
     rs = ReplicaExchange(sim, T, exchange_every=5, batched=False, seed=0, log=None)
     p = str(tmp_path / "r")
-    rb.run(20, report=0, restart=20, prefix=p)
-    rb.run(20, report=0, prefix=None)
-    rs.load(p + ".remd.chk")
-    rs.run(20, report=0, prefix=None)
+    rb.run(20, report_every=0, checkpoint_every=20, prefix=p)
+    rb.run(20, report_every=0, prefix=None)
+    rs.load_checkpoint(p + ".remd.chk")
+    rs.run(20, report_every=0, prefix=None)
     assert rs.step == rb.step == 40 and np.array_equal(rs.stats.replica, rb.stats.replica)
     assert np.array_equal(rs.stats.accepts, rb.stats.accepts) and rb.stats.accepts.sum() >= 2
     for k in range(4):
-        assert np.abs(rs.replicas.positions_nm(k) - rb.replicas.positions_nm(k)).max() < 1e-8
+        assert np.abs(rs.replicas.positions(k) - rb.replicas.positions(k)).max() < 1e-8
         assert abs(rs.replicas.observables(k)["econs"] - rb.replicas.observables(k)["econs"]) < 1e-6
 
 
@@ -376,18 +377,7 @@ def test_md_replicas_split_rows_fit_every_part():
     s = settings(cutoff=0.6, elec_cutoff=0.45, dipole_tol=1e-9, max_iter=100)
 
     def make():
-        return Simulation(
-            sys,
-            pos,
-            H,
-            s,
-            dt=0.001,
-            ensemble="nvt",
-            temperature=300.0,
-            thermostat="bussi",
-            log=None,
-            seed=2,
-        )
+        return Simulation(sys, pos, H, s, dt=0.001, thermostat="bussi", temperature=300.0, log=None, seed=2)
 
     sim = make()
     mc, mc_e = sim.ff.capacity

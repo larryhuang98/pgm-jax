@@ -79,9 +79,9 @@ def test_dudp_matches_finite_differences_with_resolved_dipoles(mode, lam):
 
 # ----------------------------------------------------------------------------- sampler
 def windows(batched=True, seed=1, mode="annihilate"):
-    sim, alch, P, _ = alch_sim(settings(dipole_tol=1e-9), thermostat="bussi", ensemble="nvt")
+    sim, alch, P, _ = alch_sim(settings(dipole_tol=1e-9), thermostat="bussi")
     if mode == "keep":
-        pos = sim.positions_nm()
+        pos = sim.positions()
         alch = Alchemy(sim.sys, 0, intramolecular="keep")
         sim = Simulation(
             sim.sys,
@@ -93,7 +93,6 @@ def windows(batched=True, seed=1, mode="annihilate"):
             params=P,
             alchemy=alch,
             thermostat="bussi",
-            ensemble="nvt",
         )
     L = standard_schedule(3, [0.5, 0.0])
     return LambdaWindows(sim, L, batched=batched, seed=seed), P
@@ -252,7 +251,6 @@ def test_gas_leg_gradient_and_exact_sampled_case():
         params=P,
         alchemy=alch,
         thermostat="bussi",
-        ensemble="nvt",
         neighbor_list="atom",
         temperature=298.0,
     )
@@ -336,21 +334,21 @@ def test_run_outputs_restart_and_fitting_target(tmp_path):
     pg = fg.ParamGradients(w)
     prefix = str(tmp_path / "g")
     run = FreeEnergyRun(w, sample_every=5, exchange_every=5, log=None, param_grad=pg)
-    run.run(60, prefix=prefix, restart=30)
+    run.run(60, prefix=prefix, checkpoint_every=30)
     d = fe.load(prefix + "_fe.npz")
     K, M = w.n, pg.space.n
     assert d["dudp"].shape == (12, 2, K, M) and d["meta"]["dudp_names"] == pg.space.names
     assert np.allclose(d["meta"]["params_flat"], np.asarray(pg.space.flatten(P)))
     # continue from the checkpoint with gradients; refused without samples of them
     run2 = FreeEnergyRun(w, sample_every=5, exchange_every=5, log=None, param_grad=pg)
-    run2.load(prefix + ".fe.chk")
+    run2.load_checkpoint(prefix + ".fe.chk")
     run2.run(10, prefix=prefix)
     assert fe.load(prefix + "_fe.npz")["dudp"].shape == (14, 2, K, M)
     plain = FreeEnergyRun(w, sample_every=5, log=None)
     plain.run(10, prefix=str(tmp_path / "p"))
     run3 = FreeEnergyRun(w, sample_every=5, log=None, param_grad=pg)
     with pytest.raises(ValueError, match="no parameter gradients"):
-        run3.load(str(tmp_path / "p.fe.chk"))
+        run3.load_checkpoint(str(tmp_path / "p.fe.chk"))
     run3.load_windows(str(tmp_path / "p.fe.chk"))
     assert run3.step == 0 and w.time_ps == 0.0 and not run3.samples["u"]
     # the target: a scale of the solute's charges theta -> table, chain rule = projection

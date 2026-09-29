@@ -23,6 +23,7 @@ import numpy as np
 
 from pgm_jax import ElecChannel, Model, System
 from pgm_jax.channels import molecular_polarizability
+from pgm_jax.cli.args import setup_logging
 from pgm_jax.md import efield as EF
 from pgm_jax.param import read_prmtop_molecules, read_prmtop_pgm
 from pgm_jax.paths import resource
@@ -172,9 +173,9 @@ def part_nve(ps: float = 20.0, only=None):
         precision="mixed",
     )
     # equilibrate at 298 K without a field (NVT, 10 ps), then NVE from the same state for each field
-    sim = Simulation(sys_, pos, H, settings=s, ensemble="nvt", thermostat="bussi", dt=0.001, log=None, seed=1)
-    sim.run(10000, report=10000, prefix=os.path.join(ROOT, "runs", "ff", "nve_equil"))
-    pos, vel = sim.positions_nm(), sim.velocities_nm_ps()
+    sim = Simulation(sys_, pos, H, settings=s, thermostat="bussi", dt=0.001, log=None, seed=1)
+    sim.run(10000, report_every=10000, prefix=os.path.join(ROOT, "runs", "ff", "nve_equil"))
+    pos, vel = sim.positions(), sim.velocities()
     cases = [
         ("no field", None),
         ("E = 0.1 V/nm", (0.0, 0.0, 0.1)),
@@ -188,11 +189,11 @@ def part_nve(ps: float = 20.0, only=None):
     nblk = 40
     n = int(round(ps / 0.001)) // nblk
     for name, fld in cases:
-        sim = Simulation(sys_, pos, H, settings=s, ensemble="nve", dt=0.001, log=None, vel_nm_ps=vel, efield=fld)
+        sim = Simulation(sys_, pos, H, settings=s, thermostat=None, dt=0.001, log=None, velocities=vel, efield=fld)
         t0 = time.time()
         t, ec, et, ef, hh = [], [], [], [], []
         for _ in range(nblk):
-            sim._advance(n)
+            sim.advance(n)
             o = sim.observables()
             t.append(o["time_ps"])
             ec.append(o["econs"])
@@ -256,18 +257,18 @@ def part_speed(nsteps: int = 5000):
         ("E(t) 0.1 V/nm, 200 cm^-1", EF.ExternalField.from_wavenumber((0, 0, 0.1), 200.0)),
         ("constant D/eps0 3 V/nm", EF.displacement((0, 0, 3.0))),
     ]:
-        sim = Simulation(sys_, pos, H, settings=s, ensemble="nvt", thermostat="bussi", dt=0.002, log=None, efield=fld)
-        sim._advance(1000)
+        sim = Simulation(sys_, pos, H, settings=s, thermostat="bussi", dt=0.002, log=None, efield=fld)
+        sim.advance(1000)
         jax.block_until_ready(sim.state.epot)
         t0 = time.time()
-        sim._advance(nsteps)
+        sim.advance(nsteps)
         jax.block_until_ready(sim.state.epot)
         ms = (time.time() - t0) / nsteps * 1000
         out[name] = {"ms_per_step": ms, "ns_per_day": 0.002 * 86400 / ms, "cg_mean": sim.observables()["cg_mean"]}
         print(
             f"{name:30s} {ms:.3f} ms/step, {0.002 * 86400 / ms:.1f} ns/day, CG {out[name]['cg_mean']:.2f}", flush=True
         )
-    sim = Simulation(sys_, pos, H, settings=s, ensemble="nvt", thermostat="bussi", dt=0.002, log=None, efield=(0, 0, 0))
+    sim = Simulation(sys_, pos, H, settings=s, thermostat="bussi", dt=0.002, log=None, efield=(0, 0, 0))
     for R in (1, 2, 4, 10):
         rep = FieldReplicas(sim, [(0.0, 0.0, 0.1 * (-1) ** k) for k in range(R)])
         rep.advance(500)
@@ -344,6 +345,7 @@ def main():
     ap.add_argument("--ps", type=float, default=20.0)
     ap.add_argument("--only", type=int, nargs="+", help="nve: case indices (0 none, 1 0.1, 2 0.5, 3 E(t), 4 D)")
     a = ap.parse_args()
+    setup_logging()
     os.makedirs(os.path.join(ROOT, "runs", "ff"), exist_ok=True)
     {
         "gas": part_gas,

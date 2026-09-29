@@ -22,8 +22,11 @@ import time
 import jax
 import numpy as np
 
+from pgm_jax.cli.args import setup_logging
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
 from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.thermostats import Bussi, Langevin
 from pgm_jax.system import System
 from pgm_jax.units import KB
 
@@ -67,10 +70,16 @@ def atoms_of(tpl):
     return C, O, HO, HC
 
 
-def sim_for(name, x, H, prec="mixed", tol=1e-5, ensemble="npt", thermostat="langevin", vel=None, seed=0, log=None):
+def sim_for(name, x, H, prec="mixed", tol=1e-5, thermostat="langevin", npt=True, vel=None, seed=0, log=None):
+    """The methanol liquid of configuration `name` (constraints, time step, HMR of CONFIGS).
+
+    thermostat: "langevin" (1/ps), "bussi" (0.5 ps) or None (NVE); npt: Monte Carlo barostat every
+    0.1 ps (needs a thermostat)."""
     cons, dt_fs, hmr = CONFIGS[name]
     tpl = template()
     st = MDSettings(precision=prec, dipole_tol=tol)  # 0.9 nm, PME, LJ tail (the model's settings)
+    th = {"langevin": Langevin(1.0), "bussi": Bussi(0.5)}.get(thermostat, thermostat)
+    baro = MonteCarloBarostat(every=max(1, int(round(0.1 / (dt_fs * 1e-3))))) if npt else None
     return FlexibleSimulation(
         System([tpl.pgm] * N),
         [tpl] * N,
@@ -78,15 +87,12 @@ def sim_for(name, x, H, prec="mixed", tol=1e-5, ensemble="npt", thermostat="lang
         H,
         st,
         dt=dt_fs * 1e-3,
-        ensemble=ensemble,
         temperature=T0,
-        gamma=1.0,
-        thermostat=thermostat,
-        tau_t=0.5,
+        thermostat=th,
+        barostat=baro,
         constraints=cons,
         hmr=hmr,
-        barostat_interval=max(1, int(round(0.1 / (dt_fs * 1e-3)))),
-        vel_nm_ps=vel,
+        velocities=vel,
         seed=seed,
         log=log,
     )
@@ -103,16 +109,15 @@ def equil():
         H,
         st,
         dt=0.0005,
-        ensemble="nvt",
+        thermostat=Langevin(5.0),
         temperature=T0,
-        gamma=5.0,
         log=sys.stdout,
     )
-    s.run(4000, report=1000)
-    s = sim_for("hb-2", s.positions_nm(), np.asarray(s.state.box), vel=s.velocities_nm_ps(), log=sys.stdout)
-    s.run(75000, report=5000)  # 150 ps NPT at 2 fs
+    s.run(4000, report_every=1000)
+    s = sim_for("hb-2", s.positions(), np.asarray(s.state.box), vel=s.velocities(), log=sys.stdout)
+    s.run(75000, report_every=5000)  # 150 ps NPT at 2 fs
     os.makedirs(OUT, exist_ok=True)
-    np.savez(os.path.join(OUT, "eq.npz"), x=s.positions_nm(), v=s.velocities_nm_ps(), H=np.asarray(s.state.box))
+    np.savez(os.path.join(OUT, "eq.npz"), x=s.positions(), v=s.velocities(), H=np.asarray(s.state.box))
 
 
 def load_eq():
@@ -131,22 +136,29 @@ def nve(prec, names, ps):
         res = {}
         cons, dt_fs, hmr = CONFIGS[name]
         dt = dt_fs * 1e-3
-        pre = sim_for(name, x, H, prec, tol, ensemble="nvt", thermostat="bussi")
-        pre._advance(int(round(2.0 / dt)))
+        pre = sim_for(name, x, H, prec, tol, thermostat="bussi", npt=False)
+        pre.advance(int(round(2.0 / dt)))
         s = sim_for(
-            name, pre.positions_nm(), np.asarray(pre.state.box), prec, tol, ensemble="nve", vel=pre.velocities_nm_ps()
+            name,
+            pre.positions(),
+            np.asarray(pre.state.box),
+            prec,
+            tol,
+            thermostat=None,
+            npt=False,
+            vel=pre.velocities(),
         )
         err_x, err_v = 0.0, 0.0
         for _ in range(200):
-            s._advance(1)
+            s.advance(1)
             o = s.observables()
             err_x, err_v = max(err_x, o.get("shake_err", 0.0)), max(err_v, o.get("rattle_err", 0.0))
         every = max(1, int(round(0.1 / dt)))
-        s._advance(every)  # compiled for this block length
+        s.advance(every)  # compiled for this block length
         t, E, T = [], [], []
         c0, n0, w0 = float(s.state.cg_total), int(s.state.step), time.time()
         for _ in range(int(round(ps / 0.1))):
-            s._advance(every)
+            s.advance(every)
             o = s.observables()
             t.append(o["time_ps"])
             E.append(o["etot"])
@@ -251,7 +263,7 @@ def sample(name, ns, seed, frame_ps=0.5, blocks=10, equil_ps=100.0):
     s = sim_for(name, x, H, seed=seed)
     dt = s.dt
     every = int(round(frame_ps / dt))  # dt in ps
-    s._advance(int(round(equil_ps / dt)) // every * every)  # equilibration with its own settings
+    s.advance(int(round(equil_ps / dt)) // every * every)  # equilibration with its own settings
     idx = atoms_of(template())
     per = int(round(ns * 1000.0 / frame_ps)) // blocks
     rec = {
@@ -273,7 +285,7 @@ def sample(name, ns, seed, frame_ps=0.5, blocks=10, equil_ps=100.0):
     for b in range(blocks):
         acc = new_acc()
         for _ in range(per):
-            s._advance(every)
+            s.advance(every)
             o = s.observables()
             o["press"] = s.pressure()  # molecular virial (constraint forces are internal)
             for k, kk in (
@@ -288,7 +300,7 @@ def sample(name, ns, seed, frame_ps=0.5, blocks=10, equil_ps=100.0):
                 ("press", "press"),
             ):
                 rec[k].append(o.get(kk, 0.0))
-            hist_frame(s.positions_nm(), np.diag(np.asarray(s.state.box)), idx, N, acc)
+            hist_frame(s.positions(), np.diag(np.asarray(s.state.box)), idx, N, acc)
         B.append(acc)
         print(
             name,
@@ -466,9 +478,7 @@ def peptide(ps=10.0):
             asys.box,
             st,
             dt=dt,
-            ensemble="nvt",
-            thermostat="bussi",
-            tau_t=0.2,
+            thermostat=Bussi(0.2),
             temperature=T0,
             constraints=cons,
             hmr=hmr,
@@ -477,34 +487,34 @@ def peptide(ps=10.0):
         )
         if x0 is None:
             s.minimize(300)
-            s._advance(int(round(5.0 / dt)))
-            x0 = s.positions_nm()
+            s.advance(int(round(5.0 / dt)))
+            x0 = s.positions()
         else:
-            s._advance(int(round(5.0 / dt)))
+            s.advance(int(round(5.0 / dt)))
         e = FlexibleSimulation(
             asys.system(),
             templates,
-            s.positions_nm(),
+            s.positions(),
             np.asarray(s.state.box),
             st,
             dt=dt,
-            ensemble="nve",
+            thermostat=None,
             constraints=cons,
             hmr=hmr,
-            vel_nm_ps=s.velocities_nm_ps(),
+            velocities=s.velocities(),
             constraint_options=opts,
             log=None,
         )
         ex = ev = 0.0
         for _ in range(200):
-            e._advance(1)
+            e.advance(1)
             o = e.observables()
             ex, ev = max(ex, o["shake_err"]), max(ev, o["rattle_err"])
         t, E, T = [], [], []
         every = int(round(0.1 / dt))
         w0, n0, c0 = time.time(), int(e.state.step), float(e.state.cg_total)
         for _ in range(int(round(ps / 0.1))):
-            e._advance(every)
+            e.advance(every)
             o = e.observables()
             t.append(o["time_ps"])
             E.append(o["etot"])
@@ -536,14 +546,14 @@ def speed(names, ps=10.0):
     path = os.path.join(OUT, f"speed_{str(jax.devices()[0]).replace(':', '')}.json")
     res = json.load(open(path)) if os.path.exists(path) else {}
     for name in names:
-        s = sim_for(name, x, H, ensemble="nvt", thermostat="bussi")
+        s = sim_for(name, x, H, thermostat="bussi", npt=False)
         dt = s.dt
         blk = int(round(1.0 / dt))
-        s._advance(2 * blk)
+        s.advance(2 * blk)
         jax.block_until_ready(s.state.epot)
         n0, c0, w0 = int(s.state.step), float(s.state.cg_total), time.time()
         for _ in range(int(round(ps))):
-            s._advance(blk)
+            s.advance(blk)
         jax.block_until_ready(s.state.epot)
         wall = time.time() - w0
         n = int(s.state.step) - n0
@@ -599,6 +609,7 @@ if __name__ == "__main__":
     ap.add_argument("--equil-ps", type=float, default=100.0)
     ap.add_argument("--blocks", type=int, default=10)
     a = ap.parse_args()
+    setup_logging()
     os.makedirs(OUT, exist_ok=True)
     if a.mode == "equil":
         equil()

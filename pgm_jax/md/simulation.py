@@ -1,35 +1,36 @@
 """Simulation driver: Amber inputs in, Amber-readable outputs out.
 
-    sim = Simulation.from_amber("water.prmtop", "water.rst7", settings=MDSettings(...),
-                                ensemble="npt", temperature=298.0, dt=0.001)
-    sim.run(nsteps=100000, report=1000, traj=1000, restart=10000, prefix="md")
+    sim = Simulation.from_amber("water.prmtop", "water.rst7", settings=MDSettings(...), temperature=298.0,
+                                dt=0.001, thermostat=Bussi(tau=1.0), barostat=MonteCarloBarostat(pressure=1.0))
+    sim.run(100000, prefix="md", report_every=1000, traj_every=1000, checkpoint_every=10000)
 
 Steps run in jit-compiled blocks on the device; between blocks the host checks the neighbour
 list (reallocates and repeats the block on overflow), re-wraps molecules into the box, reports
 and writes files.  Molecules are the prmtop residues; identical residues share one template.
 Virtual sites (Amber extra points, Molecule.vsites; md/vsites.py) are massless points of the rigid
 templates, placed from their parents at the start.
-run(dipoles=n) also samples the cell dipole every n steps (on the device, inside the blocks) into
-prefix.dip, and run(induced=n) writes per-atom induced dipoles to prefix.mu.nc (md/dipoles.py).
+run(dipoles_every=n) also samples the cell dipole every n steps (on the device, inside the blocks)
+into prefix.dip, and run(induced_every=n) writes per-atom induced dipoles to prefix.mu.nc
+(md/dipoles.py).
 mts=MTS(...) integrates force groups with their own time steps (md/mts.py; dt is the outer step).
 bias=... adds biases on collective variables (pgm_jax.bias: metadynamics, OPES, static biases);
-run() then writes prefix.colvar, prefix.hills and, with the restarts, prefix.bias (bias/io.py)."""
+run() then writes prefix.colvar, prefix.hills and, with the checkpoints, prefix.bias (bias/io.py)."""
 
 from __future__ import annotations
-
-import sys
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 from ..system import System
+from .barostats import MonteCarloBarostat
 from .box import check_box, reduce_box
 from .engine import MDEngine
 from .forcefield import MDSettings, PGMForceField
 from .integrate import Integrator
 from .io import read_coordinates_nm
 from .rigid import RigidMolecules
+from .thermostats import Thermostat
 from .vsites import VirtualSites
 
 
@@ -42,38 +43,80 @@ class Simulation(MDEngine):
 
     def __init__(
         self,
-        sys: System,
-        pos_nm,
-        H_nm,
+        system: System,
+        positions,
+        box,
         settings: MDSettings = MDSettings(),
+        *,
         dt: float = 0.001,
-        ensemble: str = "nvt",
         temperature: float = 298.0,
-        gamma: float = 1.0,
-        pressure: float = 1.0,
-        barostat_interval: int = 100,
+        thermostat: Thermostat | str | None = "langevin",
+        barostat: MonteCarloBarostat | None = None,
+        velocities=None,
         seed: int = 0,
-        vel_nm_ps=None,
         params=None,
-        log=sys.stdout,
-        neighbor_list: str = "auto",
-        thermostat="langevin",
-        tau_t: float = 1.0,
         restraints=None,
         alchemy=None,
         mts=None,
         bias=None,
         efield=None,
+        neighbor_list: str = "auto",
+        log=None,
     ):
-        H = reduce_box(H_nm)
+        """Set up rigid-body MD of `system` at `positions` in `box`.
+
+        Parameters
+        ----------
+        system : System
+            Molecules (every one rigid at its template geometry).
+        positions : array (N, 3)
+            Atom positions [nm] (virtual sites are placed from their parents).
+        box : array (3, 3)
+            Box [nm], lattice vectors as rows (reduced to a canonical form).
+        settings : MDSettings
+            Force-field, cutoff, PME and solver settings.
+        dt : float
+            Time step [ps] (the outer step with mts).
+        temperature : float
+            Temperature [K] of the thermostat, the barostat and drawn momenta.
+        thermostat : Thermostat, str or None
+            Langevin(friction), Bussi(tau), GLE..., a name for the default settings of a kind
+            ("langevin" = Langevin(1/ps), the default; "bussi"; "gle"; "gle-lowpass"), or None for
+            NVE (thermostats.make_thermostat).
+        barostat : MonteCarloBarostat or None
+            Isotropic Monte Carlo barostat (None: constant volume); needs a thermostat.
+        velocities : array (N, 3), optional
+            Atom velocities [nm/ps] (their rigid-body part is kept); default: drawn at the
+            temperature.
+        seed : int
+            Seed of the random stream (momenta, thermostat, barostat).
+        params : dict, optional
+            Force-field parameters (default: those of the system).
+        restraints, alchemy, mts, bias, efield : optional
+            Restraints (md/restraints.py), an alchemical region (md/alchemy.py), multiple time
+            stepping (md/mts.py), biases on collective variables (pgm_jax.bias), an external field
+            (md/efield.py: ExternalField or three numbers in V/nm).
+        neighbor_list : str
+            "auto" (molecular-centre list when the box allows it), "molecule" or "atom".
+        log : text stream or None
+            Receives the rows of the log table of `run` too (diagnostics go to the logger
+            "pgm_jax.md.simulation").
+
+        Raises
+        ------
+        ValueError
+            A box too small for the cutoff, invalid options or combinations.
+        """
+        H = reduce_box(box)
         check_box(H, settings.pair_cutoff + settings.skin)
-        self.sys, self.settings, self.log = sys, settings, log
-        self.vsites = VirtualSites.of(sys)
+        self.sys, self.settings, self.log = system, settings, log
+        self.vsites = VirtualSites.of(system)
+        pos_nm = positions
         if self.vsites is not None:  # sites of the rigid templates from their parents
             pos_nm = np.asarray(self.vsites.place(np.asarray(pos_nm, float), H))
-            self.vsites.check(pos_nm, H, (sys.cov_i, sys.cov_j))
-        self.rigid = RigidMolecules(sys, pos_nm, H)
-        self.ff = PGMForceField(sys, H, settings)
+            self.vsites.check(pos_nm, H, (system.cov_i, system.cov_j))
+        self.rigid = RigidMolecules(system, pos_nm, H)
+        self.ff = PGMForceField(system, H, settings)
         self._r_list = float(jnp.max(jnp.linalg.norm(self.rigid.local, axis=1)))
         self._nb_mode = neighbor_list
         self._make_neighbors(H)
@@ -88,32 +131,27 @@ class Simulation(MDEngine):
             self.rigid,
             self.nb,
             dt,
-            ensemble,
             temperature,
-            gamma,
-            pressure,
-            barostat_interval,
+            thermostat,
+            barostat,
             params,
-            thermostat=thermostat,
-            tau_t=tau_t,
             restraints=restraints,
             alchemy=alchemy,
             bias=bias,
             efield=efield,
             **extra,
         )
-        self.dt, self.ensemble, self.T0 = dt, ensemble, temperature
+        self.dt, self.ensemble, self.T0 = dt, self.integ.ensemble, temperature
         body = self.rigid.body0
         mom = None
-        if vel_nm_ps is not None:
-            mom = self.rigid.momenta_from_velocities(body, self.rigid.positions(body), jnp.asarray(vel_nm_ps))
+        if velocities is not None:
+            mom = self.rigid.momenta_from_velocities(body, self.rigid.positions(body), jnp.asarray(velocities))
         self.state = self.integ.init(body, H, jax.random.PRNGKey(seed), mom)
         self.time_ps = 0.0
-        thermo = "" if self.integ.thermostat is None else f" ({self.integ.thermostat.describe()})"
-        self._print(
-            f"# pgm_jax MD: {sys.nmol} rigid molecules, {sys.n} atoms"
-            f"{'' if self.vsites is None else f' ({self.vsites.n_sites} virtual sites)'}, {ensemble.upper()}{thermo}, "
-            f"dt {dt * 1000:g} fs, "
+        self._log.info(
+            f"pgm_jax MD: {system.nmol} rigid molecules, {system.n} atoms"
+            f"{'' if self.vsites is None else f' ({self.vsites.n_sites} virtual sites)'}, "
+            f"{self._describe_coupling()}, dt {dt * 1000:g} fs, "
             f"{settings.precision} precision, PME grid {self.ff.pme.K} order {settings.pme_order}, "
             f"{settings.describe_cutoffs()}, {self.nb.kind} neighbour list, {settings.describe_induction()}, "
             f"template fit RMSD {self.rigid.fit_rmsd:.2e} nm, device {jax.devices()[0]}"
@@ -124,13 +162,37 @@ class Simulation(MDEngine):
     def from_amber(
         cls, prmtop: str, coords: str, use_velocities: bool = True, charges: str = "pgm", **kw
     ) -> Simulation:
-        """charges: "pgm" (a pGM prmtop) or "amber" (the point charges of a classical prmtop, e.g.
-        TIP4P-Ew; with MDSettings(elec="q")); extra points become virtual sites (read_prmtop_pgm)."""
-        sys = System.from_prmtop(prmtop, charges=charges)
+        """A simulation of the system of an Amber prmtop at the coordinates of a restart / inpcrd.
+
+        Parameters
+        ----------
+        prmtop : str
+            The prmtop (residues become rigid molecules; identical residues share one template;
+            extra points become virtual sites).
+        coords : str
+            Coordinates with a periodic box (ASCII or NetCDF restart, inpcrd).
+        use_velocities : bool
+            Start from the file's velocities when it has them.
+        charges : str
+            "pgm" (a pGM prmtop) or "amber" (the point charges of a classical prmtop, e.g.
+            TIP4P-Ew; with MDSettings(elec="q")).
+        **kw
+            Keywords of the constructor (settings, dt, temperature, thermostat, ...).
+
+        Returns
+        -------
+        Simulation
+
+        Raises
+        ------
+        ValueError
+            Coordinates without a periodic box.
+        """
+        system = System.from_prmtop(prmtop, charges=charges)
         pos, vel, H = read_coordinates_nm(coords)
         if H is None:
             raise ValueError(f"{coords}: the coordinates have no periodic box")
-        return cls(sys, pos, H, vel_nm_ps=vel if use_velocities else None, **kw)
+        return cls(system, pos, H, velocities=vel if use_velocities else None, **kw)
 
     # ----------------------------------------------------------------- MDEngine hooks
     def _list_groups(self) -> tuple[np.ndarray, int]:
@@ -142,11 +204,11 @@ class Simulation(MDEngine):
         return dynpos.center
 
     # ----------------------------------------------------------------- coordinates
-    def positions_nm(self) -> np.ndarray:
+    def positions(self) -> np.ndarray:
         """Atom positions (N, 3) [nm] of the current state (virtual sites included)."""
         return np.asarray(self.rigid.positions(self.state.dyn.position))
 
-    def velocities_nm_ps(self) -> np.ndarray:
+    def velocities(self) -> np.ndarray:
         """Atom velocities (N, 3) [nm/ps] of the rigid-body motion of the current state."""
         st = self.state
         return np.asarray(self.rigid.atom_velocities(st.dyn.position, st.dyn.momentum))

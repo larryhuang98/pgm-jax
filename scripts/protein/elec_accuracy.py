@@ -20,6 +20,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from pgm_jax.cli.args import setup_logging
 from pgm_jax.md.box import max_cutoff
 from pgm_jax.md.forcefield import MDSettings, PGMForceField, elec_cutoff_settings
 from pgm_jax.paths import resource
@@ -36,6 +37,7 @@ ap.add_argument("--elec-cut", type=float, nargs="+", default=[0.8, 0.7, 0.6])
 ap.add_argument("--exponents", type=float, nargs="+", default=[1.6, 1.0], help="grid rules of elec_cutoff_settings")
 ap.add_argument("--precision", nargs="+", default=["mixed"])
 a = ap.parse_args()
+setup_logging()
 top = None
 if a.water:
     from pgm_jax.md.box import box_from_cell

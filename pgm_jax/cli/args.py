@@ -3,7 +3,94 @@ help text everywhere (docs/api_design.md, decision D2)."""
 
 from __future__ import annotations
 
+import logging
+import sys
+
+from ..md.barostats import MonteCarloBarostat
 from ..md.mts import MTS
+from ..md.thermostats import GLE, Bussi, Langevin, Thermostat, make_thermostat
+
+
+def setup_logging(level: int = logging.INFO, stream=sys.stdout) -> logging.Logger:
+    """Show pgm_jax's diagnostics (engine setup, list rebuilds, resizes) on a stream.
+
+    The library logs through loggers under "pgm_jax" and configures no handler; scripts call
+    this once.  Messages are printed as "# <message>" so that they read as comments next to the
+    log tables.
+
+    Parameters
+    ----------
+    level : int
+        Logging level of the "pgm_jax" logger (default INFO).
+    stream : text stream
+        Where the messages go (default sys.stdout).
+
+    Returns
+    -------
+    logging.Logger
+        The "pgm_jax" logger.
+    """
+    logger = logging.getLogger("pgm_jax")
+    logger.setLevel(level)
+    if not any(getattr(h, "_pgm_jax", False) for h in logger.handlers):
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("# %(message)s"))
+        handler._pgm_jax = True
+        logger.addHandler(handler)
+    logger.propagate = False
+    return logger
+
+
+def coupling_from_options(
+    ensemble: str,
+    thermostat: str = "langevin",
+    friction: float = 1.0,
+    tau: float = 1.0,
+    pressure: float = 1.0,
+    barostat_every: int = 100,
+) -> tuple[Thermostat | None, MonteCarloBarostat | None]:
+    """Thermostat and barostat objects for the ensemble options of a command line.
+
+    Parameters
+    ----------
+    ensemble : str
+        "nve", "nvt" or "npt".
+    thermostat : str
+        "langevin", "bussi" (or "csvr", "v-rescale"), "gle" or "gle-lowpass".
+    friction : float
+        Langevin friction [1/ps] (also the zero-frequency friction of "gle-lowpass").
+    tau : float
+        Bussi time constant [ps].
+    pressure : float
+        Barostat pressure [bar] (npt).
+    barostat_every : int
+        Steps between Monte Carlo volume moves (npt).
+
+    Returns
+    -------
+    (Thermostat or None, MonteCarloBarostat or None)
+        For the engines' thermostat= and barostat= keywords.
+
+    Raises
+    ------
+    ValueError
+        An unknown ensemble or thermostat.
+    """
+    ens = str(ensemble).lower()
+    if ens not in ("nve", "nvt", "npt"):
+        raise ValueError(f"ensemble: 'nve', 'nvt' or 'npt', not {ensemble!r}")
+    if ens == "nve":
+        return None, None
+    name = str(thermostat).lower()
+    if name == "langevin":
+        th = Langevin(friction)
+    elif name in ("bussi", "csvr", "v-rescale"):
+        th = Bussi(tau)
+    elif name in ("gle-lowpass", "lowpass"):
+        th = GLE.lowpass(friction)
+    else:
+        th = make_thermostat(name)
+    return th, (MonteCarloBarostat(pressure, barostat_every) if ens == "npt" else None)
 
 
 def add_iel_arguments(ap):

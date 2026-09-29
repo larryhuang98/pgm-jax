@@ -5,8 +5,8 @@ auxiliary momenta s, same shape as v).  Each O step is exact for its own dynamic
 exp(-beta (|v|^2 + |s|^2) / 2) invariant, so together with the Hamiltonian steps the scheme
 samples the canonical ensemble (up to the usual O(dt^2) splitting error).
 
-  Langevin(gamma)   white noise on every degree of freedom:
-                    dv = -gamma v dt + sqrt(2 gamma kT) dW.
+  Langevin(friction) white noise on every degree of freedom:
+                    dv = -friction v dt + sqrt(2 friction kT) dW.
   Bussi(tau)        stochastic velocity rescaling (Bussi, Donadio & Parrinello, JCP 126, 014101,
                     2007): one random factor per step scales all momenta, so the total kinetic
                     energy follows the canonical distribution with relaxation time tau.
@@ -19,8 +19,8 @@ samples the canonical ensemble (up to the usual O(dt^2) splitting error).
                     peaked at w0, small at w = 0 and at the fast (librational) frequencies.
 
 Why this matters for pGM: the induced-dipole predictor extrapolates the dipoles along the
-trajectory, and per-atom white noise makes the trajectory rough (predictor error ~ sqrt(gamma)
-dt^1.5).  Measured on 4096 pGM waters at tol 1e-5 (docs/thermostat_ideas.md):
+trajectory, and per-atom white noise makes the trajectory rough (predictor error ~
+sqrt(friction) dt^1.5).  Measured on 4096 pGM waters at tol 1e-5 (docs/thermostat_ideas.md):
 
   thermostat        CG it. 1 fs   H~ drift 2 fs (kT/ns/dof)   D vs NVE   T 1 ps after 146 K start
   Langevin 1/ps        6.0            +0.005                   -17 %        276 K
@@ -29,9 +29,13 @@ dt^1.5).  Measured on 4096 pGM waters at tol 1e-5 (docs/thermostat_ideas.md):
 
 (1) Bussi & Parrinello, CPC 179, 26 (2008): diffusion nearly unchanged.
 
-Bussi is the fastest choice and perturbs dynamics least.  Use GLE.band() when every degree of
-freedom should be coupled to the bath (local control: heterogeneous heating, equilibration).
-Langevin is kept for compatibility.
+Bussi is the fastest choice and perturbs dynamics least (recommended).  Use GLE.band() when every
+degree of freedom should be coupled to the bath (local control: heterogeneous heating,
+equilibration).  Langevin 1/ps is the engines' default (thermostat="langevin"), kept so that
+results of existing inputs do not change.
+
+The engines take a thermostat object (or one of the names of `make_thermostat` for the default
+settings of each kind, or None for NVE) and a barostat object (md/barostats.py) or None.
 
 The integrators also book the heat each O step exchanges, so H~ = E_tot + |s|^2/2 - heat
 ("econs" in Simulation.observables()) is conserved up to integration and induction errors, as
@@ -72,25 +76,60 @@ class Thermostat:
 
 
 class Langevin(Thermostat):
+    """Langevin thermostat: white noise and friction on every degree of freedom."""
+
     name = "langevin"
 
-    def __init__(self, gamma: float = 1.0):
-        self.gamma = float(gamma)
+    def __init__(self, friction: float = 1.0):
+        """Langevin thermostat.
+
+        Parameters
+        ----------
+        friction : float
+            Friction coefficient gamma [1/ps] (the inverse of the momentum relaxation time).
+
+        Raises
+        ------
+        ValueError
+            A negative friction.
+        """
+        if float(friction) < 0.0:
+            raise ValueError(f"Langevin: friction must be >= 0 ({friction!r} 1/ps)")
+        self.friction = float(friction)
 
     def apply(self, v, aux, key, h, kT, dof, project, mask):
-        c = np.exp(-self.gamma * h)
+        """Exact O step: v -> c v + sqrt(kT (1 - c^2)) xi with c = exp(-friction h), then the
+        projection onto the constraint tangent space and the padding mask (see Thermostat.apply)."""
+        c = np.exp(-self.friction * h)
         v = c * v + jnp.sqrt(kT * (1.0 - c * c)) * jax.random.normal(key, v.shape, v.dtype)
         v = project(v)
         return (v if mask is None else v * mask), aux
 
-    def describe(self):
-        return f"Langevin {self.gamma:g}/ps"
+    def describe(self) -> str:
+        """E.g. "Langevin 1/ps"."""
+        return f"Langevin {self.friction:g}/ps"
 
 
 class Bussi(Thermostat):
+    """Stochastic velocity rescaling (Bussi, Donadio & Parrinello, JCP 126, 014101 (2007))."""
+
     name = "bussi"
 
     def __init__(self, tau: float = 1.0):
+        """Bussi thermostat.
+
+        Parameters
+        ----------
+        tau : float
+            Relaxation time of the kinetic energy [ps].
+
+        Raises
+        ------
+        ValueError
+            A non-positive tau.
+        """
+        if float(tau) <= 0.0:
+            raise ValueError(f"Bussi: tau must be > 0 ({tau!r} ps)")
         self.tau = float(tau)
 
     def apply(self, v, aux, key, h, kT, dof, project, mask):
@@ -144,11 +183,24 @@ class GLE(Thermostat):
         )
 
     @classmethod
-    def lowpass(cls, gamma0: float = 1.0, cutoff: float = 50.0) -> GLE:
-        """Low-pass kernel K(w) = gamma0 cutoff^2 / (cutoff^2 + w^2): Langevin-like friction gamma0
-        below `cutoff` (rad/ps), smooth noise."""
-        a = np.sqrt(gamma0 * cutoff)
-        return cls([[0.0, a], [-a, cutoff]], label=f"GLE low-pass ({gamma0:g}/ps below {cutoff:g} rad/ps)")
+    def lowpass(cls, friction: float = 1.0, cutoff: float = 50.0) -> GLE:
+        """Low-pass kernel K(w) = friction cutoff^2 / (cutoff^2 + w^2): Langevin-like friction below
+        the cutoff frequency, smooth noise.
+
+        Parameters
+        ----------
+        friction : float
+            Zero-frequency friction K(0) [1/ps].
+        cutoff : float
+            Cutoff frequency [rad/ps].
+
+        Returns
+        -------
+        GLE
+            The thermostat (one auxiliary momentum per degree of freedom).
+        """
+        a = np.sqrt(friction * cutoff)
+        return cls([[0.0, a], [-a, cutoff]], label=f"GLE low-pass ({friction:g}/ps below {cutoff:g} rad/ps)")
 
     def kernel(self, omega):
         """Friction spectrum K(w) = Re K^(i w), 1/ps, for w in rad/ps."""
@@ -184,18 +236,41 @@ class GLE(Thermostat):
         return self.label
 
 
-def make_thermostat(spec, gamma: float = 1.0, tau: float = 1.0) -> Thermostat:
-    """ "langevin" (friction gamma), "bussi" (time constant tau), "gle" / "gle-band" (slow-band
-    GLE), "gle-lowpass", or a Thermostat instance."""
-    if isinstance(spec, Thermostat):
+THERMOSTAT_NAMES = ("langevin", "bussi", "gle", "gle-lowpass")
+
+
+def make_thermostat(spec) -> Thermostat | None:
+    """The thermostat object an engine uses.
+
+    Parameters
+    ----------
+    spec : Thermostat, str or None
+        A Thermostat instance (used as it is), None (no thermostat: NVE), or a name for the
+        default settings of a kind: "langevin" (Langevin(friction=1.0)), "bussi" (aliases "csvr",
+        "v-rescale"; Bussi(tau=1.0)), "gle" (aliases "gle-band", "band"; GLE.band()),
+        "gle-lowpass" (alias "lowpass"; GLE.lowpass()).
+
+    Returns
+    -------
+    Thermostat or None
+
+    Raises
+    ------
+    ValueError
+        An unknown name.
+    """
+    if spec is None or isinstance(spec, Thermostat):
         return spec
     s = str(spec).lower()
     if s == "langevin":
-        return Langevin(gamma)
+        return Langevin()
     if s in ("bussi", "csvr", "v-rescale"):
-        return Bussi(tau)
+        return Bussi()
     if s in ("gle", "gle-band", "band"):
         return GLE.band()
     if s in ("gle-lowpass", "lowpass"):
-        return GLE.lowpass(gamma)
-    raise ValueError(f"unknown thermostat {spec!r}: langevin | bussi | gle | gle-lowpass | Thermostat")
+        return GLE.lowpass()
+    raise ValueError(
+        f"thermostat: unknown name {spec!r}; use one of {', '.join(THERMOSTAT_NAMES)}, a Thermostat object "
+        "(Langevin(friction), Bussi(tau), GLE...) or None (NVE)"
+    )

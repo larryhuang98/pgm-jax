@@ -21,11 +21,13 @@ from ase import units
 from ase.md.langevin import Langevin
 from ase.md.verlet import VelocityVerlet
 
+from pgm_jax.cli.args import setup_logging
 from pgm_jax.interfaces import PGMEngine
 from pgm_jax.interfaces.ase import PGMCalculator, atoms_from_system, rigid_constraints
 from pgm_jax.md.box import volume
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.md.thermostats import Langevin as LangevinThermostat
 from pgm_jax.paths import resource
 from pgm_jax.units import BAR_PER_KJMOL_NM3, KB
 
@@ -46,7 +48,7 @@ def native_atomic(sim):
 
 def single_point(prec, tol):
     s = MDSettings(precision=prec, dipole_tol=tol)
-    sim = Simulation.from_amber(TOP, RST, settings=s, ensemble="nve", log=None)
+    sim = Simulation.from_amber(TOP, RST, settings=s, thermostat=None, log=None)
     pos, F_nat, E_nat, mu_nat = native_atomic(sim)
     H = np.asarray(sim.state.box)
     out = {"precision": prec, "dipole_tol": tol, "E_native": float(sim.state.epot)}
@@ -103,6 +105,7 @@ def main():
     ap.add_argument("--precision", default="mixed")
     ap.add_argument("--T", type=float, default=298.0)
     args = ap.parse_args()
+    setup_logging()
     res = {"device": str(jax.devices()[0])}
     res["single_point_double"] = single_point("double", 1e-10)
     print(json.dumps(res, indent=1), flush=True)
@@ -113,20 +116,22 @@ def main():
     dt, T = args.dt, args.T
     n_eq, n_nve, n_nvt = (int(round(x / dt)) for x in (args.ps_eq, args.ps_nve, args.ps_nvt))
     rep = 100
-    sim = Simulation.from_amber(TOP, RST, settings=s, ensemble="nvt", temperature=T, gamma=1.0, dt=dt, log=None)
-    sim._advance(n_eq)
-    pos0, vel0, H = sim.positions_nm(), sim.velocities_nm_ps(), np.asarray(sim.state.box)
+    sim = Simulation.from_amber(
+        TOP, RST, settings=s, thermostat=LangevinThermostat(1.0), temperature=T, dt=dt, log=None
+    )
+    sim.advance(n_eq)
+    pos0, vel0, H = sim.positions(), sim.velocities(), np.asarray(sim.state.box)
     sysm = sim.sys
 
     # ---- native NVE
-    nat = Simulation(sysm, pos0, H, s, dt=dt, ensemble="nve", vel_nm_ps=vel0, log=None)
+    nat = Simulation(sysm, pos0, H, s, dt=dt, thermostat=None, velocities=vel0, log=None)
     dof = nat.integ.dof
     etot_start = float(nat.observables()["etot"])
-    nat._advance(rep)  # compile
+    nat.advance(rep)  # compile
     t, E, U = [], [], []
     t0 = time.perf_counter()
     for _k in range(n_nve // rep):
-        nat._advance(rep)
+        nat.advance(rep)
         o = nat.observables()
         t.append(o["time_ps"])
         E.append(o["etot"])
@@ -175,12 +180,12 @@ def main():
 
     # ---- NVT: native Langevin vs ASE Langevin
     natv = Simulation(
-        sysm, pos0, H, s, dt=dt, ensemble="nvt", temperature=T, gamma=1.0, vel_nm_ps=vel0, log=None, seed=5
+        sysm, pos0, H, s, dt=dt, thermostat=LangevinThermostat(1.0), temperature=T, velocities=vel0, log=None, seed=5
     )
     Tn, Un, Ttr, Trot = [], [], [], []
     t0 = time.perf_counter()
     for _k in range(n_nvt // rep):
-        natv._advance(rep)
+        natv.advance(rep)
         o = natv.observables()
         Tn.append(o["temp_K"])
         Un.append(o["epot"] / sysm.nmol)

@@ -17,6 +17,7 @@ from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, RigidTempl
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.md.io import read_coordinates
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.md.thermostats import Bussi, Langevin
 from pgm_jax.md.topology import MDTopology, MoleculeRule
 from pgm_jax.md.vsites import VirtualSite, VirtualSites, amber_extra_points
 from pgm_jax.param import molecule_from_dict, molecule_to_dict, read_prmtop_molecules, read_prmtop_pgm, share_identical
@@ -446,12 +447,12 @@ def test_engines_with_sites_agree_and_conserve_energy():
     s = MDSettings(
         elec="q", cutoff=0.65, skin=0.05, ewald_beta=ewald_beta_for(0.65), pme_spacing=0.06, precision="double"
     )
-    eq = Simulation(sys, pos, H, s, dt=0.001, ensemble="nvt", thermostat="bussi", tau_t=0.1, log=None, seed=1)
-    eq._advance(500)  # relax tleap's voids a little
-    pos, vel, H = eq.positions_nm(), eq.velocities_nm_ps(), np.asarray(eq.state.box)
-    rig = Simulation(sys, pos, H, s, dt=0.001, ensemble="nve", log=None, vel_nm_ps=vel)
+    eq = Simulation(sys, pos, H, s, dt=0.001, thermostat=Bussi(0.1), log=None, seed=1)
+    eq.advance(500)  # relax tleap's voids a little
+    pos, vel, H = eq.positions(), eq.velocities(), np.asarray(eq.state.box)
+    rig = Simulation(sys, pos, H, s, dt=0.001, thermostat=None, log=None, velocities=vel)
     tpl = RigidTemplate(sys.molecules[0], pos[:4])
-    flx = FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=0.001, ensemble="nve", log=None, vel_nm_ps=vel)
+    flx = FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=0.001, thermostat=None, log=None, velocities=vel)
     n = sys.nmol
     assert rig.integ.dof == flx.integ.dof == 6 * n - 3 and flx.constraints.nc == 3 * n
     assert abs(rig.observables()["epot"] - flx.observables()["epot"]) < 1e-9 * abs(rig.observables()["epot"])
@@ -467,17 +468,17 @@ def test_engines_with_sites_agree_and_conserve_energy():
     for sim in (rig, flx):
         E = []
         for _ in range(6):
-            sim._advance(50)
+            sim.advance(50)
             E.append(sim.observables()["etot"])
         ke = 0.5 * sim.integ.dof * KB * 300.0  # hard cutoffs in a small box: crossings dominate
         assert np.std(E) < 2e-3 * ke and abs(E[-1] - E[0]) < 3e-3 * ke, (type(sim).__name__, np.std(E) / ke)
         trace.append(np.array(E) - E[0])
     # NO_SQUISH rigid bodies and RATTLE + placed sites integrate the same dynamics
     assert np.abs(trace[0] - trace[1]).max() < 2e-4 * ke, trace
-    X = flx.positions_nm().reshape(-1, 4, 3)
+    X = flx.positions().reshape(-1, 4, 3)
     assert np.abs(np.linalg.norm(X[:, 3] - X[:, 0], axis=1) - 0.0125).max() < 1e-12
     assert np.all(np.asarray(flx.state.dyn.momentum)[3::4] == 0.0)
-    assert np.all(flx.velocities_nm_ps()[3::4] == 0.0)
+    assert np.all(flx.velocities()[3::4] == 0.0)
 
 
 def test_flexible_molecule_with_sites_nvt_nve_and_hmr():
@@ -500,10 +501,8 @@ def test_flexible_molecule_with_sites_nvt_nve_and_hmr():
         H,
         s,
         dt=0.001,
-        ensemble="nvt",
+        thermostat=Langevin(20.0),
         temperature=300.0,
-        thermostat="langevin",
-        gamma=20.0,
         constraints="h-bonds",
         hmr=3.0,
         log=None,
@@ -511,12 +510,12 @@ def test_flexible_molecule_with_sites_nvt_nve_and_hmr():
     m = np.asarray(sim.flex.masses)
     assert np.all(m[6::12] == 0.0) and abs(m.sum() - sys.masses.sum()) < 1e-9  # sites stay massless
     assert sim.integ.dof == 3 * 6 * 27 - 4 * 27
-    sim._advance(300)
+    sim.advance(300)
     o = sim.observables()
     assert 150.0 < o["temp_K"] < 450.0 and o["shake_err"] < 1e-9
     p = np.asarray(sim.state.dyn.momentum).reshape(27, 12, 3)
     assert np.all(p[:, 6:] == 0.0)
-    y = sim.positions_nm().reshape(27, 12, 3)
+    y = sim.positions().reshape(27, 12, 3)
     assert (
         np.abs(
             y[:, 6:] - np.asarray(VirtualSites.of(sys).place(y.reshape(-1, 3), sim.state.box)).reshape(27, 12, 3)[:, 6:]
@@ -526,19 +525,19 @@ def test_flexible_molecule_with_sites_nvt_nve_and_hmr():
     nve = FlexibleSimulation(
         sys,
         [tpl] * 27,
-        sim.positions_nm(),
+        sim.positions(),
         np.asarray(sim.state.box),
         s,
         dt=0.0005,
-        ensemble="nve",
-        vel_nm_ps=sim.velocities_nm_ps(),
+        thermostat=None,
+        velocities=sim.velocities(),
         constraints="h-bonds",
         hmr=3.0,
         log=None,
     )
     E = []
     for _ in range(8):
-        nve._advance(50)
+        nve.advance(50)
         E.append(nve.observables()["etot"])
     ke = 0.5 * nve.integ.dof * KB * 300.0
     assert np.std(E) < 1e-3 * ke and abs(E[-1] - E[0]) < 2e-3 * ke, (np.std(E) / ke, (E[-1] - E[0]) / ke)
@@ -563,10 +562,9 @@ def test_load_amber_protein_in_tip4pew():
         asys.box,
         MDSettings(cutoff=0.8, skin=0.05, pme_spacing=0.1),
         dt=0.002,
-        ensemble="nvt",
+        thermostat="bussi",
         constraints="h-bonds",
         hmr=asys.hmr({"water": 4.0, "protein": 3.024}),
-        thermostat="bussi",
         log=None,
     )
     n_wat = kinds.count("water")
@@ -575,9 +573,9 @@ def test_load_amber_protein_in_tip4pew():
     )  # Bussi
     out = sim.minimize(10)  # steepest descent keeps the sites placed
     assert out["accepted"] > 0
-    sim._advance(20)
+    sim.advance(20)
     assert np.isfinite(sim.observables()["etot"])
-    X = sim.positions_nm()
+    X = sim.positions()
     assert np.abs(np.linalg.norm(X[sim.vsites.site] - X[sim.vsites.host], axis=1) - 0.0125).max() < 1e-12
     with pytest.raises(NotImplementedError, match="virtual sites"):
         write_pgm_prmtop(asys, "/nonexistent/x.prmtop", tpls)

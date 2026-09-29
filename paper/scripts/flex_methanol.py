@@ -11,6 +11,8 @@ from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
 from pgm_jax.units import KB
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.system import System
+from pgm_jax.md.thermostats import Langevin
+from pgm_jax.md.barostats import MonteCarloBarostat
 
 # 1. one molecule in a 4 nm box vs the gas-phase model the bonded terms were fitted with
 # 2. NVT 2 ps -> NPT 100 ps
@@ -24,9 +26,7 @@ out = {"n_mol": N, "n_atoms": N * tpl.n, "T": T, "exp_density": 0.7866, "familie
        "device": str(jax.devices()[0])}
 rng = np.random.default_rng(0)
 x = np.asarray(tpl.spec.ref_xyz) + 0.003 * rng.normal(size=(tpl.n, 3))
-s1 = FlexibleSimulation(System([tpl.pgm]), [tpl], x + 2.0, np.eye(3) * 4.0,
-                        MDSettings(precision="double", dipole_tol=1e-9, cutoff=1.8, skin=0.05, lj_lrc=False),
-                        ensemble="nve", log=None)
+s1 = FlexibleSimulation(System([tpl.pgm]), [tpl], x + 2.0, np.eye(3) * 4.0, MDSettings(precision="double", dipole_tol=1e-9, cutoff=1.8, skin=0.05, lj_lrc=False), thermostat=None, log=None)
 P = jax.tree_util.tree_map(jnp.asarray, tpl.P)
 g = np.asarray(jax.grad(lambda R: tpl.model.energy(tpl.index, R, P)[0])(jnp.asarray(x)))
 F = np.asarray(s1.state.dyn.force)
@@ -37,15 +37,14 @@ st = MDSettings()                                            # 0.9 nm, PME, tol 
 pos, H = liquid_box(tpl, N, 0.55, seed=1, min_dist=0.18)
 sys_ = System([tpl.pgm] * N)
 dt = 0.0005
-nvt = FlexibleSimulation(sys_, [tpl] * N, pos, H, st, dt=dt, ensemble="nvt", temperature=T, gamma=5.0, log=None)
-nvt._advance(4000)
-npt = FlexibleSimulation(sys_, [tpl] * N, nvt.positions_nm(), np.asarray(nvt.state.box), st, dt=dt, ensemble="npt",
-                         temperature=T, gamma=1.0, barostat_interval=25, vel_nm_ps=nvt.velocities_nm_ps(), log=None)
+nvt = FlexibleSimulation(sys_, [tpl] * N, pos, H, st, dt=dt, thermostat=Langevin(5.0), temperature=T, log=None)
+nvt.advance(4000)
+npt = FlexibleSimulation(sys_, [tpl] * N, nvt.positions(), np.asarray(nvt.state.box), st, dt=dt, thermostat=Langevin(1.0), barostat=MonteCarloBarostat(every=25), temperature=T, velocities=nvt.velocities(), log=None)
 rec = {k: [] for k in ("time_ps", "density", "temp_com", "temp_internal", "epot")}
-npt._advance(1000)                                            # compile outside the timing
+npt.advance(1000)                                            # compile outside the timing
 t0, s0 = time.time(), int(npt.state.step)
 for k in range(200):                                          # 200 x 0.5 ps
-    npt._advance(1000)
+    npt.advance(1000)
     o = npt.observables()
     rec["time_ps"].append(round(o["time_ps"], 3)); rec["density"].append(o["density_g_cm3"])
     rec["temp_com"].append(o["temp_com"]); rec["temp_internal"].append(o["temp_internal"]); rec["epot"].append(o["epot"])
@@ -60,19 +59,18 @@ out["npt_summary"] = {"density_mean_last50ps": float(half.mean()), "density_se":
                       "ns_per_day": steps * dt / 1000.0 / (wall / 86400.0), "ms_per_step": 1000.0 * wall / steps,
                       "barostat_interval": 25, "dt_fs": 0.5}
 print(out["npt_summary"], flush=True)
-x_eq, v_eq, H_eq = npt.positions_nm(), npt.velocities_nm_ps(), np.asarray(npt.state.box)
+x_eq, v_eq, H_eq = npt.positions(), npt.velocities(), np.asarray(npt.state.box)
 
 # 3. NVE from the equilibrated state
 out["nve"] = []
 for label, dt_n, prec, tol, ps in (("0.5 fs, mixed, tol 1e-5", 0.0005, "mixed", 1e-5, 20.0),
                                    ("0.25 fs, mixed, tol 1e-5", 0.00025, "mixed", 1e-5, 10.0),
                                    ("0.5 fs, double, tol 1e-8", 0.0005, "double", 1e-8, 10.0)):
-    s = FlexibleSimulation(sys_, [tpl] * N, x_eq, H_eq, MDSettings(precision=prec, dipole_tol=tol), dt=dt_n,
-                           ensemble="nve", vel_nm_ps=v_eq, log=None)
+    s = FlexibleSimulation(sys_, [tpl] * N, x_eq, H_eq, MDSettings(precision=prec, dipole_tol=tol), dt=dt_n, thermostat=None, velocities=v_eq, log=None)
     every = int(round(0.1 / dt_n))
     t, E = [], []
     for _ in range(int(round(ps / 0.1))):
-        s._advance(every)
+        s.advance(every)
         o = s.observables()
         t.append(round(o["time_ps"], 4)); E.append(o["etot"])
     t, E = np.array(t), np.array(E)

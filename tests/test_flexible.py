@@ -9,8 +9,10 @@ from test_grad import methanol
 
 from pgm_jax.bonded import terms as T
 from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
 from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.thermostats import Langevin
 from pgm_jax.system import System
 from pgm_jax.units import KB
 
@@ -47,7 +49,7 @@ def test_single_molecule_matches_gas_phase_model():
     tpl, x = template()
     y = x + 0.004 * np.random.default_rng(0).normal(size=x.shape)
     s = MDSettings(precision="double", dipole_tol=1e-9, cutoff=1.8, skin=0.05, lj_lrc=False)
-    sim = FlexibleSimulation(System([tpl.pgm]), [tpl], y + 2.0, np.eye(3) * 4.0, s, ensemble="nve", log=None)
+    sim = FlexibleSimulation(System([tpl.pgm]), [tpl], y + 2.0, np.eye(3) * 4.0, s, thermostat=None, log=None)
     F = np.asarray(sim.state.dyn.force)
     P = jax.tree_util.tree_map(jnp.asarray, tpl.P)
     g = np.asarray(jax.grad(lambda R: tpl.model.energy(0, R, P)[0])(jnp.asarray(y)))
@@ -65,28 +67,28 @@ def test_nve_energy_conservation():
     tpl, sys, pos, H = _box()
     s = MDSettings(precision="double", dipole_tol=1e-8, cutoff=0.6, skin=0.05, lj_lrc=False)
     sim = FlexibleSimulation(
-        sys, [tpl] * sys.nmol, pos, H, s, dt=0.0005, ensemble="nvt", temperature=298.0, gamma=10.0, log=None
+        sys, [tpl] * sys.nmol, pos, H, s, dt=0.0005, thermostat=Langevin(10.0), temperature=298.0, log=None
     )
-    sim._advance(1000)
+    sim.advance(1000)
     sim2 = FlexibleSimulation(
         sys,
         [tpl] * sys.nmol,
-        sim.positions_nm(),
+        sim.positions(),
         np.asarray(sim.state.box),
         s,
         dt=0.0005,
-        ensemble="nve",
-        vel_nm_ps=sim.velocities_nm_ps(),
+        thermostat=None,
+        velocities=sim.velocities(),
         log=None,
     )
     E = []
     for _ in range(10):
-        sim2._advance(100)
+        sim2.advance(100)
         E.append(sim2.observables()["etot"])
     ke = 0.5 * sim2.integ.dof * KB * 298.0
     assert np.std(E) < 1e-3 * ke and abs(E[-1] - E[0]) < 2e-3 * ke, (np.std(E) / ke, (E[-1] - E[0]) / ke)
     # molecules stay whole and bonded
-    X = sim2.positions_nm().reshape(sys.nmol, tpl.n, 3)
+    X = sim2.positions().reshape(sys.nmol, tpl.n, 3)
     b = np.linalg.norm(X[:, [0, 1]] - X[:, [1, 5]], axis=-1)
     assert b.max() < 0.16 and b.min() > 0.08
 
@@ -103,18 +105,16 @@ def test_npt_compresses_dilute_box():
         H,
         s,
         dt=0.0005,
-        ensemble="npt",
+        thermostat=Langevin(5.0),
+        barostat=MonteCarloBarostat(2000.0, 5),
         temperature=298.0,
-        gamma=5.0,
-        pressure=2000.0,
-        barostat_interval=5,
         log=None,
     )
     rho0 = sim.observables()["density_g_cm3"]
     for _ in range(4):
-        sim._advance(1000)
+        sim.advance(1000)
     o = sim.observables()
     assert np.isfinite(o["etot"]) and o["density_g_cm3"] > rho0 * 1.3, (rho0, o["density_g_cm3"])
     assert getattr(sim, "n_rebuilds", 0) >= 1
-    X = sim.positions_nm().reshape(sys.nmol, tpl.n, 3)
+    X = sim.positions().reshape(sys.nmol, tpl.n, 3)
     assert np.linalg.norm(X[:, 0] - X[:, 1], axis=-1).max() < 0.16

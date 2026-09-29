@@ -28,9 +28,10 @@ a quadratic Hamiltonian), so both sample the free ring polymer exactly; Cayley i
 
 Thermostats (the O step, at kB T_P = P kB T, heat booked so that econs = H_P - heat is conserved):
   "pimd"   PILE: Langevin on every internal mode with gamma_l = 2 lam omega_l (lam = 1: critical
-           damping of the free modes), and on the centroid either Langevin with gamma_0 = 1/tau0
-           (PILE-L, thermostat="pile-l") or Bussi's global stochastic rescaling with time constant
-           tau0 (PILE-G, "pile-g": gentle on the centroid dynamics and the dipole predictor).
+           damping of the free modes), and on the centroid either Langevin with gamma_0 =
+           1/tau_centroid (PILE-L, thermostat=PILE("l")) or Bussi's global stochastic rescaling
+           with time constant tau_centroid (PILE-G, PILE("g"): gentle on the centroid dynamics
+           and the dipole predictor).
   "trpmd"  thermostatted RPMD (Rossi, Ceriotti & Manolopoulos, JCP 140, 234116 (2014)): the
            internal modes as above with lam = 1/2 by default, no thermostat on the centroid, whose
            dynamics estimates Kubo-transformed correlation functions (e.g. diffusion).
@@ -68,8 +69,9 @@ flexible pGM water with the q-TIP4P/F monomer surface; docs/pimd.md).  Units: nm
 
 from __future__ import annotations
 
+import dataclasses as _dc
+import logging
 import math
-import sys
 
 import jax
 import jax.numpy as jnp
@@ -77,6 +79,7 @@ import numpy as np
 
 from ..units import AMU_NM3_TO_G_CM3, BAR_PER_KJMOL_NM3, DEBYE_E_NM, HBAR_KJMOL_PS, KB, KJMOL_TO_MEV
 from ._jaxmd import dataclasses
+from .barostats import MonteCarloBarostat
 from .box import inv3, max_cutoff, volume
 from .driver import (
     LogTable,
@@ -92,6 +95,8 @@ from .driver import (
 from .io import NetCDFTrajectory, write_restart
 from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .thermostats import Bussi
+
+logger = logging.getLogger(__name__)
 
 LEGACY_FORMAT = "pgm_jax pimd 1"  # the "format" entry of legacy pickle checkpoints
 
@@ -129,8 +134,9 @@ def contraction_matrix(P: int, Pc: int) -> np.ndarray:
 class RingPolymer:
     """Normal modes and free ring-polymer propagation of P beads at temperature T (K)."""
 
-    def __init__(self, nbeads: int, temperature: float):
-        self.P = int(nbeads)
+    def __init__(self, beads: int, temperature: float):
+        """Ring polymer of `beads` beads at `temperature` [K] (omega_P = P kB T / hbar)."""
+        self.P = int(beads)
         if self.P < 1:
             raise ValueError("at least one bead")
         self.T = float(temperature)
@@ -188,41 +194,97 @@ class RingPolymer:
         return self.from_nm(y)
 
 
+@_dc.dataclass(frozen=True)
 class PILE:
-    """Path-integral Langevin thermostat in normal modes (Ceriotti et al. 2010).
+    """Settings of the path-integral Langevin thermostat (Ceriotti et al., JCP 133, 124104 (2010)).
 
-    mode "pimd": internal modes gamma_l = 2 lam omega_l, centroid Langevin 1/tau0 ("pile-l") or
-    Bussi rescaling with time constant tau0 ("pile-g"); "trpmd": internal modes only (lam = 1/2
-    by default); "rpmd": none."""
+    Parameters
+    ----------
+    kind : str
+        Centroid thermostat: "l" (Langevin with friction 1/tau_centroid, PILE-L) or "g" (Bussi's
+        stochastic rescaling with time constant tau_centroid, PILE-G).
+    tau_centroid : float
+        Time constant of the centroid thermostat [ps].
+    lam : float or None
+        Internal modes get the friction 2 lam omega_l; None: 1 (critical damping) for mode
+        "pimd", 1/2 for "trpmd".
 
-    def __init__(
-        self,
-        ring: RingPolymer,
-        mode: str = "pimd",
-        thermostat: str = "pile-l",
-        tau0: float = 0.2,
-        lam: float | None = None,
-    ):
-        mode, thermostat = mode.lower(), thermostat.lower()
+    Raises
+    ------
+    ValueError
+        An unknown kind or a non-positive tau_centroid.
+    """
+
+    kind: str = "l"
+    tau_centroid: float = 0.2
+    lam: float | None = None
+
+    def __post_init__(self) -> None:
+        """Check and normalize the settings."""
+        kind = str(self.kind).lower().removeprefix("pile-")
+        if kind not in ("l", "g"):
+            raise ValueError(f"PILE: kind must be 'l' (Langevin centroid) or 'g' (Bussi centroid), not {self.kind!r}")
+        if float(self.tau_centroid) <= 0.0:
+            raise ValueError(f"PILE: tau_centroid must be > 0 ({self.tau_centroid!r} ps)")
+        object.__setattr__(self, "kind", kind)
+        object.__setattr__(self, "tau_centroid", float(self.tau_centroid))
+
+
+def as_pile(spec) -> PILE:
+    """A PILE object from a PILE, or from the names "pile-l" / "pile-g" (default settings).
+
+    Parameters
+    ----------
+    spec : PILE or str
+        The thermostat settings.
+
+    Returns
+    -------
+    PILE
+
+    Raises
+    ------
+    ValueError
+        Anything else.
+    """
+    if isinstance(spec, PILE):
+        return spec
+    if isinstance(spec, str) and spec.lower() in ("pile-l", "pile-g"):
+        return PILE(spec)
+    raise ValueError(f"thermostat: a PILE object or 'pile-l' / 'pile-g', not {spec!r}")
+
+
+class PILEStep:
+    """The O step of the path-integral thermostat in normal modes for one mode of dynamics.
+
+    mode "pimd": internal modes gamma_l = 2 lam omega_l, centroid Langevin 1/tau_centroid (PILE("l"))
+    or Bussi rescaling with time constant tau_centroid (PILE("g")); "trpmd": internal modes only
+    (lam = 1/2 by default); "rpmd": none."""
+
+    def __init__(self, ring: RingPolymer, mode: str = "pimd", pile: PILE = PILE()):
+        """Friction of every normal mode for `mode` ("pimd" | "trpmd" | "rpmd") and `pile`."""
+        mode = mode.lower()
         if mode not in ("pimd", "trpmd", "rpmd"):
-            raise ValueError("mode: 'pimd' | 'trpmd' | 'rpmd'")
-        if thermostat not in ("pile-l", "pile-g"):
-            raise ValueError("thermostat: 'pile-l' | 'pile-g'")
-        self.ring, self.mode, self.kind, self.tau0 = ring, mode, thermostat, float(tau0)
+            raise ValueError(f"mode: 'pimd' | 'trpmd' | 'rpmd', not {mode!r}")
+        self.ring, self.mode, self.pile = ring, mode, pile
+        self.kind, self.tau0 = "pile-" + pile.kind, pile.tau_centroid
+        lam = pile.lam
         self.lam = (0.5 if mode == "trpmd" else 1.0) if lam is None else float(lam)
         g = 2.0 * self.lam * ring.omega
-        g[0] = 1.0 / self.tau0 if (mode == "pimd" and thermostat == "pile-l") else 0.0
+        g[0] = 1.0 / self.tau0 if (mode == "pimd" and pile.kind == "l") else 0.0
         if mode == "rpmd":
             g[:] = 0.0
         self.gamma = g
-        self.centroid_bussi = mode == "pimd" and thermostat == "pile-g"
+        self.centroid_bussi = mode == "pimd" and pile.kind == "g"
         self._bussi = Bussi(self.tau0)
 
     @property
     def active(self) -> bool:
+        """Whether the O step does anything (not RPMD)."""
         return self.mode != "rpmd"
 
     def describe(self) -> str:
+        """One line for the log header."""
         if self.mode == "rpmd":
             return "RPMD (no thermostat)"
         c = {"pile-l": f"centroid Langevin {1.0 / self.tau0:g}/ps", "pile-g": f"centroid Bussi {self.tau0:g} ps"}
@@ -265,7 +327,7 @@ class PIMDIntegrator:
     """BAOAB ring-polymer integrator for an engine with init(q, box) -> eng and
     compute(q, box, eng) -> (forces (P, N, 3), U, eng).
 
-    ensemble "npt": isotropic Monte Carlo barostat every `barostat_interval` steps (engines with
+    With a barostat (MonteCarloBarostat): isotropic Monte Carlo moves every `barostat.every` steps (engines with
     molecules: scale(q, s), energy(q, box, eng), nmol).  Every bead of a molecule is translated with
     the molecular centre of mass of the centroid, which leaves the springs and the intramolecular
     terms unchanged; acceptance on (U' - U) / P + p dV - N_mol kT ln(V'/V) (the ring polymer
@@ -275,39 +337,69 @@ class PIMDIntegrator:
         self,
         engine,
         masses,
-        nbeads: int,
+        beads: int,
         temperature: float,
         dt: float,
         mode: str = "pimd",
-        thermostat: str = "pile-l",
-        tau0: float = 0.2,
-        lam: float | None = None,
+        thermostat: PILE | str = PILE(),
         propagator: str = "cayley",
-        ensemble: str = "nvt",
-        pressure: float = 1.0,
-        barostat_interval: int = 100,
+        barostat: MonteCarloBarostat | None = None,
     ):
-        if ensemble not in ("nvt", "npt"):
-            raise ValueError("ensemble: 'nvt' | 'npt' (NVE: mode='rpmd')")
-        if ensemble == "npt" and not hasattr(engine, "scale"):
+        """Ring-polymer integrator.
+
+        Parameters
+        ----------
+        engine
+            Force engine (PotentialEngine, PGMBeads).
+        masses : array (N,)
+            Atom masses [amu].
+        beads : int
+            Number of beads P.
+        temperature : float
+            Temperature [K] (the ring polymer runs at P T).
+        dt : float
+            Time step [ps].
+        mode : str
+            "pimd", "trpmd" or "rpmd" (see the module docstring).
+        thermostat : PILE or str
+            Path-integral thermostat settings (as_pile).
+        propagator : str
+            Free ring-polymer step: "cayley" or "exact".
+        barostat : MonteCarloBarostat or None
+            Isotropic Monte Carlo barostat (None: constant volume).
+
+        Raises
+        ------
+        ValueError
+            A barostat with an engine without molecules, or invalid settings.
+        """
+        if barostat is not None and not hasattr(engine, "scale"):
             raise ValueError("the barostat needs an engine with molecules (PGMBeads)")
-        self.ensemble = ensemble
+        self.barostat = barostat
+        self.ensemble = "npt" if barostat is not None else "nvt"
+        pressure = barostat.pressure if barostat is not None else 1.0
         self.pressure = float(pressure) / BAR_PER_KJMOL_NM3  # bar -> kJ/mol/nm^3
-        self.interval = int(barostat_interval)
+        self.interval = int(barostat.every if barostat is not None else 100)
         self.engine = engine
         self.mass = jnp.asarray(np.asarray(masses, float).reshape(-1, 1))
         self.n = int(self.mass.shape[0])
-        self.ring = RingPolymer(nbeads, temperature)
+        self.ring = RingPolymer(beads, temperature)
         self.P = self.ring.P
         self.dt = float(dt)
         self.propagator = propagator
-        self.set_thermostat(mode, thermostat, tau0, lam)
+        self.set_thermostat(mode, thermostat)
 
-    def set_thermostat(
-        self, mode: str = "pimd", thermostat: str = "pile-l", tau0: float = 0.2, lam: float | None = None
-    ):
-        """(Re)configure the thermostat (e.g. PIMD equilibration, then TRPMD or RPMD) and re-jit."""
-        self.thermo = PILE(self.ring, mode, thermostat, tau0, lam)
+    def set_thermostat(self, mode: str = "pimd", thermostat: PILE | str = PILE()) -> None:
+        """(Re)configure the thermostat (e.g. PIMD equilibration, then TRPMD or RPMD) and re-jit.
+
+        Parameters
+        ----------
+        mode : str
+            "pimd", "trpmd" or "rpmd".
+        thermostat : PILE or str
+            Path-integral thermostat settings (as_pile).
+        """
+        self.thermo = PILEStep(self.ring, mode, as_pile(thermostat))
         self.mode = self.thermo.mode
         self.dof = 3.0 * self.n
         h = self.dt if self.mode == "rpmd" else 0.5 * self.dt
@@ -485,7 +577,7 @@ class PGMBeads:
     def __init__(
         self,
         sim,
-        nbeads: int,
+        beads: int,
         contract: int | None = None,
         bead_margin: float = 0.08,
         bead_chunk: int | str | None = "auto",
@@ -510,7 +602,7 @@ class PGMBeads:
                 "electric field (efield=) are not supported yet"
             )
         self.sim, self.ff, self.flex, self.integ = sim, sim.ff, sim.flex, integ
-        self.P = int(nbeads)
+        self.P = int(beads)
         self.Pc = None if (contract is None or int(contract) >= self.P) else int(contract)
         self.nf = self.P if self.Pc is None else self.Pc
         if bead_chunk == "auto":  # 512 waters, P = 32: 15.2 ms/step vmapped at once, 8.0 in chunks of 8
@@ -792,37 +884,64 @@ class PGMBeads:
 class PIMDSimulation:
     """Path-integral MD of a FlexibleSimulation's system (flexible molecules, NVT or NPT).
 
-        sim = FlexibleSimulation(sys, [tpl] * n, pos, H, MDSettings(), dt=0.00025, ensemble="nvt", temperature=298)
-        pi = PIMDSimulation(sim, beads=32, mode="pimd", thermostat="pile-g", tau0=0.5)
-        pi.run(40000, report=400, traj=400, prefix="qwater")        # centroid trajectory qwater.nc
-        pi.set_mode("trpmd"); pi.run(...)                           # dynamics from the PIMD ensemble
+        sim = FlexibleSimulation(system, [tpl] * n, positions, box, MDSettings(), dt=0.00025, temperature=298)
+        pi = PIMDSimulation(sim, beads=32, mode="pimd", thermostat=PILE("g", tau_centroid=0.5))
+        pi.run(40000, report_every=400, traj_every=400, prefix="qwater")   # centroid trajectory qwater.nc
+        pi.set_mode("trpmd"); pi.run(...)                                  # dynamics from the PIMD ensemble
 
     dt, temperature and settings come from `sim` (its own integrator and thermostat are not used).
-    contract: ring-polymer contraction of the intermolecular forces to P' beads (None: off).
-    bead_margin: largest distance (nm) of a bead atom from its centroid (neighbour lists).
-    ensemble "npt": Monte Carlo barostat at `pressure` (bar) every `barostat_interval` steps.
-    bead_chunk: force beads per vmapped chunk ("auto": 8 for more than 8 beads)."""
+    """
 
     def __init__(
         self,
         sim,
         beads: int = 32,
         mode: str = "pimd",
-        thermostat: str = "pile-l",
-        tau0: float = 0.2,
-        lam: float | None = None,
+        thermostat: PILE | str = PILE(),
         propagator: str = "cayley",
         contract: int | None = None,
+        barostat: MonteCarloBarostat | None = None,
         bead_margin: float = 0.08,
+        bead_chunk: int | str | None = "auto",
+        spread: bool = True,
         seed: int = 0,
         dt: float | None = None,
-        spread: bool = True,
-        ensemble: str = "nvt",
-        pressure: float = 1.0,
-        barostat_interval: int = 100,
-        bead_chunk: int | str | None = "auto",
-        log=sys.stdout,
+        log=None,
     ):
+        """Set up the ring polymers of `sim`'s current configuration.
+
+        Parameters
+        ----------
+        sim : FlexibleSimulation
+            The system, force field, settings, temperature and (default) time step; flexible
+            molecules without constraints.
+        beads : int
+            Number of beads P.
+        mode : str
+            "pimd" (PILE thermostat), "trpmd" (thermostatted RPMD) or "rpmd" (NVE).
+        thermostat : PILE or str
+            Path-integral thermostat settings (PILE; "pile-l" / "pile-g" for the defaults).
+        propagator : str
+            Free ring-polymer step: "cayley" (default) or "exact".
+        contract : int or None
+            Ring-polymer contraction of the intermolecular forces to this many beads (None: off).
+        barostat : MonteCarloBarostat or None
+            Isotropic Monte Carlo barostat (None: constant volume).
+        bead_margin : float
+            Largest distance of a bead atom from its centroid [nm] (enlarges the neighbour lists).
+        bead_chunk : int, "auto" or None
+            Force beads per vmapped chunk ("auto": 8 for more than 8 beads; None: all at once).
+        spread : bool
+            Draw the beads from the free ring-polymer distribution around the configuration
+            (False: all beads on it).
+        seed : int
+            Seed of the random stream (bead spread, momenta, thermostat, barostat).
+        dt : float or None
+            Time step [ps] (None: sim.dt).
+        log : text stream or None
+            Receives the rows of the log table of `run` (diagnostics go to the logger
+            "pgm_jax.md.pimd").
+        """
         self.sim, self.log = sim, log
         self.engine = PGMBeads(sim, beads, contract, bead_margin, bead_chunk)
         self.P = int(beads)
@@ -836,14 +955,10 @@ class PIMDSimulation:
             self.dt,
             mode,
             thermostat,
-            tau0,
-            lam,
             propagator,
-            ensemble,
-            pressure,
-            barostat_interval,
+            barostat,
         )
-        self.ensemble = ensemble
+        self.ensemble = self.integ.ensemble
         self.elements = np.array(sim.sys.elements)
         H = jnp.asarray(sim.state.box)
         pos = sim.state.dyn.position
@@ -858,25 +973,32 @@ class PIMDSimulation:
         self.state = self.integ.init(q, H, k2)
         self.time_ps = 0.0
         e = self.engine
-        self._print(
-            f"# pgm_jax PIMD: {sim.sys.nmol} molecules, {sim.sys.n} atoms, {self.P} beads"
+        logger.info(
+            f"pgm_jax PIMD: {sim.sys.nmol} molecules, {sim.sys.n} atoms, {self.P} beads"
             f"{'' if e.Pc is None else f' (intermolecular forces contracted to {e.Pc})'}, "
-            f"{self.integ.thermo.describe()}, {ensemble.upper()}"
-            f"{f' ({pressure:g} bar, Monte Carlo every {barostat_interval} steps)' if ensemble == 'npt' else ''}, "
+            f"{self.integ.thermo.describe()}, {self.ensemble.upper()}"
+            f"{f' ({barostat.describe()})' if barostat is not None else ''}, "
             f"T {self.T0:g} K, dt {self.dt * 1000:g} fs, "
             f"{propagator} free ring-polymer step, {e.nb.kind} neighbour list of the centroid "
             f"(bead margin {e.bead_margin:g} nm), {sim.settings.precision} precision, device {jax.devices()[0]}"
         )
 
-    def _print(self, s):
-        if self.log is not None:
-            print(s, file=self.log, flush=True)
+    def set_mode(self, mode: str, thermostat: PILE | str | None = None) -> None:
+        """Switch between "pimd", "trpmd" and "rpmd" (same state; the conserved quantity restarts).
 
-    def set_mode(self, mode: str, thermostat: str | None = None, tau0: float | None = None, lam: float | None = None):
-        """Switch between "pimd", "trpmd" and "rpmd" (same state; the conserved quantity restarts)."""
-        th = self.integ.thermo
-        self.integ.set_thermostat(mode, thermostat or th.kind, th.tau0 if tau0 is None else tau0, lam)
-        self._print(f"# thermostat: {self.integ.thermo.describe()}")
+        Parameters
+        ----------
+        mode : str
+            The new mode.
+        thermostat : PILE, str or None
+            New thermostat settings; None keeps the centroid thermostat (kind and tau_centroid)
+            with the internal-mode friction of the new mode (lam = 1 for "pimd", 1/2 for "trpmd").
+        """
+        if thermostat is None:
+            pile = self.integ.thermo.pile
+            thermostat = PILE(pile.kind, pile.tau_centroid)
+        self.integ.set_thermostat(mode, thermostat)
+        logger.info(f"thermostat: {self.integ.thermo.describe()}")
 
     # ------------------------------------------------------------------ sizes and blocks
     def _size(self, q, H, factor=1.2, nbr=None):
@@ -898,13 +1020,13 @@ class PIMDSimulation:
 
     def _rebuild_neighbors(self):
         H = np.asarray(self.state.box)
-        self._print(f"# step {int(self.state.step)}: neighbour lists rebuilt for volume {float(volume(H)):.3f} nm^3")
+        logger.info(f"step {int(self.state.step)}: neighbour lists rebuilt for volume {float(volume(H)):.3f} nm^3")
         self.engine.make_neighbors(H)
         nbr = self._size(self.state.q, H)
         redo = self.integ.forces(self.state.set(eng=self.state.eng.set(nbr=nbr)))
         self.state = redo.set(eng=redo.eng.set(induction=self.state.eng.induction))
 
-    def _advance(self, n: int) -> None:
+    def advance(self, n: int) -> None:
         """Advance n steps without writing files.
 
         Under NPT the lists are rebuilt when the volume has drifted by 10 %, and a block that keeps
@@ -956,8 +1078,8 @@ class PIMDSimulation:
                 e.nb.cap = max(e.nb.cap, old[1] + 4)
             self.integ.run = jax.jit(self.integ._run)
             self.integ.forces = jax.jit(self.integ._forces)
-        self._print(
-            f"# {'neighbour list' if list_bad else 'row capacity'} overflow in steps {int(start.step)}-"
+        logger.info(
+            f"{'neighbour list' if list_bad else 'row capacity'} overflow in steps {int(start.step)}-"
             f"{int(start.step) + n}: resized, repeating"
         )
         redo = self.integ.forces(start.set(eng=start.eng.set(nbr=nbr)))
@@ -1064,47 +1186,55 @@ class PIMDSimulation:
         M, m = self._dip_jit(st.q, st.box, st.eng.induction.mu)
         return np.asarray(M), float(m)
 
-    def centroid_nm(self) -> np.ndarray:
+    def centroid(self) -> np.ndarray:
+        """Centroid positions (N, 3) [nm] of the current state."""
         return np.asarray(jnp.mean(self.state.q, 0))
 
-    def beads_nm(self) -> np.ndarray:
+    def beads(self) -> np.ndarray:
+        """Bead positions (P, N, 3) [nm] of the current state (ring polymers whole)."""
         return np.asarray(self.state.q)
+
+    def box(self) -> np.ndarray:
+        """Box (3, 3) [nm] of the current state (lattice vectors as rows)."""
+        return np.asarray(self.state.box)
 
     # ------------------------------------------------------------------ running
     def run(
         self,
         nsteps: int,
-        report: int = 100,
-        traj: int = 0,
-        beads_traj: int = 0,
-        restart: int = 0,
+        *,
         prefix: str = "pimd",
+        report_every: int = 100,
+        traj_every: int = 0,
+        beads_traj_every: int = 0,
+        checkpoint_every: int = 0,
+        report_pressure: bool = False,
         append: bool = False,
-        pressure: bool = False,
-    ):
+    ) -> None:
         """Advance nsteps with output files.
 
         Parameters
         ----------
         nsteps : int
             Steps.
-        report : int
-            Steps between rows of the log table prefix.log (estimators, energies [kJ/mol], volume,
-            dipoles [D], CG statistics, speed); 0: none.
-        traj : int
-            Steps between centroid frames of prefix.nc (0: none).
-        beads_traj : int
-            Steps between frames of every bead in prefix_beads.nc (P x N atoms, bead-major; 0: none).
-        restart : int
-            Steps between checkpoints prefix.pimd.chk plus Amber restarts of the centroid
-            prefix.rst7 (0: none; with restarts also at the end).
         prefix : str
             Path prefix of the files.
+        report_every : int
+            Steps between rows of the log table prefix.log (estimators, energies [kJ/mol], volume,
+            dipoles [D], CG statistics, speed); 0: none.
+        traj_every : int
+            Steps between centroid frames of prefix.nc (0: none).
+        beads_traj_every : int
+            Steps between frames of every bead in prefix_beads.nc (P x N atoms, bead-major; 0: none).
+        checkpoint_every : int
+            Steps between checkpoints prefix.pimd.chk plus Amber restarts of the centroid
+            prefix.rst7 (0: none; with checkpoints also at the end).
+        report_pressure : bool
+            Add the centroid-virial pressure [bar] to every log row.
         append : bool
             Append to existing files (a continuation).
-        pressure : bool
-            Add the centroid-virial pressure [bar] to every log row.
         """
+        report, traj, beads_traj, restart = report_every, traj_every, beads_traj_every, checkpoint_every
         block = block_length(nsteps, report, traj, beads_traj, restart)
         n = self.sim.sys.n
         tfile = NetCDFTrajectory(prefix + ".nc", n, append=append) if traj else None
@@ -1114,60 +1244,66 @@ class PIMDSimulation:
         done = 0
         while done < nsteps:
             m = min(block, nsteps - done)
-            self._advance(m)
+            self.advance(m)
             done += m
             step = int(self.state.step)
             if report and step % report == 0:
                 obs = self.observables()
-                if pressure:
+                if report_pressure:
                     obs["press_bar"] = self.pressure()
                 obs["ns_per_day"] = clock.ns_per_day(step)
                 table.write(obs)
             box_A = np.asarray(self.state.box) * 10.0
             if tfile is not None and step % traj == 0:
-                tfile.write(self.time_ps, self.centroid_nm() * 10.0, box_A)
+                tfile.write(self.time_ps, self.centroid() * 10.0, box_A)
             if bfile is not None and step % beads_traj == 0:
-                bfile.write(self.time_ps, self.beads_nm().reshape(-1, 3) * 10.0, box_A)
+                bfile.write(self.time_ps, self.beads().reshape(-1, 3) * 10.0, box_A)
             if restart and step % restart == 0:
-                self.save(prefix)
+                self._write_checkpoint_files(prefix)
         table.close()
         if restart:
-            self.save(prefix)
+            self._write_checkpoint_files(prefix)
 
     # ------------------------------------------------------------------ checkpoints
-    def save(self, prefix: str) -> None:
-        """Write a checkpoint prefix.pimd.chk and an Amber restart of the centroid prefix.rst7.
+    def _write_checkpoint_files(self, prefix: str) -> None:
+        """prefix.pimd.chk and the centroid restart prefix.rst7 (the files of run's checkpoints)."""
+        self.save_checkpoint(prefix + ".pimd.chk")
+        self.write_restart(prefix + ".rst7")
 
-        Parameters
-        ----------
-        prefix : str
-            Path prefix of the files.
-
-        Notes
-        -----
-        The checkpoint (driver.write_checkpoint, kind "pimd") holds the complete state: beads,
-        momenta, forces, induced dipoles and predictor history of every bead, thermostat and
-        barostat state and the random key; continuing from it reproduces the run bitwise on the
-        CPU.
-        """
+    def write_restart(self, path: str) -> None:
+        """Amber NetCDF restart of the centroid (positions, centroid velocities, box) at `path`."""
         st = self.state
         vc = np.asarray(jnp.mean(st.p, 0) / self.integ.mass)
         write_restart(
-            prefix + ".rst7",
-            self.centroid_nm() * 10.0,
+            path,
+            self.centroid() * 10.0,
             vc * 10.0,
             np.asarray(st.box) * 10.0,
             self.time_ps,
             title=f"pgm_jax PIMD centroid, {self.P} beads",
         )
+
+    def save_checkpoint(self, path: str) -> None:
+        """Write a checkpoint of the complete state (driver.write_checkpoint, kind "pimd").
+
+        Parameters
+        ----------
+        path : str
+            The file (prefix.pimd.chk in `run`).
+
+        Notes
+        -----
+        The checkpoint holds beads, momenta, forces, induced dipoles and predictor history of
+        every bead, thermostat and barostat state and the random key; continuing from it
+        reproduces the run bitwise on the CPU.
+        """
+        st = self.state
         write_checkpoint(
-            prefix + ".pimd.chk",
-            "pimd",
-            {"beads": self.P, "time_ps": self.time_ps, "state": st.set(eng=st.eng.set(nbr=None))},
+            path, "pimd", {"beads": self.P, "time_ps": self.time_ps, "state": st.set(eng=st.eng.set(nbr=None))}
         )
 
-    def load(self, path: str) -> None:
-        """Continue from a checkpoint written by `save`, or from a legacy pickle ``.pimd.chk`` of
+    def load_checkpoint(self, path: str) -> None:
+        """Continue from a checkpoint written by `save_checkpoint`, or from a legacy pickle ``.pimd.chk`` of
         pgm_jax up to commit e72c57c (same system, settings and number of beads).
 
         Parameters

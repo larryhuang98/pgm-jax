@@ -183,14 +183,14 @@ def _run(tmp_path, name, report, engine="rigid"):
     sys, pos, H = small_box(0, nw=30, nm=0 if engine == "flexible" else 4)
     s = settings(cutoff=0.6, pme_grid=(32, 32, 32), pme_order=6, dipole_tol=1e-9, max_iter=200)
     if engine == "rigid":
-        sim = Simulation(sys, pos, H, settings=s, dt=0.001, ensemble="nvt", thermostat="bussi", log=None, seed=4)
+        sim = Simulation(sys, pos, H, settings=s, dt=0.001, thermostat="bussi", log=None, seed=4)
     else:
         from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
 
         tpl = RigidTemplate(sys.molecules[0], pos[sys.atom_slice(0)])
-        sim = FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=0.001, ensemble="nvt", thermostat="bussi", seed=4)
+        sim = FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=0.001, thermostat="bussi", seed=4)
     prefix = str(tmp_path / name)
-    sim.run(40, report=report, prefix=prefix, dipoles=5, induced=20)
+    sim.run(40, report_every=report, prefix=prefix, dipoles_every=5, induced_every=20)
     return sim, prefix
 
 
@@ -210,7 +210,7 @@ def test_recorded_series_match_the_state(tmp_path, monkeypatch, engine):
     assert np.allclose(c["debye"]["total"] * DEBYE_E_NM, c["total"])
     assert np.isnan(d["alpha_nm3"][::2]).all() and np.isfinite(d["alpha_nm3"][1::2]).all()
     st = sim.state
-    pos = sim.positions_nm()
+    pos = sim.positions()
     flex = getattr(sim, "flex", None)
     centers = st.dyn.position.center if flex is None else flex.list_centers(jnp.asarray(pos))
     idx = sim.nb.candidates(st.nbr, centers, st.box, jnp.asarray(pos))[0]
@@ -257,9 +257,9 @@ def test_trajectory_dipoles_of_an_amber_trajectory(tmp_path):
         max_iter=300,
         precision="double",
     )
-    sim = Simulation.from_amber(TOP, RST, settings=s, dt=0.002, ensemble="nvt", thermostat="bussi", log=None, seed=2)
+    sim = Simulation.from_amber(TOP, RST, settings=s, dt=0.002, thermostat="bussi", log=None, seed=2)
     prefix = str(tmp_path / "w")
-    sim.run(20, report=10, traj=10, prefix=prefix, dipoles=10)
+    sim.run(20, report_every=10, traj_every=10, prefix=prefix, dipoles_every=10)
     out = str(tmp_path / "t.dip")
     trajectory_dipoles.main(
         [

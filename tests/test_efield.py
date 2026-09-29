@@ -14,6 +14,7 @@ from test_md import settings, small_box
 from pgm_jax import ElecChannel, Model, Molecule, System
 from pgm_jax.channels import molecular_polarizability
 from pgm_jax.md import efield as EF
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.dipoles import CellDipole
 from pgm_jax.md.forcefield import PGMForceField
 from pgm_jax.md.simulation import Simulation
@@ -174,12 +175,12 @@ def test_zero_field_is_the_field_free_engine():
     assert float(rz.energy["field"]) == 0.0
     assert abs(float(rz.energy["total"]) - float(r0.energy["total"])) < 1e-12 * abs(float(r0.energy["total"]))
     assert float(jnp.abs(rz.forces - r0.forces).max()) < 1e-12 * float(jnp.abs(r0.forces).max())
-    kw = dict(settings=settings(cutoff=0.6, dipole_tol=1e-8), dt=0.001, ensemble="nve", log=None, seed=3)
+    kw = dict(settings=settings(cutoff=0.6, dipole_tol=1e-8), dt=0.001, thermostat=None, log=None, seed=3)
     a = Simulation(sys, pos, H, **kw)
     b = Simulation(sys, pos, H, efield=(0.0, 0.0, 0.0), **kw)
-    a._advance(20)
-    b._advance(20)
-    assert np.abs(a.positions_nm() - b.positions_nm()).max() < 1e-12
+    a.advance(20)
+    b.advance(20)
+    assert np.abs(a.positions() - b.positions()).max() < 1e-12
     assert abs(a.observables()["econs"] - b.observables()["econs"]) < 1e-9
     assert b.state.fdip is not None and a.state.efield is None
 
@@ -187,7 +188,7 @@ def test_zero_field_is_the_field_free_engine():
 def _econs_drift(sim, blocks=8, n=50):
     e = []
     for _ in range(blocks):
-        sim._advance(n)
+        sim.advance(n)
         e.append(sim.observables()["econs"])
     return np.asarray(e)
 
@@ -200,7 +201,7 @@ def test_nve_conserves_energy_in_a_static_field(engine):
     kw = dict(
         settings=settings(cutoff=0.6, dipole_tol=1e-8, vdw="none"),
         dt=0.001,
-        ensemble="nve",
+        thermostat=None,
         log=None,
         seed=1,
         efield=(0.0, 0.0, 1.0),
@@ -233,14 +234,14 @@ def test_time_dependent_field_work_is_booked():
         H,
         settings=settings(cutoff=0.6, dipole_tol=1e-8, vdw="none"),
         dt=0.0005,
-        ensemble="nve",
+        thermostat=None,
         log=None,
         seed=2,
         efield=fld,
     )
     et, ec = [], []
     for _ in range(8):
-        sim._advance(50)
+        sim.advance(50)
         o = sim.observables()
         et.append(o["etot"])
         ec.append(o["econs"])
@@ -256,10 +257,10 @@ def test_set_field_and_checkpoint(tmp_path):
     sim = Simulation(sys, pos, H, settings=settings(cutoff=0.6), dt=0.001, log=None, efield=(0.0, 0.0, 0.2))
     sim.set_field((0.0, 0.1, 0.0))
     assert np.allclose(np.asarray(sim.state.efield), [0, 0.1, 0])
-    sim._advance(10)
-    sim.save(str(tmp_path / "c"))
+    sim.advance(10)
+    sim.save_checkpoint(str(tmp_path / "c.chk"))
     sim2 = Simulation(sys, pos, H, settings=settings(cutoff=0.6), dt=0.001, log=None, efield=(0.0, 0.0, 0.2))
-    sim2.load(str(tmp_path / "c.chk"))
+    sim2.load_checkpoint(str(tmp_path / "c.chk"))
     assert np.allclose(np.asarray(sim2.state.efield), [0, 0.1, 0])
 
 
@@ -296,7 +297,7 @@ def _ions_box():
 def test_charged_molecules_energy_continuous_across_rewrapping():
     sys, pos, H = _ions_box()
     kw = dict(settings=settings(cutoff=0.6, dipole_tol=1e-8), dt=0.001, log=None, seed=4)
-    sim = Simulation(sys, pos, H, ensemble="nve", efield=(0.0, 0.0, 2.0), **kw)
+    sim = Simulation(sys, pos, H, thermostat=None, efield=(0.0, 0.0, 2.0), **kw)
     st = sim.state
     # shift the Na+ by a lattice vector: the wrap in the driver books Q L in fshift, epot unchanged
     body = st.dyn.position
@@ -311,7 +312,7 @@ def test_charged_molecules_energy_continuous_across_rewrapping():
     ke_scale = 0.5 * sim.integ.dof * KB * 298
     assert np.ptp(e) < 2e-3 * ke_scale, np.ptp(e)
     with pytest.raises(NotImplementedError):
-        Simulation(sys, pos, H, ensemble="npt", efield=(0.0, 0.0, 0.1), **kw)
+        Simulation(sys, pos, H, barostat=MonteCarloBarostat(), efield=(0.0, 0.0, 0.1), **kw)
 
 
 # ----------------------------------------------------------------------------- constant displacement
@@ -399,7 +400,7 @@ def test_nve_conserves_energy_at_constant_displacement():
         H,
         settings=settings(cutoff=0.6, dipole_tol=1e-8, vdw="none"),
         dt=0.001,
-        ensemble="nve",
+        thermostat=None,
         log=None,
         seed=5,
         efield=EF.displacement((0.0, 0.0, 2.0)),
@@ -423,13 +424,12 @@ def test_field_replicas_batched_run_and_analysis(tmp_path):
         H,
         settings=settings(cutoff=0.6, dipole_tol=1e-6),
         dt=0.001,
-        ensemble="nvt",
         thermostat="bussi",
         log=None,
         efield=(0.0, 0.0, 0.0),
     )
     rep = FieldReplicas(sim, [(0.0, 0.0, 0.5), (0.0, 0.0, -0.5), (0.0, 0.0, 0.0)], seed=1)
-    rep.run(40, every=10, prefix=str(tmp_path / "ff"), report=20)
+    rep.run(40, sample_every=10, prefix=str(tmp_path / "ff"), report_every=20)
     meta, d = read_series(str(tmp_path / "ff.ffd"))
     assert d["M"].shape == (4, 3, 3) and np.allclose(meta["fields"][1], [0, 0, -0.5])
     for k in range(3):  # the recorded M is the cell dipole of each replica
@@ -453,10 +453,10 @@ def test_mts_with_a_field_is_the_ordinary_integrator_at_one_fast_step(engine):
     fld = EF.ExternalField((0.2, 0.0, 0.8), omega=30.0)
     out = []
     for m in (None, MTS(inner=1, r_short=0.4, buffer=0.1, anchor=False)):
-        sim = water_sim(engine, m, ensemble="nve", efield=fld)
-        sim._advance(15)
+        sim = water_sim(engine, m, thermostat=None, efield=fld)
+        sim.advance(15)
         o = sim.observables()
-        out.append((sim.positions_nm(), o["econs"], float(sim.state.heat)))
+        out.append((sim.positions(), o["econs"], float(sim.state.heat)))
     assert np.abs(out[0][0] - out[1][0]).max() < 1e-11
     assert abs(out[0][1] - out[1][1]) < 1e-8 * abs(out[0][1])
     assert abs(out[0][2] - out[1][2]) < 1e-9 and abs(out[0][2]) > 1e-4
@@ -475,7 +475,7 @@ def test_charge_flux_with_a_field(kind):
     pos, H = liquid_box(tpl, n, 0.55, seed=0, min_dist=0.18)
     pos = pos + 0.004 * np.random.default_rng(1).normal(size=pos.shape)
     sys = System([tpl.pgm] * n)
-    sim = FlexibleSimulation(sys, [tpl] * n, pos, H, tight(), ensemble="nve", log=None)
+    sim = FlexibleSimulation(sys, [tpl] * n, pos, H, tight(), thermostat=None, log=None)
     pos, H = jnp.asarray(sim.flex.pos0), jnp.asarray(H)
     ff = PGMForceField(sys, H, tight(), topology=sim.topology, flux=sim.ff.flux)
     idx = ff.rows_for(pos, H)

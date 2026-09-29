@@ -25,8 +25,10 @@ import sys
 import jax
 import numpy as np
 
+from pgm_jax.cli.args import setup_logging
 from pgm_jax.fit import GasPhase, Objective, Param, ParameterSpace, RDFSpec, Target
 from pgm_jax.fit.liquid import LiquidFit
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.box import box_from_cell
 from pgm_jax.md.forcefield import MDSettings, elec_cutoff_settings
 from pgm_jax.md.io import read_coordinates
@@ -171,6 +173,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_arguments(ap)
     a = ap.parse_args()
+    setup_logging()
     if not a.out:
         ap.error("-o/--out is required")
     S = setup(a)
@@ -228,7 +231,7 @@ def main():
         log=Tee(),
         seed=a.seed,
         fixed=a.fixed,
-        ensemble=a.ensemble,
+        barostat=MonteCarloBarostat() if a.ensemble == "npt" else None,
         replicas=a.replicas,
         equil_rep_ps=a.equil_rep,
     )

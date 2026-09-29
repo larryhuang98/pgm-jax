@@ -19,7 +19,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from pgm_jax.cli.args import add_iel_arguments, add_mts_arguments, iel_settings, mts_from_args
+from pgm_jax.cli.args import (
+    add_iel_arguments,
+    add_mts_arguments,
+    coupling_from_options,
+    iel_settings,
+    mts_from_args,
+    setup_logging,
+)
 from pgm_jax.md.box import box_from_cell
 from pgm_jax.md.forcefield import DSUM_TOL, MDSettings, ewald_beta_for
 from pgm_jax.md.io import read_coordinates
@@ -87,6 +94,7 @@ def main():
     add_mts_arguments(ap)
     add_iel_arguments(ap)
     a = ap.parse_args()
+    setup_logging()
     mts = mts_from_args(a)
     mols = read_prmtop_molecules(TOP)
     xyz, vel, box = read_coordinates(RST)
@@ -111,21 +119,19 @@ def main():
         elec_cutoff=a.elec_cut,
         **iel_settings(a),
     )
+    th, baro = coupling_from_options(a.ensemble, a.thermostat, a.gamma, a.tau, 1.0, a.barostat_interval)
     if a.engine == "rigid":
         sim = Simulation(
             sys_,
             pos,
             H * n,
             settings=st,
-            ensemble=a.ensemble,
             temperature=298.0,
-            gamma=a.gamma,
-            barostat_interval=a.barostat_interval,
             dt=a.dt,
-            vel_nm_ps=v,
+            velocities=v,
             log=sys.stdout,
-            thermostat=a.thermostat,
-            tau_t=a.tau,
+            thermostat=th,
+            barostat=baro,
             mts=mts,
         )
     else:
@@ -138,25 +144,22 @@ def main():
             pos,
             H * n,
             settings=st,
-            ensemble=a.ensemble,
             temperature=298.0,
-            gamma=a.gamma,
-            barostat_interval=a.barostat_interval,
             dt=a.dt,
             log=sys.stdout,
-            thermostat=a.thermostat,
-            tau_t=a.tau,
+            thermostat=th,
+            barostat=baro,
             hmr=a.hmr,
             mts=mts,
         )
         print("# masses of the first molecule:", np.asarray(sim.flex.masses)[:3], flush=True)
     blk = max(1, int(round(1.0 / a.dt)))  # 1 ps blocks
-    sim._advance(blk)  # compile + warm up
+    sim.advance(blk)  # compile + warm up
     cg0, s0 = float(sim.state.cg_total), int(sim.state.step)
     t0 = time.time()
     done = 0
     while done < a.steps:
-        sim._advance(blk)
+        sim.advance(blk)
         done += blk
     el = time.time() - t0
     o = sim.observables()
@@ -201,12 +204,12 @@ def main():
         vol = []
         t1 = time.time()
         for _ in range(int(round(a.ps / 0.5))):
-            sim._advance(n)
+            sim.advance(n)
             o = sim.observables()
             X.append([o.get(k, np.nan) for k in keys])
             if a.rdf:
                 box = jnp.asarray(sim.state.box)
-                hist += np.asarray(oo_hist(jnp.asarray(sim.positions_nm()[oxy]), box))
+                hist += np.asarray(oo_hist(jnp.asarray(sim.positions()[oxy]), box))
                 vol.append(float(o["volume_nm3"]))
         X = np.array(X)
         nb = 10

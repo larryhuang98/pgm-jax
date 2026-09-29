@@ -20,9 +20,9 @@ with SHAKE / RATTLE in g-BAOAB order (md/constraints.py); with hydrogen mass rep
     tpl = FlexibleTemplate.from_fit(model, P)                 # after fitting pgm_jax.bonded
     tpl.save("methanol.flex")
     pos, H = liquid_box(tpl, 256, density=0.75)
-    sim = FlexibleSimulation(System([tpl.pgm] * 256), [tpl] * 256, pos, H, MDSettings(),
-                             dt=0.0005, ensemble="npt", temperature=298.0)
-    sim.run(20000, report=2000)
+    sim = FlexibleSimulation(System([tpl.pgm] * 256), [tpl] * 256, pos, H, MDSettings(), dt=0.0005,
+                             temperature=298.0, thermostat=Bussi(1.0), barostat=MonteCarloBarostat())
+    sim.run(20000, report_every=2000)
 
     # a protein in rigid water, X-H bonds constrained, 2 fs
     sim = FlexibleSimulation(sys, [protein] + [RigidTemplate(water, xyz)] * n_wat, pos, H,
@@ -45,6 +45,7 @@ import numpy as np
 from ..system import System
 from ..units import AMU_NM3_TO_G_CM3, KB
 from ._jaxmd import simulate
+from .barostats import MonteCarloBarostat
 from .box import check_box, inv3, reduce_box, volume
 from .constraints import Constraints, hmr_masses
 from .engine import MDEngine
@@ -52,7 +53,7 @@ from .flux import ChargeFlux
 from .forcefield import MDSettings, PGMForceField
 from .integrate import Dynamics, Integrator, MDState, field_state
 from .rigid import _unwrap
-from .thermostats import Bussi
+from .thermostats import Bussi, Thermostat
 from .topology import MDTopology, MoleculeRule
 from .vsites import VirtualSites
 
@@ -617,69 +618,111 @@ class FlexibleIntegrator(Integrator):
 class FlexibleSimulation(MDEngine):
     """Molecular dynamics of flexible molecules (atoms integrated individually; bonded terms, X-H or
     all-bond constraints, virtual sites rebuilt every step, charge flux).  The shared machinery
-    (blocks, observables, run loop, checkpoints) is MDEngine's (md/engine.py).
-    `templates[k]` (FlexibleTemplate or RigidTemplate) belongs to `sys.molecules[k]`.
-    constraints: "none" | "h-bonds" (X-H bonds of the flexible templates) | "all-bonds" (every bond;
-    rigid templates are always constrained; md/constraints.py, docs/shake.md); hmr: hydrogen mass (amu) for mass
-    repartitioning (the mass comes from the bonded heavy atom), None, or one value (or None) per molecule, e.g.
-    AmberSystem.hmr({"water":
-    4.0, "protein": 3.024}) (constraints.hmr_masses); restraints: md/restraints.py; alchemy: an
-    alchemical region (md/alchemy.py); mts: multiple time stepping (md/mts.py: MTS settings; dt is
-    then the outer step); bias: biases on collective variables (pgm_jax.bias); constraint_options:
-    keywords of md/constraints.Constraints (n_iter, dense_max, tol, bucket); efield: an external
-    electric field (md/efield.py: ExternalField or three numbers in V/nm)."""
+    (blocks, observables, run loop, checkpoints) is MDEngine's (md/engine.py)."""
 
     def __init__(
         self,
-        sys: System,
+        system: System,
         templates,
-        pos_nm,
-        H_nm,
+        positions,
+        box,
         settings: MDSettings = MDSettings(),
+        *,
         dt: float = 0.0005,
-        ensemble: str = "nvt",
         temperature: float = 298.0,
-        gamma: float = 1.0,
-        pressure: float = 1.0,
-        barostat_interval: int = 100,
+        thermostat: Thermostat | str | None = "langevin",
+        barostat: MonteCarloBarostat | None = None,
+        velocities=None,
         seed: int = 0,
-        vel_nm_ps=None,
         params=None,
-        log=None,
-        neighbor_list: str = "auto",
-        r_margin: float = 0.05,
-        constraints: str = "none",
-        hmr=None,
-        max_single: int | None = None,
-        thermostat="langevin",
-        tau_t: float = 1.0,
         restraints=None,
         alchemy=None,
         mts=None,
         bias=None,
-        constraint_options: dict | None = None,
         efield=None,
+        constraints: str = "none",
+        hmr=None,
+        constraint_options: dict | None = None,
+        r_margin: float = 0.05,
+        neighbor_list: str = "auto",
+        log=None,
     ):
-        H = reduce_box(H_nm)
+        """Set up MD of flexible molecules.
+
+        Parameters
+        ----------
+        system : System
+            Molecules (the pGM part of every template).
+        templates : sequence
+            FlexibleTemplate or RigidTemplate per molecule of `system` (identical objects are
+            shared).
+        positions : array (N, 3)
+            Atom positions [nm] (molecules whole; virtual sites are rebuilt from their parents).
+        box : array (3, 3)
+            Box [nm], lattice vectors as rows.
+        settings : MDSettings
+            Force-field, cutoff, PME and solver settings.
+        dt : float
+            Time step [ps] (the outer step with mts).
+        temperature : float
+            Temperature [K] of the thermostat, the barostat and drawn momenta.
+        thermostat : Thermostat, str or None
+            Langevin(friction), Bussi(tau), GLE..., a name for the default settings of a kind
+            ("langevin" = Langevin(1/ps), the default), or None for NVE.
+        barostat : MonteCarloBarostat or None
+            Isotropic Monte Carlo barostat with molecular scaling (None: constant volume).
+        velocities : array (N, 3), optional
+            Atom velocities [nm/ps]; default: drawn at the temperature.
+        seed : int
+            Seed of the random stream.
+        params : dict, optional
+            Force-field parameters (default: those of the system).
+        restraints, alchemy, mts, bias, efield : optional
+            As for Simulation.
+        constraints : str
+            "none", "h-bonds" (X-H bonds of the flexible templates) or "all-bonds" (every bond);
+            rigid templates are always constrained (md/constraints.py, docs/shake.md).
+        hmr : float, sequence or None
+            Hydrogen mass [amu] for mass repartitioning (taken from the bonded heavy atom), one
+            value (or None) per molecule, e.g. AmberSystem.hmr({"water": 4.0, "protein": 3.024}),
+            or None (constraints.hmr_masses).
+        constraint_options : dict, optional
+            Keywords of md/constraints.Constraints (n_iter, dense_max, tol, bucket) and
+            "max_single" (largest molecule solved as one block, md/topology.py).
+        r_margin : float
+            Margin [nm] added to the largest group radius for the molecular neighbour list.
+        neighbor_list : str
+            "auto", "molecule" or "atom".
+        log : text stream or None
+            Receives the rows of the log table of `run` too (diagnostics go to the logger
+            "pgm_jax.md.flexible").
+
+        Raises
+        ------
+        ValueError
+            A box too small for the cutoff, templates that do not fit the settings, invalid
+            options or combinations.
+        """
+        H = reduce_box(box)
         check_box(H, settings.pair_cutoff + settings.skin)
-        self.sys, self.settings, self.log = sys, settings, log
+        self.sys, self.settings, self.log = system, settings, log
         uniq = {id(t): t for t in templates}.values()
         for tpl in uniq:
             tpl.check_settings(settings)
         rules = {id(t): t.md_rule(constraints) for t in uniq}
-        kw = {} if max_single is None else {"max_single": max_single}
-        self.topology = MDTopology.build(sys, [rules[id(t)] for t in templates], **kw)
-        masses = hmr_masses(sys, hmr)
-        self.vsites = VirtualSites.of(sys)
-        self.flex = FlexibleMolecules(sys, pos_nm, H, templates, self.topology, masses, self.vsites)
+        copts = dict(constraint_options or {})
+        kw = {} if copts.get("max_single") is None else {"max_single": copts.pop("max_single")}
+        copts.pop("max_single", None)
+        self.topology = MDTopology.build(system, [rules[id(t)] for t in templates], **kw)
+        masses = hmr_masses(system, hmr)
+        self.vsites = VirtualSites.of(system)
+        self.flex = FlexibleMolecules(system, positions, H, templates, self.topology, masses, self.vsites)
         self.rigid = self.flex  # wrap() / positions() used by the base driver
         self.ff = PGMForceField(
-            sys, H, settings, topology=self.topology, flux=ChargeFlux.from_templates(sys, templates)
+            system, H, settings, topology=self.topology, flux=ChargeFlux.from_templates(system, templates)
         )
         self.ff.masses = jnp.asarray(masses)
-        self.constraints = Constraints(
-            self.topology.constraints, self.topology.constraint_d0, masses, **(constraint_options or {})
-        )
+        self.constraints = Constraints(self.topology.constraints, self.topology.constraint_d0, masses, **copts)
         self.r_list = self._r_list = self.flex.r_max + r_margin
         self._nb_mode = neighbor_list
         self._make_neighbors(H)
@@ -696,37 +739,32 @@ class FlexibleSimulation(MDEngine):
             self.nb,
             dt,
             constraints=self.constraints,
-            ensemble=ensemble,
             temperature=temperature,
-            gamma=gamma,
-            pressure=pressure,
-            barostat_interval=barostat_interval,
-            params=params,
             thermostat=thermostat,
-            tau_t=tau_t,
+            barostat=barostat,
+            params=params,
             restraints=restraints,
             alchemy=alchemy,
             bias=bias,
             efield=efield,
             **extra,
         )
-        self.dt, self.ensemble, self.T0 = dt, ensemble, temperature
-        mom = None if vel_nm_ps is None else self.flex.mass * jnp.asarray(vel_nm_ps)
+        self.dt, self.ensemble, self.T0 = dt, self.integ.ensemble, temperature
+        mom = None if velocities is None else self.flex.mass * jnp.asarray(velocities)
         self.state = self.integ.init(pos0, H, jax.random.PRNGKey(seed), mom)
         self.time_ps = 0.0
         nflex = sum(1 for t in templates if t.has_bonded)
-        self._print(
-            f"# pgm_jax MD: {sys.nmol} molecules ({nflex} flexible), {sys.n} atoms"
+        self._log.info(
+            f"pgm_jax MD: {system.nmol} molecules ({nflex} flexible), {system.n} atoms"
             f"{'' if self.vsites is None else f' ({self.vsites.n_sites} virtual sites)'}, "
-            f"{self.topology.n_group} list groups, {self.constraints.nc} constraints, {ensemble.upper()}"
-            f"{'' if self.integ.thermostat is None else ' (' + self.integ.thermostat.describe() + ')'}, "
+            f"{self.topology.n_group} list groups, {self.constraints.nc} constraints, {self._describe_coupling()}, "
             f"dt {dt * 1000:g} fs, {settings.precision} precision, PME grid {self.ff.pme.K} order "
             f"{settings.pme_order}, {settings.describe_cutoffs()}, {self.nb.kind} neighbour list (group radius "
             f"{self.r_list:.3f} nm), {settings.describe_induction()}, device {jax.devices()[0]}"
         )
         if self.constraints.nc:
-            self._print(
-                f"# constraints ({constraints}): {self.constraints.describe()}; {self.integ.dof} degrees of freedom"
+            self._log.info(
+                f"constraints ({constraints}): {self.constraints.describe()}; {self.integ.dof} degrees of freedom"
             )
         self._describe_options(alchemy, mts)
 
@@ -771,7 +809,7 @@ class FlexibleSimulation(MDEngine):
         if st.efield is not None:  # keep a field amplitude set with set_field
             self.state = self.integ.forces(self.state.set(efield=st.efield), False)
         out = {"steps": it + 1, "accepted": n_acc, "energy": E, "fmax": float(jnp.max(jnp.linalg.norm(F, axis=1)))}
-        self._print(f"# minimised: {out}")
+        self._log.info(f"minimised: {out}")
         return out
 
     # ----------------------------------------------------------------- MDEngine hooks
@@ -840,10 +878,12 @@ class FlexibleSimulation(MDEngine):
             )
         return out
 
-    def positions_nm(self):
+    def positions(self) -> np.ndarray:
+        """Atom positions (N, 3) [nm] of the current state (molecules whole)."""
         return np.asarray(self.state.dyn.position)
 
-    def velocities_nm_ps(self):
+    def velocities(self) -> np.ndarray:
+        """Atom velocities (N, 3) [nm/ps] of the current state."""
         return np.asarray(self.state.dyn.momentum / self.flex.mass)
 
 

@@ -21,10 +21,12 @@ import jax.numpy as jnp
 import numpy as np
 from fit_multi import add_arguments, setup
 
+from pgm_jax.cli.args import setup_logging
 from pgm_jax.fit import FrameAnalyzer
 from pgm_jax.md.forcefield import MDSettings, elec_cutoff_settings
 from pgm_jax.md.remd import MDReplicas
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.md.thermostats import Bussi
 from pgm_jax.units import DEBYE_E_NM
 
 jax.config.update("jax_enable_x64", True)
@@ -37,6 +39,7 @@ def main():
     ap.add_argument("--segments", type=int, default=10)
     ap.add_argument("--seg-ps", type=float, default=100.0)
     a = ap.parse_args()
+    setup_logging()
     S = setup(a)
     ew = {k: v for k, v in elec_cutoff_settings(a.cutoff).items() if k != "elec_cutoff"}
     if a.ewald_beta:
@@ -58,10 +61,8 @@ def main():
         S["H"],
         st,
         dt=a.dt / 1000.0,
-        ensemble="nvt",
+        thermostat=Bussi(1.0),
         temperature=a.T,
-        thermostat="bussi",
-        tau_t=1.0,
         seed=a.seed,
         params=S["space"](jnp.asarray(th)),
         log=None,
@@ -71,7 +72,7 @@ def main():
     every = max(1, int(round(a.every / sim.dt)))
     done = sorted(glob.glob(a.out + "_frames*.npz"))
     t0 = time.time()
-    sim._advance(int(round(a.equil / sim.dt)))
+    sim.advance(int(round(a.equil / sim.dt)))
     rep = MDReplicas(sim, a.T + 1e-6 * np.arange(a.nrep), batched=True, seed=a.seed + 7)
     rep.advance(int(round(a.equil_rep / sim.dt)))
     print(

@@ -59,6 +59,7 @@ import jax
 import numpy as np
 
 from pgm_jax.analysis import free_energy as fe
+from pgm_jax.cli.args import setup_logging
 from pgm_jax.md import fe_grad as fg
 from pgm_jax.md.alchemy import (
     Alchemy,
@@ -68,6 +69,7 @@ from pgm_jax.md.alchemy import (
     alchemical_system,
     standard_schedule,
 )
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.box import (
     box_from_cell,
     volume,
@@ -76,6 +78,7 @@ from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.io import read_coordinates
 from pgm_jax.md.rigid import RigidBody
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.md.thermostats import Bussi
 from pgm_jax.param import read_prmtop_molecules
 from pgm_jax.paths import resource
 from pgm_jax.system import System
@@ -240,8 +243,7 @@ def cmd_run(a):
         settings=settings,
         dt=a.dt / 1000.0,
         temperature=a.temp,
-        thermostat="bussi",
-        tau_t=1.0,
+        thermostat=Bussi(1.0),
         params=P,
         alchemy=alch,
         log=sys.stdout,
@@ -251,12 +253,12 @@ def cmd_run(a):
     if a.elec_only:
         lam = lam[: a.n_elec]
     if a.checkpoint is None and a.start_from is None and a.npt_ps > 0:
-        npt = engine(sysA, templates, pos, H, ensemble="npt", pressure=1.0, barostat_interval=100, vel_nm_ps=vel, **kw)
+        npt = engine(sysA, templates, pos, H, barostat=MonteCarloBarostat(1.0, 100), velocities=vel, **kw)
         n = int(round(a.npt_ps / (a.dt / 1000.0)))
         rep = max(n // 20, 1)
         vols = []
         for _ in range(20):
-            npt.run(rep, report=rep, prefix=a.out + "_npt", append=bool(vols))
+            npt.run(rep, report_every=rep, prefix=a.out + "_npt", append=bool(vols))
             vols.append(float(volume(npt.state.box)))
         Vm = float(np.mean(vols[10:]))
         print(
@@ -265,9 +267,9 @@ def cmd_run(a):
             flush=True,
         )
         pos, H = scale_to_volume(npt, Vm)
-        vel = npt.velocities_nm_ps()
+        vel = npt.velocities()
         del npt
-    sim = engine(sysA, templates, pos, H, ensemble="nvt", vel_nm_ps=vel, **kw)
+    sim = engine(sysA, templates, pos, H, velocities=vel, **kw)
     meta = {
         "model": a.model if not a.prmtop else a.prmtop,
         "solute": a.solute,
@@ -285,7 +287,7 @@ def cmd_run(a):
     if templates is not None:
         meta["solute_template"] = os.path.abspath(a.solute_template)
     if mode == "annihilate":  # rigid solute: exact gas-phase leg
-        gas = GasPhaseLeg(alch, sim.positions_nm()[sysA.atom_slice(a.solute)], elec)
+        gas = GasPhaseLeg(alch, sim.positions()[sysA.atom_slice(a.solute)], elec)
         meta.update(
             gas_delta_g=gas.delta_g(P), gas_e1=gas.energy(1.0, P), gas_dudl=[gas.dudl(le, P) for le in lam[:, 0]]
         )
@@ -312,16 +314,19 @@ def cmd_run(a):
         sample_every=to_steps(a.sample_ps),
         exchange_every=to_steps(a.exchange_ps),
         seed=a.seed,
+        log=sys.stdout,
         meta=meta,
         param_grad=pg,
     )
     if a.checkpoint:
-        run.load(a.checkpoint)
+        run.load_checkpoint(a.checkpoint)
     elif a.start_from:
         run.load_windows(a.start_from)
         print(f"# windows start from {a.start_from}", flush=True)
     total = to_steps(a.ns * 1000.0)
-    summary = run.run(total - run.step, prefix=a.out, report=to_steps(a.report_ps), restart=to_steps(a.restart_ps))
+    summary = run.run(
+        total - run.step, prefix=a.out, report_every=to_steps(a.report_ps), checkpoint_every=to_steps(a.restart_ps)
+    )
     summary["wall_s"] = time.time() - t0
     print(json.dumps(summary, indent=1))
     report(fe.load(a.out + "_fe.npz"), a.discard_ps)
@@ -445,13 +450,11 @@ def cmd_bench(a):
         settings=settings,
         dt=a.dt / 1000.0,
         temperature=a.temp,
-        thermostat="bussi",
-        tau_t=1.0,
+        thermostat=Bussi(1.0),
         params=P,
         log=None,
         seed=a.seed,
-        ensemble="nvt",
-        vel_nm_ps=vel,
+        velocities=vel,
     )
     lam = standard_schedule(a.n_elec)
     n = a.steps
@@ -467,7 +470,7 @@ def cmd_bench(a):
 
     def md(sim):
         def f():
-            sim._advance(n)
+            sim.advance(n)
             jax.block_until_ready(sim.state.epot)
 
         return timed(f) / n * 1e3
@@ -656,6 +659,7 @@ def main():
     z.add_argument("npz")
     z.add_argument("--discard-ps", type=float, default=200.0)
     a = ap.parse_args()
+    setup_logging()
     if a.cmd == "run":
         cmd_run(a)
     elif a.cmd == "bench":

@@ -25,6 +25,7 @@ from pgm_jax.md.alchemy import (
     alchemical_system,
     standard_schedule,
 )
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.box import min_image
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.md.simulation import Simulation
@@ -89,11 +90,11 @@ def test_npt_with_an_alchemical_region_follows_the_plain_run():
     NPT run follows the plain run (same seed and start velocities; the solute copy has its own
     rigid-body frame, so momenta drawn in body frames would differ) step by step."""
     vel = np.random.default_rng(4).normal(size=(192, 3)) * 0.5
-    kw = dict(ensemble="npt", barostat_interval=4, thermostat="bussi", seed=3, vel_nm_ps=vel)
+    kw = dict(thermostat="bussi", barostat=MonteCarloBarostat(every=4), seed=3, velocities=vel)
     sim, _, _, (pos, H, sys0) = alch_sim(settings(dipole_tol=1e-10), **kw)
     plain = Simulation(sys0, pos, H, settings(dipole_tol=1e-10), dt=0.001, log=None, **kw)
-    sim._advance(40)
-    plain._advance(40)
+    sim.advance(40)
+    plain.advance(40)
     assert int(sim.state.mc[0]) == 10 and int(sim.state.mc[1]) == int(plain.state.mc[1]) > 0
     assert np.allclose(np.asarray(sim.state.box), np.asarray(plain.state.box), rtol=1e-10)
     assert abs(float(sim.state.epot) - float(plain.state.epot)) < 1e-7 * abs(float(plain.state.epot))
@@ -213,7 +214,7 @@ def test_pressure_at_intermediate_lambda_matches_volume_derivative():
 
 # ----------------------------------------------------------------------------- windows
 def test_windows_batched_equal_sequential_and_exchange():
-    sim, alch, P, _ = alch_sim(settings(dipole_tol=1e-9), thermostat="bussi", ensemble="nvt")
+    sim, alch, P, _ = alch_sim(settings(dipole_tol=1e-9), thermostat="bussi")
     L = standard_schedule(3, [0.5, 0.0])
     wb = LambdaWindows(sim, L, batched=True, seed=1)
     ws = LambdaWindows(sim, L, batched=False, seed=1)
@@ -246,20 +247,20 @@ def test_windows_batched_equal_sequential_and_exchange():
 
 
 def test_free_energy_run_outputs_and_restart(tmp_path):
-    sim, alch, P, _ = alch_sim(settings(dipole_tol=1e-8), thermostat="bussi", ensemble="nvt")
+    sim, alch, P, _ = alch_sim(settings(dipole_tol=1e-8), thermostat="bussi")
     L = standard_schedule(3, [0.5, 0.0])
     prefix = str(tmp_path / "w")
     run = FreeEnergyRun(LambdaWindows(sim, L, seed=2), sample_every=5, exchange_every=10, log=None, meta={"x": 1})
-    s = run.run(40, prefix=prefix, report=20, restart=20)
+    s = run.run(40, prefix=prefix, report_every=20, checkpoint_every=20)
     d = fe.load(prefix + "_fe.npz")
     assert d["u"].shape == (8, 5, 5) and d["dudl"].shape == (8, 5, 2) and d["meta"]["x"] == 1
     assert s["exchanges"] == 4 and os.path.exists(prefix + ".fe.chk") and os.path.exists(prefix + "_L03.rst7")
     # continue from the 40-step checkpoint in a new driver: same windows state, samples appended
     run2 = FreeEnergyRun(LambdaWindows(sim, L, seed=5), sample_every=5, exchange_every=10, log=None)
-    run2.load(prefix + ".fe.chk")
+    run2.load_checkpoint(prefix + ".fe.chk")
     assert run2.step == 40 and len(run2.samples["u"]) == 8
     assert np.allclose(run2.windows.potentials(), run.windows.potentials())
-    run2.run(10, prefix=prefix, report=0)
+    run2.run(10, prefix=prefix, report_every=0)
     assert fe.load(prefix + "_fe.npz")["u"].shape == (10, 5, 5)
     r = fe.estimate(fe.load(prefix + "_fe.npz"), discard_ps=0.0, gas={"delta_g": 1.0, "dudl": np.zeros(5)})
     for m in ("ti", "bar", "mbar"):
@@ -321,7 +322,7 @@ def test_refused_setups():
         Simulation(sysA, pos, H, settings(vdw="gvdw"), log=None, alchemy=Alchemy(sysA, 0))
     with pytest.raises(ValueError):
         Alchemy(sysA, 0, lam=(1.2, 0.0))
-    sim = Simulation(sysA, pos, H, settings(), log=None, params=P, alchemy=Alchemy(sysA, 0), ensemble="nve")
+    sim = Simulation(sysA, pos, H, settings(), log=None, params=P, alchemy=Alchemy(sysA, 0), thermostat=None)
     with pytest.raises(ValueError, match="thermostat"):
         LambdaWindows(sim, standard_schedule(2, [0.0]))
 
@@ -488,7 +489,7 @@ def test_flexible_windows_and_lone_solute_gas_leg():
     )
     alch_g = Alchemy(sub, 0)
     gsim = FlexibleSimulation(
-        sub, [tpl], x, Hg, sg, log=None, params=P, alchemy=alch_g, ensemble="nve", neighbor_list="atom"
+        sub, [tpl], x, Hg, sg, log=None, params=P, alchemy=alch_g, thermostat=None, neighbor_list="atom"
     )
 
     def E(le):

@@ -20,6 +20,7 @@ import sys
 import numpy as np
 
 from pgm_jax.analysis import dielectric as D
+from pgm_jax.cli.args import setup_logging
 from pgm_jax.md.dipoles import read_dipoles
 from pgm_jax.units import C_LIGHT_M_S, DEBYE_E_NM
 
@@ -40,6 +41,7 @@ def main(argv=None):
     ap.add_argument("--ir-segment", type=float, default=10.0, help="ps per Welch segment (resolution)")
     ap.add_argument("--plot", help="PNG with the running estimate and the error against the block count")
     a = ap.parse_args(argv)
+    setup_logging()
 
     meta, d = read_dipoles(a.files)
     if meta["charged_molecules"] and not a.molecular:

@@ -28,10 +28,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from pgm_jax.cli.args import setup_logging
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.box import box_from_cell, volume
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.md.io import read_coordinates
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.md.thermostats import Langevin
 from pgm_jax.paths import resource
 from pgm_jax.system import System
 from pgm_jax.units import AMU_NM3_TO_G_CM3, KB, KCAL
@@ -100,13 +103,11 @@ def build(name, n_meth=216):
 def make_sim(sysd, params, T, settings, pos, H, vel, seed):
     common = dict(
         dt=sysd["dt"],
-        ensemble="npt",
+        thermostat=Langevin(1.0),
+        barostat=MonteCarloBarostat(1.0, 25),
         temperature=T,
-        gamma=1.0,
-        pressure=1.0,
-        barostat_interval=25,
         seed=seed,
-        vel_nm_ps=vel,
+        velocities=vel,
         params=params,
         log=None,
     )
@@ -161,7 +162,7 @@ def advance(sim, nsteps, chunk=2000):
     """Run in chunks (the driver checks the neighbour list and box between chunks)."""
     while nsteps > 0:
         k = min(chunk, nsteps)
-        sim._advance(k)
+        sim.advance(k)
         nsteps -= k
 
 
@@ -179,7 +180,7 @@ def sample(sim, sysd, theta, p0, T, n_prod, every, to_params):
     dU = jax.jit(jax.value_and_grad(U))
     out = {"U": [], "rho": [], "dU": [], "U_check": []}
     for _ in range(n_prod // every):
-        sim._advance(every)
+        sim.advance(every)
         st = sim.state
         if flexible:
             pos = st.dyn.position
@@ -247,6 +248,7 @@ def main():
     )
     ap.add_argument("--out", default="")
     a = ap.parse_args()
+    setup_logging()
     out = a.out or os.path.join(ROOT, f"runs/liquid/{a.system}.json")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     sysd = build(a.system)
@@ -315,7 +317,7 @@ def main():
         json.dump(log, open(out, "w"), indent=1)
         pred = (y + est["J"] @ step).tolist()
         theta = theta + step
-        pos, H, vel = sim.positions_nm(), np.asarray(sim.state.box), sim.velocities_nm_ps()
+        pos, H, vel = sim.positions(), np.asarray(sim.state.box), sim.velocities()
     print(f"# done in {time.time() - t0:.0f} s", flush=True)
 
 

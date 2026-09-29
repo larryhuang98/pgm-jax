@@ -106,7 +106,7 @@ from __future__ import annotations
 
 import dataclasses as _dc
 import json
-import sys as _sys
+import logging
 
 import jax
 import jax.numpy as jnp
@@ -124,6 +124,7 @@ from .remd import ExchangeStatistics, MDReplicas, _nocount, _stack, _take, excha
 
 PREFIX = "alch:"  # tying-key prefix of an alchemical molecule's own parameters
 LEGACY_FORMAT = "pgm_jax free energy 1"  # the "format" entry of legacy pickle checkpoints
+logger = logging.getLogger(__name__)
 
 
 # ----------------------------------------------------------------------------- setup
@@ -174,7 +175,7 @@ class Alchemy:
 
         sys, P = alchemical_system(sys, solute=0)
         alch = Alchemy(sys, solute=0)
-        sim = Simulation(sys, pos, H, settings, params=P, alchemy=alch, ensemble="nvt", thermostat="bussi")
+        sim = Simulation(sys, pos, H, settings, params=P, alchemy=alch, thermostat="bussi")
 
     `lam` is the coupling (lambda_elec, lambda_vdw) of states whose MDState.lam is None (the
     default single simulation); LambdaWindows gives each window its own.  sc_alpha: soft-core
@@ -531,7 +532,7 @@ class LambdaWindows(MDReplicas):
         if getattr(integ, "alchemy", None) is None:
             raise ValueError("the simulation has no alchemical region: Simulation(..., alchemy=Alchemy(...))")
         if integ.thermostat is None:
-            raise ValueError("lambda windows need a thermostat (ensemble nvt or npt)")
+            raise ValueError("lambda windows need a thermostat (create the simulation with thermostat=...)")
         if batched and sim.ensemble == "npt":
             raise ValueError(
                 "batched windows run NVT only (under vmap the barostat's trial energy would be "
@@ -677,8 +678,8 @@ class LambdaWindows(MDReplicas):
             sim = self._on(k)
             write_restart(
                 f"{prefix}_L{k:02d}.rst7",
-                sim.positions_nm() * 10.0,
-                sim.velocities_nm_ps() * 10.0,
+                sim.positions() * 10.0,
+                sim.velocities() * 10.0,
                 np.asarray(sim.state.box) * 10.0,
                 self.time_ps,
                 title=f"pgm_jax lambda window {k}: {self.lambdas[k].tolist()}",
@@ -703,11 +704,11 @@ class LambdaWindows(MDReplicas):
 class FreeEnergyRun:
     """Lambda windows with samples for the estimators and optional Hamiltonian replica exchange.
 
-        sys, P = alchemical_system(sys, 0)
-        sim = Simulation(sys, pos, H, settings, params=P, alchemy=Alchemy(sys, 0), ensemble="nvt",
+        system, P = alchemical_system(system, 0)
+        sim = Simulation(system, positions, box, settings, params=P, alchemy=Alchemy(system, 0),
                          thermostat="bussi", dt=0.002)
         fe = FreeEnergyRun(LambdaWindows(sim, standard_schedule()), sample_every=500, exchange_every=500)
-        fe.run(1000000, prefix="wat", report=5000, restart=50000)       # 2 ns per window
+        fe.run(1000000, prefix="wat", report_every=5000, checkpoint_every=50000)   # 2 ns per window
         free_energy.estimate(np.load("wat_fe.npz"), discard_ps=200)    # TI, BAR, MBAR
 
     Every `sample_every` steps: u[k, n] and dU/dlambda of every window (LambdaWindows.sample);
@@ -716,7 +717,7 @@ class FreeEnergyRun:
     prefix_fe.npz (samples: u (S, K, K), dudl (S, K, 2), step, time_ps, replica (S, K), epot (S, K),
     lambdas, kT, meta), prefix_fe.log (one line per report: temperatures, CG iterations, acceptance,
     speed), prefix_fe.json (acceptance matrix, round trips, speed), prefix.fe.chk (checkpoint:
-    windows, samples, statistics, random state; `load`) and prefix_Lkk.rst7."""
+    windows, samples, statistics, random state; `load_checkpoint`) and prefix_Lkk.rst7."""
 
     def __init__(
         self,
@@ -724,10 +725,35 @@ class FreeEnergyRun:
         sample_every: int = 500,
         exchange_every: int = 0,
         seed: int = 0,
-        log=_sys.stdout,
+        log=None,
         meta: dict | None = None,
         param_grad=None,
     ):
+        """Set up sampling (and exchanges) over the lambda windows.
+
+        Parameters
+        ----------
+        windows : LambdaWindows
+            The windows.
+        sample_every : int
+            Steps between samples of the reduced energies and dU/dlambda.
+        exchange_every : int
+            Steps between exchange attempts (a multiple of sample_every; 0: none).
+        seed : int
+            Seed of the exchange random numbers.
+        log : text stream or None
+            Receives the rows of the log table of `run` too (the setup is logged to the logger
+            "pgm_jax.md.alchemy").
+        meta : dict, optional
+            JSON-serializable metadata stored with the samples.
+        param_grad : ParamGradients, optional
+            Also sample parameter gradients of the end states (md/fe_grad.py).
+
+        Raises
+        ------
+        ValueError
+            Invalid intervals, or param_grad of other windows.
+        """
         self.windows = windows
         self.param_grad = param_grad
         self.n = windows.n
@@ -750,16 +776,12 @@ class FreeEnergyRun:
             self.samples["dudp"] = []
             self.meta.update(param_grad.meta())
         mode = "batched" if windows.batched else "sequential"
-        self._print(
-            f"# lambda windows: {self.n} ({mode}), T = {windows.temperatures[0]:.2f} K, samples every "
+        logger.info(
+            f"lambda windows: {self.n} ({mode}), T = {windows.temperatures[0]:.2f} K, samples every "
             f"{self.sample_every} steps ({self.sample_every * windows.dt:g} ps), "
             + (f"Hamiltonian exchange every {self.exchange_every} steps" if self.exchange_every else "no exchanges")
         )
-        self._print("# (lambda_elec, lambda_vdw): " + " ".join(f"({a:g},{b:g})" for a, b in windows.lambdas))
-
-    def _print(self, s):
-        if self.log is not None:
-            print(s, file=self.log, flush=True)
+        logger.info("(lambda_elec, lambda_vdw): " + " ".join(f"({a:g},{b:g})" for a, b in windows.lambdas))
 
     # ------------------------------------------------------------------ one sample / exchange
     def _sample(self):
@@ -784,7 +806,7 @@ class FreeEnergyRun:
         return pairs, acc
 
     # ------------------------------------------------------------------ running
-    def run(self, nsteps: int, prefix: str | None = "fe", report: int = 0, restart: int = 0) -> dict:
+    def run(self, nsteps: int, *, prefix: str | None = "fe", report_every: int = 0, checkpoint_every: int = 0) -> dict:
         """Advance every window nsteps with samples every sample_every steps (and exchanges).
 
         Parameters
@@ -793,11 +815,11 @@ class FreeEnergyRun:
             Steps.
         prefix : str or None
             Path prefix of the files (None: no files).
-        report : int
+        report_every : int
             Steps between rows of the log table prefix_fe.log (mean, minimum and maximum
             temperature of the windows [K], mean CG iterations per step and of the last sample,
             neighbour acceptance, ns/day per window); 0: none.
-        restart : int
+        checkpoint_every : int
             Steps between checkpoints prefix.fe.chk with the samples prefix_fe.npz and restarts
             prefix_Lkk.rst7 (0: only at the end).
 
@@ -806,6 +828,7 @@ class FreeEnergyRun:
         dict
             `summary` of the run.
         """
+        report, restart = report_every, checkpoint_every
         w = self.windows
         block = block_length(nsteps, self.sample_every, report, restart)
         files = prefix is not None
@@ -843,13 +866,13 @@ class FreeEnergyRun:
                 row["ns_per_day"] = clock.ns_per_day(self.step)
                 table.write(row)
             if files and restart and self.step % restart == 0:
-                self.save(prefix)
+                self._write_checkpoint_files(prefix)
         speed = clock.ns_per_day(self.step)
         if table is not None:
             table.close()
         summary = self.summary(ns_per_day=speed)
         if files:
-            self.save(prefix)
+            self._write_checkpoint_files(prefix)
             with open(f"{prefix}_fe.json", "w") as fh:
                 json.dump(summary, fh, indent=1)
         return summary
@@ -900,21 +923,30 @@ class FreeEnergyRun:
             else {}
         )
 
-    def save(self, prefix: str) -> None:
-        """Write the samples prefix_fe.npz, a checkpoint prefix.fe.chk and restarts prefix_Lkk.rst7.
+    def _write_checkpoint_files(self, prefix: str) -> None:
+        """The files of run's checkpoints: samples prefix_fe.npz, prefix.fe.chk and the window
+        restarts prefix_Lkk.rst7."""
+        self.save_samples(f"{prefix}_fe.npz")
+        self.save_checkpoint(prefix + ".fe.chk")
+        self.windows.write_restarts(prefix)
+
+    def save_samples(self, path: str) -> None:
+        """Write the samples (`arrays`) to an .npz file for free_energy.estimate / fe.load."""
+        np.savez(path, **self.arrays())
+
+    def save_checkpoint(self, path: str) -> None:
+        """Write a checkpoint of the run (driver.write_checkpoint, kind "free-energy").
 
         Parameters
         ----------
-        prefix : str
-            Path prefix of the files.
+        path : str
+            The file (prefix.fe.chk in `run`).
 
         Notes
         -----
-        The checkpoint (driver.write_checkpoint, kind "free-energy") holds every window state,
-        the samples, the exchange statistics and random state, the step and the metadata; `load`
-        continues the run bitwise on the CPU.
+        The checkpoint holds every window state, the samples, the exchange statistics and random
+        state, the step and the metadata; `load_checkpoint` continues the run bitwise on the CPU.
         """
-        np.savez(f"{prefix}_fe.npz", **self.arrays())
         content = {
             "lambdas": self.windows.lambdas,
             "step": self.step,
@@ -924,11 +956,10 @@ class FreeEnergyRun:
             "meta": self.meta,
             "windows": self.windows.state_dict(),
         }
-        write_checkpoint(prefix + ".fe.chk", "free-energy", content)
-        self.windows.write_restarts(prefix)
+        write_checkpoint(path, "free-energy", content)
 
     def _read(self, path: str) -> dict:
-        """The content of a checkpoint written by `save` (or a legacy pickle ``.fe.chk``), with the
+        """The content of a checkpoint written by `save_checkpoint` (or a legacy pickle ``.fe.chk``), with the
         samples as lists of per-sample entries."""
         d = read_checkpoint(
             path, "free-energy", self.windows.state_template(), OPTIONAL_STATE, legacy_format=LEGACY_FORMAT
@@ -936,8 +967,8 @@ class FreeEnergyRun:
         d["samples"] = {k: list(v) for k, v in d["samples"].items()}
         return d
 
-    def load(self, path: str) -> None:
-        """Continue from a checkpoint written by `save`, or from a legacy pickle ``.fe.chk`` of
+    def load_checkpoint(self, path: str) -> None:
+        """Continue from a checkpoint written by `save_checkpoint`, or from a legacy pickle ``.fe.chk`` of
         pgm_jax up to commit e72c57c (same system, settings and windows).
 
         Parameters
@@ -969,7 +1000,7 @@ class FreeEnergyRun:
             self.meta.update(self.param_grad.meta())
 
     def load_windows(self, path: str) -> None:
-        """Start from the window configurations of a checkpoint written by `save` (e.g. equilibrated
+        """Start from the window configurations of a checkpoint written by `save_checkpoint` (e.g. equilibrated
         at other parameters) with no samples, step 0 and time 0.
 
         Its samples, statistics and random state are not taken over.  Windows are matched by

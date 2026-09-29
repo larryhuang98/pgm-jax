@@ -337,7 +337,7 @@ class PGMEngine:
             )
         kw.setdefault("params", sim.integ.params)
         kw.setdefault("restraints", sim.integ.restraints)
-        return cls(sim.sys, sim.positions_nm(), np.asarray(sim.state.box), sim.settings, templates=templates, **kw)
+        return cls(sim.sys, sim.positions(), np.asarray(sim.state.box), sim.settings, templates=templates, **kw)
 
     # ------------------------------------------------------------------ neighbour lists
     def _make_neighbors(self, H):

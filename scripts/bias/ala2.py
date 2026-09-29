@@ -27,8 +27,10 @@ import numpy as np
 
 from pgm_jax import System
 from pgm_jax.bias import OPES, BiasSet, Harmonic, MetaD, StaticBias, cv
+from pgm_jax.cli.args import setup_logging
 from pgm_jax.md.flexible import FlexibleSimulation
 from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.thermostats import Langevin
 from pgm_jax.protein import amber_template, load_amber
 from pgm_jax.units import KB
 
@@ -72,6 +74,7 @@ ap.add_argument("--labels", nargs="+", default=["none", "metad_grid", "metad_hil
 ap.add_argument("--pme-grid", type=int, default=None, help="PME grid points per edge (vacuum default 20)")
 ap.add_argument("--beta", type=float, default=None, help="Ewald coefficient (nm^-1; vacuum default 2.5)")
 a = ap.parse_args()
+setup_logging()
 kT = KB * a.T
 
 
@@ -113,8 +116,7 @@ def build(bias):
         s,
         dt=a.dt,
         temperature=a.T,
-        gamma=a.gamma,
-        thermostat="langevin",
+        thermostat=Langevin(a.gamma),
         constraints="h-bonds",
         seed=a.seed,
         bias=b,
@@ -131,26 +133,26 @@ def run(sim, prefix, ns):
     W = a.walkers
     if W > 1:
         sim.minimize(200, seed=a.seed)
-        wk = Walkers(sim, W, shared=a.shared, seed=a.seed)
+        wk = Walkers(sim, W, shared=a.shared, seed=a.seed, log=sys.stdout)
         if a.resume and os.path.exists(prefix + ".walkers.chk"):
-            wk.load(prefix + ".walkers.chk")
+            wk.load_checkpoint(prefix + ".walkers.chk")
             n -= int(np.asarray(wk.S.step)[0])
             print(f"# resumed at step {int(np.asarray(wk.S.step)[0])}; {n} steps to go")
         t0 = time.time()
-        wk.run(n, report=rep, restart=rep * 50, prefix=prefix, append=a.resume)
+        wk.run(n, report_every=rep, checkpoint_every=rep * 50, prefix=prefix, append=a.resume)
         print(
             f"# {W} walkers x {n} steps in {time.time() - t0:.0f} s "
             f"({W * n * a.dt / 1000 / max(time.time() - t0, 1e-9) * 86400:.1f} ns/day aggregate)"
         )
         return wk
     if a.resume and os.path.exists(prefix + ".chk"):
-        sim.load(prefix + ".chk")
+        sim.load_checkpoint(prefix + ".chk")
         n -= int(sim.state.step)
         print(f"# resumed at step {int(sim.state.step)}; {n} steps to go")
     else:
         sim.minimize(200, seed=a.seed)
     t0 = time.time()
-    sim.run(n, report=rep, restart=rep * 50, prefix=prefix, append=a.resume)
+    sim.run(n, report_every=rep, checkpoint_every=rep * 50, prefix=prefix, append=a.resume)
     print(
         f"# {n} steps in {time.time() - t0:.0f} s ({n * a.dt / 1000 / max(time.time() - t0, 1e-9) * 86400:.1f} ns/day)"
     )
@@ -203,14 +205,14 @@ elif a.mode == "umbrella":
     h = holder["h"]
     rep = int(round(a.report / a.dt))
     if a.resume and os.path.exists(a.out + ".walkers.chk"):
-        wk = Walkers(sim, K, bias_states=[sim.state.bias] * K, seed=a.seed)
-        wk.load(a.out + ".walkers.chk")
+        wk = Walkers(sim, K, bias_states=[sim.state.bias] * K, seed=a.seed, log=sys.stdout)
+        wk.load_checkpoint(a.out + ".walkers.chk")
     else:
         sim.minimize(200, seed=a.seed)
         phi0 = float(sim.cv_values()[0][0])
         d = np.mod(cen - phi0 + np.pi, 2 * np.pi) - np.pi
         states = [sim.state.bias._replace(parts=(h.state(at=phi0), ())) for _ in range(K)]
-        wk = Walkers(sim, K, bias_states=states, seed=a.seed)
+        wk = Walkers(sim, K, bias_states=states, seed=a.seed, log=sys.stdout)
         nst = 40
         per = max(1, int(round(a.equil / a.dt / nst)))
         for j in range(1, nst + 1):
@@ -232,7 +234,7 @@ elif a.mode == "umbrella":
         wk.S = wk.S.set(step=jnp.zeros_like(wk.S.step))
     n = int(round(a.ns * 1000 / a.dt)) - int(np.asarray(wk.S.step)[0])
     t0 = time.time()
-    wk.run(n, report=rep, restart=rep * 50, prefix=a.out, append=a.resume)
+    wk.run(n, report_every=rep, checkpoint_every=rep * 50, prefix=a.out, append=a.resume)
     json.dump({"centers": cen.tolist(), "kappa": a.kappa, "nwin": a.nwin, "first": a.first}, open(a.out + ".json", "w"))
     print(f"# {K} windows x {n} steps in {time.time() - t0:.0f} s")
 elif a.mode == "remd":
@@ -245,20 +247,20 @@ elif a.mode == "remd":
     n = int(round(a.ns * 1000 / a.dt))
     rep = int(round(a.report / a.dt))
     if a.resume and os.path.exists(a.out + ".remd.chk"):
-        rex = ReplicaExchange(sim, rex_T, exchange_every=250, seed=a.seed)
-        rex.load(a.out + ".remd.chk")
+        rex = ReplicaExchange(sim, rex_T, exchange_every=250, seed=a.seed, log=sys.stdout)
+        rex.load_checkpoint(a.out + ".remd.chk")
         n -= int(rex.step)
         print(f"# resumed at step {int(rex.step)}; {n} steps to go", flush=True)
     else:
         sim.minimize(200, seed=a.seed)
-        sim.run(int(round(a.equil / a.dt)), report=int(round(a.equil / a.dt)), prefix=a.out + "_eq")
-        rex = ReplicaExchange(sim, rex_T, exchange_every=250, seed=a.seed)
+        sim.run(int(round(a.equil / a.dt)), report_every=int(round(a.equil / a.dt)), prefix=a.out + "_eq")
+        rex = ReplicaExchange(sim, rex_T, exchange_every=250, seed=a.seed, log=sys.stdout)
     json.dump(
         {"phi": [int(i) for i in phi.idx], "psi": [int(i) for i in psi.idx], "T": list(map(float, rex_T))},
         open(a.out + ".json", "w"),
     )
     t0 = time.time()
-    rex.run(n, report=rep, traj=100, restart=rep * 50, prefix=a.out, append=a.resume)
+    rex.run(n, report_every=rep, traj_every=100, checkpoint_every=rep * 50, prefix=a.out, append=a.resume)
     print(f"# REMD {a.replicas} replicas x {n} steps in {time.time() - t0:.0f} s", flush=True)
 elif a.mode == "bench":
     # the same system and settings with and without a 2D metaD bias (grid; hills every 250 steps)
@@ -304,11 +306,11 @@ elif a.mode == "bench":
                     [OPES([phi, psi], sigma=a.sigma, pace=a.pace, barrier=a.barrier)], colvar=a.colvar
                 )
             )
-        sim._advance(500)
+        sim.advance(500)
         ts = []
         for _rep in range(3):
             t0 = time.time()
-            sim._advance(a.bench_steps)
+            sim.advance(a.bench_steps)
             jax.block_until_ready(sim.state.epot)
             ts.append((time.time() - t0) / a.bench_steps * 1e3)
         o = sim.observables()

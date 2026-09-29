@@ -7,7 +7,9 @@ nm^3, electric field V/nm, angles rad.  A value in any other unit carries the un
 
 Where the code base used slightly different values of one constant (different CODATA releases),
 each value is kept under its own name, so that no result changes; unifying them would change
-numbers and needs a decision of its own.
+numbers and needs a decision of its own.  The three Bohr radii (BOHR_NM = CODATA 2014,
+BOHR_NM_CODATA2018, BOHR_NM_CODATA2022) stay separate until the owner decides which one to keep
+(docs/api_design.md, 9.1).
 """
 
 # ----------------------------------------------------------------------------- thermodynamics

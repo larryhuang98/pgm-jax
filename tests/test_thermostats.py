@@ -70,7 +70,10 @@ def test_gle_kernels_and_fdt_check():
     assert np.allclose(low.kernel([0.0, 40.0]), [2.0, 1.0])
     with pytest.raises(ValueError):
         GLE([[0.0, 1.0], [-1.0, -0.5]])  # A + A^T not positive semidefinite
-    assert isinstance(make_thermostat("bussi", tau=0.5), Bussi) and make_thermostat("gle").n_aux == 2
+    assert isinstance(make_thermostat("bussi"), Bussi) and make_thermostat("gle").n_aux == 2
+    assert make_thermostat(None) is None and make_thermostat(Bussi(0.5)).tau == 0.5
+    with pytest.raises(ValueError, match="unknown name"):
+        make_thermostat("berendsen")
 
 
 def test_constrained_nvt_runs_conserve_effective_energy():
@@ -99,16 +102,14 @@ def test_constrained_nvt_runs_conserve_effective_energy():
             dt=0.002,
             temperature=300.0,
             log=None,
-            ensemble="nve" if name == "nve" else "nvt",
-            thermostat="langevin" if name == "nve" else name,
-            tau_t=0.2,
+            thermostat={"nve": None, "bussi": Bussi(0.2)}.get(name, name),
             seed=4,
         )
-        sim._advance(100)
+        sim.advance(100)
         e0 = sim.observables()["econs"]
         dev, T = 0.0, []
         for _ in range(6):
-            sim._advance(50)
+            sim.advance(50)
             o = sim.observables()
             dev = max(dev, abs(o["econs"] - e0))
             T.append(o["temp_K"])
@@ -118,3 +119,26 @@ def test_constrained_nvt_runs_conserve_effective_energy():
         assert dev < 3.0 * res["nve"][0] + 0.005 * ek, (name, res)
         if name != "nve":
             assert 200.0 < T < 400.0, (name, T)
+
+
+def test_coupling_objects():
+    """Thermostat / barostat objects of the engines, the command-line helper, PILE settings."""
+    from pgm_jax.cli.args import coupling_from_options
+    from pgm_jax.md.barostats import MonteCarloBarostat, ensemble_name
+    from pgm_jax.md.pimd import PILE, as_pile
+
+    th, b = coupling_from_options("npt", "bussi", tau=0.5, pressure=2.0, barostat_every=10)
+    assert isinstance(th, Bussi) and th.tau == 0.5 and b == MonteCarloBarostat(2.0, 10)
+    assert coupling_from_options("nve") == (None, None)
+    th, b = coupling_from_options("nvt", "langevin", friction=5.0)
+    assert isinstance(th, Langevin) and th.friction == 5.0 and b is None
+    assert ensemble_name(None, None) == "nve" and ensemble_name(Bussi(), None) == "nvt"
+    assert ensemble_name(Bussi(), MonteCarloBarostat()) == "npt"
+    for bad in (lambda: ensemble_name(None, MonteCarloBarostat()), lambda: MonteCarloBarostat(every=0)):
+        with pytest.raises(ValueError):
+            bad()
+    with pytest.raises(ValueError, match="friction"):
+        Langevin(-1.0)
+    assert as_pile("pile-g") == PILE("g") and PILE("pile-l").kind == "l" and PILE().tau_centroid == 0.2
+    with pytest.raises(ValueError):
+        PILE("x")

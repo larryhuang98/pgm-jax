@@ -108,7 +108,7 @@ def test_iel_scf_step_converges_to_the_field_polarized_dipoles(kind):
 def _econs(sim, blocks=8, n=50):
     e = []
     for _ in range(blocks):
-        sim._advance(n)
+        sim.advance(n)
         e.append(sim.observables()["econs"])
     return np.asarray(e)
 
@@ -118,7 +118,7 @@ def test_iel_nve_conserves_energy_in_a_field(field):
     sys, pos, H = small_box(6, nm=0)
     fld = EF.displacement((0.0, 0.0, 2.0)) if field == "D" else field
     s = settings(cutoff=0.6, dipole_tol=1e-8, vdw="none", iel="0scf")
-    sim = Simulation(sys, pos, H, settings=s, dt=0.001, ensemble="nve", log=None, seed=1, efield=fld)
+    sim = Simulation(sys, pos, H, settings=s, dt=0.001, thermostat=None, log=None, seed=1, efield=fld)
     ef0 = sim.observables()["field_energy"]
     e = _econs(sim)
     o = sim.observables()
@@ -137,7 +137,7 @@ def test_bias_with_field_and_iel(iel):
     s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False, iel=iel)
     d = cv.Distance(0, 9)
     d0 = float(d(jnp.asarray(pos), jnp.asarray(H)))
-    kw = dict(dt=0.0005, ensemble="nve", log=None, seed=2, efield=(0.0, 0.4, 0.8))
+    kw = dict(dt=0.0005, thermostat=None, log=None, seed=2, efield=(0.0, 0.4, 0.8))
     sim = Simulation(sys, pos, H, s, bias=BiasSet([Harmonic([d], at=[d0 + 0.05], kappa=[2000.0])]), **kw)
     ref = Simulation(sys, pos, H, s, **kw)
     x = sim.rigid.positions(sim.state.dyn.position)
@@ -154,7 +154,7 @@ def test_bias_with_field_and_iel(iel):
     assert abs(o["field_energy"] - ref.observables()["field_energy"]) < 1e-9
     E, B = [], []
     for _ in range(8):
-        sim._advance(40)
+        sim.advance(40)
         o = sim.observables()
         E.append(o["econs"])
         B.append(o["ebias"])
@@ -180,7 +180,6 @@ def test_walkers_book_the_work_of_a_time_dependent_field():
             H,
             s,
             dt=0.001,
-            ensemble="nvt",
             thermostat="bussi",
             temperature=300.0,
             log=None,
@@ -191,7 +190,7 @@ def test_walkers_book_the_work_of_a_time_dependent_field():
     sim, one = mk(), mk()
     wk = Walkers(sim, 2, shared=False, seed=4)
     one.state = wk.state(0).set(nbr=one.state.nbr)
-    one._advance(60)
+    one.advance(60)
     wk.advance(60)
     h1, hw = float(one.state.heat), float(np.asarray(wk.S.heat)[0])
     assert abs(float(one.state.epot) - float(np.asarray(wk.S.epot)[0])) < 1e-6
@@ -216,13 +215,12 @@ def test_flexible_minimize_with_mts():
         H,
         s,
         dt=0.004,
-        ensemble="nvt",
         log=None,
         mts=MTS(inner=2, r_short=0.4, buffer=0.1),
     )
     out = sim.minimize(steps=3)
     assert out["steps"] >= 1
-    sim._advance(4)
+    sim.advance(4)
     assert np.isfinite(sim.observables()["epot"])
 
 
@@ -238,17 +236,7 @@ def test_refused_combinations():
 
     def flex(settings=s, **kw):
         return FlexibleSimulation(
-            sys,
-            [tpl] * sys.nmol,
-            pos,
-            H,
-            settings,
-            dt=0.0002,
-            ensemble="nvt",
-            temperature=T,
-            thermostat="bussi",
-            log=None,
-            **kw,
+            sys, [tpl] * sys.nmol, pos, H, settings, dt=0.0002, thermostat="bussi", temperature=T, log=None, **kw
         )
 
     ub = BiasSet([Harmonic([cv.Distance(0, 3)], at=[0.3], kappa=[100.0])])

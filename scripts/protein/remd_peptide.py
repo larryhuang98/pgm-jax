@@ -31,11 +31,13 @@ import time
 import jax
 import numpy as np
 
+from pgm_jax.cli.args import setup_logging
 from pgm_jax.fit.reweighting import backbone_torsions
 from pgm_jax.md.flexible import FlexibleSimulation
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.io import read_trajectory
 from pgm_jax.md.remd import ReplicaExchange, geometric_ladder
+from pgm_jax.md.thermostats import Bussi
 from pgm_jax.protein import ResidueLibrary, amber_template, load_amber
 
 jax.config.update("jax_enable_x64", True)
@@ -63,6 +65,7 @@ ap.add_argument("--seed", type=int, default=1)
 ap.add_argument("--bench", type=int, nargs="+", default=[1, 2, 4, 8, 16], help="replica counts timed by bench")
 ap.add_argument("--bench-steps", type=int, default=2000)
 a = ap.parse_args()
+setup_logging()
 asys = load_amber(a.prmtop, a.inpcrd, electrostatics=ResidueLibrary.load(a.library) if a.library else "placeholder")
 kp = [k for k, m in enumerate(asys.molecules) if m.kind == "protein"]
 if len(kp) != 1:
@@ -160,25 +163,24 @@ sim = FlexibleSimulation(
     asys.box,
     st,
     dt=a.dt,
-    ensemble="nvt",
+    thermostat=Bussi(a.tau),
     temperature=a.tmin,
     constraints="h-bonds",
     hmr=3.024,
     log=sys.stdout,
-    thermostat="bussi",
-    tau_t=a.tau,
     seed=a.seed,
 )
 equil = a.out + "_equil"
 if os.path.exists(equil + ".chk"):
-    sim.load(equil + ".chk")
+    sim.load_checkpoint(equil + ".chk")
     print(f"# equilibrated state from {equil}.chk", flush=True)
 else:
     t0 = time.time()
     print("# minimise:", sim.minimize(300), flush=True)
     n = int(round(a.equil / a.dt))
-    sim.run(n, report=max(n // 10, 1), prefix=equil)
-    sim.save(equil)
+    sim.run(n, report_every=max(n // 10, 1), prefix=equil)
+    sim.save_checkpoint(equil + ".chk")
+    sim.write_restart(equil + ".rst7")
     print(f"# equilibration {a.equil:g} ps: {time.time() - t0:.0f} s", flush=True)
 nsteps = int(round(a.ns * 1000.0 / a.dt))
 traj, report = int(round(a.traj / a.dt)), int(round(a.report / a.dt))
@@ -202,7 +204,7 @@ if a.mode == "bench":
     for R in a.bench:
         sim.state = start
         if R == 1:  # plain MD of the same system
-            timed("plain MD  ", 1, sim._advance, lambda: [sim.state])
+            timed("plain MD  ", 1, sim.advance, lambda: [sim.state])
             continue
         for batched in (True, False) if R == max(a.bench) else (True,):
             rep = ReplicaExchange(
@@ -211,14 +213,14 @@ if a.mode == "bench":
             timed("batched   " if batched else "sequential", R, rep.advance, lambda: [rep.state(k) for k in range(R)])
     raise SystemExit(0)
 if a.mode == "plain":
-    sim.run(nsteps, report=report, traj=traj, restart=report * 10, prefix=a.out + "_plain")
+    sim.run(nsteps, report_every=report, traj_every=traj, checkpoint_every=report * 10, prefix=a.out + "_plain")
 else:
     T = geometric_ladder(a.tmin, a.tmax, a.replicas)
-    rex = ReplicaExchange(sim, T, exchange_every=a.exchange, batched=not a.sequential, seed=a.seed)
+    rex = ReplicaExchange(sim, T, exchange_every=a.exchange, batched=not a.sequential, seed=a.seed, log=sys.stdout)
     if a.resume:
-        rex.load(a.out + ".remd.chk")
+        rex.load_checkpoint(a.out + ".remd.chk")
     left = nsteps - rex.step
-    s = rex.run(left, report=report, traj=traj, restart=report * 10, prefix=a.out, append=a.resume)
+    s = rex.run(left, report_every=report, traj_every=traj, checkpoint_every=report * 10, prefix=a.out, append=a.resume)
     print(
         json.dumps(
             {

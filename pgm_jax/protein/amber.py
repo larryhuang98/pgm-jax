@@ -9,7 +9,7 @@ solvent, ions) and this module turns it into pgm_jax molecules.
                              MDSettings(), dt=0.002, constraints="h-bonds", hmr=3.024)
     # per-kind hydrogen masses; positional restraints on the backbone at the current positions
     hmr = asys.hmr({"water": 4.0, "protein": 3.024, "ion": None})
-    rs = asys.position_restraints(418.4, "backbone", sim.positions_nm(), sim.state.box)
+    rs = asys.position_restraints(418.4, "backbone", sim.positions(), sim.state.box)
 
 Molecules are the connected components of the bond graph; kind "water" (a residue with a water
 name and three atoms, plus any extra points: TIP4P-Ew, OPC, TIP5P), "ion" (one atom), "protein"
@@ -140,7 +140,7 @@ class AmberSystem:
     ):
         """Positional restraints (md/restraints.py) holding the selected atoms (see `select`) of each
         molecule of the given kinds at `positions` (system order, nm; default the loaded
-        coordinates, e.g. sim.positions_nm() after minimisation) with box `box` (default the
+        coordinates, e.g. sim.positions() after minimisation) with box `box` (default the
         loaded box, e.g. sim.state.box).  One PositionRestraint per molecule; with scaling "com"
         (default) its reference centroid is mass-weighted, so under NPT the reference moves with
         the molecule.  k in kJ/mol/nm^2 with Amber's E = k d^2 (1 kcal/mol/A^2 = 418.4)."""

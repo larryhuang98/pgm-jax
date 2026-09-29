@@ -8,9 +8,11 @@ import numpy as np
 import pytest
 from test_flexible import template
 
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.constraints import Constraints
 from pgm_jax.md.flexible import FlexibleSimulation, liquid_box
 from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.thermostats import Bussi, Langevin
 from pgm_jax.system import System
 from pgm_jax.units import KB
 
@@ -132,11 +134,9 @@ def test_rules_and_degrees_of_freedom():
         tpl.md_rule("h-angles")
     n = sys_.n
     for cons, nc in (("none", 0), ("h-bonds", 32), ("all-bonds", 40)):
-        for ens, th, sub in (("nve", "langevin", 3), ("nvt", "langevin", 0), ("nvt", "bussi", 3)):
-            sim = FlexibleSimulation(
-                sys_, [tpl] * 8, pos, H, SCL, dt=0.001, ensemble=ens, thermostat=th, constraints=cons, log=None
-            )
-            assert sim.constraints.nc == nc and sim.integ.dof == 3 * n - nc - sub, (cons, ens, th)
+        for th, sub in ((None, 3), ("langevin", 0), ("bussi", 3)):
+            sim = FlexibleSimulation(sys_, [tpl] * 8, pos, H, SCL, dt=0.001, thermostat=th, constraints=cons, log=None)
+            assert sim.constraints.nc == nc and sim.integ.dof == 3 * n - nc - sub, (cons, th)
             if sub:  # total momentum removed at the start
                 assert np.abs(np.asarray(sim.state.dyn.momentum).sum(0)).max() < 1e-10
 
@@ -153,14 +153,13 @@ def test_constraints_every_step_and_nve():
         H,
         SCL,
         dt=0.001,
-        ensemble="nvt",
+        thermostat=Langevin(20.0),
         temperature=298.0,
-        gamma=20.0,
         constraints="h-bonds",
         log=None,
     )
-    eq._advance(400)
-    x0, v0, H0 = eq.positions_nm(), eq.velocities_nm_ps(), np.asarray(eq.state.box)
+    eq.advance(400)
+    x0, v0, H0 = eq.positions(), eq.velocities(), np.asarray(eq.state.box)
     fluct = {}
     for cons, dt in (
         ("none", 0.0005),
@@ -170,11 +169,11 @@ def test_constraints_every_step_and_nve():
         ("all-bonds", 0.002),
     ):
         sim = FlexibleSimulation(
-            sys_, [tpl] * 8, x0, H0, SCL, dt=dt, ensemble="nve", vel_nm_ps=v0, constraints=cons, log=None
+            sys_, [tpl] * 8, x0, H0, SCL, dt=dt, thermostat=None, velocities=v0, constraints=cons, log=None
         )
         E = []
         for k in range(int(round(0.2 / dt))):  # 0.2 ps, checked every step
-            sim._advance(1)
+            sim.advance(1)
             o = sim.observables()
             if cons != "none":
                 assert o["shake_err"] < 1e-10 and o["rattle_err"] < 1e-10, (
@@ -200,21 +199,17 @@ def test_skipped_projection_is_exact():
     from pgm_jax.md import flexible as F
 
     tpl, sys_, pos, H = _cluster()
-    for ens in ("nve", "nvt"):
-        a = FlexibleSimulation(
-            sys_, [tpl] * 8, pos, H, SCL, dt=0.002, ensemble=ens, constraints="h-bonds", seed=4, log=None
-        )
-        a._advance(20)
+    for th in (None, "langevin"):
+        a = FlexibleSimulation(sys_, [tpl] * 8, pos, H, SCL, dt=0.002, thermostat=th, constraints="h-bonds", seed=4)
+        a.advance(20)
         orig = F.FlexibleIntegrator._drift
         try:
             F.FlexibleIntegrator._drift = lambda self, dyn, h, project=True: orig(self, dyn, h, True)
-            b = FlexibleSimulation(
-                sys_, [tpl] * 8, pos, H, SCL, dt=0.002, ensemble=ens, constraints="h-bonds", seed=4, log=None
-            )
-            b._advance(20)
+            b = FlexibleSimulation(sys_, [tpl] * 8, pos, H, SCL, dt=0.002, thermostat=th, constraints="h-bonds", seed=4)
+            b.advance(20)
         finally:
             F.FlexibleIntegrator._drift = orig
-        assert np.abs(a.positions_nm() - b.positions_nm()).max() < 1e-11
+        assert np.abs(a.positions() - b.positions()).max() < 1e-11
         assert np.abs(np.asarray(a.state.dyn.momentum - b.state.dyn.momentum)).max() < 1e-9
 
 
@@ -232,17 +227,14 @@ def test_npt_bussi_and_mts_keep_constraints():
         H,
         s,
         dt=0.002,
-        ensemble="npt",
-        thermostat="bussi",
-        tau_t=0.2,
-        pressure=2000.0,
-        barostat_interval=5,
+        thermostat=Bussi(0.2),
+        barostat=MonteCarloBarostat(2000.0, 5),
         constraints="h-bonds",
         log=None,
     )
     V0 = sim.observables()["volume_nm3"]
     for _ in range(5):
-        sim._advance(100)
+        sim.advance(100)
         o = sim.observables()
         assert o["shake_err"] < 1e-10 and o["rattle_err"] < 1e-10
     assert int(sim.state.mc[0]) >= 50 and int(sim.state.mc[1]) >= 1 and o["volume_nm3"] != V0
@@ -256,14 +248,14 @@ def test_npt_bussi_and_mts_keep_constraints():
         H,
         SCL,
         dt=0.003,
-        ensemble="nve",
+        thermostat=None,
         constraints="all-bonds",
         mts=MTS(inner=3, split="special"),
         log=None,
     )
     e0 = m.observables()["etot"]
     for _ in range(4):
-        m._advance(25)
+        m.advance(25)
         o = m.observables()
         assert o["shake_err"] < 1e-10 and o["rattle_err"] < 1e-10
     assert abs(o["etot"] - e0) < 2e-2 * 0.5 * m.integ.dof * KB * 298.0
@@ -283,7 +275,7 @@ def test_iterative_solver_in_md():
         np.eye(3) * 3.0,
         s,
         dt=0.002,
-        ensemble="nve",
+        thermostat=None,
         temperature=300.0,
         constraints="all-bonds",
         log=None,
@@ -291,7 +283,7 @@ def test_iterative_solver_in_md():
     assert [b.kind for b in sim.constraints.blocks] == ["sparse"] and sim.constraints.nc == len(tpl.spec.bonds)
     E = []
     for _ in range(50):
-        sim._advance(2)
+        sim.advance(2)
         o = sim.observables()
         assert o["shake_err"] < 1e-9 and o["rattle_err"] < 1e-10, (o["shake_err"], o["rattle_err"])
         E.append(o["etot"])
@@ -312,9 +304,7 @@ def test_thermostats_with_constraints():
             H,
             SCL,
             dt=0.001,
-            ensemble="nvt",
-            thermostat=th,
-            gamma=5.0,
+            thermostat=Langevin(5.0) if th == "langevin" else th,
             temperature=298.0,
             constraints="h-bonds",
             seed=2,
@@ -323,7 +313,7 @@ def test_thermostats_with_constraints():
         e0 = sim.observables()["econs"]
         ec = []
         for _ in range(10):
-            sim._advance(20)
+            sim.advance(20)
             o = sim.observables()
             assert o["shake_err"] < 1e-10 and o["rattle_err"] < 1e-10, (th, o["shake_err"], o["rattle_err"])
             ec.append(o["econs"])
@@ -335,8 +325,8 @@ def test_half_step_kinetic_energy():
     """half_step_kinetic() is the mean kinetic energy of the RATTLE-projected half-step momenta
     p -+ h F / 2 (the leapfrog average), reported as temp_half."""
     tpl, sys_, pos, H = _cluster()
-    sim = FlexibleSimulation(sys_, [tpl] * 8, pos, H, SCL, dt=0.002, ensemble="nvt", constraints="h-bonds", log=None)
-    sim._advance(10)
+    sim = FlexibleSimulation(sys_, [tpl] * 8, pos, H, SCL, dt=0.002, constraints="h-bonds", log=None)
+    sim.advance(10)
     st = sim.state
     q, p, F = st.dyn.position, st.dyn.momentum, st.dyn.force
     m, M = sim.flex.masses, np.asarray(sim.flex.mass)

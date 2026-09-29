@@ -53,7 +53,9 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.io import netcdf_file
 
+from pgm_jax.cli.args import setup_logging
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
+from pgm_jax.md.thermostats import Langevin
 from pgm_jax.md.topology import MDTopology
 from pgm_jax.paths import resource
 from pgm_jax.prmtop import Prmtop
@@ -156,7 +158,16 @@ def use_amber_lambda():
 def sp_mdin(st, H):
     """Single point: pmemd_mdin's nonbonded model, no constraints, induction solved tightly."""
     txt = pmemd_mdin(
-        st, H, nstlim=1, dt=0.00001, ensemble="nve", constraints="none", ntpr=1, ntwf=1, ntwr=1000, title="single point"
+        st,
+        H,
+        nstlim=1,
+        dt=0.00001,
+        thermostat=None,
+        constraints="none",
+        ntpr=1,
+        ntwf=1,
+        ntwr=1000,
+        title="single point",
     )
     txt = txt.replace(" &pol_gauss\n", " &pol_gauss\n   dipole_scf_init=1, scf_solv_opt=1,\n")
     return txt.replace(" &ewald\n", " &ewald\n   netfrc=0,\n")  # the CPU code removes the net PME force by default
@@ -455,16 +466,15 @@ def md_engine(name, ps, seed):
         asys.box,
         st,
         dt=0.002,
-        ensemble="nvt",
+        thermostat=Langevin(1.0),
         constraints="h-bonds",
         temperature=298.0,
-        gamma=1.0,
         seed=seed,
     )
     sim.minimize(300)
     n = int(round(ps / 0.002))
     t0 = time.time()
-    sim.run(n, report=5000, traj=5000, prefix=os.path.join(wd, "md"))
+    sim.run(n, report_every=5000, traj_every=5000, prefix=os.path.join(wd, "md"))
     secs = time.time() - t0
     X, _, _ = read_trajectory(os.path.join(wd, "md.nc"))
     Xp = np.empty_like(X)
@@ -557,6 +567,7 @@ if __name__ == "__main__":
         help="engine PME with pmemd's influence-function factor (result key <system>_lambda)",
     )
     a = ap.parse_args()
+    setup_logging()
     if a.mode == "sp":
         pme, tag = ({"spacing": 0.04, "order": 8}, "_tight") if a.tight else (None, "")
         if a.amber_lambda:

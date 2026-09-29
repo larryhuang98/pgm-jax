@@ -104,7 +104,7 @@ def test_flexible_gvdw_single_molecule_and_settings_check():
     assert len(tpl.lj_pairs()[0]) == 3
     y = x + 0.004 * np.random.default_rng(0).normal(size=x.shape)
     s = MDSettings(precision="double", dipole_tol=1e-9, cutoff=1.8, skin=0.05, lj_lrc=False, vdw="gvdw")
-    sim = FlexibleSimulation(System([tpl.pgm]), [tpl], y + 2.0, np.eye(3) * 4.0, s, ensemble="nve", log=None)
+    sim = FlexibleSimulation(System([tpl.pgm]), [tpl], y + 2.0, np.eye(3) * 4.0, s, thermostat=None, log=None)
     F = np.asarray(sim.state.dyn.force)
     P = jax.tree_util.tree_map(jnp.asarray, tpl.P)
     g = np.asarray(jax.grad(lambda R: tpl.model.energy(0, R, P)[0])(jnp.asarray(y)))
@@ -116,6 +116,6 @@ def test_flexible_gvdw_single_molecule_and_settings_check():
             y + 2.0,
             np.eye(3) * 4.0,
             MDSettings(cutoff=1.8, skin=0.05),
-            ensemble="nve",
+            thermostat=None,
             log=None,
         )

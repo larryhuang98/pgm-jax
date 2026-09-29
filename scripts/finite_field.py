@@ -28,7 +28,10 @@ import jax
 import numpy as np
 
 from pgm_jax.analysis.finite_field import analyse, predicted_errors
+from pgm_jax.cli.args import setup_logging
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.finite_field import FieldReplicas, read_series
+from pgm_jax.md.thermostats import Bussi
 from pgm_jax.paths import resource
 from pgm_jax.units import AMU_NM3_TO_G_CM3
 
@@ -41,7 +44,8 @@ MODELS = {
 }
 
 
-def build(a, ensemble="nvt"):
+def build(a):
+    """System, positions, box [nm] and the Simulation keywords (NVT, Bussi 1 ps) of the chosen model."""
     from pgm_jax.md.box import box_from_cell
     from pgm_jax.md.forcefield import MDSettings
     from pgm_jax.md.io import read_coordinates
@@ -65,18 +69,7 @@ def build(a, ensemble="nvt"):
         precision=a.precision,
         elec=elec,
     )
-    kw = dict(
-        settings=st,
-        ensemble=ensemble,
-        temperature=a.temp,
-        pressure=1.0,
-        barostat_interval=100,
-        dt=a.dt / 1000,
-        log=sys.stdout,
-        thermostat="bussi",
-        tau_t=1.0,
-        seed=a.seed,
-    )
+    kw = dict(settings=st, temperature=a.temp, dt=a.dt / 1000, log=sys.stdout, thermostat=Bussi(1.0), seed=a.seed)
     return sys_, pos, H, kw
 
 
@@ -102,14 +95,14 @@ def cmd_run(a):
     if a.density and not resume:
         pos, H = scale_to(sys_, pos, H, mass / a.density * AMU_NM3_TO_G_CM3)
     elif a.npt_ps and not resume:
-        sim = Simulation(sys_, pos, H, **dict(kw, ensemble="npt"))
+        sim = Simulation(sys_, pos, H, **dict(kw, barostat=MonteCarloBarostat()))
         n = int(round(a.npt_ps / (a.dt / 1000))) // 20
         vols = []
         for _ in range(20):
-            sim.run(n, report=n, prefix=a.out + ".npt", append=bool(vols))
+            sim.run(n, report_every=n, prefix=a.out + ".npt", append=bool(vols))
             vols.append(float(np.abs(np.linalg.det(np.asarray(sim.state.box)))))
         V = float(np.mean(vols[10:]))
-        pos, H = scale_to(sys_, sim.positions_nm(), np.asarray(sim.state.box), V)
+        pos, H = scale_to(sys_, sim.positions(), np.asarray(sim.state.box), V)
         print(f"# NPT {a.npt_ps} ps: mean volume {V:.4f} nm^3 (density {mass / V * AMU_NM3_TO_G_CM3:.4f})", flush=True)
     from pgm_jax.md.efield import ExternalField
 
@@ -118,10 +111,10 @@ def cmd_run(a):
     for e in a.fields:
         fields += [(0.0, 0.0, e), (0.0, 0.0, -e)]
     fields += [(0.0, 0.0, 0.0)] * a.zero
-    rep = FieldReplicas(sim, fields, seed=a.seed)
+    rep = FieldReplicas(sim, fields, seed=a.seed, log=sys.stdout)
     extra = {"model": a.model or a.prmtop, "elec": sim.settings.elec, "dt_fs": a.dt, "dipole_tol": a.tol}
     if resume:
-        rep.load(chk)
+        rep.load_checkpoint(chk)
         print(f"# continuing from {chk} at {rep.time_ps:.2f} ps", flush=True)
     else:
         extra["density_g_cm3"] = mass / abs(np.linalg.det(H)) * AMU_NM3_TO_G_CM3
@@ -135,13 +128,12 @@ def cmd_run(a):
     nsteps -= nsteps % a.report
     rep.run(
         nsteps,
-        every=a.every,
+        sample_every=a.every,
         prefix=a.out,
-        report=a.report,
+        report_every=a.report,
         append=resume,
-        restart=a.report * 10,
+        checkpoint_every=a.report * 10,
         extra=extra,
-        log=sys.stdout,
     )
 
 
@@ -231,6 +223,7 @@ def main():
     s.add_argument("--eps-inf", type=float, default=None)
     s.add_argument("--json")
     a = ap.parse_args()
+    setup_logging()
     if a.cmd == "run":
         if not (a.model or (a.prmtop and a.coords)):
             ap.error("--model or --prmtop and --coords")

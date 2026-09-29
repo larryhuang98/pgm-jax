@@ -106,15 +106,15 @@ def test_flexible_templates_match_flexible_simulation():
 
     tpl, sysm, pos, H = _box()
     s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=0.6, skin=0.05, lj_lrc=False)
-    sim = FlexibleSimulation(sysm, [tpl] * sysm.nmol, pos, H, s, ensemble="nve", log=None)
-    eng = PGMEngine(sysm, sim.positions_nm(), H, s, templates=[tpl] * sysm.nmol)
-    r = eng.compute(sim.positions_nm(), H, virial=True)
+    sim = FlexibleSimulation(sysm, [tpl] * sysm.nmol, pos, H, s, thermostat=None, log=None)
+    eng = PGMEngine(sysm, sim.positions(), H, s, templates=[tpl] * sysm.nmol)
+    r = eng.compute(sim.positions(), H, virial=True)
     F = np.asarray(sim.state.dyn.force)
     assert abs(r.energy - float(sim.state.epot)) < 1e-8 * abs(r.energy)
     assert np.abs(r.forces - F).max() < 1e-6 * np.abs(F).max()
     assert r.terms["bonded"] > 0
     # atomic virial of the bonded terms: finite differences of the total energy
-    x = sim.positions_nm()
+    x = sim.positions()
     h = 1e-5
     for a, b in ((0, 0), (0, 1)):
         e = []

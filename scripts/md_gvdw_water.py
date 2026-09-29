@@ -12,10 +12,13 @@ import time
 import jax
 import numpy as np
 
+from pgm_jax.cli.args import setup_logging
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.box import box_from_cell
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.io import read_coordinates
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.md.thermostats import Langevin
 from pgm_jax.param import read_prmtop_molecules
 from pgm_jax.paths import resource
 from pgm_jax.system import System
@@ -30,6 +33,7 @@ ap.add_argument("--ps", type=float, default=100.0)
 ap.add_argument("--equil", type=float, default=20.0)
 ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
+setup_logging()
 rst = os.path.expanduser(f"~/pgm-gvdw-data/inputs/{a.model if a.model != 'gauss' else 'gaussian'}/inpcrd.restrt")
 mols = read_prmtop_molecules(TOP)
 vdw, rep = "lj", "gauss"
@@ -56,18 +60,16 @@ sim = Simulation(
     box_from_cell(*box) * 0.1,
     s,
     dt=0.001,
-    ensemble="npt",
+    thermostat=Langevin(2.0),
+    barostat=MonteCarloBarostat(1.0, 100),
     temperature=298.0,
-    gamma=2.0,
-    pressure=1.0,
-    barostat_interval=100,
     seed=a.seed,
     log=None,
 )
-sim._advance(int(a.equil * 1000))
+sim.advance(int(a.equil * 1000))
 rho, t0 = [], time.time()
 for _ in range(int(a.ps)):
-    sim._advance(1000)
+    sim.advance(1000)
     rho.append(sim.observables()["density_g_cm3"])
 rho = np.array(rho)
 blocks = np.array([b.mean() for b in np.array_split(rho, 5)])

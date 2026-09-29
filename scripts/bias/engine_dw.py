@@ -21,6 +21,7 @@ from pgm_jax.bias import OPES, BiasSet, LowerWall, MetaD, StaticBias, UpperWall,
 from pgm_jax.bias import analysis as A
 from pgm_jax.bias.io import read_table
 from pgm_jax.bias.walkers import Walkers
+from pgm_jax.cli.args import coupling_from_options, setup_logging
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.simulation import Simulation
 from pgm_jax.units import KB
@@ -38,6 +39,7 @@ ap.add_argument("--skip", type=float, default=0.2)
 ap.add_argument("--seed", type=int, default=5)
 ap.add_argument("--out", default="runs/bias/engine_dw")
 a = ap.parse_args()
+setup_logging()
 kT = KB * a.T
 h, r0, w = 15.0, 0.8, 0.25
 
@@ -65,17 +67,15 @@ sim = Simulation(
     s,
     dt=a.dt,
     temperature=a.T,
-    thermostat=a.thermostat,
-    gamma=1.0,
-    tau_t=0.5,
+    thermostat=coupling_from_options("nvt", a.thermostat, friction=1.0, tau=0.5)[0],
     bias=bs,
     seed=a.seed,
     log=sys.stdout,
 )
-wk = Walkers(sim, a.walkers, seed=a.seed)
+wk = Walkers(sim, a.walkers, seed=a.seed, log=sys.stdout)
 n = int(round(a.ns * 1000 / a.dt))
 t0 = time.time()
-wk.run(n, report=n // 20, prefix=a.out)
+wk.run(n, report_every=n // 20, prefix=a.out)
 wall = time.time() - t0
 ax = np.linspace(0.36, 1.34, 50)
 

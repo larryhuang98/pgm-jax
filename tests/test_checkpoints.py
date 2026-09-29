@@ -14,13 +14,15 @@ from pgm_jax.bias import BiasSet, MetaD, cv
 from pgm_jax.bias.walkers import Walkers
 from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
 from pgm_jax.md.alchemy import Alchemy, FreeEnergyRun, LambdaWindows, alchemical_system
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.driver import is_legacy_checkpoint, read_checkpoint
 from pgm_jax.md.finite_field import FieldReplicas
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, RigidTemplate
 from pgm_jax.md.forcefield import MDSettings
-from pgm_jax.md.pimd import PIMDSimulation
+from pgm_jax.md.pimd import PILE, PIMDSimulation
 from pgm_jax.md.remd import ReplicaExchange
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.md.thermostats import Bussi, Langevin
 from pgm_jax.system import Molecule, System
 
 LEGACY = os.path.join(os.path.dirname(__file__), "data", "legacy_checkpoints")
@@ -83,9 +85,7 @@ def water_lattice(n_side=4, spacing=0.31, seed=0):
 def rigid():
     """64 rigid waters, NVT (Bussi)."""
     pos, H, _ = water_lattice()
-    return Simulation(
-        System([water()] * 64), pos, H, S, dt=0.001, ensemble="nvt", thermostat="bussi", tau_t=0.1, seed=3, log=None
-    )
+    return Simulation(System([water()] * 64), pos, H, S, dt=0.001, thermostat=Bussi(0.1), seed=3, log=None)
 
 
 def rigid_metad():
@@ -106,9 +106,7 @@ def rigid_metad():
         np.eye(3) * 3.0,
         s,
         dt=0.0005,
-        ensemble="nvt",
-        thermostat="langevin",
-        gamma=5.0,
+        thermostat=Langevin(5.0),
         temperature=300.0,
         seed=2,
         log=None,
@@ -119,7 +117,7 @@ def rigid_metad():
 def flexible(**kw):
     """64 waters in the flexible engine (SETTLE-like rigid templates), GLE NPT by default."""
     pos, H, w = water_lattice()
-    opts = dict(ensemble="npt", thermostat="gle", barostat_interval=5, seed=1) | kw
+    opts = dict(thermostat="gle", barostat=MonteCarloBarostat(every=5), seed=1) | kw
     return FlexibleSimulation(
         System([water()] * 64), [RigidTemplate(water(), w)] * 64, pos, H, S, dt=0.002, log=None, **opts
     )
@@ -139,25 +137,13 @@ def alchemy_sim():
         pme_grid=(32, 32, 32),
         peek=0.0,
     )
-    return Simulation(
-        sysA, pos, H, s, dt=0.001, log=None, params=P, alchemy=Alchemy(sysA, 0), thermostat="bussi", ensemble="nvt"
-    )
+    return Simulation(sysA, pos, H, s, dt=0.001, log=None, params=P, alchemy=Alchemy(sysA, 0), thermostat="bussi")
 
 
 def field_sim():
     """64 rigid waters in an external field (amplitude set per replica), Bussi NVT."""
     pos, H, _ = water_lattice()
-    return Simulation(
-        System([water()] * 64),
-        pos,
-        H,
-        S,
-        dt=0.001,
-        ensemble="nvt",
-        thermostat="bussi",
-        log=None,
-        efield=(0.0, 0.0, 0.0),
-    )
+    return Simulation(System([water()] * 64), pos, H, S, dt=0.001, thermostat="bussi", log=None, efield=(0.0, 0.0, 0.0))
 
 
 def pimd_sim():
@@ -189,9 +175,8 @@ def pimd_sim():
         np.eye(3) * 1.5,
         s,
         dt=0.0002,
-        ensemble="nvt",
-        temperature=300.0,
         thermostat="bussi",
+        temperature=300.0,
         log=None,
     )
 
@@ -199,14 +184,7 @@ def pimd_sim():
 def pimd(seed):
     """4-bead NPT PIMD of pimd_sim."""
     return PIMDSimulation(
-        pimd_sim(),
-        beads=4,
-        seed=seed,
-        ensemble="npt",
-        pressure=1000.0,
-        barostat_interval=5,
-        thermostat="pile-g",
-        log=None,
+        pimd_sim(), beads=4, seed=seed, barostat=MonteCarloBarostat(1000.0, every=5), thermostat=PILE("g")
     )
 
 
@@ -218,17 +196,17 @@ def test_engine_checkpoints(name, expected, tmp_path):
     sim = {"rigid": rigid, "rigid_metad": rigid_metad, "flexible": flexible}[name]()
     path = os.path.join(LEGACY, name + ".chk")
     assert is_legacy_checkpoint(path)
-    sim.load(path)
+    sim.load_checkpoint(path)
     new = str(tmp_path / "new")
-    sim.save(new)
+    sim.save_checkpoint(new + ".chk")
     assert not is_legacy_checkpoint(new + ".chk")
-    sim._advance(10)
-    close(sim.positions_nm(), expected[f"{name}.pos"])
-    close(sim.velocities_nm_ps(), expected[f"{name}.vel"])
+    sim.advance(10)
+    close(sim.positions(), expected[f"{name}.pos"])
+    close(sim.velocities(), expected[f"{name}.vel"])
     close(sim.state.epot, expected[f"{name}.epot"])
     first = sim.state.set(nbr=None)
-    sim.load(new + ".chk")
-    sim._advance(10)
+    sim.load_checkpoint(new + ".chk")
+    sim.advance(10)
     same(sim.state.set(nbr=None), first)
     with pytest.raises(ValueError, match="not a 'pimd' one"):
         read_checkpoint(new + ".chk", "pimd")
@@ -237,15 +215,15 @@ def test_engine_checkpoints(name, expected, tmp_path):
 def test_replica_exchange_checkpoint(expected, tmp_path):
     """Batched temperature REMD: legacy .remd.chk continuation; npz round trip bitwise."""
     T = np.array([300.0, 304.0, 308.0])
-    rex = ReplicaExchange(flexible(ensemble="nvt", temperature=300.0), T, exchange_every=10, seed=5, log=None)
-    rex.load(os.path.join(LEGACY, "remd.remd.chk"))
-    rex.save(str(tmp_path / "new"))
+    rex = ReplicaExchange(flexible(temperature=300.0, barostat=None), T, exchange_every=10, seed=5)
+    rex.load_checkpoint(os.path.join(LEGACY, "remd.remd.chk"))
+    rex.save_checkpoint(str(tmp_path / "new.remd.chk"))
     rex.replicas.advance(10)
     rex.exchange()
     close(np.stack([rex.replicas.state(k).dyn.position for k in range(3)]), expected["remd.pos"])
     assert np.array_equal(rex.stats.replica, expected["remd.replica"])
     first = [rex.replicas.state(k).set(nbr=None) for k in range(3)]
-    rex.load(str(tmp_path / "new.remd.chk"))
+    rex.load_checkpoint(str(tmp_path / "new.remd.chk"))
     rex.replicas.advance(10)
     rex.exchange()
     same([rex.replicas.state(k).set(nbr=None) for k in range(3)], first)
@@ -253,13 +231,13 @@ def test_replica_exchange_checkpoint(expected, tmp_path):
 
 def test_free_energy_checkpoint(expected, tmp_path):
     """Lambda windows with samples and exchanges: legacy .fe.chk continuation; npz round trip."""
-    run = FreeEnergyRun(LambdaWindows(alchemy_sim(), LAMBDAS, seed=7), sample_every=5, exchange_every=10, log=None)
-    run.load(os.path.join(LEGACY, "fe.fe.chk"))
-    run.save(str(tmp_path / "new"))
+    run = FreeEnergyRun(LambdaWindows(alchemy_sim(), LAMBDAS, seed=7), sample_every=5, exchange_every=10)
+    run.load_checkpoint(os.path.join(LEGACY, "fe.fe.chk"))
+    run.save_checkpoint(str(tmp_path / "new.fe.chk"))
     run.run(10, prefix=None)
     close(run.arrays()["u"], expected["fe.u"])
     first = run.arrays()
-    run.load(str(tmp_path / "new.fe.chk"))
+    run.load_checkpoint(str(tmp_path / "new.fe.chk"))
     run.run(10, prefix=None)
     for k, v in run.arrays().items():
         assert np.array_equal(np.asarray(v), np.asarray(first[k])), k
@@ -268,12 +246,12 @@ def test_free_energy_checkpoint(expected, tmp_path):
 def test_field_replicas_checkpoint(expected, tmp_path):
     """Finite-field replicas: legacy .ffchk continuation; npz round trip bitwise."""
     rep = FieldReplicas(field_sim(), FIELDS, seed=9)
-    rep.load(os.path.join(LEGACY, "ff.ffchk"))
-    rep.save(str(tmp_path / "new.ffchk"))
+    rep.load_checkpoint(os.path.join(LEGACY, "ff.ffchk"))
+    rep.save_checkpoint(str(tmp_path / "new.ffchk"))
     rep.advance(10)
     close(np.stack([rep.state(k).dyn.position.center for k in range(2)]), expected["ff.center"])
     first = rep.S.set(nbr=None)
-    rep.load(str(tmp_path / "new.ffchk"))
+    rep.load_checkpoint(str(tmp_path / "new.ffchk"))
     rep.advance(10)
     same(rep.S.set(nbr=None), first)
 
@@ -281,26 +259,26 @@ def test_field_replicas_checkpoint(expected, tmp_path):
 def test_pimd_checkpoint(expected, tmp_path):
     """NPT PIMD: legacy .pimd.chk continuation; npz round trip bitwise."""
     pi = pimd(8)
-    pi.load(os.path.join(LEGACY, "pimd.pimd.chk"))
-    pi.save(str(tmp_path / "new"))
-    pi._advance(10)
+    pi.load_checkpoint(os.path.join(LEGACY, "pimd.pimd.chk"))
+    pi.save_checkpoint(str(tmp_path / "new.pimd.chk"))
+    pi.advance(10)
     close(pi.state.q, expected["pimd.q"])
     close(pi.state.box, expected["pimd.box"])
     first = pi.state.set(eng=pi.state.eng.set(nbr=None))
-    pi.load(str(tmp_path / "new.pimd.chk"))
-    pi._advance(10)
+    pi.load_checkpoint(str(tmp_path / "new.pimd.chk"))
+    pi.advance(10)
     same(pi.state.set(eng=pi.state.eng.set(nbr=None)), first)
 
 
 def test_walkers_checkpoint(expected, tmp_path):
     """Shared-bias walkers: legacy .walkers.chk continuation; npz round trip bitwise."""
     wk = Walkers(rigid_metad(), 3, shared=True, seed=9)
-    wk.load(os.path.join(LEGACY, "wk.walkers.chk"))
-    wk.save(str(tmp_path / "new.walkers.chk"))
+    wk.load_checkpoint(os.path.join(LEGACY, "wk.walkers.chk"))
+    wk.save_checkpoint(str(tmp_path / "new.walkers.chk"))
     wk.advance(10)
     close(wk.S.dyn.position.center, expected["walkers.center"])
     close(wk.bias_energies(), expected["walkers.ebias"])
     first = wk.S.set(nbr=None)
-    wk.load(str(tmp_path / "new.walkers.chk"))
+    wk.load_checkpoint(str(tmp_path / "new.walkers.chk"))
     wk.advance(10)
     same(wk.S.set(nbr=None), first)

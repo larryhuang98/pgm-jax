@@ -30,11 +30,13 @@ import sys
 import jax
 import numpy as np
 
-from pgm_jax.cli.args import add_iel_arguments, iel_settings
+from pgm_jax.cli.args import add_iel_arguments, iel_settings, setup_logging
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.box import box_from_cell
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.io import read_coordinates
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.md.thermostats import Bussi
 from pgm_jax.param import read_prmtop_molecules
 from pgm_jax.paths import resource
 from pgm_jax.system import System
@@ -83,6 +85,7 @@ def main():
     ap.add_argument("--coords", default=RST, help="restart matching --prmtop")
     add_iel_arguments(ap)
     a = ap.parse_args()
+    setup_logging()
     mols = read_prmtop_molecules(a.prmtop)
     elec = "qpi"
     if a.model == "tip3p":
@@ -124,28 +127,32 @@ def main():
     )
     kw = dict(
         settings=st,
-        ensemble=a.ensemble,
         temperature=298.0,
-        pressure=1.0,
-        barostat_interval=100,
+        thermostat=Bussi(1.0),
+        barostat=MonteCarloBarostat(1.0, every=100) if a.ensemble == "npt" else None,
         dt=a.dt / 1000,
         log=sys.stdout,
-        thermostat="bussi",
-        tau_t=1.0,
         seed=a.seed,
     )
     if a.engine == "rigid":
-        sim = Simulation(sys_, pos, H * n, vel_nm_ps=v, **kw)
+        sim = Simulation(sys_, pos, H * n, velocities=v, **kw)
     else:
         from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
 
         tpl = {id(m): RigidTemplate(m, pos[sys_.atom_slice(k)]) for k, m in enumerate(sys_.molecules)}
         sim = FlexibleSimulation(sys_, [tpl[id(m)] for m in sys_.molecules], pos, H * n, hmr=a.hmr, **kw)
     if a.checkpoint:
-        sim.load(a.checkpoint)
+        sim.load_checkpoint(a.checkpoint)
     nsteps = int(round(a.ns * 1e6 / a.dt))
     nsteps -= nsteps % a.report
-    sim.run(nsteps, report=a.report, restart=a.restart, prefix=a.out, dipoles=a.dipoles, append=bool(a.checkpoint))
+    sim.run(
+        nsteps,
+        report_every=a.report,
+        checkpoint_every=a.restart,
+        prefix=a.out,
+        dipoles_every=a.dipoles,
+        append=bool(a.checkpoint),
+    )
 
 
 if __name__ == "__main__":

@@ -28,11 +28,13 @@ import jax.numpy as jnp
 import numpy as np
 
 from pgm_jax.analysis.stats import block_mean
-from pgm_jax.cli.args import add_iel_arguments, iel_settings
+from pgm_jax.cli.args import add_iel_arguments, iel_settings, setup_logging
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.box import box_from_cell
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.md.io import read_coordinates
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.md.thermostats import Bussi
 from pgm_jax.param import read_prmtop_molecules
 from pgm_jax.paths import resource
 from pgm_jax.system import System
@@ -100,6 +102,7 @@ def main():
     )
     add_iel_arguments(ap)
     a = ap.parse_args()
+    setup_logging()
     if a.combine:
         return combine(a.combine, a.out)
     if a.eps:
@@ -136,15 +139,15 @@ def main():
         **iel_settings(a),
     )
     dt = a.dt / 1000
-    kw = dict(settings=st, temperature=298.0, dt=dt, log=None, thermostat="bussi", tau_t=1.0)
+    kw = dict(settings=st, temperature=298.0, dt=dt, log=None, thermostat=Bussi(1.0))
     if a.npt > 0:
         return npt_replicas(a, sys_, pos, H * n, kw)
-    nvt = Simulation(sys_, pos, H * n, ensemble="nvt", **kw)
-    nve = Simulation(sys_, pos, H * n, ensemble="nve", **kw)
+    nvt = Simulation(sys_, pos, H * n, **kw)
+    nve = Simulation(sys_, pos, H * n, thermostat=None, **kw)
     nve.ff = nve.integ.ff = nvt.ff  # one force field and neighbour list, two steps
     nve.nb = nve.integ.nb = nvt.nb
     nve.integ.compile()
-    nvt.load(a.checkpoint)
+    nvt.load_checkpoint(a.checkpoint)
     start = nvt.state
     if a.density:  # molecular scaling to the target density
         from pgm_jax.md.box import volume
@@ -191,10 +194,10 @@ def main():
     t_run = 0.0
     for seed in range(a.seed0, a.seed0 + a.seeds):
         nvt.state = nvt.integ.init(start.dyn.position, start.box, jax.random.PRNGKey(1000 + seed))
-        nvt._advance(int(round(a.equil / a.dt * 1000)))
+        nvt.advance(int(round(a.equil / a.dt * 1000)))
         nve.integ.compile()  # row capacities may have grown
         nve.state = nvt.state
-        nve._advance(k_every)
+        nve.advance(k_every)
         ref.mc, ref.mc_e = nve.ff.mc, nve.ff.mc_e
         E, U, T, ts, mud, it0 = [], [], [], [], [], float(nve.state.cg_total)
         s0 = int(nve.state.step)
@@ -203,7 +206,7 @@ def main():
         prev = None
         t0 = time.time()
         for _k in range(0, n_prod, k_every):
-            nve._advance(k_every)
+            nve.advance(k_every)
             s = nve.state
             o = nve.observables()
             step = int(s.step) - s0
@@ -211,7 +214,7 @@ def main():
             U.append(o["epot"])
             T.append(o["temp_K"])
             ts.append(step * a.dt / 1000)
-            x = nve.positions_nm().reshape(nmol, 3, 3)
+            x = nve.positions().reshape(nmol, 3, 3)
             Hh = np.asarray(s.box)
             c = np.asarray(s.dyn.position.center)
             if prev is not None:  # unwrap the centres of mass
@@ -287,20 +290,22 @@ def npt_replicas(a, sys_, pos, H, kw):
     for seed in range(a.seed0, a.seed0 + a.seeds):
         prefix = f"{a.out}_s{seed}"
         kw = dict(kw, log=open(prefix + ".out", "a"))
-        sim = Simulation(sys_, pos, H, ensemble="npt", pressure=1.0, barostat_interval=100, **kw)
+        sim = Simulation(sys_, pos, H, barostat=MonteCarloBarostat(1.0, 100), **kw)
         if os.path.exists(prefix + ".chk"):  # continue this replica
-            sim.load(prefix + ".chk")
+            sim.load_checkpoint(prefix + ".chk")
             done = int(round(sim.time_ps * 1000 / a.dt))
             append = True
         else:
-            sim.load(a.checkpoint)
+            sim.load_checkpoint(a.checkpoint)
             st0 = sim.state
             sim.state = sim.integ.init(st0.dyn.position, st0.box, jax.random.PRNGKey(2000 + seed))
             sim.time_ps, done, append = 0.0, 0, False
         total = int(round(a.npt * 1e6 / a.dt))
         total -= total % 5000
         if total > done:
-            sim.run(total - done, report=5000, restart=25000, prefix=prefix, dipoles=25, append=append)
+            sim.run(
+                total - done, report_every=5000, checkpoint_every=25000, prefix=prefix, dipoles_every=25, append=append
+            )
 
 
 def pooled_eps(files, skip, prefix):

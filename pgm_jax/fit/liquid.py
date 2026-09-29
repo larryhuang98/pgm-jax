@@ -19,17 +19,21 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import os
-import sys
 import time
 
 import jax.numpy as jnp
 import numpy as np
 
+from ..md.barostats import MonteCarloBarostat
 from ..md.forcefield import MDSettings
 from ..md.simulation import Simulation
+from ..md.thermostats import Bussi, Thermostat
 from .estimators import LiquidSamples
 from .frames import FrameAnalyzer
+
+logger = logging.getLogger(__name__)
 
 
 def _jsonable(x):
@@ -49,6 +53,8 @@ def _jsonable(x):
 
 
 class LiquidFit:
+    """Iterative fit of a rigid-molecule pGM liquid to experimental targets (module docstring)."""
+
     def __init__(
         self,
         sys_,
@@ -57,13 +63,10 @@ class LiquidFit:
         space,
         objective,
         T: float = 298.0,
-        pressure: float = 1.0,
         settings: MDSettings = MDSettings(),
         dt: float = 0.002,
-        thermostat: str = "bussi",
-        tau_t: float = 1.0,
-        gamma: float = 1.0,
-        barostat_interval: int = 100,
+        thermostat: Thermostat | str = Bussi(),
+        barostat: MonteCarloBarostat | None = MonteCarloBarostat(),
         equil_ps: float = 20.0,
         prod_ps: float = 200.0,
         every_ps: float = 0.5,
@@ -76,32 +79,92 @@ class LiquidFit:
         prefix: str = "fit",
         exact_every: int = 0,
         bootstrap: int = 200,
-        log=sys.stdout,
+        log=None,
         seed: int = 0,
         fixed: bool = False,
         save_frames: bool = True,
-        ensemble: str = "npt",
         replicas: int = 1,
         equil_rep_ps: float = 20.0,
     ):
+        """Set up the fit (see the module docstring for one iteration).
+
+        Parameters
+        ----------
+        sys_ : System
+            The liquid (rigid molecules).
+        pos : array (N, 3)
+            Starting positions [nm].
+        H : array (3, 3)
+            Starting box [nm].
+        space : ParameterSpace
+            Maps the fitted vector theta to force-field parameters.
+        objective : Objective
+            Targets, weights and priors.
+        T : float
+            Temperature [K].
+        settings : MDSettings
+            MD settings (a PME grid is fixed from the starting box when not given, so that all
+            iterations share one compiled program).
+        dt : float
+            Time step [ps].
+        thermostat : Thermostat or str
+            Thermostat of the runs (default Bussi, tau 1 ps).
+        barostat : MonteCarloBarostat or None
+            Barostat of the runs (default 1 bar every 100 steps; None: NVT at the box).
+        equil_ps, prod_ps, every_ps : float
+            Equilibration and production time per iteration and the frame interval [ps].
+        rdf : RDFSpec, optional
+            Radial distribution functions (needed by an rdf target).
+        chunk : int
+            Frames analysed per vmapped chunk.
+        tol : float
+            Dipole tolerance of the frame analysis.
+        nblocks : int
+            Blocks for the jackknife errors.
+        radius, radius_max : float
+            Initial and largest trust radius of the Levenberg-Marquardt step (in theta).
+        prefix : str
+            Path prefix of the records (prefix.json, prefix_state.npz, frames).
+        exact_every : int
+            Iterations between exact reweighting checks (0: never).
+        bootstrap : int
+            Block-bootstrap samples for the parameter uncertainty.
+        log : text stream or None
+            Receives the iteration reports (diagnostics go to the logger "pgm_jax.fit.liquid").
+        seed : int
+            Seed of the MD runs.
+        fixed : bool
+            Measure only (theta stays; segments continue from each other).
+        save_frames : bool
+            Write the analysed frames of every iteration (prefix_framesNN.npz).
+        replicas : int
+            Batched NVT replicas per iteration (md/remd.MDReplicas; needs barostat=None).
+        equil_rep_ps : float
+            Equilibration of the replicas after they are drawn [ps].
+
+        Raises
+        ------
+        ValueError
+            No thermostat, replicas with a barostat, an rdf target without rdf.
+        """
         if settings.pme_grid is None:
             from ..md.pme import grid_size
 
             settings = dataclasses.replace(settings, pme_grid=tuple(int(k) for k in grid_size(H, settings.pme_spacing)))
         self.sys, self.space, self.obj = sys_, space, objective
         self.pos, self.H, self.vel = np.asarray(pos, float), np.asarray(H, float), None
-        self.T, self.p, self.settings, self.dt = float(T), float(pressure), settings, float(dt)
-        self.md_kw = dict(thermostat=thermostat, tau_t=tau_t, gamma=gamma, barostat_interval=barostat_interval)
+        self.T, self.settings, self.dt = float(T), settings, float(dt)
+        if thermostat is None:
+            raise ValueError("thermostat: the liquid runs need one (NVT or NPT)")
+        self.md_kw = dict(thermostat=thermostat, barostat=barostat)
         self.equil_ps, self.prod_ps, self.every_ps = float(equil_ps), float(prod_ps), float(every_ps)
         self.nblocks, self.radius, self.radius_max = int(nblocks), float(radius), float(radius_max)
         self.prefix, self.exact_every, self.nboot, self.seed = prefix, int(exact_every), int(bootstrap), int(seed)
         self.log = log
         self.fixed, self.save_frames = bool(fixed), bool(save_frames)
-        if ensemble not in ("npt", "nvt"):
-            raise ValueError("ensemble: npt or nvt")
-        if replicas > 1 and ensemble != "nvt":
-            raise ValueError("batched replicas run NVT only (md/remd.MDReplicas)")
-        self.ensemble, self.replicas, self.equil_rep_ps = ensemble, int(replicas), float(equil_rep_ps)
+        if replicas > 1 and barostat is not None:
+            raise ValueError("batched replicas run NVT only (md/remd.MDReplicas): barostat=None")
+        self.replicas, self.equil_rep_ps = int(replicas), float(equil_rep_ps)
         if any(t.name == "rdf" for t in objective.targets) and rdf is None:
             raise ValueError("an rdf target needs the RDFSpec (rdf=)")
         self.analyzer = FrameAnalyzer(sys_, self.H, settings, space, rdf=rdf, tol=tol, chunk=chunk)
@@ -124,13 +187,10 @@ class LiquidFit:
             self.H,
             self.settings,
             dt=self.dt,
-            ensemble=self.ensemble,
             temperature=self.T,
-            pressure=self.p,
             seed=seed,
-            vel_nm_ps=self.vel,
+            velocities=self.vel,
             params=params,
-            log=None,
             **self.md_kw,
         )
         t0 = time.time()
@@ -139,7 +199,7 @@ class LiquidFit:
         blk = every * max(1, int(round(10.0 / (every * self.dt))))
         while n_eq > 0:
             k = min(blk, n_eq)
-            sim._advance(k)
+            sim.advance(k)
             n_eq -= k
         if self.replicas > 1:
             return self._simulate_replicas(sim, theta, seed, every, prod_ps, keep_frames, t0)
@@ -149,7 +209,7 @@ class LiquidFit:
         ta = 0.0
         th = jnp.asarray(theta, float)
         for i in range(nframes):
-            sim._advance(every)
+            sim.advance(every)
             st = sim.state
             fr = (sim.rigid.positions(st.dyn.position), st.box, st.induction.mu)
             pending.append(fr)
@@ -162,7 +222,7 @@ class LiquidFit:
                 pending = []
         frames = {k: np.concatenate([r[k] for r in results]) for k in results[0]}
         obs = sim.observables()
-        self.pos, self.H, self.vel = sim.positions_nm(), np.asarray(sim.state.box), sim.velocities_nm_ps()
+        self.pos, self.H, self.vel = sim.positions(), sim.box(), sim.velocities()
         info = {
             "equil_s": t1 - t0,
             "prod_s": time.time() - t1,
@@ -388,7 +448,7 @@ class LiquidFit:
             t = self.resume()
             if t is not None:
                 theta, start = t, len(self.records)
-                self._print(f"# resumed at iteration {start}: {self.space.describe(theta)}")
+                logger.info(f"resumed at iteration {start}: {self.space.describe(theta)}")
         t0 = time.time()
         for it in range(start, iters):
             rec = self.iterate(theta, it)
@@ -397,6 +457,6 @@ class LiquidFit:
             if max_seconds is not None and it + 1 < iters:
                 per = (time.time() - t0) / (it + 1 - start)
                 if time.time() - t0 + per > max_seconds:
-                    self._print(f"# stopping after iteration {it} (time budget); resume with the same prefix")
+                    logger.info(f"stopping after iteration {it} (time budget); resume with the same prefix")
                     break
         return theta

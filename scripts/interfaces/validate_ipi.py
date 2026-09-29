@@ -20,6 +20,7 @@ import time
 import jax
 import numpy as np
 
+from pgm_jax.cli.args import setup_logging
 from pgm_jax.interfaces import PGMEngine
 from pgm_jax.interfaces import ipi_tools as T
 from pgm_jax.interfaces.ipi import IPIClient
@@ -73,8 +74,10 @@ def setup(args):
     return tpl, s
 
 
-def native_sim(tpl, s, pos, H, ensemble="nvt", vel=None, seed=0, dt=0.00025, T=298.0):
+def native_sim(tpl, s, pos, H, nvt=True, vel=None, seed=0, dt=0.00025, T=298.0):
+    """The same water in pgm_jax's own engine: Bussi 0.1 ps (nvt) or NVE."""
     from pgm_jax.md.flexible import FlexibleSimulation
+    from pgm_jax.md.thermostats import Bussi
 
     n = len(pos) // 3
     return FlexibleSimulation(
@@ -84,13 +87,10 @@ def native_sim(tpl, s, pos, H, ensemble="nvt", vel=None, seed=0, dt=0.00025, T=2
         H,
         s,
         dt=dt,
-        ensemble=ensemble,
         temperature=T,
-        thermostat="bussi",
-        tau_t=0.1,
+        thermostat=Bussi(0.1) if nvt else None,
         seed=seed,
-        vel_nm_ps=vel,
-        log=None,
+        velocities=vel,
     )
 
 
@@ -120,12 +120,12 @@ def cmd_start(args):
     H = box_from_cell(*box) * 0.1
     sim = native_sim(tpl, s, xyz * 0.1, H)
     sim.minimize(200)
-    sim._advance(int(round(args.ps / 0.00025)))
+    sim.advance(int(round(args.ps / 0.00025)))
     os.makedirs(os.path.join(ROOT, "runs/ipi_val"), exist_ok=True)
     np.savez(
         os.path.join(ROOT, "runs/ipi_val", "start.npz"),
-        pos=sim.positions_nm(),
-        vel=sim.velocities_nm_ps(),
+        pos=sim.positions(),
+        vel=sim.velocities(),
         H=np.asarray(sim.state.box),
     )
     print(sim.observables())
@@ -149,11 +149,11 @@ def cmd_nve(args):
     n = len(pos) // 3
     sysm, tpls = System([tpl.pgm] * n), [tpl] * n
     steps, rep = args.steps, 20
-    nat = native_sim(tpl, s, pos, H, "nve", vel)
+    nat = native_sim(tpl, s, pos, H, False, vel)
     t, E, U = [0.0], [nat.observables()["etot"]], [nat.observables()["epot"]]
     t0 = time.perf_counter()
     for _k in range(steps // rep):
-        nat._advance(rep)
+        nat.advance(rep)
         o = nat.observables()
         t.append(o["time_ps"])
         E.append(o["etot"])
@@ -170,7 +170,7 @@ def cmd_nve(args):
         nbeads=1,
         steps=steps,
         dt_fs=0.25,
-        ensemble="nve",
+        thermostat=None,
         stride=rep,
         address="pgmval_nve",
         velocities=vel / (BOHR_NM_CODATA2022 / ATU_PS),
@@ -219,11 +219,11 @@ def cmd_nvt(args):
     n = len(pos) // 3
     sysm, tpls = System([tpl.pgm] * n), [tpl] * n
     steps, rep = args.steps, 40
-    nat = native_sim(tpl, s, pos, H, "nvt", vel, seed=3)
+    nat = native_sim(tpl, s, pos, H, True, vel, seed=3)
     Tn, Un = [], []
     t0 = time.perf_counter()
     for _k in range(steps // rep):
-        nat._advance(rep)
+        nat.advance(rep)
         o = nat.observables()
         Tn.append(o["temp_K"])
         Un.append(o["epot"] / n)
@@ -239,7 +239,6 @@ def cmd_nvt(args):
         nbeads=1,
         steps=steps,
         dt_fs=0.25,
-        ensemble="nvt",
         thermostat="svr",
         tau_fs=100.0,
         stride=rep,
@@ -295,7 +294,6 @@ def cmd_pimd(args):
         nbeads=P,
         steps=steps,
         dt_fs=0.25,
-        ensemble="nvt",
         thermostat="pile_g",
         tau_fs=100.0,
         stride=rep,
@@ -383,6 +381,7 @@ def main():
     ap.add_argument("--work", default=WORK, help="i-PI run directories")
     ap.add_argument("--out", default=OUT)
     args = ap.parse_args()
+    setup_logging()
     WORK, OUT = os.path.abspath(args.work), os.path.abspath(args.out)
     {"start": cmd_start, "nve": cmd_nve, "nvt": cmd_nvt, "pimd": cmd_pimd}[args.cmd](args)
 

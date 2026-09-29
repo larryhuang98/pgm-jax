@@ -14,6 +14,7 @@ from test_hmr import _cluster
 from test_md_macro import _water_box
 
 from pgm_jax import System
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.box import reduce_box
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.restraints import (
@@ -27,6 +28,7 @@ from pgm_jax.md.restraints import (
     harmonic,
     nmr_energy,
 )
+from pgm_jax.md.thermostats import Bussi, Langevin
 from pgm_jax.units import BAR_PER_KJMOL_NM3, KB
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
@@ -243,13 +245,13 @@ def test_nve_with_restraints_and_force_mapping(engine):
     masses = np.asarray(System([water()]).masses)
     rs = _cluster_restraints(pos, np.tile(masses, len(pos) // 3))
     s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
-    sim = _water_sim(engine, pos, H, w, s, dt=0.001, ensemble="nve", restraints=rs)
+    sim = _water_sim(engine, pos, H, w, s, dt=0.001, thermostat=None, restraints=rs)
     o = sim.observables()
-    assert abs(o["erestraint"] - float(rs.energy(sim.positions_nm(), H))) < 1e-10 and o["erestraint"] > 40.0
+    assert abs(o["erestraint"] - float(rs.energy(sim.positions(), H))) < 1e-10 and o["erestraint"] > 40.0
     assert set(sim.restraint_energies()) == {"position", "distance", "angle", "dihedral", "com_distance"}
     E, R = [o["etot"]], [o["erestraint"]]
     for _ in range(8):
-        sim._advance(40)
+        sim.advance(40)
         o = sim.observables()
         E.append(o["etot"])
         R.append(o["erestraint"])
@@ -298,16 +300,15 @@ def test_barostat_trials_include_restraints(engine):
             w,
             s,
             dt=1e-5,
-            ensemble="npt",
-            barostat_interval=1,
-            gamma=1.0,
+            thermostat=Langevin(1.0),
+            barostat=MonteCarloBarostat(every=1),
             temperature=300.0,
-            vel_nm_ps=np.zeros_like(pos),
+            velocities=np.zeros_like(pos),
             restraints=r,
             seed=2,
         )
         V0 = sim.observables()["volume_nm3"]
-        sim._advance(120)
+        sim.advance(120)
         o = sim.observables()
         out[scaling] = (o["erestraint"], o["mc_accept"], abs(o["volume_nm3"] / V0 - 1.0))
     kT = KB * 300.0
@@ -337,19 +338,18 @@ def test_flexible_engine_restrained_atom_held():
         s,
         dt=0.002,
         temperature=300.0,
-        thermostat="bussi",
-        tau_t=0.1,
+        thermostat=Bussi(0.1),
         restraints=rs,
         log=None,
     )
     L = H[0, 0]
 
     def dist():
-        return float(np.linalg.norm((lambda v: v - np.round(v / L) * L)(sim.positions_nm()[0] - ref[0])))
+        return float(np.linalg.norm((lambda v: v - np.round(v / L) * L)(sim.positions()[0] - ref[0])))
 
     d = [dist()]
     for _ in range(6):
-        sim._advance(50)
+        sim.advance(50)
         o = sim.observables()
         d.append(dist())
         assert o["shake_err"] < 1e-9 and np.isfinite(o["econs"])

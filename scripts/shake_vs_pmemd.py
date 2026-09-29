@@ -37,7 +37,9 @@ import jax.numpy as jnp
 import numpy as np
 from validate_shake import compare_rows, hist_frame, new_acc, save_blocks
 
+from pgm_jax.cli.args import setup_logging
 from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.thermostats import Langevin
 from pgm_jax.protein import amber_template, load_amber, pmemd_mdin, write_pgm_prmtop
 from pgm_jax.protein.pmemd import pmemd_grid
 from pgm_jax.units import KCAL, KE, KE_AMBER_PGM
@@ -176,9 +178,8 @@ def engine_md(p, run, ns, equil_ps=50.0, frame_ps=0.5, hmr=None, dt_fs=2.0, tag=
         asys.box,
         settings(asys.box),
         dt=dt,
-        ensemble="nvt",
+        thermostat=Langevin(1.0),
         temperature=T0,
-        gamma=1.0,
         constraints=cons,
         hmr=hmr,
         params=P,
@@ -186,7 +187,7 @@ def engine_md(p, run, ns, equil_ps=50.0, frame_ps=0.5, hmr=None, dt_fs=2.0, tag=
         log=sys.stdout,
     )
     every = int(round(frame_ps / dt))  # dt in ps
-    sim._advance(int(round(equil_ps / dt)) // every * every)
+    sim.advance(int(round(equil_ps / dt)) // every * every)
     idx = atoms_of(asys.molecules[0].atom_names)
     nmol = len(asys.molecules)
     n_frames = int(round(ns * 1000.0 / frame_ps))
@@ -195,7 +196,7 @@ def engine_md(p, run, ns, equil_ps=50.0, frame_ps=0.5, hmr=None, dt_fs=2.0, tag=
     acc = new_acc()
     w0, n0, c0 = time.time(), int(sim.state.step), float(sim.state.cg_total)
     for f in range(n_frames):
-        sim._advance(every)
+        sim.advance(every)
         o = sim.observables()
         rec["epot"].append(o["epot"])
         rec["temp"].append(o["temp_K"])
@@ -204,7 +205,7 @@ def engine_md(p, run, ns, equil_ps=50.0, frame_ps=0.5, hmr=None, dt_fs=2.0, tag=
         rec["temp_internal"].append(o["temp_internal"])
         rec["shake_err"].append(o["shake_err"])
         rec["rattle_err"].append(o["rattle_err"])
-        hist_frame(sim.positions_nm(), L, idx, nmol, acc)
+        hist_frame(sim.positions(), L, idx, nmol, acc)
         if f % 200 == 199:
             print(tag, run, f + 1, np.mean(rec["epot"]) / nmol, np.mean(rec["temp"]), flush=True)
     wall = time.time() - w0
@@ -285,6 +286,7 @@ if __name__ == "__main__":
     ap.add_argument("--tag", default="engine")
     ap.add_argument("--tags", default="pmemd,engine")
     a = ap.parse_args()
+    setup_logging()
     p = Paths(a.system)
     if a.mode == "prep":
         prep(p, a.kind)

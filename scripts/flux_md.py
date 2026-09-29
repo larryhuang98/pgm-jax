@@ -34,9 +34,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from pgm_jax.cli.args import coupling_from_options, setup_logging
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.dipoles import CellDipole
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
 from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.thermostats import Langevin
 from pgm_jax.system import System
 from pgm_jax.units import DEBYE_E_NM, KB, KCAL
 
@@ -56,6 +59,7 @@ ap.add_argument("--double_ps", type=float, default=None, help="nve: double-preci
 ap.add_argument("--thermostat", default="langevin", help="speed: langevin (1/ps) | bussi (1 ps)")
 ap.add_argument("--fixed_iter", type=int, default=0, help="speed: exactly this many CG iterations per step")
 a = ap.parse_args()
+setup_logging()
 tpl = FlexibleTemplate.load(a.template)
 stem = os.path.splitext(a.template)[0]
 T, dt = a.temp, 0.0005
@@ -76,24 +80,23 @@ if a.cmd == "liquid":
     pos, H = liquid_box(tpl, N, 0.55, seed=1, min_dist=0.18)
     sys_ = System([tpl.pgm] * N)
     st = MDSettings()
-    nvt = FlexibleSimulation(sys_, [tpl] * N, pos, H, st, dt=dt, ensemble="nvt", temperature=T, gamma=5.0, log=None)
-    nvt._advance(4000)
+    nvt = FlexibleSimulation(sys_, [tpl] * N, pos, H, st, dt=dt, thermostat=Langevin(5.0), temperature=T, log=None)
+    nvt.advance(4000)
     sim = FlexibleSimulation(
         sys_,
         [tpl] * N,
-        nvt.positions_nm(),
+        nvt.positions(),
         np.asarray(nvt.state.box),
         st,
         dt=dt,
-        ensemble="npt",
+        thermostat=Langevin(1.0),
+        barostat=MonteCarloBarostat(every=25),
         temperature=T,
-        gamma=1.0,
-        barostat_interval=25,
-        vel_nm_ps=nvt.velocities_nm_ps(),
+        velocities=nvt.velocities(),
         log=sys.stdout,
     )
     for _ in range(int(round(a.equil_ps / 0.5))):  # 0.5 ps blocks (an overflow repeats one block)
-        sim._advance(1000)
+        sim.advance(1000)
     dip = mol_dipole_fn(sim)
     fl = sim.ff.flux
     qshift = None
@@ -107,7 +110,7 @@ if a.cmd == "liquid":
     every = int(round(0.5 / dt))
     t0, s0, cg0 = time.time(), int(sim.state.step), float(sim.state.cg_total)
     for _ in range(int(round(a.prod_ps / 0.5))):
-        sim._advance(every)
+        sim.advance(every)
         o = sim.observables()
         x, Hb, mu = sim.state.dyn.position, sim.state.box, sim.state.induction.mu
         rec["time_ps"].append(round(o["time_ps"], 3))
@@ -147,7 +150,7 @@ if a.cmd == "liquid":
     }
     print({k: v for k, v in out.items() if k != "record"}, flush=True)
     json.dump(out, open(stem + "_liquid.json", "w"), indent=1)
-    np.savez(stem + "_liquid.npz", pos=sim.positions_nm(), vel=sim.velocities_nm_ps(), box=np.asarray(sim.state.box))
+    np.savez(stem + "_liquid.npz", pos=sim.positions(), vel=sim.velocities(), box=np.asarray(sim.state.box))
 
 elif a.cmd == "nve":
     z = np.load(stem + "_liquid.npz")
@@ -166,14 +169,14 @@ elif a.cmd == "nve":
             z["box"],
             MDSettings(precision=prec, dipole_tol=tol),
             dt=dt,
-            ensemble="nve",
-            vel_nm_ps=z["vel"],
+            thermostat=None,
+            velocities=z["vel"],
             log=None,
         )
         every = int(round(0.1 / dt))
         t, E = [], []
         for _ in range(int(round(ps / 0.1))):
-            s._advance(every)
+            s.advance(every)
             o = s.observables()
             t.append(o["time_ps"])
             E.append(o["etot"])
@@ -281,21 +284,17 @@ else:
             H,
             st,
             dt=dt,
-            ensemble="nvt",
             temperature=T,
-            gamma=1.0,
-            thermostat=a.thermostat,
-            tau_t=1.0,
-            vel_nm_ps=vel,
-            log=None,
+            thermostat=coupling_from_options("nvt", a.thermostat)[0],
+            velocities=vel,
         )
-        sims[label]._advance(500)  # compile
+        sims[label].advance(500)  # compile
     for rnd in range(3):
         for label, sim in sims.items():
             jax.block_until_ready(sim.state.dyn.position)
             s0, c0 = int(sim.state.step), float(sim.state.cg_total)
             t0 = time.time()
-            sim._advance(a.steps)
+            sim.advance(a.steps)
             jax.block_until_ready(sim.state.dyn.position)
             w = time.time() - t0
             st_ = int(sim.state.step) - s0

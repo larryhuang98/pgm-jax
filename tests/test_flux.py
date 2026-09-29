@@ -18,6 +18,7 @@ from pgm_jax.md.dipoles import CellDipole
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
 from pgm_jax.md.flux import ChargeFlux, molecule_at
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
+from pgm_jax.md.thermostats import Langevin
 from pgm_jax.protein import write_pgm_prmtop
 from pgm_jax.system import System
 from pgm_jax.units import KB
@@ -65,7 +66,7 @@ def box():
     pos, H = liquid_box(tpl, n, 0.55, seed=0, min_dist=0.18)
     pos = pos + 0.004 * np.random.default_rng(1).normal(size=pos.shape)
     sys_ = System([tpl.pgm] * n)
-    sim = FlexibleSimulation(sys_, [tpl] * n, pos, H, tight(), ensemble="nve", log=None)
+    sim = FlexibleSimulation(sys_, [tpl] * n, pos, H, tight(), thermostat=None, log=None)
     return tpl, sys_, sim, np.asarray(sim.flex.pos0), jnp.asarray(H)
 
 
@@ -96,7 +97,7 @@ def test_flux_equals_bonded_model():
     assert abs(float(e_nb - e_lj - out["perm"] - out["ind"])) < 1e-10 * abs(float(out["perm"]))
     # MD: flux == no flux at the same charges; forces == gas-phase gradient (periodic images aside)
     s = tight(cutoff=1.8, pme_grid=None, ewald_beta=4.0, pme_order=6)
-    sim = FlexibleSimulation(sys1, [tpl], y + 2.0, np.eye(3) * 4.0, s, ensemble="nve", log=None)
+    sim = FlexibleSimulation(sys1, [tpl], y + 2.0, np.eye(3) * 4.0, s, thermostat=None, log=None)
     H = jnp.eye(3) * 4.0
     xb = sim.flex.pos0
     idx = sim.ff.rows_for(xb, H)
@@ -310,28 +311,28 @@ def test_flux_nve_and_constraints():
         precision="double", dipole_tol=1e-8, cutoff=0.6, skin=0.05, lj_lrc=False, ewald_beta=6.0, pme_spacing=0.05
     )
     sim = FlexibleSimulation(
-        sys_, [tpl] * n, pos, H, s, dt=0.0005, ensemble="nvt", temperature=298.0, gamma=10.0, log=None
+        sys_, [tpl] * n, pos, H, s, dt=0.0005, thermostat=Langevin(10.0), temperature=298.0, log=None
     )
-    sim._advance(1000)
+    sim.advance(1000)
     sim2 = FlexibleSimulation(
         sys_,
         [tpl] * n,
-        sim.positions_nm(),
+        sim.positions(),
         np.asarray(sim.state.box),
         s,
         dt=0.0005,
-        ensemble="nve",
-        vel_nm_ps=sim.velocities_nm_ps(),
+        thermostat=None,
+        velocities=sim.velocities(),
         log=None,
     )
     E = []
     for _ in range(10):
-        sim2._advance(100)
+        sim2.advance(100)
         E.append(sim2.observables()["etot"])
     ke = 0.5 * sim2.integ.dof * KB * 298.0
     assert np.std(E) < 1e-3 * ke and abs(E[-1] - E[0]) < 2e-3 * ke, (np.std(E) / ke, (E[-1] - E[0]) / ke)
-    simc = FlexibleSimulation(sys_, [tpl] * n, pos, H, s, dt=0.001, ensemble="nvt", constraints="h-bonds", log=None)
-    simc._advance(50)
+    simc = FlexibleSimulation(sys_, [tpl] * n, pos, H, s, dt=0.001, constraints="h-bonds", log=None)
+    simc.advance(50)
     x = simc.state.dyn.position
     db = np.asarray(simc.ff.flux.deviations(x, simc.state.box)).reshape(n, 5)
     assert np.abs(db[:, 1:]).max() < 1e-7 and np.abs(db[:, 0]).max() > 1e-4  # C-H, O-H held; C-O free

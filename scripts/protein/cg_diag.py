@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from pgm_jax.cli.args import setup_logging
 from pgm_jax.md.flexible import FlexibleSimulation
 from pgm_jax.md.forcefield import _PRED, MDSettings
 from pgm_jax.protein import amber_template, load_amber
@@ -22,6 +23,7 @@ ap.add_argument("inpcrd")
 ap.add_argument("--dt", type=float, default=0.002)
 ap.add_argument("--iterations", type=int, default=20)
 args = ap.parse_args()
+setup_logging()
 pr, rs, dt = args.prmtop, args.inpcrd, args.dt
 asys = load_amber(pr, rs)
 prot = [k for k, m in enumerate(asys.molecules) if m.kind == "protein"]
@@ -37,7 +39,7 @@ sim = FlexibleSimulation(
     hmr=3.024,
 )
 sim.minimize(300)
-sim._advance(300)
+sim.advance(300)
 S0 = sim.state
 I, ff = sim.integ, sim.ff
 S1 = I.run(S0, 1)

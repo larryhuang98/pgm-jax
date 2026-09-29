@@ -20,7 +20,6 @@ use these pieces for
 from __future__ import annotations
 
 import json
-import logging
 import math
 import os
 import pickle
@@ -30,8 +29,6 @@ from collections.abc import Callable, Iterable
 import jax
 import jax.numpy as jnp
 import numpy as np
-
-log = logging.getLogger(__name__)
 
 CHECKPOINT_FORMAT = "pgm_jax checkpoint"
 CHECKPOINT_VERSION = 1

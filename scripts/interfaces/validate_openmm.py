@@ -19,10 +19,13 @@ import numpy as np
 import openmm
 from openmm import unit
 
+from pgm_jax.cli.args import setup_logging
 from pgm_jax.interfaces import PGMEngine
 from pgm_jax.interfaces.openmm import PGMOpenMM
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.md.thermostats import Langevin
 from pgm_jax.paths import resource
 from pgm_jax.units import AMU_NM3_TO_G_CM3, KB
 
@@ -83,6 +86,7 @@ def main():
     ap.add_argument("--T", type=float, default=298.0)
     ap.add_argument("--platform", default=None)
     args = ap.parse_args()
+    setup_logging()
     plats = platforms() if args.platform is None else [args.platform]
     res = {"device": str(jax.devices()[0]), "openmm": openmm.__version__, "platforms": plats}
     dt, T = args.dt, args.T
@@ -90,9 +94,9 @@ def main():
 
     # ---- single point, double precision
     s2 = MDSettings(precision="double", dipole_tol=1e-10)
-    sim = Simulation.from_amber(TOP, RST, settings=s2, ensemble="nve", log=None)
+    sim = Simulation.from_amber(TOP, RST, settings=s2, thermostat=None, log=None)
     st = sim.state
-    pos = sim.positions_nm()
+    pos = sim.positions()
     idx = sim.nb.candidates(st.nbr, st.dyn.position.center, st.box, sim.rigid.positions(st.dyn.position))[0]
     nat = jax.jit(sim.ff.compute)(pos, st.box, idx, sim.ff.init_induction())
     om = PGMOpenMM(PGMEngine.from_simulation(sim))
@@ -116,19 +120,19 @@ def main():
 
     # ---- equilibrate natively, then NVE / NVT / NPT
     s = MDSettings()
-    sim = Simulation.from_amber(TOP, RST, settings=s, ensemble="nvt", temperature=T, gamma=1.0, dt=dt, log=None)
-    sim._advance(int(round(args.ps_eq / dt)))
-    pos0, vel0, H = sim.positions_nm(), sim.velocities_nm_ps(), np.asarray(sim.state.box)
+    sim = Simulation.from_amber(TOP, RST, settings=s, thermostat=Langevin(1.0), temperature=T, dt=dt, log=None)
+    sim.advance(int(round(args.ps_eq / dt)))
+    pos0, vel0, H = sim.positions(), sim.velocities(), np.asarray(sim.state.box)
     sysm = sim.sys
     n_nve, n_nvt, n_npt = (int(round(x / dt)) for x in (args.ps_nve, args.ps_nvt, args.ps_npt))
 
-    nat = Simulation(sysm, pos0, H, s, dt=dt, ensemble="nve", vel_nm_ps=vel0, log=None)
+    nat = Simulation(sysm, pos0, H, s, dt=dt, thermostat=None, velocities=vel0, log=None)
     dof = nat.integ.dof
-    nat._advance(rep)
+    nat.advance(rep)
     t, E = [], []
     t0 = time.perf_counter()
     for _k in range(n_nve // rep):
-        nat._advance(rep)
+        nat.advance(rep)
         o = nat.observables()
         t.append(o["time_ps"])
         E.append(o["etot"])
@@ -177,11 +181,11 @@ def main():
     # ---- NVT
     p = plats[0]
     natv = Simulation(
-        sysm, pos0, H, s, dt=dt, ensemble="nvt", temperature=T, gamma=1.0, vel_nm_ps=vel0, log=None, seed=5
+        sysm, pos0, H, s, dt=dt, thermostat=Langevin(1.0), temperature=T, velocities=vel0, log=None, seed=5
     )
     Tn, Un = [], []
     for _k in range(n_nvt // rep):
-        natv._advance(rep)
+        natv.advance(rep)
         o = natv.observables()
         Tn.append(o["temp_K"])
         Un.append(o["epot"] / sysm.nmol)
@@ -224,18 +228,16 @@ def main():
             H,
             s,
             dt=dt,
-            ensemble="npt",
+            thermostat=Langevin(1.0),
+            barostat=MonteCarloBarostat(1.0, 25),
             temperature=T,
-            gamma=1.0,
-            pressure=1.0,
-            barostat_interval=25,
-            vel_nm_ps=vel0,
+            velocities=vel0,
             log=None,
             seed=6,
         )
         rn = []
         for _k in range(n_npt // rep):
-            natp._advance(rep)
+            natp.advance(rep)
             rn.append(natp.observables()["density_g_cm3"])
         eng = PGMEngine(sysm, pos0, H, s)
         om = PGMOpenMM(eng)

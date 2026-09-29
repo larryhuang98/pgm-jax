@@ -20,7 +20,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from pgm_jax.analysis.stats import block_mean
-from pgm_jax.md.pimd import PIMDIntegrator, PotentialEngine, RingPolymer
+from pgm_jax.md.pimd import PILE, PIMDIntegrator, PotentialEngine, RingPolymer
 from pgm_jax.units import HBAR_KJMOL_PS, KB
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -56,7 +56,7 @@ def harmonic(a):
             r = RingPolymer(P, T)
             ex = 0.5 / beta * float(np.sum(w**2 / (r.omega**2 + w**2)))
             eng = PotentialEngine(lambda x, box, w=w: 0.5 * m * w**2 * jnp.sum(x * x))
-            integ = PIMDIntegrator(eng, np.full(n, m), P, T, dt, "pimd", a.thermostat, tau0=1.0 / w)
+            integ = PIMDIntegrator(eng, np.full(n, m), P, T, dt, "pimd", PILE(a.thermostat, tau_centroid=1.0 / w))
             t0 = time.time()
             st = integ.run(integ.init(jnp.zeros((n, 3)), jnp.eye(3), jax.random.PRNGKey(P)), int(20 / (w * dt)))
             st, X = sample(integ, st, a.samples, max(1, int(round(1.0 / (w * dt)))))
@@ -96,7 +96,7 @@ def free(a):
     out = {}
     for mode, th in (("pimd", "pile-l"), ("pimd", "pile-g"), ("trpmd", "pile-l")):
         eng = PotentialEngine(lambda x, box: 0.0 * jnp.sum(x))
-        integ = PIMDIntegrator(eng, np.full(n, m), P, T, 0.0005, mode, th, tau0=0.05)
+        integ = PIMDIntegrator(eng, np.full(n, m), P, T, 0.0005, mode, PILE(th, tau_centroid=0.05))
         r = integ.ring
         st = integ.run(integ.init(jnp.zeros((n, 3)), jnp.eye(3), jax.random.PRNGKey(0)), 1000)
 
@@ -149,7 +149,14 @@ def nve(a):
     for prop in ("cayley", "exact"):
         for dt in a.dts:
             integ = PIMDIntegrator(
-                PotentialEngine(V), np.full(n, m), P, T, dt * 1e-3, "pimd", "pile-l", tau0=0.05, propagator=prop
+                PotentialEngine(V),
+                np.full(n, m),
+                P,
+                T,
+                dt * 1e-3,
+                "pimd",
+                PILE("l", tau_centroid=0.05),
+                propagator=prop,
             )
             st = integ.run(integ.init(jnp.zeros((n, 3)), jnp.eye(3), jax.random.PRNGKey(1)), int(2.0 / (dt * 1e-3)))
             integ.set_thermostat("rpmd")

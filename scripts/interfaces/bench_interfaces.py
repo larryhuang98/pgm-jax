@@ -19,6 +19,7 @@ import time
 import jax
 import numpy as np
 
+from pgm_jax.cli.args import setup_logging
 from pgm_jax.interfaces import PGMEngine
 from pgm_jax.md.box import box_from_cell
 from pgm_jax.md.forcefield import MDSettings
@@ -53,25 +54,26 @@ def main():
     ap.add_argument("--profile", action="store_true", help="cProfile of 100 ASE steps")
     ap.add_argument("--out", default="validation/interfaces/bench.json")
     a = ap.parse_args()
+    setup_logging()
     res = {"device": str(jax.devices()[0]), "steps": a.steps}
     for n in a.replicate:
         sysm, pos, vel, H, s = system(n)
         r = {"atoms": sysm.n}
-        sim = Simulation(sysm, pos, H, s, dt=a.dt, ensemble="nve", vel_nm_ps=vel, log=None)
-        sim._advance(100)
+        sim = Simulation(sysm, pos, H, s, dt=a.dt, thermostat=None, velocities=vel, log=None)
+        sim.advance(100)
         t0 = time.perf_counter()
         frames = []
         for _k in range(a.steps // 100):
-            sim._advance(100)
+            sim.advance(100)
             if len(frames) < 200:
-                frames.append(sim.positions_nm())
+                frames.append(sim.positions())
         r["native_ms"] = 1e3 * (time.perf_counter() - t0) / (a.steps // 100 * 100)
         # the engine alone on consecutive MD frames: run a short native trajectory with frames every step
-        sim1 = Simulation(sysm, frames[-1], H, s, dt=a.dt, ensemble="nve", vel_nm_ps=sim.velocities_nm_ps(), log=None)
+        sim1 = Simulation(sysm, frames[-1], H, s, dt=a.dt, thermostat=None, velocities=sim.velocities(), log=None)
         fr = []
         for _k in range(300):
-            sim1._advance(1)
-            fr.append(sim1.positions_nm())
+            sim1.advance(1)
+            fr.append(sim1.positions())
         eng = PGMEngine(sysm, fr[0], H, s)
         for x in fr[:50]:
             eng.compute(x, H)
@@ -87,7 +89,7 @@ def main():
         for x in fr[50:]:
             eng.compute(x, H, virial=True)
         r["engine_virial_ms"] = 1e3 * (time.perf_counter() - t0) / 250
-        pos0, vel0 = sim.positions_nm(), sim.velocities_nm_ps()
+        pos0, vel0 = sim.positions(), sim.velocities()
         if "ase" not in a.skip:
             from ase import units
             from ase.md.verlet import VelocityVerlet

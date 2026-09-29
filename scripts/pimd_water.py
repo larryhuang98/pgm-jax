@@ -27,11 +27,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from pgm_jax.cli.args import setup_logging
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.box import box_from_cell
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.io import read_coordinates
-from pgm_jax.md.pimd import PIMDSimulation
+from pgm_jax.md.pimd import PILE, PIMDSimulation
+from pgm_jax.md.thermostats import Bussi
 from pgm_jax.models.water import flexible_water
 from pgm_jax.param import read_prmtop_pgm
 from pgm_jax.paths import resource
@@ -88,10 +91,8 @@ def build(a, log=sys.stdout):
         H,
         s,
         dt=a.dt * 1e-3,
-        ensemble="nvt",
+        thermostat=Bussi(0.1),
         temperature=a.temp,
-        thermostat="bussi",
-        tau_t=0.1,
         seed=a.seed,
         log=log,
     )
@@ -149,26 +150,22 @@ def run(a):
     if a.load is None:
         sim.minimize(200)
         if a.classical_ps > 0:  # classical flexible equilibration (Bussi)
-            sim.run(int(round(a.classical_ps / (a.dt * 1e-3))), report=1000, prefix=a.prefix + "_classical")
+            sim.run(int(round(a.classical_ps / (a.dt * 1e-3))), report_every=1000, prefix=a.prefix + "_classical")
     pi = PIMDSimulation(
         sim,
         beads=a.beads,
         mode=a.mode,
-        thermostat=a.thermostat,
-        tau0=a.tau0,
-        lam=a.lam,
+        thermostat=PILE(a.thermostat, tau_centroid=a.tau0, lam=a.lam),
         propagator=a.propagator,
         contract=a.contract or None,
         bead_margin=a.bead_margin,
         seed=a.seed,
-        ensemble=a.ensemble,
-        pressure=a.press,
-        barostat_interval=a.barostat_interval,
+        barostat=MonteCarloBarostat(a.press, a.barostat_interval) if a.ensemble == "npt" else None,
         bead_chunk=a.bead_chunk if a.bead_chunk == "auto" else (int(a.bead_chunk) or None),
         log=sys.stdout,
     )
     if a.load:
-        pi.load(a.load)
+        pi.load_checkpoint(a.load)
         pi.state = pi.state.set(
             heat=jnp.zeros(()), step=jnp.zeros((), jnp.int32), eng=pi.state.eng.set(cg_total=jnp.zeros(()))
         )
@@ -176,7 +173,7 @@ def run(a):
     neq = int(round(a.equil_ps / (a.dt * 1e-3)))
     rep = max(1, int(round(a.report_ps / (a.dt * 1e-3))))
     if neq:
-        pi.run(neq, report=rep, prefix=a.prefix + "_equil")
+        pi.run(neq, report_every=rep, prefix=a.prefix + "_equil")
     edges = np.linspace(0.0, 0.8, 321)
     hist, nO, nH = rdf_fn(sim, edges)
     H = np.zeros((3, len(edges) - 1))
@@ -189,7 +186,7 @@ def run(a):
     cols = None
     while done < nstep:
         m = min(rep, nstep - done)
-        pi._advance(m)
+        pi.advance(m)
         done += m
         o = pi.observables()
         if a.pressure:
@@ -260,7 +257,8 @@ def run(a):
             k = int(np.argmax(gi * (rc > 0.12)))
             print(f"g_{name}: first peak {rc[k]:.4f} nm, height {gi[k]:.3f}")
     if a.save:
-        pi.save(a.prefix)
+        pi.save_checkpoint(a.prefix + ".pimd.chk")
+        pi.write_restart(a.prefix + ".rst7")
 
 
 def bench(a):
@@ -273,17 +271,15 @@ def bench(a):
                 sim,
                 beads=P,
                 contract=c or None,
-                thermostat=a.thermostat,
-                tau0=a.tau0,
-                log=None,
+                thermostat=PILE(a.thermostat, tau_centroid=a.tau0),
                 bead_margin=a.bead_margin,
                 bead_chunk=ch or None,
             )
-            pi._advance(a.warm)
+            pi.advance(a.warm)
             jax.block_until_ready(pi.state.q)
             cg0 = float(pi.state.eng.cg_total)
             t0 = time.time()
-            pi._advance(a.steps)
+            pi.advance(a.steps)
             jax.block_until_ready(pi.state.q)
             el = time.time() - t0
             o = pi.observables()
@@ -374,6 +370,7 @@ def main(argv=None):
     bt = sub.add_parser("batch")
     bt.add_argument("file")
     a = ap.parse_args(argv)
+    setup_logging()
     {"template": template, "run": run, "bench": bench, "batch": batch}[a.cmd](a)
 
 

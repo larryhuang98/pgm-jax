@@ -2,15 +2,15 @@
 
   NVE : velocity Verlet with the NO_SQUISH free-rotor splitting for quaternions (JAX-MD
         simulate.momentum_step / position_step, rigid_body registrations; Miller et al. 2002).
-  NVT : BAOAB with the O step of a thermostat from thermostats.py (Langevin friction `gamma`,
-        Bussi rescaling `tau_t`, or a smooth GLE).  For rigid bodies the thermostat acts on the
+  NVT : BAOAB with the O step of a thermostat from thermostats.py (Langevin(friction),
+        Bussi(tau) rescaling, or a smooth GLE).  For rigid bodies the thermostat acts on the
         mass-scaled centre-of-mass momenta and body-frame angular momenta, L_l / sqrt(I_l), mapped
         to and from the quaternion conjugate momenta.  (JAX-MD 0.2.29's rigid-body stochastic_step
         draws the quaternion-momentum noise with a diagonal covariance instead of
         sum_l s_l^2 P_l P_l^T, which under-heats the rotations: rigid water settled 15-25 K below
         the target.)  The heat exchanged in the O steps is booked in MDState.heat, so
         E_tot + |aux|^2/2 - heat is conserved up to integration and induction errors.
-  NPT : NVT plus an isotropic Monte Carlo barostat every `barostat_interval` steps (Amber
+  NPT : NVT plus an isotropic Monte Carlo barostat every `barostat.every` steps (Amber
         barostat = 2, OpenMM MonteCarloBarostat): centres of mass and box are scaled,
         orientations and momenta are kept, acceptance on dE + P dV - N kT ln(V'/V); the
         maximum volume change adapts to 25-75 % acceptance.
@@ -41,6 +41,7 @@ import numpy as np
 
 from ..units import KB, KJMOL_NM3_PER_BAR
 from ._jaxmd import dataclasses, rigid_body, simulate, space
+from .barostats import MonteCarloBarostat, ensemble_name
 from .box import volume
 from .efield import as_field
 from .forcefield import InductionState, PGMForceField
@@ -143,29 +144,57 @@ class Integrator:
         rigid: RigidMolecules,
         neighbors,
         dt: float = 0.001,
-        ensemble: str = "nvt",
         temperature: float = 298.0,
-        gamma: float = 1.0,
-        pressure: float = 1.0,
-        barostat_interval: int = 100,
+        thermostat: str | Thermostat | None = "langevin",
+        barostat: MonteCarloBarostat | None = None,
         params=None,
-        thermostat: str | Thermostat = "langevin",
-        tau_t: float = 1.0,
         restraints=None,
         alchemy=None,
         bias=None,
         efield=None,
     ):
-        ensemble = ensemble.lower()
-        if ensemble not in ("nve", "nvt", "npt"):
-            raise ValueError("ensemble must be nve, nvt or npt")
+        """Build the integrator and compile its entry points.
+
+        Parameters
+        ----------
+        ff : PGMForceField
+            The force field.
+        rigid : RigidMolecules
+            The rigid bodies (FlexibleMolecules for the subclass).
+        neighbors : MoleculeNeighbors or AtomNeighbors
+            The neighbour-list object.
+        dt : float
+            Time step [ps].
+        temperature : float
+            Bath temperature [K] (also the temperature of drawn momenta).
+        thermostat : Thermostat, str or None
+            The thermostat (thermostats.make_thermostat: an object, a name for the default
+            settings of a kind, or None for NVE).
+        barostat : MonteCarloBarostat or None
+            The barostat (None: constant volume); needs a thermostat.
+        params : dict, optional
+            Force-field parameters (default: those of the system).
+        restraints, alchemy, bias, efield : optional
+            Restraints (restraints.py), an alchemical region (alchemy.py), biases (pgm_jax.bias)
+            and an external field (efield.py); see the module docstring.
+
+        Raises
+        ------
+        ValueError
+            A barostat without a thermostat, invalid restraints or biases.
+        NotImplementedError
+            Unsupported combinations (iEL or a field with an alchemical region, NPT with a field
+            and charged molecules).
+        """
         self.ff, self.rigid, self.nb = ff, rigid, neighbors
+        self.thermostat = make_thermostat(thermostat)
+        self.barostat = barostat
+        ensemble = ensemble_name(self.thermostat, barostat)
         self.dt, self.ensemble = float(dt), ensemble
         self.kT = KB * float(temperature)
-        self.gamma_value = float(gamma)
-        self.thermostat = None if ensemble == "nve" else make_thermostat(thermostat, gamma, tau_t)
-        self.pressure = float(pressure) * KJMOL_NM3_PER_BAR
-        self.interval = int(barostat_interval)
+        # the barostat's target in kJ/mol/nm^3 and its interval (defaults when there is none)
+        self.pressure = float(barostat.pressure if barostat is not None else 1.0) * KJMOL_NM3_PER_BAR
+        self.interval = int(barostat.every if barostat is not None else 100)
         self.params = params
         self.shift = space.free()[1]
         self.nmol = rigid.nmol

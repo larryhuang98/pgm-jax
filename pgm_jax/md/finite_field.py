@@ -26,9 +26,9 @@ error, is (<M.e> / sd(M_e))^2 / 3: the induced mean dipole must exceed the therm
 which favours large fields (up to dielectric saturation) and large boxes.  `analyse` reports the
 measured errors, and `predicted_errors` these estimates.
 
-    sim = Simulation(sys, pos, H, settings, ensemble="nvt", thermostat="bussi", efield=(0, 0, 0))
+    sim = Simulation(sys, pos, H, settings, thermostat="bussi", efield=(0, 0, 0))
     rep = FieldReplicas(sim, [(0, 0, 0.1), (0, 0, -0.1), (0, 0, 0.2), (0, 0, -0.2), (0, 0, 0)])
-    rep.run(nsteps, every=25, prefix="ff")          # prefix.ffd: M of every replica every 25 steps
+    rep.run(nsteps, sample_every=25, prefix="ff")   # prefix.ffd: M of every replica every 25 steps
     table = analyse(*read_series("ff.ffd"), skip_ps=50)
 
 Units: V/nm, e nm, nm^3, K."""
@@ -53,7 +53,28 @@ class FieldReplicas(MDReplicas):
     static sizes, overflow handling, re-wrapping).  No exchanges: the replicas are independent
     trajectories at the same temperature."""
 
-    def __init__(self, sim, fields, seed: int = 0):
+    def __init__(self, sim, fields, seed: int = 0, log=None):
+        """Replicas of `sim`'s current state in the given fields.
+
+        Parameters
+        ----------
+        sim : Simulation or FlexibleSimulation
+            Created with efield=... (any amplitude; each replica sets its own), NVE or NVT.
+        fields : array (R, 3)
+            Field of every replica [V/nm].
+        seed : int
+            Seed of the replicas' momenta and thermostat streams.
+        log : text stream or None
+            Receives the rows of the log table of `run` too.
+
+        Raises
+        ------
+        ValueError
+            A simulation without a field, NPT, or multiple time stepping.
+        NotImplementedError
+            Charged molecules (the itinerant dipole of re-wrapped ions is not booked).
+        """
+        self.log = log
         integ = sim.integ
         if integ.efield is None:
             raise ValueError("create the simulation with efield=... (any amplitude; each replica sets its own)")
@@ -116,50 +137,49 @@ class FieldReplicas(MDReplicas):
     def run(
         self,
         nsteps: int,
-        every: int = 25,
+        *,
+        sample_every: int = 25,
         prefix: str = "ff",
-        report: int = 5000,
+        report_every: int = 5000,
+        checkpoint_every: int = 0,
         append: bool = False,
-        restart: int = 0,
         extra: dict | None = None,
-        log=None,
     ) -> None:
         """Advance every replica nsteps with output files.
 
         Parameters
         ----------
         nsteps : int
-            Steps (a multiple of `every`).
-        every : int
+            Steps (a multiple of `sample_every`).
+        sample_every : int
             Steps between samples of the cell dipole M [e nm] of every replica, written to
             prefix.ffd (header: `header`).
         prefix : str
             Path prefix of the files.
-        report : int
+        report_every : int
             Steps between rows of the log table prefix.log (mean, minimum and maximum temperature
             [K], mean CG iterations, ns/day per replica and aggregate) and flushes of prefix.ffd;
-            a multiple of `every` (0: none).
+            a multiple of `sample_every` (0: none).
+        checkpoint_every : int
+            Steps between checkpoints prefix.ffchk (0: none; always one at the end).
         append : bool
             Continue existing files.
-        restart : int
-            Steps between checkpoints prefix.ffchk (0: none; always one at the end).
         extra : dict, optional
             Further header entries of prefix.ffd.
-        log : text stream or None
-            Receives the rows of the log table too.
 
         Raises
         ------
         ValueError
-            nsteps or report not a multiple of every.
+            nsteps or report_every not a multiple of sample_every.
         """
+        every, report, restart = sample_every, report_every, checkpoint_every
         if nsteps % every or (report and report % every):
-            raise ValueError("nsteps and report must be multiples of every")
+            raise ValueError("nsteps and report_every must be multiples of sample_every")
         path = prefix + ".ffd"
         if not (append and os.path.exists(path)):
             with open(path, "w") as fh:
                 fh.write(self.header(extra))
-        table = LogTable(prefix + ".log", append=append, echo=log)
+        table = LogTable(prefix + ".log", append=append, echo=self.log)
         clock = Stopwatch(0, self.dt)
         done, rows = 0, []
         while done < nsteps:
@@ -188,14 +208,14 @@ class FieldReplicas(MDReplicas):
                     }
                 )
             if restart and done % restart == 0:
-                self.save(prefix + ".ffchk")
+                self.save_checkpoint(prefix + ".ffchk")
         if rows:
             with open(path, "a") as fh:
                 fh.writelines(rows)
         table.close()
-        self.save(prefix + ".ffchk")
+        self.save_checkpoint(prefix + ".ffchk")
 
-    def save(self, path: str) -> None:
+    def save_checkpoint(self, path: str) -> None:
         """Write a checkpoint of every replica and the fields (driver.write_checkpoint, kind
         "field-replicas").
 
@@ -208,8 +228,8 @@ class FieldReplicas(MDReplicas):
         d["fields"] = self.fields
         write_checkpoint(path, "field-replicas", d)
 
-    def load(self, path: str) -> None:
-        """Continue from a checkpoint written by `save`, or from a legacy pickle ``.ffchk`` of
+    def load_checkpoint(self, path: str) -> None:
+        """Continue from a checkpoint written by `save_checkpoint`, or from a legacy pickle ``.ffchk`` of
         pgm_jax up to commit e72c57c (same system and fields).
 
         Parameters

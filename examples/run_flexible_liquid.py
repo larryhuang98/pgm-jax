@@ -12,8 +12,10 @@ import os
 import jax
 import numpy as np
 
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
 from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.thermostats import Langevin
 from pgm_jax.system import System
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -34,24 +36,22 @@ pos, H = liquid_box(tpl, a.n, a.density0, seed=1, min_dist=0.18)
 sys_ = System([tpl.pgm] * a.n)
 dt = a.dt / 1000.0
 settings = MDSettings()  # 0.9 nm cutoff, PME, dipole tol 1e-5, mixed precision
-nvt = FlexibleSimulation(sys_, [tpl] * a.n, pos, H, settings, dt=dt, ensemble="nvt", temperature=a.T, gamma=5.0)
-nvt.run(int(round(2.0 / dt)), report=int(round(1.0 / dt)), prefix=prefix + "_nvt")  # 2 ps relaxation
+nvt = FlexibleSimulation(sys_, [tpl] * a.n, pos, H, settings, dt=dt, thermostat=Langevin(5.0), temperature=a.T)
+nvt.run(int(round(2.0 / dt)), report_every=int(round(1.0 / dt)), prefix=prefix + "_nvt")  # 2 ps relaxation
 sim = FlexibleSimulation(
     sys_,
     [tpl] * a.n,
-    nvt.positions_nm(),
+    nvt.positions(),
     np.asarray(nvt.state.box),
     settings,
     dt=dt,
-    ensemble="npt",
+    thermostat=Langevin(1.0),
+    barostat=MonteCarloBarostat(a.P, 25),
     temperature=a.T,
-    pressure=a.P,
-    gamma=1.0,
-    barostat_interval=25,
-    vel_nm_ps=nvt.velocities_nm_ps(),
+    velocities=nvt.velocities(),
 )
 every = int(round(1.0 / dt))  # report every ps
-sim.run(int(round(a.ps / dt)), report=every, traj=every, restart=10 * every, prefix=prefix)
+sim.run(int(round(a.ps / dt)), report_every=every, traj_every=every, checkpoint_every=10 * every, prefix=prefix)
 log = [ln.split() for ln in open(prefix + ".log") if ln.strip() and not ln.startswith("#")]
 head = [ln for ln in open(prefix + ".log") if ln.startswith("#") and "density_g_cm3" in ln][-1].split()[1:]
 rho = np.array([float(r[head.index("density_g_cm3")]) for r in log])

@@ -50,7 +50,7 @@ state variable (MDState.kT), so one compiled step runs every temperature.  Two m
                   (row capacity, neighbour-list capacities) are shared: an overflow in any
                   replica resizes all of them and repeats the block for all.
   batched=False   the replicas are advanced one after the other through the engine's own driver
-                  (Simulation._advance: overflow handling, rebuilds of the neighbour lists when an
+                  (Simulation.advance: overflow handling, rebuilds of the neighbour lists when an
                   NPT volume drifts).  For NPT, and for systems that fill the GPU on their own.
                   NPT ladders whose volumes differ by more than ~10 % make the shared neighbour-list
                   layout rebuild (and recompile) as replicas alternate.
@@ -69,7 +69,7 @@ Outputs of `ReplicaExchange.run(prefix=...)`, per temperature slot k (two digits
 and for the whole run: prefix_remd.log (one line per exchange: the replica at each temperature
 from then on and the outcome of each neighbour pair), prefix_remd.json (ladder, acceptance
 matrix, round trips, speed) and prefix.remd.chk (the complete state: every replica, the replica
-map, statistics and the exchange random state; `ReplicaExchange.load`).  Frames and log lines at
+map, statistics and the exchange random state; `ReplicaExchange.load_checkpoint`).  Frames and log lines at
 a step are written after that step's exchange, so the replica of a frame is the one in the
 exchange-log line of that step or the last line before it (`read_exchange_log`).
 
@@ -78,7 +78,7 @@ Units: K, kJ/mol, nm, ps."""
 from __future__ import annotations
 
 import json
-import sys
+import logging
 from types import SimpleNamespace
 
 import jax
@@ -100,6 +100,7 @@ from .engine import OPTIONAL_STATE
 from .io import NetCDFTrajectory, write_restart
 
 LEGACY_FORMAT = "pgm_jax remd 1"  # the "format" entry of legacy pickle checkpoints
+logger = logging.getLogger(__name__)
 
 
 # ----------------------------------------------------------------------------- exchange logic
@@ -269,7 +270,7 @@ class MDReplicas:
     def __init__(self, sim, temperatures, batched: bool = True, seed: int = 0):
         integ = sim.integ
         if integ.thermostat is None:
-            raise ValueError("replica exchange needs a thermostat (ensemble nvt or npt)")
+            raise ValueError("replica exchange needs a thermostat (create the simulation with thermostat=...)")
         if getattr(integ, "mts", None) is not None:
             raise ValueError("replica exchange with multiple time stepping (mts=) is not supported yet")
         if getattr(integ, "bias", None) is not None and integ.bias.dynamic:
@@ -378,15 +379,15 @@ class MDReplicas:
     def observables(self, k: int) -> dict:
         return self._on(k).observables()
 
-    def positions_nm(self, k: int) -> np.ndarray:
-        """Atom positions (N, 3) of temperature slot k, nm."""
-        return self._on(k).positions_nm()
+    def positions(self, k: int) -> np.ndarray:
+        """Atom positions (N, 3) [nm] of temperature slot k."""
+        return self._on(k).positions()
 
     def frames(self):
         """Positions (R, N, 3) and boxes (R, 3, 3) of every slot, A."""
         if self.batched:
             return np.asarray(self._positions(self.S.dyn.position)) * 10.0, np.asarray(self.S.box) * 10.0
-        X = [self.positions_nm(k) for k in range(self.n)]
+        X = [self.positions(k) for k in range(self.n)]
         return np.array(X) * 10.0, np.array([np.asarray(s.box) for s in self.states]) * 10.0
 
     def write_restarts(self, prefix: str):
@@ -395,8 +396,8 @@ class MDReplicas:
             sim = self._on(k)
             write_restart(
                 f"{prefix}_T{k:02d}.rst7",
-                sim.positions_nm() * 10.0,
-                sim.velocities_nm_ps() * 10.0,
+                sim.positions() * 10.0,
+                sim.velocities() * 10.0,
                 np.asarray(sim.state.box) * 10.0,
                 self.time_ps,
                 title=f"pgm_jax REMD T={self.temperatures[k]:g} K",
@@ -433,7 +434,7 @@ class MDReplicas:
         for k in range(self.n):
             before = self._sizes()
             sim.state, sim.time_ps = self.states[k], self.time_ps
-            sim._advance(n)
+            sim.advance(n)
             self.states[k] = sim.state
             # a replica may re-size the shared static sizes from its own configuration: never
             # below what another replica needed (no resize ping-pong)
@@ -476,8 +477,8 @@ class MDReplicas:
             """_resize and a log line."""
             step0 = int(np.asarray(start.step)[0])
             start = self._resize(start, nb_bad, row_bad)
-            sim._print(
-                f"# {'neighbour list' if nb_bad else 'row capacity'} overflow in steps {step0}-{step0 + n} "
+            logger.info(
+                f"{'neighbour list' if nb_bad else 'row capacity'} overflow in steps {step0}-{step0 + n} "
                 f"(replicas): resized (rows {sim.ff.mc or sim.nb.cap}, list "
                 f"{self._template.idx.shape[1]}), repeating"
             )
@@ -584,18 +585,42 @@ class MDReplicas:
 class ReplicaExchange:
     """Temperature replica exchange.
 
-        sim = FlexibleSimulation(..., ensemble="nvt", thermostat="bussi", dt=0.002, constraints="h-bonds", hmr=3.024)
+        sim = FlexibleSimulation(..., thermostat="bussi", dt=0.002, constraints="h-bonds", hmr=3.024)
         sim.minimize(300); sim.run(25000)                       # equilibrate at the lowest temperature
         rex = ReplicaExchange(sim, geometric_ladder(300.0, 400.0, 8), exchange_every=500)
-        rex.run(500000, report=5000, traj=500, restart=50000, prefix="ala3")
+        rex.run(500000, prefix="ala3", report_every=5000, traj_every=500, checkpoint_every=50000)
 
     `sim`: a Simulation / FlexibleSimulation (replicas built by MDReplicas with `batched` and
     `seed`), or a ready replica engine with the MDReplicas interface (then `temperatures` is not
     given).  Exchanges are attempted every `exchange_every` steps."""
 
     def __init__(
-        self, sim, temperatures=None, exchange_every: int = 500, batched: bool = True, seed: int = 0, log=sys.stdout
+        self, sim, temperatures=None, exchange_every: int = 500, batched: bool = True, seed: int = 0, log=None
     ):
+        """Set up the replicas and the exchange statistics.
+
+        Parameters
+        ----------
+        sim : Simulation, FlexibleSimulation or replica engine
+            An MD engine (replicas built by MDReplicas with `batched` and `seed`), or a ready
+            replica engine with the MDReplicas interface (then `temperatures` is not given).
+        temperatures : array (R,), optional
+            Temperature ladder [K], increasing.
+        exchange_every : int
+            Steps between exchange attempts.
+        batched : bool
+            One vmapped program for all replicas (NVT only) or one after the other.
+        seed : int
+            Seed of the replicas' streams and of the exchange random numbers.
+        log : text stream or None
+            Receives one progress line per report (acceptance, round trips, speed); the setup
+            is logged to the logger "pgm_jax.md.remd".
+
+        Raises
+        ------
+        ValueError
+            Missing or superfluous temperatures, exchange_every < 1.
+        """
         if hasattr(sim, "integ"):
             if temperatures is None:
                 raise ValueError("give the temperatures of the replicas")
@@ -614,16 +639,12 @@ class ReplicaExchange:
         self.step = 0
         self.log = log
         mode = "batched" if getattr(self.replicas, "batched", False) else "sequential"
-        self._print(
-            f"# replica exchange: {self.n} replicas ({mode}), T = "
+        logger.info(
+            f"replica exchange: {self.n} replicas ({mode}), T = "
             f"{' '.join(f'{t:.2f}' for t in self.T)} K, exchanges every {self.every} steps "
             f"({self.every * self.replicas.dt:g} ps)"
             f"{'' if self.replicas.pressure is None else ', NPT (P V in the criterion)'}"
         )
-
-    def _print(self, s):
-        if self.log is not None:
-            print(s, file=self.log, flush=True)
 
     # ------------------------------------------------------------------ exchanges
     def reduced_energies(self) -> np.ndarray:
@@ -653,15 +674,38 @@ class ReplicaExchange:
     def run(
         self,
         nsteps: int,
-        report: int = 1000,
-        traj: int = 0,
-        restart: int = 0,
+        *,
         prefix: str | None = "remd",
+        report_every: int = 1000,
+        traj_every: int = 0,
+        checkpoint_every: int = 0,
         append: bool = False,
-    ):
-        """nsteps steps of every replica, exchanges every `exchange_every` steps; per-temperature
-        logs every `report` steps, trajectories every `traj`, checkpoints every `restart` (0: off;
-        prefix None: no files)."""
+    ) -> dict:
+        """Advance every replica nsteps with exchanges every `exchange_every` steps.
+
+        Parameters
+        ----------
+        nsteps : int
+            Steps.
+        prefix : str or None
+            Path prefix of the files (None: no files): prefix_Tkk.log (log table per temperature),
+            prefix_Tkk.nc, prefix_remd.log (exchanges), prefix_remd.json (summary),
+            prefix.remd.chk and prefix_Tkk.rst7.
+        report_every : int
+            Steps between rows of the per-temperature logs and progress lines (0: none).
+        traj_every : int
+            Steps between trajectory frames of every temperature (0: none).
+        checkpoint_every : int
+            Steps between checkpoints (0: none; with checkpoints also at the end).
+        append : bool
+            Append to existing files (a continuation).
+
+        Returns
+        -------
+        dict
+            `summary` of the run.
+        """
+        report, traj, restart = report_every, traj_every, checkpoint_every
         rep, n = self.replicas, self.n
         block = block_length(nsteps, self.every, report, traj, restart)
         files = prefix is not None
@@ -707,8 +751,8 @@ class ReplicaExchange:
                         obs["ns_per_day"] = speed
                         logs[k].write(obs)
                 acc = self.stats.neighbour_acceptance()
-                self._print(
-                    f"# step {self.step} ({rep.time_ps:.1f} ps): acceptance "
+                self._progress(
+                    f"step {self.step} ({rep.time_ps:.1f} ps): acceptance "
                     f"{' '.join('  -  ' if np.isnan(a) else f'{a:.3f}' for a in acc)}, round trips "
                     f"{int(self.stats.round_trips.sum())}, {speed:.1f} ns/day per replica"
                 )
@@ -717,21 +761,38 @@ class ReplicaExchange:
                 for k in range(n):
                     trajs[k].write(rep.time_ps, X[k], B[k])
             if files and restart and self.step % restart == 0:
-                self.save(prefix)
+                self._write_checkpoint_files(prefix)
         speed = clock.ns_per_day(self.step)
         for t in logs or []:
             t.close()
         if xlog is not None:
             xlog.close()
         if files and restart:
-            self.save(prefix)
+            self._write_checkpoint_files(prefix)
         summary = self.summary(ns_per_day=speed)
         if files:
             with open(f"{prefix}_remd.json", "w") as fh:
                 json.dump(summary, fh, indent=1)
         return summary
 
+    def _progress(self, line: str) -> None:
+        """One progress line to the log stream (if any)."""
+        if self.log is not None:
+            print(line, file=self.log, flush=True)
+
     def summary(self, ns_per_day: float | None = None) -> dict:
+        """Ladder, acceptance, round trips and (optionally) speed of the run so far.
+
+        Parameters
+        ----------
+        ns_per_day : float, optional
+            Speed per replica [ns/day] to include (with the aggregate speed).
+
+        Returns
+        -------
+        dict
+            JSON-serializable summary (the content of prefix_remd.json).
+        """
         st = self.stats
         acc = st.acceptance()
         out = {
@@ -756,20 +817,26 @@ class ReplicaExchange:
         return out
 
     # ------------------------------------------------------------------ checkpoints
-    def save(self, prefix: str) -> None:
-        """Write a checkpoint prefix.remd.chk (and prefix_Tkk.rst7 Amber restarts when the replica
-        engine writes them).
+    def _write_checkpoint_files(self, prefix: str) -> None:
+        """The files of run's checkpoints: prefix.remd.chk and, when the replica engine writes
+        them, Amber restarts prefix_Tkk.rst7."""
+        self.save_checkpoint(prefix + ".remd.chk")
+        if hasattr(self.replicas, "write_restarts"):
+            self.replicas.write_restarts(prefix)
+
+    def save_checkpoint(self, path: str) -> None:
+        """Write a checkpoint of the whole run (driver.write_checkpoint, kind "remd").
 
         Parameters
         ----------
-        prefix : str
-            Path prefix of the files.
+        path : str
+            The file (prefix.remd.chk in `run`).
 
         Notes
         -----
-        The checkpoint (driver.write_checkpoint, kind "remd") holds every replica state
-        (`state_dict` of the engine), the replica map and statistics, the step and the state of
-        the exchange random-number generator; `load` continues the run bitwise on the CPU.
+        The checkpoint holds every replica state (`state_dict` of the engine), the replica map
+        and statistics, the step and the state of the exchange random-number generator;
+        `load_checkpoint` continues the run bitwise on the CPU.
         """
         content = {
             "temperatures": self.T,
@@ -779,12 +846,10 @@ class ReplicaExchange:
             "stats": self.stats.to_dict(),
             "replicas": self.replicas.state_dict(),
         }
-        write_checkpoint(prefix + ".remd.chk", "remd", content)
-        if hasattr(self.replicas, "write_restarts"):
-            self.replicas.write_restarts(prefix)
+        write_checkpoint(path, "remd", content)
 
-    def load(self, path: str) -> None:
-        """Continue from a checkpoint written by `save`, or from a legacy pickle ``.remd.chk`` of
+    def load_checkpoint(self, path: str) -> None:
+        """Continue from a checkpoint written by `save_checkpoint`, or from a legacy pickle ``.remd.chk`` of
         pgm_jax up to commit e72c57c.
 
         Parameters

@@ -14,10 +14,12 @@ from test_md import small_box
 from test_md_macro import _water_box
 
 from pgm_jax import System
+from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.md.iel import spectral_radius
 from pgm_jax.md.neighbors import AtomNeighbors
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.md.thermostats import Bussi
 from pgm_jax.units import KB
 
 
@@ -106,30 +108,31 @@ def _reverse(sim):
 def test_time_reversibility_without_dissipation(mode):
     sys, pos, H = _water()
     s = _settings(iel=mode, iel_order=0, iel_iter=2)
-    sim = Simulation(sys, pos, H, s, dt=0.0005, ensemble="nve", log=None, seed=3)
-    sim._advance(10)  # past the warm-up
-    x0 = sim.positions_nm()
-    sim._advance(60)
-    moved = np.abs(sim.positions_nm() - x0).max()
+    sim = Simulation(sys, pos, H, s, dt=0.0005, thermostat=None, log=None, seed=3)
+    sim.advance(10)  # past the warm-up
+    x0 = sim.positions()
+    sim.advance(60)
+    moved = np.abs(sim.positions() - x0).max()
     _reverse(sim)
-    sim._advance(60)
-    back = np.abs(sim.positions_nm() - x0).max()
+    sim.advance(60)
+    back = np.abs(sim.positions() - x0).max()
     assert moved > 1e-3 and back < 1e-9 * max(moved, 1.0) * 1e3, (moved, back)
 
 
 def test_dissipation_breaks_reversibility_only_slightly():
     sys, pos, H = _water()
     s = _settings(iel="0scf", iel_order=5)
-    sim = Simulation(sys, pos, H, s, dt=0.0005, ensemble="nve", log=None, seed=3)
-    sim._advance(10)
-    x0 = sim.positions_nm()
-    sim._advance(60)
+    sim = Simulation(sys, pos, H, s, dt=0.0005, thermostat=None, log=None, seed=3)
+    sim.advance(10)
+    x0 = sim.positions()
+    sim.advance(60)
     _reverse(sim)
-    sim._advance(60)
-    assert np.abs(sim.positions_nm() - x0).max() < 1e-4
+    sim.advance(60)
+    assert np.abs(sim.positions() - x0).max() < 1e-4
 
 
-def _trajectory(settings, n=8, block=25, dt=0.001, seed=5, ensemble="nve"):
+def _trajectory(settings, n=8, block=25, dt=0.001, seed=5, nvt=False):
+    """64 waters in a small box, NVE, or NVT with Bussi 0.1 ps (nvt=True)."""
     sys, pos, H = _water()
     sim = Simulation(
         sys,
@@ -137,12 +140,10 @@ def _trajectory(settings, n=8, block=25, dt=0.001, seed=5, ensemble="nve"):
         H,
         settings,
         dt=dt,
-        ensemble=ensemble,
         log=None,
         seed=seed,
         temperature=300.0,
-        thermostat="bussi",
-        tau_t=0.1,
+        thermostat=Bussi(0.1) if nvt else None,
     )
     return sim
 
@@ -154,9 +155,9 @@ def test_dipoles_and_energy_follow_the_converged_solution():
     ref.mc = sim.ff.mc
     solve = jax.jit(lambda pos, H, idx: ref.compute(pos, H, idx, ref.init_induction()))
     rel, de = [], []
-    sim._advance(20)
+    sim.advance(20)
     for _ in range(8):
-        sim._advance(25)
+        sim.advance(25)
         st = sim.state
         pos = sim.rigid.positions(st.dyn.position)
         idx = sim.nb.candidates(st.nbr, st.dyn.position.center, st.box, pos)[0]
@@ -170,22 +171,22 @@ def test_dipoles_and_energy_follow_the_converged_solution():
 
 
 def _drift_and_noise(settings, dt=0.001, n=12, block=50):
-    sim = _trajectory(settings, dt=dt, ensemble="nvt")
-    sim._advance(100)  # relax the lattice start (Bussi 0.1 ps)
+    sim = _trajectory(settings, dt=dt, nvt=True)
+    sim.advance(100)  # relax the lattice start (Bussi 0.1 ps)
     nve = Simulation(
         sim.sys,
-        sim.positions_nm(),
+        sim.positions(),
         np.asarray(sim.state.box),
         settings,
         dt=dt,
-        ensemble="nve",
+        thermostat=None,
         log=None,
-        vel_nm_ps=sim.velocities_nm_ps(),
+        velocities=sim.velocities(),
     )
     E = []
-    nve._advance(20)
+    nve.advance(20)
     for _ in range(n):
-        nve._advance(block)
+        nve.advance(block)
         E.append(nve.observables()["etot"])
     E = np.array(E)
     t = np.arange(n) * block * dt
@@ -205,14 +206,14 @@ def test_energy_conservation_in_a_tiny_box():
 def test_iel_scf_modes():
     base = _settings(dipole_tol=1e-8)
     sim = _trajectory(dataclasses.replace(base, iel="scf", iel_iter=0))  # CG from x to tolerance
-    sim._advance(40)
+    sim.advance(40)
     it_x = float(sim.state.cg_total) / 40
     ref = _trajectory(base)
-    ref._advance(40)
+    ref.advance(40)
     it_mu4 = float(ref.state.cg_total) / 40
     assert it_x < it_mu4 + 3, (it_x, it_mu4)
     sim2 = _trajectory(dataclasses.replace(base, iel="scf", iel_iter=2))
-    sim2._advance(40)
+    sim2.advance(40)
     assert int(sim2.state.iters) == 2 and np.isfinite(sim2.observables()["etot"])
 
 
@@ -222,27 +223,17 @@ def test_barostat_and_flexible_engine():
     sys, pos, H = _water()
     s = _settings(iel="0scf", dipole_tol=1e-8)
     sim = Simulation(
-        sys,
-        pos,
-        H * 1.02,
-        s,
-        dt=0.001,
-        ensemble="npt",
-        barostat_interval=5,
-        log=None,
-        thermostat="bussi",
-        tau_t=0.1,
-        seed=2,
+        sys, pos, H * 1.02, s, dt=0.001, thermostat=Bussi(0.1), barostat=MonteCarloBarostat(every=5), log=None, seed=2
     )
-    sim._advance(100)
+    sim.advance(100)
     o = sim.observables()
     assert int(sim.state.mc[0]) == 20 and np.isfinite(o["epot"]) and 0.5 < o["density_g_cm3"] < 1.5
     _, _, w = _water_box()
     tpl = RigidTemplate(water(), w)
-    fl = FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=0.001, ensemble="nve", log=None)
-    rg = Simulation(sys, pos, H, s, dt=0.001, ensemble="nve", log=None)
+    fl = FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=0.001, thermostat=None, log=None)
+    rg = Simulation(sys, pos, H, s, dt=0.001, thermostat=None, log=None)
     assert abs(float(fl.state.epot) - float(rg.state.epot)) < 1e-8 * abs(float(rg.state.epot))
-    fl._advance(30)
+    fl.advance(30)
     assert int(fl.state.iters) == 0 and np.isfinite(fl.observables()["etot"])
 
 
@@ -268,12 +259,12 @@ def test_response_spectrum_and_positive_auxiliary_energy():
     sys, p, Hw = _water()
     dev = {}
     for name, st in (("iel", _settings(iel="0scf", iel_omega=0.5, iel_order=0, iel_kappa=1.82)), ("scf", _settings())):
-        sim = Simulation(sys, p, Hw, st, dt=0.001, ensemble="nve", log=None, seed=3)
-        sim._advance(20)
+        sim = Simulation(sys, p, Hw, st, dt=0.001, thermostat=None, log=None, seed=3)
+        sim.advance(20)
         e0 = sim.observables()["etot"]
         E = []
         for _ in range(8):
-            sim._advance(50)
+            sim.advance(50)
             E.append(sim.observables()["etot"] - e0)
         dev[name] = (max(abs(e) for e in E), sim.observables()["ekin"])
     assert dev["iel"][0] < 3.0 * dev["scf"][0] + 0.002 * dev["scf"][1], dev

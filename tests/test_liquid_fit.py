@@ -383,7 +383,7 @@ def test_nvt_replicas_are_ordered_by_replica(tmp_path):
         bootstrap=0,
         log=None,
         tol=1e-8,
-        ensemble="nvt",
+        barostat=None,
         replicas=2,
         equil_rep_ps=0.01,
         fixed=True,

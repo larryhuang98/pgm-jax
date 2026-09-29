@@ -12,7 +12,7 @@ atoms).
     ])
     sim = FlexibleSimulation(..., restraints=rs)        # or Simulation(..., restraints=rs)
     sim.observables()["erestraint"], sim.restraint_energies()      # total; by kind
-    asys.position_restraints(k, "backbone", sim.positions_nm(), sim.state.box)   # proteins (protein/amber.py)
+    asys.position_restraints(k, "backbone", sim.positions(), sim.state.box)   # proteins (protein/amber.py)
 
 Force constants follow Amber (restraint_wt, NMR rk2 / rk3): E = k x^2, with no factor 1/2; a spring
 constant K of E = K x^2 / 2 is k = K / 2.  Units kJ/mol/nm^2 (kJ/mol/rad^2 for angles and

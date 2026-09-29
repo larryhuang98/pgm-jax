@@ -19,6 +19,8 @@ import time
 
 import numpy as np
 
+from pgm_jax.md.pimd import PILE
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "validation/pimd")
 T, N, M = 300.0, 64, 1.008
@@ -119,7 +121,9 @@ def run_pgmjax():
     res = {}
     for P, Pc in CASES:
         eng = PotentialEngine(vs, soft=vw, contract=Pc)
-        integ = PIMDIntegrator(eng, np.full(N, M), P, T, DT, "pimd", "pile-l", tau0=1.0 / 20.0, propagator="exact")
+        integ = PIMDIntegrator(
+            eng, np.full(N, M), P, T, DT, "pimd", PILE("l", tau_centroid=1.0 / 20.0), propagator="exact"
+        )
         t0 = time.time()
         st = integ.run(integ.init(jnp.zeros((N, 3)), jnp.eye(3), jax.random.PRNGKey(P + (Pc or 0))), NEQ)
 

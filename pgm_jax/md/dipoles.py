@@ -155,7 +155,7 @@ def cell_dipole(sim, params=None) -> dict:
     "total"} (e nm, (3,) numpy), "debye" (the same four in D), "molecular" (nmol, 3) e nm."""
     cd = CellDipole(sim.ff)
     params = sim.integ.params if params is None else params
-    pos, H, mu = sim.positions_nm(), np.asarray(sim.state.box), sim.state.induction.mu
+    pos, H, mu = sim.positions(), np.asarray(sim.state.box), sim.state.induction.mu
     c = np.asarray(cd.components(pos, H, mu, params))
     out = {"charge": c[0], "perm": c[1], "ind": c[2], "total": c.sum(0)}
     out["debye"] = {k: out[k] / DEBYE_E_NM for k in ("charge", "perm", "ind", "total")}

@@ -72,7 +72,6 @@ def test_solvated_peptide_md_with_constraints():
         asys.box,
         s,
         dt=0.002,
-        ensemble="nvt",
         constraints="h-bonds",
         hmr=3.024,
         log=None,
@@ -80,6 +79,6 @@ def test_solvated_peptide_md_with_constraints():
     n_h_prot = sum(e == "H" for e in asys.molecules[0].spec.elements)
     n_w = sum(m.kind == "water" for m in asys.molecules)
     assert sim.constraints.nc == n_h_prot + 3 * n_w
-    sim._advance(100)
+    sim.advance(100)
     obs = sim.observables()
     assert np.isfinite(obs["etot"]) and obs["shake_err"] < 1e-6 and 150 < obs["temp_K"] < 450, obs

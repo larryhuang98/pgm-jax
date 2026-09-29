@@ -87,7 +87,7 @@ def test_nnb_template_md_consistency():
     assert "coef" in tpl.P["nnb"]
     y = x + 0.004 * rng.normal(size=x.shape)
     s = MDSettings(precision="double", dipole_tol=1e-9, cutoff=1.8, skin=0.05, lj_lrc=False)
-    sim = FlexibleSimulation(System([tpl.pgm]), [tpl], y + 2.0, np.eye(3) * 4.0, s, ensemble="nve", log=None)
+    sim = FlexibleSimulation(System([tpl.pgm]), [tpl], y + 2.0, np.eye(3) * 4.0, s, thermostat=None, log=None)
     F = np.asarray(sim.state.dyn.force)
     g = np.asarray(jax.grad(lambda R: model.energy(0, R, P)[0])(jnp.asarray(y)))
     assert np.abs(F + g).max() < 1e-3 * np.sqrt(np.mean(g**2))

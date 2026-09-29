@@ -17,6 +17,7 @@ from pgm_jax.md.io import NetCDFTrajectory, read_coordinates, write_restart
 from pgm_jax.md.neighbors import AtomNeighbors
 from pgm_jax.md.rigid import RigidMolecules, matrix_to_quaternion
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.md.thermostats import Langevin
 from pgm_jax.paths import resource
 from pgm_jax.units import KB
 
@@ -214,7 +215,7 @@ def test_langevin_equipartition():
     ff, _ = ff_and_list(sys, pos, H)
     rig = RigidMolecules(sys, pos, H)
     integ = Integrator(
-        ff, rig, AtomNeighbors(sys.n, H, 0.6, 0.05), dt=0.002, ensemble="nvt", temperature=300.0, gamma=5.0
+        ff, rig, AtomNeighbors(sys.n, H, 0.6, 0.05), dt=0.002, thermostat=Langevin(5.0), temperature=300.0
     )
     from pgm_jax.md._jaxmd import simulate
     from pgm_jax.md.integrate import Dynamics
@@ -262,21 +263,21 @@ def test_netcdf_trajectory_and_restart(tmp_path):
 @need_water_box
 def test_nve_energy_conservation_and_exact_restart(tmp_path):
     s = MDSettings(cutoff=0.8, skin=0.1, pme_grid=(48, 48, 48), dipole_tol=1e-6, precision="mixed")
-    sim = Simulation.from_amber(TOP, RST, settings=s, ensemble="nve", dt=0.001, log=None)
+    sim = Simulation.from_amber(TOP, RST, settings=s, thermostat=None, dt=0.001, log=None)
     E = []
     for _ in range(10):
-        sim._advance(100)
+        sim.advance(100)
         E.append(sim.observables()["etot"])
     ke_scale = 0.5 * sim.integ.dof * KB * 298
     assert np.std(E) < 2e-4 * ke_scale and abs(E[-1] - E[0]) < 5e-4 * ke_scale, (np.std(E), E[-1] - E[0])
     # continuation from a checkpoint: the same trajectory up to floating-point summation order
     # (PME spreading uses atomic adds on the GPU, so runs are not bitwise reproducible)
-    sim.save(str(tmp_path / "c"))
-    sim._advance(20)
-    x_cont, e_cont = sim.positions_nm(), sim.observables()["etot"]
-    sim2 = Simulation.from_amber(TOP, RST, settings=s, ensemble="nve", dt=0.001, log=None)
-    sim2.load(str(tmp_path / "c.chk"))
+    sim.save_checkpoint(str(tmp_path / "c.chk"))
+    sim.advance(20)
+    x_cont, e_cont = sim.positions(), sim.observables()["etot"]
+    sim2 = Simulation.from_amber(TOP, RST, settings=s, thermostat=None, dt=0.001, log=None)
+    sim2.load_checkpoint(str(tmp_path / "c.chk"))
     assert int(sim2.state.step) == 1000 and abs(sim2.time_ps - 1.0) < 1e-12
-    sim2._advance(20)
-    assert np.abs(sim2.positions_nm() - x_cont).max() < 1e-4
+    sim2.advance(20)
+    assert np.abs(sim2.positions() - x_cont).max() < 1e-4
     assert abs(sim2.observables()["etot"] - e_cont) < 0.1

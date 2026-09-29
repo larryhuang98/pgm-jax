@@ -7,7 +7,7 @@ engine (Simulation, FlexibleSimulation).
     w = Walkers(sim, 8, shared=True)              # multiple-walker metadynamics: one bias, 8 depositors
     w = Walkers(sim, 8)                           # 8 independent runs (each its own bias), e.g. for error bars
     w = Walkers(sim, 24, bias_states=[...])       # e.g. umbrella windows: one Harmonic centre per walker
-    w.run(500000, report=5000, restart=50000, prefix="ala2")
+    w.run(500000, prefix="ala2", report_every=5000, checkpoint_every=50000)
 
 Small systems leave most of a GPU idle, so W walkers cost little more than one (the replica
 engine of md/remd.py: stacked states, one layout of the neighbour lists, overflows resized for all).
@@ -21,11 +21,9 @@ shared=True   one bias state for all walkers (multiple walkers, Raiteri et al., 
 Walkers start from the simulation's current configuration with momenta drawn from independent
 random streams.  Outputs: prefix_wNN.colvar per walker; hills in prefix.hills (shared) or
 prefix_wNN.hills; prefix_walkers.log (per report: mean temperature, epot and bias of the walkers);
-checkpoint prefix.walkers.chk (all states; `load`)."""
+checkpoint prefix.walkers.chk (all states; `load_checkpoint`)."""
 
 from __future__ import annotations
-
-import sys
 
 import jax
 import jax.numpy as jnp
@@ -44,12 +42,39 @@ def _unbatched_bias(S):
 
 
 class Walkers(MDReplicas):
-    def __init__(self, sim, n: int, shared: bool = False, bias_states=None, seed: int = 0):
+    """Several biased copies of one simulation advanced together (see the module docstring)."""
+
+    def __init__(self, sim, walkers: int, shared: bool = False, bias_states=None, seed: int = 0, log=None):
+        """Walkers from `sim`'s current configuration.
+
+        Parameters
+        ----------
+        sim : Simulation or FlexibleSimulation
+            Created with bias=... and a thermostat, NVT, without multiple time stepping.
+        walkers : int
+            Number of walkers W.
+        shared : bool
+            One bias state deposited into by every walker (multiple-walker metadynamics / OPES)
+            instead of one per walker.
+        bias_states : sequence, optional
+            One bias state per walker (e.g. umbrella centres; not with shared=True).
+        seed : int
+            Seed of the walkers' momenta and thermostat streams.
+        log : text stream or None
+            Receives the rows of the log table of `run` too.
+
+        Raises
+        ------
+        ValueError
+            A simulation without a bias or thermostat, NPT, MTS, or bias_states with shared=True.
+        """
+        self.log = log
+        n = walkers
         integ = sim.integ
         if integ.bias is None:
             raise ValueError("the simulation has no bias (bias=...)")
         if integ.thermostat is None:
-            raise ValueError("walkers need a thermostat (nvt)")
+            raise ValueError("walkers need a thermostat (create the simulation with thermostat=...)")
         if sim.ensemble == "npt":
             raise ValueError("batched walkers run NVT only")
         if getattr(integ, "mts", None) is not None:
@@ -223,11 +248,11 @@ class Walkers(MDReplicas):
     def run(
         self,
         nsteps: int,
-        report: int = 1000,
-        restart: int = 0,
+        *,
         prefix: str = "walkers",
+        report_every: int = 1000,
+        checkpoint_every: int = 0,
         append: bool = False,
-        log=sys.stdout,
     ) -> None:
         """Advance every walker nsteps with output files.
 
@@ -235,19 +260,18 @@ class Walkers(MDReplicas):
         ----------
         nsteps : int
             Steps.
-        report : int
-            Steps between rows of prefix_walkers.log (mean temperature [K], mean potential and bias
-            energies and total bias work [kJ/mol], aggregate ns/day); 0: none.
-        restart : int
-            Steps between checkpoints prefix.walkers.chk (0: none; with restarts also at the end).
         prefix : str
             Path prefix of the files: COLVAR rows prefix_wNN.colvar per walker, hills in
             prefix.hills (shared) or prefix_wNN.hills.
+        report_every : int
+            Steps between rows of prefix_walkers.log (mean temperature [K], mean potential and bias
+            energies and total bias work [kJ/mol], aggregate ns/day); 0: none.
+        checkpoint_every : int
+            Steps between checkpoints prefix.walkers.chk (0: none; with checkpoints also at the end).
         append : bool
             Append to existing files (a continuation).
-        log : text stream or None
-            Receives the rows of the log table too.
         """
+        report, restart = report_every, checkpoint_every
         bias, sim = self.integ.bias, self.sim
         block = block_length(nsteps, report, restart)
         outs = []
@@ -259,7 +283,7 @@ class Walkers(MDReplicas):
         shared_out = None
         if self.shared:
             shared_out = BiasOutput(bias, prefix, self.dt, sim.T0, append=append, state=self.S.bias, colvar=False)
-        table = LogTable(prefix + "_walkers.log", append=append, echo=log)
+        table = LogTable(prefix + "_walkers.log", append=append, echo=self.log)
         clock = Stopwatch(0, self.dt)
         done = 0
         for w in range(self.n):
@@ -288,10 +312,10 @@ class Walkers(MDReplicas):
                     }
                 )
             if restart and step % restart == 0:
-                self.save(prefix + ".walkers.chk")
+                self.save_checkpoint(prefix + ".walkers.chk")
         table.close()
         if restart:
-            self.save(prefix + ".walkers.chk")
+            self.save_checkpoint(prefix + ".walkers.chk")
 
     def state_dict(self) -> dict:
         """The walkers' content for a checkpoint.
@@ -340,7 +364,7 @@ class Walkers(MDReplicas):
         self.S = S.set(nbr=self._forces(S).nbr)
         self.time_ps = float(d["time_ps"])
 
-    def save(self, path: str) -> None:
+    def save_checkpoint(self, path: str) -> None:
         """Write a checkpoint of every walker (driver.write_checkpoint, kind "walkers").
 
         Parameters
@@ -350,8 +374,8 @@ class Walkers(MDReplicas):
         """
         write_checkpoint(path, "walkers", self.state_dict())
 
-    def load(self, path: str) -> None:
-        """Continue from a checkpoint written by `save`, or from a legacy pickle ``.walkers.chk`` of
+    def load_checkpoint(self, path: str) -> None:
+        """Continue from a checkpoint written by `save_checkpoint`, or from a legacy pickle ``.walkers.chk`` of
         pgm_jax up to commit e72c57c (same system, walker count and mode).
 
         Parameters

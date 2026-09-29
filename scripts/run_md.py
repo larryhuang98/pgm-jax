@@ -20,14 +20,17 @@ has the columns efield, field_energy and the cell dipole Mx My Mz (e nm).
 from __future__ import annotations
 
 import argparse
+import sys
 
 import jax
 
 from pgm_jax.cli.args import (  # noqa: E402
     add_iel_arguments,
     add_mts_arguments,
+    coupling_from_options,
     iel_settings,
     mts_from_args,
+    setup_logging,
 )
 from pgm_jax.md.forcefield import DSUM_TOL, MDSettings, ewald_beta_for
 from pgm_jax.md.simulation import Simulation
@@ -123,6 +126,7 @@ def main(argv=None):
     add_mts_arguments(ap, "--dt")
     add_iel_arguments(ap)
     a = ap.parse_args(argv)
+    setup_logging()
     if a.ew_coeff is None:
         a.ew_coeff = 0.4 if a.es_cut is None else ewald_beta_for(a.es_cut / 10, a.dsum_tol) / 10
     if a.pme_spacing is None:
@@ -148,6 +152,9 @@ def main(argv=None):
         elec="q" if a.charges == "amber" else "qpi",
         **iel_settings(a),
     )
+    thermostat, barostat = coupling_from_options(
+        a.ensemble, a.thermostat, a.gamma, a.tautp, a.press, a.barostat_interval
+    )
     sim = Simulation.from_amber(
         a.prmtop,
         a.coords,
@@ -155,29 +162,26 @@ def main(argv=None):
         settings=st,
         charges=a.charges,
         dt=a.dt / 1000,
-        ensemble=a.ensemble,
         temperature=a.temp,
-        gamma=a.gamma,
-        thermostat=a.thermostat,
-        tau_t=a.tautp,
-        pressure=a.press,
-        barostat_interval=a.barostat_interval,
+        thermostat=thermostat,
+        barostat=barostat,
         seed=a.seed,
+        log=sys.stdout,
         mts=mts_from_args(a),
         efield=field_from_args(a),
     )
     if a.checkpoint:
-        sim.load(a.checkpoint)
+        sim.load_checkpoint(a.checkpoint)
     sim.run(
         a.nsteps,
-        report=a.report,
-        traj=a.traj,
-        restart=a.restart,
+        report_every=a.report,
+        traj_every=a.traj,
+        checkpoint_every=a.restart,
         prefix=a.out,
-        pressure_every_report=a.pressure,
+        report_pressure=a.pressure,
         append=bool(a.checkpoint),
-        dipoles=a.dipoles,
-        induced=a.induced,
+        dipoles_every=a.dipoles,
+        induced_every=a.induced,
     )
 
 

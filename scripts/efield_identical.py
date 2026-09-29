@@ -40,12 +40,12 @@ from pgm_jax.md.simulation import Simulation  # noqa: E402
 sys_, pos, H = small_box(0, nm=0)
 s = MDSettings(cutoff=0.6, skin=0.05, pme_grid=(32, 32, 32), dipole_tol=1e-5, precision="mixed")
 out = {}
-sim = Simulation(sys_, pos, H, s, dt=0.002, ensemble="nvt", thermostat="bussi", log=None, seed=7)
-sim._advance(300)
-out["rigid_pos"], out["rigid_epot"] = sim.positions_nm(), np.array(float(sim.state.epot))
+sim = Simulation(sys_, pos, H, s, dt=0.002, thermostat="bussi", log=None, seed=7)
+sim.advance(300)
+out["rigid_pos"], out["rigid_epot"] = sim.positions(), np.array(float(sim.state.epot))
 tpl = [RigidTemplate(m, pos[sys_.atom_slice(k)]) for k, m in enumerate(sys_.molecules)]
-sim = FlexibleSimulation(sys_, tpl, pos, H, s, dt=0.002, ensemble="nvt", thermostat="bussi", log=None, seed=7)
-sim._advance(300)
-out["flex_pos"], out["flex_epot"] = sim.positions_nm(), np.array(float(sim.state.epot))
+sim = FlexibleSimulation(sys_, tpl, pos, H, s, dt=0.002, thermostat="bussi", log=None, seed=7)
+sim.advance(300)
+out["flex_pos"], out["flex_epot"] = sim.positions(), np.array(float(sim.state.epot))
 np.savez(a.out, **out)
 print("saved", a.out, {k: float(np.sum(v)) for k, v in out.items()})

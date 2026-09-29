@@ -23,7 +23,7 @@ import time
 import jax
 import numpy as np
 
-from pgm_jax.cli.args import add_mts_arguments, mts_from_args
+from pgm_jax.cli.args import add_mts_arguments, coupling_from_options, mts_from_args, setup_logging
 from pgm_jax.md.box import box_from_cell
 from pgm_jax.md.flexible import FlexibleSimulation
 from pgm_jax.md.forcefield import DSUM_TOL, MDSettings, elec_cutoff_settings
@@ -100,6 +100,7 @@ ap.add_argument(
 )
 add_mts_arguments(ap)
 a = ap.parse_args()
+setup_logging()
 ew = (
     {"ewald_beta": 4.0, "pme_spacing": 0.08}
     if a.elec_cut is None
@@ -129,6 +130,7 @@ pos, H = asys.system_positions(), asys.box
 if a.coords:
     xyz, _, cell = read_coordinates(a.coords)
     pos, H = xyz * 0.1, box_from_cell(*cell) * 0.1
+thermostat, barostat = coupling_from_options(a.ensemble, a.thermostat, a.gamma, a.tau, 1.0, a.barostat_interval)
 sim = FlexibleSimulation(
     asys.system(),
     asys.templates(tpl),
@@ -137,14 +139,11 @@ sim = FlexibleSimulation(
     st,
     dt=a.dt,
     temperature=a.temp,
-    ensemble=a.ensemble,
-    barostat_interval=a.barostat_interval,
+    thermostat=thermostat,
+    barostat=barostat,
     constraints="h-bonds",
     hmr=hmr,
     log=sys.stdout,
-    thermostat=a.thermostat,
-    tau_t=a.tau,
-    gamma=a.gamma,
     seed=a.seed,
     mts=mts_from_args(a),
 )
@@ -165,12 +164,12 @@ print(
 t1 = time.time()
 if a.minimize > 0:
     print("minimise:", sim.minimize(a.minimize), flush=True)
-sim._advance(500)
+sim.advance(500)
 print(f"minimise + compile + 500 steps {time.time() - t1:.1f} s", flush=True)
 t0 = time.time()
 done = 0
 while done < a.steps:
-    sim._advance(500)
+    sim.advance(500)
     done += 500
 el_t = time.time() - t0
 o = sim.observables()
@@ -190,7 +189,7 @@ nblk = max(1, int(round(a.sample_ps / a.dt)))
 if a.equil_ps > 0:
     t0 = time.time()
     for _ in range(int(round(a.equil_ps / a.sample_ps))):
-        sim._advance(nblk)
+        sim.advance(nblk)
     o = sim.observables()
     print(
         f"equilibrated {a.equil_ps:g} ps ({time.time() - t0:.0f} s): T {o['temp_K']:.1f} K, epot {o['epot']:.1f}",
@@ -220,11 +219,11 @@ if a.prod_ps > 0:
             tfile = NetCDFTrajectory(a.save + ".nc", sim.sys.n)
     t0 = time.time()
     for i in range(int(round(a.prod_ps / a.sample_ps))):
-        sim._advance(nblk)
+        sim.advance(nblk)
         o = sim.observables()
         rows.append([o[c] for c in cols])
         if a.traj_ps > 0 and (i + 1) % tevery == 0:
-            x = sim.positions_nm()
+            x = sim.positions()
             frames.append((x[ca] * 10.0, x[heavy] * 10.0))
             if tfile is not None:
                 tfile.write(sim.time_ps, x * 10.0, np.asarray(sim.state.box) * 10.0)
@@ -271,4 +270,5 @@ if a.prod_ps > 0:
     if a.save:
         np.savez(a.save + "_samples.npz", **{c: X[:, i] for i, c in enumerate(cols)}, dof=sim.integ.dof)
 if a.save:
-    sim.save(a.save)
+    sim.save_checkpoint(a.save + ".chk")
+    sim.write_restart(a.save + ".rst7")

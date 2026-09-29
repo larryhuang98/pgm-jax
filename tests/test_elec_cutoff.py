@@ -213,16 +213,16 @@ def test_row_capacity_overflow_of_each_part():
     # the driver finds the overflow, re-sizes both parts and repeats the block
     log = io.StringIO()
     s = settings(cutoff=RC_V, elec_cutoff=RC_E, dipole_tol=1e-8, max_iter=100)
-    ref = Simulation(sys, pos, H, s, dt=0.001, ensemble="nve", log=None)
-    sim = Simulation(sys, pos, H, s, dt=0.001, ensemble="nve", log=log)
+    ref = Simulation(sys, pos, H, s, dt=0.001, thermostat=None, log=None)
+    sim = Simulation(sys, pos, H, s, dt=0.001, thermostat=None, log=log)
     tail = sim.ff.mc - sim.ff.mc_e
     sim.ff.mc, sim.ff.mc_e = ce - 1 + tail, ce - 1  # electrostatic part too small
     sim.integ.compile()
-    sim._advance(20)
-    ref._advance(20)
+    sim.advance(20)
+    ref.advance(20)
     assert "row capacity overflow" in log.getvalue()
     assert sim.ff.mc_e >= ce + 7 and sim.ff.mc - sim.ff.mc_e >= tail
-    assert np.allclose(sim.positions_nm(), ref.positions_nm(), rtol=0, atol=1e-9)
+    assert np.allclose(sim.positions(), ref.positions(), rtol=0, atol=1e-9)
 
 
 def test_ewald_beta_rule_and_recommended_settings():
