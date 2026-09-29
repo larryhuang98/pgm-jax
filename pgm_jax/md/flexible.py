@@ -1,5 +1,10 @@
-"""Flexible molecules for pGM MD: bonded terms on top of the periodic pGM force field, rigid
-molecules by constraints, macromolecules.
+"""Flexible molecules for pGM MD: bonded terms on the periodic pGM force field, constraints.
+
+Contents: the templates `FlexibleTemplate` (fitted bonded terms) and `RigidTemplate` (rigid
+molecules of up to three atoms held by constraints), `FlexibleMolecules` (per-atom molecule
+representation), `FlexibleIntegrator` (constrained BAOAB on atoms), the engine
+`FlexibleSimulation`, and `liquid_box` (a starting box of one template).  Rigid molecules by
+constraints and macromolecules run in the same engine.
 
 A molecule type is described by a template:
   FlexibleTemplate  pGM electrostatics (the `Molecule` the force field uses) and bonded parameters
@@ -31,12 +36,16 @@ with SHAKE / RATTLE in g-BAOAB order (md/constraints.py); with hydrogen mass rep
 Molecules are kept whole: positions are never wrapped atom by atom, only whole molecules are
 shifted by lattice vectors.  Virtual sites (Molecule.vsites, md/vsites.py) are not integrated: they
 are rebuilt from their parents every step and their forces are spread to their parents.
-Units: nm, ps, amu, kJ/mol, K."""
+
+Units: nm, ps, amu, kJ/mol, K.
+"""
 
 from __future__ import annotations
 
 import pickle
+from collections.abc import Sequence
 from dataclasses import asdict, replace
+from typing import TYPE_CHECKING, Any, TextIO
 
 import jax
 import jax.numpy as jnp
@@ -57,15 +66,64 @@ from .thermostats import Bussi, Thermostat
 from .topology import MDTopology, MoleculeRule
 from .vsites import VirtualSites
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from jax.typing import ArrayLike
+
+    from ..bonded.model import BondedModel, BondedTerms, MolSpec
+    from ..bonded.nn.model import NNBonded
+    from ..system import Molecule
+    from .alchemy import Alchemy
+    from .efield import ExternalField
+    from .forcefield import Result
+    from .mts import MTS
+    from .restraints import Restraint, Restraints
+
 
 # ----------------------------------------------------------------------------- templates
 class FlexibleTemplate:
     """Bonded parameters of one molecule type, fitted with pgm_jax.bonded, plus its pGM molecule.
-    The MD engine treats electrostatics with all pairs, so the fit must have used pGM electrostatics
-    without exclusions or refitted charges.  Charge flux (BondedSettings.flux) runs as fitted
-    (md/flux.py; FlexibleSimulation builds it from the templates)."""
 
-    def __init__(self, specs, settings: dict, P: dict, index: int = 0):
+    The MD engine treats electrostatics with all pairs, so the fit must have used pGM
+    electrostatics without exclusions or refitted charges.  Charge flux (BondedSettings.flux) runs
+    as fitted (md/flux.py; FlexibleSimulation builds it from the templates).  Molecules sharing a
+    template object share its compiled bonded energy (vmapped over the copies).
+
+    Attributes
+    ----------
+    specs : list of MolSpec
+        Molecule specifications of the fit (topologies dropped; rebuilt by `terms`).
+    settings : dict
+        BondedSettings of the fit (as a dict).
+    P : dict
+        Fitted parameters (numpy leaves).
+    index : int
+        Which molecule of the fit this template is.
+    has_bonded : bool
+        True (class attribute; RigidTemplate: False).
+    """
+
+    def __init__(self, specs: Sequence[MolSpec], settings: dict, P: dict, index: int = 0) -> None:
+        """Store a fit and check that it is compatible with the MD engine.
+
+        Parameters
+        ----------
+        specs : Sequence of MolSpec
+            The molecules of the fit.
+        settings : dict
+            BondedSettings of the fit as a dict (dataclasses.asdict).
+        P : dict
+            Fitted parameters.
+        index : int
+            Molecule of the fit this template describes.
+
+        Raises
+        ------
+        ValueError
+            A fit with electrostatic or induction exclusions, fitted charges, learned pair scales
+            or quadrupoles (the MD engine uses pGM with all pairs).
+        """
         from ..bonded.model import BondedSettings
 
         self.specs = [replace(s, top=None) for s in specs]
@@ -89,19 +147,24 @@ class FlexibleTemplate:
         self._model = self._terms = None
 
     @classmethod
-    def from_fit(cls, model, P, index: int = 0) -> FlexibleTemplate:
-        """From a fitted BondedModel and its parameters (molecule `index` of the model).  Neural
-        bonded terms ("nnb") are frozen: their stage-1 coefficients are evaluated once here."""
+    def from_fit(cls, model: BondedModel, P: dict, index: int = 0) -> FlexibleTemplate:
+        """Return the template of molecule `index` of a fitted BondedModel and its parameters.
+
+        Neural bonded terms ("nnb") are frozen: their stage-1 coefficients are evaluated once here.
+        """
         if getattr(model, "nnb", None) is not None and "coef" not in P["nnb"]:
             P = dict(P)
             P["nnb"] = model.nnb.freeze(P["nnb"])
         return cls(model.mols, asdict(model.s), P, index)
 
     @classmethod
-    def from_network(cls, net, P, spec, **settings) -> FlexibleTemplate:
-        """Template of any molecule from a trained neural bonded model (bonded.nn.NNBonded and its
-        parameters, e.g. NNBonded.load): stage 1 is evaluated for this molecule and frozen.
-        settings: the BondedSettings the network was trained with (lj14_scale, lj_min_sep, elec, ...)."""
+    def from_network(cls, net: NNBonded, P: dict, spec: MolSpec, **settings: Any) -> FlexibleTemplate:
+        """Return the template of any molecule from a trained neural bonded model.
+
+        net and P: bonded.nn.NNBonded and its parameters (e.g. NNBonded.load); stage 1 is
+        evaluated for this molecule and frozen (its topology is built if missing).  **settings:
+        the BondedSettings the network was trained with (lj14_scale, lj_min_sep, elec, ...).
+        """
         from ..bonded.model import BondedSettings
         from ..bonded.topology import build_topology
 
@@ -126,19 +189,22 @@ class FlexibleTemplate:
         return cls([spec], asdict(st), {"nnb": {"coef": [C]}}, 0)
 
     @property
-    def spec(self):
+    def spec(self) -> MolSpec:
+        """The MolSpec of this molecule."""
         return self.specs[self.index]
 
     @property
-    def pgm(self):
+    def pgm(self) -> Molecule:
+        """The pGM molecule (charges, radii, polarizabilities, covalent dipoles, van der Waals)."""
         return self.spec.pgm
 
     @property
-    def name(self):
+    def name(self) -> str:
+        """Molecule name."""
         return self.spec.name
 
     @property
-    def terms(self):
+    def terms(self) -> BondedTerms:
         """The bonded terms (BondedTerms: no gas-phase nonbonded setup, any molecule size)."""
         if self._terms is None:
             from ..bonded.model import BondedSettings, BondedTerms
@@ -147,9 +213,12 @@ class FlexibleTemplate:
         return self._terms
 
     @property
-    def model(self):
-        """The full gas-phase model the bonded terms were fitted with (BondedModel: + pGM and
-        intramolecular van der Waals), for reference energies of isolated molecules."""
+    def model(self) -> BondedModel:
+        """The full gas-phase model the bonded terms were fitted with (built on first use).
+
+        BondedModel: bonded terms + pGM and intramolecular van der Waals, for reference energies
+        of isolated molecules.
+        """
         if self._model is None:
             from ..bonded.model import BondedModel, BondedSettings
 
@@ -158,11 +227,15 @@ class FlexibleTemplate:
 
     @property
     def n(self) -> int:
+        """Number of atoms."""
         return len(self.spec.elements)
 
-    def lj_pairs(self):
-        """Intramolecular van der Waals pairs (i, j, weight): graph distance >= lj_min_sep (1), 1-4
-        (lj14_scale).  (The MD engine takes them from md/topology.py's special pairs.)"""
+    def lj_pairs(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return the intramolecular van der Waals pairs (i, j, weight).
+
+        Weight 1 for graph distance >= lj_min_sep, lj14_scale for 1-4 pairs (added if both).  The
+        MD engine takes them from md/topology.py's special pairs; this is for reference.
+        """
         top = self.terms.mols[self.index].top
         i, j = np.triu_indices(self.n, 1)
         d = top.dist[i, j] if top.dist is not None else np.array([top.graph_distance(a, b) for a, b in zip(i, j)])
@@ -172,17 +245,28 @@ class FlexibleTemplate:
         return i[keep], j[keep], w[keep]
 
     def bond_lengths(self) -> np.ndarray:
-        """Reference bond lengths (nm) of the fitted model, in the order of the topology's bonds
-        (the lengths X-H constraints hold)."""
+        """Return the reference bond lengths [nm] of the fitted model, in the topology's bond order.
+
+        The lengths X-H constraints hold (typed families: P["ref"]["b0"]; frozen neural terms:
+        their b0 coefficients).
+        """
         terms, P = self.terms, jax.tree_util.tree_map(np.asarray, self.P)
         if terms.fams:
             return np.asarray(P["ref"]["b0"])[terms.I[self.index]["bond"]]
         return np.asarray(P["nnb"]["coef"][self.index]["b0"])
 
     def md_rule(self, constraints: str = "none") -> MoleculeRule:
-        """How the MD engine treats this molecule: intramolecular van der Waals by graph distance
-        (lj_min_sep, lj14_scale of the fit); constraints "none", "h-bonds" (X-H bonds at the
-        model's reference lengths) or "all-bonds" (every bond at its reference length)."""
+        """Return how the MD engine treats this molecule (md/topology.py).
+
+        Intramolecular van der Waals by graph distance (lj_min_sep, lj14_scale of the fit);
+        constraints "none", "h-bonds" (X-H bonds at the model's reference lengths) or "all-bonds"
+        (every bond at its reference length).
+
+        Raises
+        ------
+        ValueError
+            An unknown constraints option.
+        """
         top = self.terms.mols[self.index].top
         cons = []
         if constraints in ("h-bonds", "all-bonds"):
@@ -202,7 +286,7 @@ class FlexibleTemplate:
 
     has_bonded = True
 
-    def check_settings(self, settings):
+    def check_settings(self, settings: MDSettings) -> None:
         """Check that the MD model is the model the bonded terms were fitted with.
 
         Parameters
@@ -223,29 +307,66 @@ class FlexibleTemplate:
                     f"the MD settings have {getattr(md, name)!r}"
                 )
 
-    def bonded_energy(self, R, P=None):
+    def bonded_energy(self, R: jax.Array, P: dict | None = None) -> jax.Array:
+        """Return the bonded energy [kJ/mol] of one copy at positions R (n, 3) [nm] (P: None = fitted)."""
         return self.terms.bonded_energy(self.index, R, jax.tree_util.tree_map(jnp.asarray, self.P if P is None else P))
 
-    def save(self, path: str):
+    def save(self, path: str) -> None:
+        """Write the template to a pickle file (specs, settings, parameters, index)."""
         with open(path, "wb") as fh:
             pickle.dump({"specs": self.specs, "settings": self.settings, "P": self.P, "index": self.index}, fh)
 
     @classmethod
     def load(cls, path: str) -> FlexibleTemplate:
+        """Return a template read from a `save` file (a pickle: read only files you trust)."""
         with open(path, "rb") as fh:
             d = pickle.load(fh)
         return cls(d["specs"], d["settings"], d["P"], d["index"])
 
 
 class RigidTemplate:
-    """A rigid molecule of up to three atoms (water, ions) for FlexibleSimulation: every distance
-    held by a constraint (from the geometry `xyz`, nm), no bonded terms, no intramolecular van der
-    Waals (Amber's rigid water).  Virtual sites of the molecule (TIP4P's M site, TIP5P's lone pairs)
-    come on top of the three atoms: they are placed, not constrained."""
+    """A rigid molecule of up to three atoms (water, ions) for FlexibleSimulation.
+
+    Every distance is held by a constraint (from the geometry `xyz`), no bonded terms, no
+    intramolecular van der Waals (Amber's rigid water).  Virtual sites of the molecule (TIP4P's M
+    site, TIP5P's lone pairs) come on top of the three atoms: they are placed, not constrained.
+    Implements the template interface of FlexibleTemplate that the engine uses.
+
+    Attributes
+    ----------
+    pgm : Molecule
+        The pGM molecule.
+    name : str
+        Name.
+    n : int
+        Number of atoms (sites included).
+    real_atoms : list of int
+        The atoms that are not virtual sites (at most 3).
+    xyz : np.ndarray (n, 3)
+        Geometry [nm].
+    has_bonded : bool
+        False (class attribute).
+    """
 
     has_bonded = False
 
-    def __init__(self, molecule, xyz=None, name: str | None = None):
+    def __init__(self, molecule: Molecule, xyz: ArrayLike | None = None, name: str | None = None) -> None:
+        """Set up the template.
+
+        Parameters
+        ----------
+        molecule : Molecule
+            The pGM molecule.
+        xyz : ArrayLike (n, 3), optional
+            Geometry [nm] (None: molecule.extra["xyz"]; not needed for one atom).
+        name : str, optional
+            Name (None: the molecule's).
+
+        Raises
+        ------
+        ValueError
+            More than three real atoms.
+        """
         self.pgm = molecule
         self.name = name or molecule.name
         self.n = molecule.n
@@ -259,29 +380,38 @@ class RigidTemplate:
         self.xyz = x.reshape(self.n, 3)
 
     @property
-    def spec(self):
+    def spec(self) -> RigidTemplate:
+        """The template itself (it provides `elements` like a MolSpec)."""
         return self
 
     @property
-    def elements(self):
+    def elements(self) -> list[str]:
+        """Element symbols."""
         return list(self.pgm.elements)
 
     def md_rule(self, constraints: str = "none") -> MoleculeRule:
+        """Return the rule: every distance of the real atoms constrained, no van der Waals (any option)."""
         ra = self.real_atoms
         pairs = [(i, j) for k, i in enumerate(ra) for j in ra[k + 1 :]]
         cons = tuple((i, j, float(np.linalg.norm(self.xyz[i] - self.xyz[j]))) for i, j in pairs)
         return MoleculeRule(bonds=[], vdw="none", constraints=cons)
 
-    def check_settings(self, settings):
+    def check_settings(self, settings: MDSettings) -> None:
+        """Accept any settings (a rigid molecule has no fitted terms)."""
         return None
 
-    def bonded_energy(self, R, P=None):
+    def bonded_energy(self, R: jax.Array, P: dict | None = None) -> float:
+        """Return 0.0 (no bonded terms)."""
         return 0.0
 
 
-def _unwrap_bonded(x, H, bonds):
-    """Make a molecule whole along its bonds (any size, unlike the minimum image of the first
-    atom): every atom at the minimum image of the atom it is reached from."""
+def _unwrap_bonded(x: np.ndarray, H: np.ndarray, bonds: Sequence[Sequence[int]]) -> np.ndarray:
+    """Return a molecule made whole along its bonds (host).
+
+    Works for any size, unlike the minimum image of the first atom (rigid._unwrap, used without
+    bonds): a depth-first walk puts every atom at the minimum image of the atom it is reached
+    from.  x (n, 3) and the result [nm]; H (3, 3) [nm]; bonds local.
+    """
     n = len(x)
     if n <= 1 or not len(bonds):
         return _unwrap(x, H)
@@ -312,13 +442,68 @@ def _unwrap_bonded(x, H, bonds):
 
 # ----------------------------------------------------------------------------- molecules
 class FlexibleMolecules:
-    """Per-atom dynamics for every molecule: bonded energies grouped by template, molecular and
-    neighbour-list-group centres, whole-molecule wrapping.  `templates[k]` belongs to
-    `sys.molecules[k]` (same atom order); `topology` is the system's MDTopology."""
+    """Per-atom molecule representation: bonded energies, centres, whole-molecule wrapping.
+
+    Bonded energies are grouped by template (one vmap per template), with molecular and
+    neighbour-list-group centres and whole-molecule wrapping; it provides the `positions` / `wrap`
+    interface of rigid.RigidMolecules to the engine.  `templates[k]` belongs to `sys.molecules[k]`
+    (same atom order); `topology` is the system's MDTopology.
+
+    Attributes
+    ----------
+    masses : jax.Array (N,)
+        Physical masses [amu] (after mass repartitioning).
+    mass : jax.Array (N, 1)
+        The integrator's masses [amu] (1 at virtual sites, whose momenta are held at 0).
+    real : jax.Array (N, 1)
+        1 for real atoms, 0 for sites (with virtual sites only).
+    mmol, mgroup : jax.Array
+        Masses of the molecules and of the list groups [amu].
+    groups : list of (template, jax.Array (copies, n))
+        Atom rows of the copies of every flexible template.
+    pos0 : jax.Array (N, 3)
+        Initial positions, molecules whole, sites placed [nm].
+    r_max : float
+        Largest atom-to-group-centre distance at pos0 [nm].
+    dof_correction : int
+        0 (the rigid-body correction does not apply).
+    """
 
     def __init__(
-        self, sys: System, pos, H, templates, topology: MDTopology, masses=None, vsites: VirtualSites | None = None
-    ):
+        self,
+        sys: System,
+        pos: ArrayLike,
+        H: ArrayLike,
+        templates: Sequence[FlexibleTemplate | RigidTemplate],
+        topology: MDTopology,
+        masses: ArrayLike | None = None,
+        vsites: VirtualSites | None = None,
+    ) -> None:
+        """Check the templates, make the molecules whole and group the flexible copies.
+
+        Parameters
+        ----------
+        sys : System
+            The system.
+        pos : ArrayLike (N, 3)
+            Positions [nm].
+        H : ArrayLike (3, 3)
+            Box [nm].
+        templates : Sequence of templates (nmol,)
+            Template of every molecule.
+        topology : MDTopology
+            The system's pair topology.
+        masses : ArrayLike (N,), optional
+            Masses [amu] (None: the system's).
+        vsites : VirtualSites, optional
+            The virtual sites.
+
+        Raises
+        ------
+        ValueError
+            Not one template per molecule, a template that does not match its molecule, or bonded
+            terms on virtual sites.
+        """
         if len(templates) != sys.nmol:
             raise ValueError("one template per molecule")
         pos, H = np.asarray(pos, float), np.asarray(H, float)
@@ -361,55 +546,77 @@ class FlexibleMolecules:
         self.r_max = topology.group_radius(whole, m)
         self.dof_correction = 0
 
-    def centers(self, pos):
-        """Molecular centres of mass (wrapping, barostat scaling, molecular virial)."""
+    def centers(self, pos: jax.Array) -> jax.Array:
+        """Return the molecular centres of mass (M, 3) [nm] (wrapping, barostat, molecular virial)."""
         return jax.ops.segment_sum(self.masses[:, None] * pos, self.mol, self.nmol) / self.mmol[:, None]
 
-    def list_centers(self, pos):
-        """Centres of mass of the neighbour-list groups."""
+    def list_centers(self, pos: jax.Array) -> jax.Array:
+        """Return the centres of mass (G, 3) [nm] of the neighbour-list groups."""
         return jax.ops.segment_sum(self.masses[:, None] * pos, self.group, self.n_group) / self.mgroup[:, None]
 
-    def energy(self, pos, P_atoms=None):
-        """Bonded energy (kJ/mol) of every flexible molecule (the intramolecular van der Waals pairs
-        are in the force field's special pairs)."""
+    def energy(self, pos: jax.Array, P_atoms: Any = None) -> jax.Array | float:
+        """Return the bonded energy [kJ/mol] of every flexible molecule at positions pos (N, 3) [nm].
+
+        The intramolecular van der Waals pairs are in the force field's special pairs.  P_atoms is
+        not used.
+        """
         e = 0.0
         for tpl, rows in self.groups:
             e = e + jnp.sum(jax.vmap(tpl.bonded_energy)(pos[rows]))
         return e
 
-    def positions(self, pos):
+    def positions(self, pos: jax.Array) -> jax.Array:
+        """Return pos (the integrator's positions are the atom positions)."""
         return pos
 
-    def wrap(self, pos, H):
-        """Whole molecules shifted so that their centres of mass lie in the primary cell."""
+    def wrap(self, pos: jax.Array, H: ArrayLike) -> jax.Array:
+        """Return the positions with whole molecules shifted so that their centres lie in the cell."""
         H = jnp.asarray(H)
         hi = jax.lax.Precision.HIGHEST
         f = jnp.matmul(self.centers(pos), inv3(H), precision=hi)
         return pos - jnp.matmul(jnp.floor(f), H, precision=hi)[self.mol]
 
-    def extent(self, pos):
-        """Largest atom-to-group-centre distance (nm), to check the neighbour-list margin."""
+    def extent(self, pos: jax.Array) -> jax.Array:
+        """Return the largest atom-to-group-centre distance [nm] (check of the neighbour-list margin)."""
         return jnp.max(jnp.linalg.norm(pos - self.list_centers(pos)[self.group], axis=1))
 
 
 # ----------------------------------------------------------------------------- integrator
 class FlexibleIntegrator(Integrator):
-    """Velocity Verlet (NVE) / BAOAB (NVT, thermostats.py: Langevin, Bussi or GLE) on atoms, with
-    constraints in g-BAOAB order (SHAKE after every drift, RATTLE after every kick and thermostat
+    """Velocity Verlet (NVE) / BAOAB (NVT: Langevin, Bussi or GLE) on atoms, with constraints.
+
+    Constraints in g-BAOAB order (SHAKE after every drift, RATTLE after every kick and thermostat
     step; GLE auxiliaries are projected too); NPT adds the Monte Carlo barostat with molecular
     scaling (centres of mass scaled, molecules translated rigidly, which keeps the constraints).
     Degrees of freedom: 3 per real atom minus one per constraint, minus 3 when the total momentum
-    is conserved (NVE, Bussi; drawn momenta then have no net momentum, given ones are kept)."""
+    is conserved (NVE, Bussi; drawn momenta then have no net momentum, given ones are kept).
+
+    Attributes
+    ----------
+    flex : FlexibleMolecules
+        The molecules.
+    vsites : VirtualSites or None
+        Virtual sites.
+    cons : Constraints or None
+        Constraints (None without any).
+    n_real : int
+        Real (non-site) atoms.
+    momentum_conserved : bool
+        NVE or Bussi.
+
+    Other attributes as Integrator.
+    """
 
     def __init__(
         self,
         ff: PGMForceField,
         flex: FlexibleMolecules,
-        neighbors,
+        neighbors: Any,
         dt: float = 0.0005,
         constraints: Constraints | None = None,
-        **kw,
-    ):
+        **kw: Any,
+    ) -> None:
+        """Set up the integrator (arguments as Integrator; `constraints`: SHAKE / RATTLE or None)."""
         self.flex = flex
         self.vsites = getattr(flex, "vsites", None)
         self.cons = constraints if (constraints is not None and constraints.nc) else None
@@ -420,7 +627,22 @@ class FlexibleIntegrator(Integrator):
         self.momentum_conserved = self.ensemble == "nve" or isinstance(self.thermostat, Bussi)
         self.dof = 3 * self.n_real - nc - (3 if self.momentum_conserved else 0)
 
-    def _forces(self, pos, box, induction, nbr, force_rebuild=False, lam=None, bias=None, field=None):
+    def _forces(
+        self,
+        pos: jax.Array,
+        box: jax.Array,
+        induction: Any,
+        nbr: Any,
+        force_rebuild: bool | jax.Array = False,
+        lam: jax.Array | None = None,
+        bias: Any = None,
+        field: tuple | None = None,
+    ) -> tuple[jax.Array, Result, Any]:
+        """Return atomic forces, the result and the list as Integrator._forces, for atoms.
+
+        Adds the bonded energy and forces of the flexible molecules; site forces are spread to
+        the parents.  pos (N, 3) [nm]; forces (N, 3) [kJ/mol/nm].
+        """
         centers = self.flex.list_centers(pos)
         nbr = self.nb.update(nbr, pos, centers, box, force_rebuild)
         cand, ovf = self.nb.candidates(nbr, centers, box, pos)
@@ -438,21 +660,31 @@ class FlexibleIntegrator(Integrator):
             return self.vsites.spread(pos, box, res.forces - g_in), res, nbr
         return res.forces - g_in, res, nbr
 
-    def _bias_atoms(self, x):
+    def _bias_atoms(self, x: jax.Array) -> jax.Array:
+        """Return x (the positions are the atoms)."""
         return x
 
-    def _map_atom_forces(self, x, box, F):
+    def _map_atom_forces(self, x: jax.Array, box: jax.Array, F: jax.Array) -> jax.Array:
+        """Return F with site forces spread to the parents."""
         return F if self.vsites is None else self.vsites.spread(x, box, F)
 
-    def place(self, pos, box):
+    def place(self, pos: jax.Array, box: jax.Array) -> jax.Array:
         """Positions with the virtual sites rebuilt from their parents (identity without sites)."""
         return pos if self.vsites is None else self.vsites.place(pos, box)
 
-    def init(self, pos, box, key, momentum=None, bias=None) -> MDState:
+    def init(
+        self, pos: ArrayLike, box: ArrayLike, key: jax.Array, momentum: ArrayLike | None = None, bias: Any = None
+    ) -> MDState:
+        """Return a new state (host): positions on the constraints, momenta drawn or set, forces.
+
+        Drawn momenta (sites excluded) have zero total momentum when it is conserved; given
+        momenta [amu nm/ps] are kept (zeroed at sites); RATTLE projects them.  Arguments as
+        Integrator.init with atom positions pos (N, 3) [nm].
+        """
         box = jnp.asarray(box, jnp.float64)
         pos = jnp.asarray(pos, jnp.float64)
         if self.cons is not None:  # start on the constraint surface
-            for _ in range(3):
+            for _ in range(3):  # three SHAKE passes from the start geometry
                 pos = self.cons.positions(pos, pos)
         pos = self.place(pos, box)
         nbr = self.nb.allocate(pos, self.flex.list_centers(pos), box)
@@ -498,18 +730,21 @@ class FlexibleIntegrator(Integrator):
         )
         return self.forces(field_state(st, self.efield), False)
 
-    def _scaled(self, dyn: Dynamics):
-        """Mass-scaled atomic momenta; the projection keeps them (and the thermostat
-        auxiliaries) on the constraint tangent space."""
+    def _scaled(self, dyn: Dynamics) -> tuple[jax.Array, jax.Array | None, Callable, Callable]:
+        """Return the mass-scaled atomic momenta, the site mask, the inverse map and the projection.
+
+        The projection (RATTLE in mass-scaled form) keeps the momenta and the thermostat
+        auxiliaries on the constraint tangent space.
+        """
         sm = jnp.sqrt(dyn.mass)
         q = dyn.position
         if self.cons is None:
 
-            def project(u):
+            def project(u: jax.Array) -> jax.Array:
                 return u
         else:
 
-            def project(u):
+            def project(u: jax.Array) -> jax.Array:
                 return self.cons.momenta(q, u * sm, self.flex.masses) / sm
 
         mask = None if self.vsites is None else jnp.broadcast_to(self.flex.real, dyn.momentum.shape)  # sites: no noise
@@ -517,14 +752,18 @@ class FlexibleIntegrator(Integrator):
 
     # ------------------------------------------------------------------ constrained steps (g-BAOAB)
     def _kick(self, dyn: Dynamics, h: float) -> Dynamics:
+        """Return dyn after a kick p += h F [ps], projected by RATTLE."""
         p = dyn.momentum + h * dyn.force
         return dyn.set(momentum=p if self.cons is None else self.cons.momenta(dyn.position, p, self.flex.masses))
 
     def _drift(self, dyn: Dynamics, h: float, project: bool = True) -> Dynamics:
-        """Positions advanced by h (SHAKE) and momenta consistent with the constrained move (RATTLE).
-        project=False leaves the RATTLE projection to the next kick, which projects at the same
-        positions (projection is linear: P(p + h F) = P(P p + h F)).  Virtual sites have zero
-        momentum, so they stay where they are; `_step` rebuilds them once per step, before the forces."""
+        """Return dyn after a drift by h [ps]: SHAKE positions, momenta of the constrained move.
+
+        p = m (q1 - q) / h, then RATTLE.  project=False leaves the RATTLE projection to the next
+        kick, which projects at the same positions (projection is linear:
+        P(p + h F) = P(P p + h F)).  Virtual sites have zero momentum, so they stay where they
+        are; `_step` rebuilds them once per step, before the forces.
+        """
         q = dyn.position
         q1 = q + h * dyn.momentum / dyn.mass
         if self.cons is not None:
@@ -535,6 +774,7 @@ class FlexibleIntegrator(Integrator):
         return dyn.set(position=q1, momentum=p)
 
     def _step(self, st: MDState) -> MDState:
+        """Advance one constrained step (g-BAOAB; plain Integrator._step without constraints or sites)."""
         if self.cons is None and self.vsites is None:
             return super()._step(st)
         dt = self.dt
@@ -559,6 +799,11 @@ class FlexibleIntegrator(Integrator):
         return st
 
     def _barostat(self, st: MDState) -> MDState:
+        """Try one Monte Carlo volume move as Integrator._barostat, molecules translated rigidly.
+
+        Every atom moves with its molecule's centre of mass, r -> r + (s - 1) R_k, which keeps the
+        constraints; the trial energy includes the bonded energy.
+        """
         key, k1, k2 = jax.random.split(st.dyn.rng, 3)
         H = st.box
         V = volume(H)
@@ -593,7 +838,7 @@ class FlexibleIntegrator(Integrator):
         accept = (Vn > 0) & (jnp.log(jax.random.uniform(k2, dtype=jnp.float64)) < -w / kT)
         st = st.set(dyn=st.dyn.set(rng=key), overflow=st.overflow | ovf)
 
-        def acc(st):
+        def acc(st: MDState) -> MDState:  # accepted: move to the trial box and re-evaluate the forces
             st = st.set(dyn=st.dyn.set(position=pos_n), box=Hn, induction=ind_n)
             F, res, nbr = self._forces(pos_n, Hn, ind_n, nbr_n, lam=st.lam, bias=st.bias, field=field)
             return self._with_result(st, F, res, nbr)
@@ -609,15 +854,15 @@ class FlexibleIntegrator(Integrator):
         mc = jnp.where(adapt, mc.at[2].set(0).at[3].set(0), mc)
         return st.set(mc=mc, mc_dv=dv)
 
-    def kinetic(self, st: MDState):
-        """(total, centre-of-mass translational) kinetic energy, kJ/mol."""
+    def kinetic(self, st: MDState) -> tuple[jax.Array, jax.Array]:
+        """Return the (total, centre-of-mass translational) kinetic energy [kJ/mol]."""
         p = st.dyn.momentum
         ke = 0.5 * jnp.sum(p * p / self.flex.mass)
         Pm = jax.ops.segment_sum(p, self.flex.mol, self.flex.nmol)
         return ke, 0.5 * jnp.sum(Pm * Pm / self.flex.mmol[:, None])
 
-    def temperatures(self, st: MDState):
-        """(centre-of-mass translational, internal) temperatures, K."""
+    def temperatures(self, st: MDState) -> tuple[jax.Array, jax.Array]:
+        """Return the (centre-of-mass translational, internal) temperatures [K]."""
         ke, ke_t = self.kinetic(st)
         n_t = 3 * self.nmol - (3 if self.momentum_conserved else 0)
         nc = self.cons.nc if self.cons is not None else 0
@@ -627,48 +872,66 @@ class FlexibleIntegrator(Integrator):
 
 # ----------------------------------------------------------------------------- driver
 class FlexibleSimulation(MDEngine):
-    """Molecular dynamics of flexible molecules (atoms integrated individually; bonded terms, X-H or
-    all-bond constraints, virtual sites rebuilt every step, charge flux).  The shared machinery
-    (blocks, observables, run loop, checkpoints) is MDEngine's (md/engine.py)."""
+    """Molecular dynamics of flexible molecules (atoms integrated individually).
+
+    Bonded terms, X-H or all-bond constraints, virtual sites rebuilt every step, charge flux.  The
+    shared machinery (blocks, observables, run loop, checkpoints) is MDEngine's (md/engine.py);
+    the integrator is FlexibleIntegrator (mts.MTSFlexibleIntegrator with `mts`).
+
+    Attributes
+    ----------
+    topology : MDTopology
+        Pair topology (groups, special pairs, constraints).
+    vsites : VirtualSites or None
+        Virtual sites.
+    flex : FlexibleMolecules
+        The molecules (also `rigid`, for the base driver).
+    constraints : Constraints
+        The constraints (possibly none).
+    r_list : float
+        Neighbour-list group radius (largest group radius + r_margin) [nm].
+
+    Other attributes as MDEngine.
+    """
 
     def __init__(
         self,
         system: System,
-        templates,
-        positions,
-        box,
+        templates: Sequence[FlexibleTemplate | RigidTemplate],
+        positions: ArrayLike,
+        box: ArrayLike,
         settings: MDSettings = MDSettings(),
         *,
         dt: float = 0.0005,
         temperature: float = 298.0,
         thermostat: Thermostat | str | None = "langevin",
         barostat: MonteCarloBarostat | None = None,
-        velocities=None,
+        velocities: ArrayLike | None = None,
         seed: int = 0,
-        params=None,
-        restraints=None,
-        alchemy=None,
-        mts=None,
-        bias=None,
-        efield=None,
+        params: dict | None = None,
+        restraints: Restraints | Restraint | list | None = None,
+        alchemy: Alchemy | None = None,
+        mts: MTS | None = None,
+        bias: Any = None,
+        efield: ExternalField | ArrayLike | None = None,
         constraints: str = "none",
-        hmr=None,
+        hmr: float | Sequence[float | None] | None = None,
         constraint_options: dict | None = None,
         r_margin: float = 0.05,
-        log=None,
-    ):
+        log: TextIO | None = None,
+    ) -> None:
         """Set up MD of flexible molecules.
 
         Parameters
         ----------
         system : System
             Molecules (the pGM part of every template).
-        templates : sequence
+        templates : Sequence of FlexibleTemplate or RigidTemplate
             FlexibleTemplate or RigidTemplate per molecule of `system` (identical objects are
             shared).
-        positions : array (N, 3)
+        positions : ArrayLike (N, 3)
             Atom positions [nm] (molecules whole; virtual sites are rebuilt from their parents).
-        box : array (3, 3)
+        box : ArrayLike (3, 3)
             Box [nm], lattice vectors as rows.
         settings : MDSettings
             Force-field, cutoff, PME and solver settings.
@@ -681,7 +944,7 @@ class FlexibleSimulation(MDEngine):
             ("langevin" = Langevin(1/ps), the default), or None for NVE.
         barostat : MonteCarloBarostat or None
             Isotropic Monte Carlo barostat with molecular scaling (None: constant volume).
-        velocities : array (N, 3), optional
+        velocities : ArrayLike (N, 3), optional
             Atom velocities [nm/ps]; default: drawn at the temperature.
         seed : int
             Seed of the random stream.
@@ -689,7 +952,7 @@ class FlexibleSimulation(MDEngine):
             Force-field parameters (default: those of the system).
         restraints, alchemy, mts, bias, efield : optional
             As for Simulation.
-        constraints : str
+        constraints : {"none", "h-bonds", "all-bonds"}
             "none", "h-bonds" (X-H bonds of the flexible templates) or "all-bonds" (every bond);
             rigid templates are always constrained (md/constraints.py, docs/shake.md).
         hmr : float, sequence or None
@@ -776,15 +1039,36 @@ class FlexibleSimulation(MDEngine):
         self._describe_options(alchemy, mts)
 
     def minimize(self, steps: int = 500, max_step: float = 0.01, ftol: float = 50.0, seed: int = 1) -> dict:
-        """Steepest descent (adaptive step, at most max_step nm per atom, constraints kept by SHAKE)
-        until the largest force is below ftol (kJ/mol/nm) or `steps` evaluations; then new
-        velocities are drawn at the target temperature.  Relaxes clashes of built structures
-        (hydrogens added by tleap, solvent boxes) before dynamics."""
+        """Minimise the energy by steepest descent, then draw new velocities at the temperature.
+
+        Adaptive step (the atom with the largest force moves h <= max_step; h grows by 1.2 after an
+        accepted step and halves after a rejected one), constraints kept by SHAKE and virtual
+        sites placed, until the largest force is below ftol or `steps` evaluations.  Relaxes
+        clashes of built structures (hydrogens added by tleap, solvent boxes) before dynamics.
+        The bias state and a field amplitude set with set_field are kept.
+
+        Parameters
+        ----------
+        steps : int
+            Largest number of force evaluations.
+        max_step : float
+            Largest displacement of an atom per step [nm].
+        ftol : float
+            Stop when the largest atomic force is below this [kJ/mol/nm].
+        seed : int
+            Seed of the new velocities.
+
+        Returns
+        -------
+        dict
+            "steps" (evaluations), "accepted", "energy" [kJ/mol], "fmax" [kJ/mol/nm].
+        """
         integ, st = self.integ, self.state
         cons = integ.cons
 
         @jax.jit
-        def trial(pos, box, induction, nbr, h, F):
+        def trial(pos: jax.Array, box: jax.Array, induction: Any, nbr: Any, h: float, F: jax.Array) -> tuple:
+            """Return the trial positions h F / |F|_max from pos (SHAKE, sites) and their forces."""
             fmax = jnp.max(jnp.linalg.norm(F, axis=1))
             new = pos + h * F / jnp.maximum(fmax, 1e-12)
             if cons is not None:
@@ -823,15 +1107,15 @@ class FlexibleSimulation(MDEngine):
     checkpoint_kind = "md-flexible"
 
     def _list_groups(self) -> tuple[np.ndarray, int]:
-        """The groups of the molecular neighbour list: md/topology.py splits large molecules."""
+        """Return the groups of the molecular neighbour list (md/topology.py splits large molecules)."""
         return self.topology.group, self.topology.n_group
 
-    def _list_centers(self, dynpos):
-        """Centres of mass of the neighbour-list groups at atom positions `dynpos` [nm]."""
+    def _list_centers(self, dynpos: jax.Array) -> jax.Array:
+        """Return the centres of mass of the neighbour-list groups at atom positions `dynpos` [nm]."""
         return self.flex.list_centers(dynpos)
 
     def _after_block(self) -> None:
-        """Every atom must stay within the list radius of its group's centre.
+        """Check that every atom stays within the list radius of its group's centre.
 
         Raises
         ------
@@ -845,21 +1129,24 @@ class FlexibleSimulation(MDEngine):
                 f"radius {self.r_list:.3f} nm; increase r_margin"
             )
 
-    def half_step_kinetic(self, st=None):
-        """Kinetic energy (kJ/mol) as the mean of the two half-step values around the current step,
+    def half_step_kinetic(self, st: MDState | None = None) -> float | None:
+        """Return the kinetic energy [kJ/mol] as the mean of the two half-step values around a step.
+
         (K(p - h F / 2) + K(p + h F / 2)) / 2 = K(p) + h^2/8 (P F) M^-1 (P F), with P F the force
         projected onto the constraint tangent space and h the time step.  At full steps BAOAB and
         velocity Verlet under-estimate the kinetic energy of a mode of frequency w by the factor
         1 - (w h)^2 / 4 (harmonic limit; e.g. 3 % of the total for methanol at 2 fs with X-H
         constraints), while their configurational sampling is accurate; the half-step mean is exact
         in that limit (Amber's leapfrog reports the same average).  Not defined with multiple time
-        stepping (returns None)."""
+        stepping (returns None).  st: the state (None: the current one).
+        """
         if getattr(self.integ, "mts", None) is not None:
             return None
         if not hasattr(self, "_half_ke_jit"):
             integ, cons, flex = self.integ, self.constraints, self.flex
 
-            def f(st):
+            def f(st: MDState) -> jax.Array:
+                """Return K(p) + dt^2/8 (P F) M^-1 (P F) (sites excluded)."""
                 F = st.dyn.force
                 if cons.nc:
                     F = cons.momenta(st.dyn.position, F, flex.masses)
@@ -871,6 +1158,12 @@ class FlexibleSimulation(MDEngine):
         return float(self._half_ke_jit(self.state if st is None else st))
 
     def observables(self) -> dict:
+        """Return MDEngine.observables with the flexible engine's entries.
+
+        temp_com / temp_internal (instead of temp_trans / temp_rot), temp_half (from
+        `half_step_kinetic`) [K], and with constraints shake_err (largest relative length error)
+        and rattle_err (Constraints.velocity_violation).
+        """
         out = super().observables()
         out["temp_com"] = out.pop("temp_trans")
         out["temp_internal"] = out.pop("temp_rot")
@@ -886,22 +1179,51 @@ class FlexibleSimulation(MDEngine):
         return out
 
     def positions(self) -> np.ndarray:
-        """Atom positions (N, 3) [nm] of the current state (molecules whole)."""
+        """Return the atom positions (N, 3) [nm] of the current state (molecules whole)."""
         return np.asarray(self.state.dyn.position)
 
     def velocities(self) -> np.ndarray:
-        """Atom velocities (N, 3) [nm/ps] of the current state."""
+        """Return the atom velocities (N, 3) [nm/ps] of the current state."""
         return np.asarray(self.state.dyn.momentum / self.flex.mass)
 
 
 # ----------------------------------------------------------------------------- building a box
 def liquid_box(
     tpl: FlexibleTemplate, n_mol: int, density: float, seed: int = 0, min_dist: float = 0.22, tries: int = 200
-):
-    """n_mol copies of the template's reference geometry, randomly rotated, on a cubic lattice of
-    the given density (g/cm^3; start below the liquid density and let NPT compress).  Returns
-    positions (n_mol * n_atoms, 3) nm and the box H (3, 3) nm; copies are re-drawn until no two
-    atoms of different molecules are closer than `min_dist` nm."""
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return a cubic box of randomly rotated copies of the template's reference geometry.
+
+    The copies sit on a cubic lattice (random sites of it when n_mol is not a cube) at the given
+    density (start below the liquid density and let NPT compress); each copy is re-drawn until no
+    two atoms of different molecules are closer than `min_dist`.
+
+    Parameters
+    ----------
+    tpl : FlexibleTemplate
+        The template.
+    n_mol : int
+        Number of molecules.
+    density : float
+        Density [g/cm^3].
+    seed : int
+        Random seed.
+    min_dist : float
+        Smallest intermolecular atom distance [nm].
+    tries : int
+        Rotations tried per molecule.
+
+    Returns
+    -------
+    positions : np.ndarray (n_mol * n_atoms, 3)
+        Positions [nm].
+    box : np.ndarray (3, 3)
+        Cubic box [nm].
+
+    Raises
+    ------
+    RuntimeError
+        A molecule could not be placed.
+    """
     rng = np.random.default_rng(seed)
     x0 = np.asarray(tpl.spec.ref_xyz, float)
     m = np.asarray(tpl.pgm.masses, float)
@@ -915,7 +1237,8 @@ def liquid_box(
     H = np.eye(3) * L
     placed = []
 
-    def rot():
+    def rot() -> np.ndarray:
+        """Return a uniformly random rotation matrix (from a normalized Gaussian quaternion)."""
         q = rng.normal(size=4)
         q /= np.linalg.norm(q)
         w, x, y, z = q
