@@ -180,6 +180,7 @@ def test_bias_with_field_and_iel(iel):
     assert np.ptp(E) < 0.05 * (max(B) - min(B)) + 2e-3, (np.ptp(E), B)
 
 
+@pytest.mark.slow
 def test_walkers_book_the_work_of_a_time_dependent_field():
     """Walkers with a time-dependent field reproduce the single run, heat included.
 

@@ -222,6 +222,7 @@ def test_replica_exchange_checkpoint(expected, tmp_path):
     same([rex.replicas.state(k).set(nbr=None) for k in range(3)], first)
 
 
+@pytest.mark.slow
 def test_free_energy_checkpoint(expected, tmp_path):
     """Lambda windows with samples and exchanges: legacy .fe.chk continuation; npz round trip bitwise."""
     run = FreeEnergyRun(LambdaWindows(alchemy_sim(), LAMBDAS, seed=7), sample_every=5, exchange_every=10)
@@ -249,6 +250,7 @@ def test_field_replicas_checkpoint(expected, tmp_path):
     same(rep.S.set(nbr=None), first)
 
 
+@pytest.mark.slow
 def test_pimd_checkpoint(expected, tmp_path):
     """NPT PIMD: legacy .pimd.chk continuation; npz round trip bitwise."""
     pi = pimd(8)
@@ -263,6 +265,7 @@ def test_pimd_checkpoint(expected, tmp_path):
     same(pi.state.set(eng=pi.state.eng.set(nbr=None)), first)
 
 
+@pytest.mark.slow
 def test_walkers_checkpoint(expected, tmp_path):
     """Shared-bias walkers: legacy .walkers.chk continuation; npz round trip bitwise."""
     wk = Walkers(rigid_metad(), 3, shared=True, seed=9)

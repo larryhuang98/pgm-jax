@@ -262,11 +262,7 @@ def test_nve_conserves_energy_in_a_static_field(engine):
 
 
 def test_time_dependent_field_work_is_booked():
-    """E(t) = E0 cos(w t): E_tot changes by the field's work, econs is conserved.
-
-    E(t) = E0 cos(w t): the field's explicit time dependence changes E_tot; econs (heat booked)
-    stays conserved.
-    """
+    """E(t) = E0 cos(w t): E_tot changes by the field's work, econs is conserved."""
     sys, pos, H = small_box(7)
     pos = jnp.asarray(pos)
     fld = EF.ExternalField((0.0, 0.0, 1.5), omega=2 * np.pi / 0.2)  # 200 fs period
@@ -308,9 +304,7 @@ def test_set_field_and_checkpoint(tmp_path):
 
 
 def _ions_box():
-    """Return a water / methanol box with one Na+ / Cl- pair on free lattice points.
-
-    Water box with one Na+ / Cl- pair (single-atom rigid bodies).
+    """Return a water / methanol box with one Na+ / Cl- pair (single-atom rigid bodies) on free lattice points.
 
     Returns
     -------

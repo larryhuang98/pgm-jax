@@ -380,6 +380,7 @@ def _pgm_box():
     return sys, np.asarray(VirtualSites.of(sys).place(pos, H)), H
 
 
+@pytest.mark.slow
 def test_pgm_forces_and_strain_derivative_with_sites():
     """With sites, the spread pGM forces and the strain derivative match central differences.
 
@@ -424,6 +425,7 @@ def test_pgm_forces_and_strain_derivative_with_sites():
         ff.strain_derivative(pos, H, idx, res.induction.mu, molecular=False)
 
 
+@pytest.mark.slow
 def test_zero_polarizability_atoms():
     """Atoms and sites with alpha = 0 keep mu = 0 and finite gradients.
 
@@ -458,6 +460,7 @@ def test_zero_polarizability_atoms():
 
 
 # ----------------------------------------------------------------------------- MD engines
+@pytest.mark.slow
 def test_engines_with_sites_agree_and_conserve_energy():
     """Both MD engines with TIP4P-Ew sites agree and conserve energy.
 
@@ -504,6 +507,7 @@ def test_engines_with_sites_agree_and_conserve_energy():
     assert np.all(flx.velocities()[3::4] == 0.0)
 
 
+@pytest.mark.slow
 def test_flexible_molecule_with_sites_nvt_nve_and_hmr():
     """A flexible molecule with sites: massless sites, right dof, NVT and NVE.
 
@@ -569,6 +573,7 @@ def test_flexible_molecule_with_sites_nvt_nve_and_hmr():
     assert np.std(E) < 1e-3 * ke and abs(E[-1] - E[0]) < 2e-3 * ke, (np.std(E) / ke, (E[-1] - E[0]) / ke)
 
 
+@pytest.mark.slow
 def test_load_amber_protein_in_tip4pew():
     """A protein in TIP4P-Ew loads with one site per water, minimises and runs; pmemd export refused."""
     from pgm_jax.protein.amber import amber_template, load_amber

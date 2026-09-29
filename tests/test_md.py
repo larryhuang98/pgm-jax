@@ -13,6 +13,7 @@ within 5 %); NetCDF / restart files; NVE energy conservation of pGM3P-25 water a
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from _systems import PGM3P25_RST, PGM3P25_TOP, md_settings, requires_pgm3p25, small_box
 
 from pgm_jax import PeriodicPGM
@@ -232,6 +233,7 @@ def test_netcdf_trajectory_and_restart(tmp_path):
 
 
 @requires_pgm3p25
+@pytest.mark.slow
 def test_nve_energy_conservation_and_exact_restart(tmp_path):
     """NVE of pGM3P-25 water conserves energy; a checkpoint continues the run (needs the data).
 

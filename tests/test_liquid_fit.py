@@ -340,6 +340,7 @@ def test_lm_step_trust_region_and_covariance_calibration():
     assert np.allclose(obj.covariance(est0)["C_theta"], np.linalg.inv(J.T @ W @ J), rtol=1e-4)
 
 
+@pytest.mark.slow
 def test_one_iteration_of_liquid_fit(tmp_path):
     """One LiquidFit iteration end to end writes its JSON record and resumes.
 

@@ -135,6 +135,7 @@ def windows(batched=True, seed=1, mode="annihilate"):
     return LambdaWindows(sim, L, batched=batched, seed=seed), P
 
 
+@pytest.mark.slow
 def test_sampler_batched_equals_sequential_and_direct():
     """The batched and sequential dU/dP samplers agree with direct derivatives of the window energies."""
     wb, P = windows(True)
@@ -161,6 +162,7 @@ def test_sampler_batched_equals_sequential_and_direct():
 
 
 @pytest.mark.parametrize("mode", ["annihilate", "keep"])
+@pytest.mark.slow
 def test_estimators_are_derivatives_of_reweighted_free_energies(mode):
     """The gradient estimators are exact derivatives of the reweighted free energies.
 
@@ -248,6 +250,7 @@ def test_estimators_are_derivatives_of_reweighted_free_energies(mode):
 
 
 # ----------------------------------------------------------------------------- gas phase, exact case
+@pytest.mark.slow
 def test_gas_leg_gradient_and_exact_sampled_case():
     """The gas-phase leg gradient, and a lone solute whose sampled gradient is exact.
 
@@ -376,6 +379,7 @@ def test_harmonic_oscillators_analytic_gradient_and_calibrated_errors():
 
 
 # ----------------------------------------------------------------------------- driver and targets
+@pytest.mark.slow
 def test_run_outputs_restart_and_fitting_target(tmp_path):
     """FreeEnergyRun stores and restarts dU/dP samples; FreeEnergyTarget chains them to theta.
 
@@ -468,6 +472,7 @@ def test_parameter_space_and_scaled_params():
     assert np.allclose(v[se], 0.5 * np.asarray(p)[se]) and np.count_nonzero(v) == np.count_nonzero(np.asarray(p)[se])
 
 
+@pytest.mark.slow
 def test_flexible_solute_keep_sampler():
     """A flexible solute with intramolecular="keep": the sampler and the gas-phase part at (0, 0).
 

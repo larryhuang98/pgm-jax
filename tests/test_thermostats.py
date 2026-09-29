@@ -110,6 +110,7 @@ def test_gle_kernels_and_fdt_check():
         make_thermostat("berendsen")
 
 
+@pytest.mark.slow
 def test_constrained_nvt_runs_conserve_effective_energy():
     """Constrained NVT with every thermostat conserves econs and keeps T near the target.
 

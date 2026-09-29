@@ -13,6 +13,7 @@ import logging
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from _systems import md_settings, small_box
 
 from pgm_jax.md.forcefield import DSUM_TOL, PGMForceField, elec_cutoff_settings, ewald_beta_for
@@ -68,6 +69,7 @@ def test_elec_cutoff_equal_to_cutoff_is_the_single_cutoff_engine():
         assert np.array_equal(W0, W1) and float(e0) == float(e1)
 
 
+@pytest.mark.slow
 def test_split_rows_are_elec_at_elec_cutoff_plus_vdw_at_cutoff():
     """Split rows decompose exactly into electrostatics at RC_E and van der Waals at RC_V (1e-10).
 
@@ -234,6 +236,7 @@ def test_split_rows_with_special_pair_weights_decompose():
     assert abs(float(r.energy["vdw"] - rref.energy["vdw"])) < 1e-12 * abs(float(rref.energy["vdw"]))
 
 
+@pytest.mark.slow
 def test_row_capacity_overflow_of_each_part(caplog):
     """Too small a capacity of either part overflows; the driver re-sizes both and repeats the block.
 

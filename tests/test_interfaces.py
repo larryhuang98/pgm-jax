@@ -175,6 +175,7 @@ def test_slots_and_resizing():
     assert eng.stats["repeats"] >= 1 and eng.ff.mc > 8
 
 
+@pytest.mark.slow
 def test_compute_batch_matches_single_structures():
     """compute_batch equals one engine call per structure, also for partial and reordered batches.
 

@@ -53,6 +53,7 @@ def test_single_molecule_matches_gas_phase_model():
     assert np.abs(F + g).max() < 1e-3 * rms, (np.abs(F + g).max(), rms)
 
 
+@pytest.mark.slow
 def test_nve_energy_conservation():
     """NVE of 32 flexible methanols conserves the energy after a Langevin start; bonds stay intact.
 
@@ -88,6 +89,7 @@ def test_nve_energy_conservation():
     assert b.max() < 0.16 and b.min() > 0.08
 
 
+@pytest.mark.slow
 def test_npt_compresses_dilute_box():
     """NPT at 2 kbar compresses a dilute box, rebuilding the neighbour lists on the way.
 

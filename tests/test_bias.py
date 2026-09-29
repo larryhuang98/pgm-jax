@@ -360,6 +360,7 @@ def _opes_reference(S, sigma0, barrier, kT, periods, compression=1.0, fixed_sigm
 
 
 @pytest.mark.parametrize("fixed,recursive", [(False, True), (True, True), (False, False)])
+@pytest.mark.slow
 def test_opes_matches_reference_algorithm(fixed, recursive):
     """OPES reproduces the reference algorithm step by step.
 
@@ -522,6 +523,7 @@ def test_md_bias_forces_and_static_nve(engine):
 
 
 @pytest.mark.parametrize("engine", ["rigid", "atoms"])
+@pytest.mark.slow
 def test_md_deposition_in_loop(engine, tmp_path):
     """Hills deposited inside the compiled MD loop: forces, energy bookkeeping, files, restart.
 
@@ -576,6 +578,7 @@ def test_md_deposition_in_loop(engine, tmp_path):
     assert int(st3.parts[0].n) == 20
 
 
+@pytest.mark.slow
 def test_md_opes_nvt_pressure_and_mts():
     """OPES in NVT: the pressure includes the bias virial; a bias in the slow MTS group runs.
 
@@ -614,6 +617,7 @@ def test_md_opes_nvt_pressure_and_mts():
     assert o["hills"] == 8 and abs(o["econs"] - E0) < 0.05 * max(o["bias_work"], 1.0), (E0, o)
 
 
+@pytest.mark.slow
 def test_flexible_peptide_dihedral_bias():
     """Metadynamics on a solvated peptide's phi / psi: deposits, and the CVs are the backbone torsions.
 
@@ -772,6 +776,7 @@ def test_wham_and_histogram():
 
 
 @pytest.mark.parametrize("shared", [False, True])
+@pytest.mark.slow
 def test_walkers(shared, tmp_path):
     """Walkers in one vmapped program: independent walkers or one shared bias; files and restart.
 

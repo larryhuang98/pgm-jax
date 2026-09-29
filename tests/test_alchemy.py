@@ -14,7 +14,7 @@ What is checked, and against what:
   free energies f_k = ln(K_k / K_0) / 2 (beta = 1).
 
 Tolerances: identities of the Hamiltonian (same energy through two code paths) are ~1e-9
-relative, set by the 1e-11 dipole tolerance; finite differences with h = 1e-4 in lambda are
+relative (float64, dipoles to 1e-11); finite differences with h = 1e-4 in lambda are
 ~1e-6 relative (h^2 truncation); the statistical tests use 3 standard errors and a 0.7-1.4 band
 for error bars against the spread over repeats.
 """
@@ -215,6 +215,7 @@ def test_pressure_at_intermediate_lambda_matches_volume_derivative():
 
 
 # ----------------------------------------------------------------------------- windows
+@pytest.mark.slow
 def test_windows_batched_equal_sequential_and_exchange():
     """Batched (vmap) lambda windows reproduce sequential ones, including Hamiltonian exchange.
 
@@ -256,6 +257,7 @@ def test_windows_batched_equal_sequential_and_exchange():
     assert np.allclose(np.asarray(wb.state(1).induction.hist[3]), np.asarray(wb.state(1).induction.mu))
 
 
+@pytest.mark.slow
 def test_free_energy_run_outputs_and_restart(tmp_path):
     """FreeEnergyRun writes samples, restarts, checkpoints and final files, and continues from a checkpoint.
 
@@ -372,6 +374,7 @@ def intra_lj(tpl, Pa, Y):
     return float(np.sum(w * eps * ((rmin / r) ** 12 - 2 * (rmin / r) ** 6)))
 
 
+@pytest.mark.slow
 def test_flexible_solute_hamiltonian():
     """A flexible solute has the original Hamiltonian at (1, 1) and the decoupled one at (0, 0).
 
@@ -422,6 +425,7 @@ def test_keep_intramolecular_rigid_equals_annihilation_plus_gas_leg():
         assert abs(gk[0] - (ga[0] - gas.dudl(float(lam[0]), P))) < 1e-6 and abs(gk[1] - ga[1]) < 1e-9
 
 
+@pytest.mark.slow
 def test_keep_intramolecular_flexible_solute():
     """intramolecular="keep" on a flexible solute: end states and dU/dlambda by finite differences.
 
@@ -464,6 +468,7 @@ def test_keep_intramolecular_flexible_solute():
         assert abs(fd - g[j]) < 1e-6 * max(1.0, abs(g[j])), (j, fd, g[j])
 
 
+@pytest.mark.slow
 def test_flexible_windows_and_lone_solute_gas_leg():
     """Batched windows on the flexible engine, and the lone flexible solute's gas-phase leg.
 

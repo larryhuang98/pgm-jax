@@ -94,6 +94,7 @@ def test_flux_equals_bonded_model():
     assert np.abs(F + g).max() < 1e-3 * rms, (np.abs(F + g).max(), rms)
 
 
+@pytest.mark.slow
 def test_flux_forces_and_strain_derivatives(box):
     """Flux forces and strain derivatives match autodiff and central differences.
 
@@ -297,6 +298,7 @@ def test_flux_refusals_and_options():
         )
 
 
+@pytest.mark.slow
 def test_flux_nve_and_constraints():
     """NVE with flux conserves the energy; constrained X-H bonds carry no flux.
 

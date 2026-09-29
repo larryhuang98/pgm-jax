@@ -244,6 +244,7 @@ def _drift_and_noise(settings, dt=0.001, n=12, block=50):
     return slope, np.std(E - np.polyval(np.polyfit(t, E, 1), t)) / (0.5 * nve.integ.dof * KB * 300.0)
 
 
+@pytest.mark.slow
 def test_energy_conservation_in_a_tiny_box():
     """The iEL dipoles conserve the energy as well as converged SCF (drift and noise within 3x)."""
     base = _settings()
@@ -269,6 +270,7 @@ def test_iel_scf_modes():
     assert int(sim2.state.iters) == 2 and np.isfinite(sim2.observables()["etot"])
 
 
+@pytest.mark.slow
 def test_barostat_and_flexible_engine():
     """The iEL dipoles run with the Monte Carlo barostat and in the flexible engine (same energy, 1e-8)."""
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate

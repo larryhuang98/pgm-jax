@@ -260,9 +260,9 @@ def flux_settings(**kw):
 def fd_check(E, x, rng, h=1e-6):
     """Assert that jax.grad(E) matches central differences along three random directions.
 
-    The directional derivative (E(x + h d) - E(x - h d)) / (2 h) with h = 1e-6 has a truncation error
-    ~h^2 |E'''| and a round-off error ~1e-16 |E| / h, both far below the tolerance 1e-6 relative
-    (absolute below 1).
+    The directional derivative (E(x + h d) - E(x - h d)) / (2 h) with h = 1e-6 nm has a truncation
+    error ~h^2 |E'''| and a round-off error ~1e-16 |E| / h, both below the tolerance
+    1e-6 max(1, |fd|).
 
     Parameters
     ----------

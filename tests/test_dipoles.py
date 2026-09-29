@@ -184,7 +184,7 @@ def test_ir_spectrum_of_an_oscillating_dipole():
 
     Peak at the oscillation frequency and the sum rule int alpha n dw = pi beta <dM/dt^2> / (6 c eps0 V).
 
-    Peak within 2 cm^-1 of 500 cm^-1; the integral within 2 % (finite segment length).
+    Peak within 2 cm^-1 of 500 cm^-1; the integral within 2 %.
     """
     dt, nu = 0.002, 500.0  # ps, cm^-1
     w0 = 2 * np.pi * C_LIGHT_M_S * 100 * nu * 1e-12  # rad/ps
@@ -244,6 +244,7 @@ def _run(tmp_path, name, report, engine="rigid"):
 
 
 @pytest.mark.parametrize("engine", ["rigid", "flexible"])
+@pytest.mark.slow
 def test_recorded_series_match_the_state(tmp_path, monkeypatch, engine):
     """Dipoles recorded inside the compiled blocks equal direct evaluations of the state.
 
@@ -251,8 +252,7 @@ def test_recorded_series_match_the_state(tmp_path, monkeypatch, engine):
     equals the final state's M, the polarizability rows equal a direct evaluation, and the per-atom
     induced dipoles are written (NetCDF).
 
-    The in-block samples equal those taken at block ends to 1e-8 e nm (the same trajectory; the
-    recording changes the summation order only), the last sample equals the final state's M (1e-9)
+    The in-block samples equal those taken at block ends to 1e-8 e nm, the last sample equals the final state's M (1e-9)
     and the polarizability rows a direct evaluation (1e-7 relative, the iterative solve).
     """
     monkeypatch.setattr(DipoleRecorder, "alpha_every", 2)

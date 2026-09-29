@@ -8,13 +8,14 @@ differentiability); learned pair scales, fitted charges and bond-charge incremen
 direct energy; the twist angle and the F12 electronic families against their geometric
 definitions; a synthetic fit that must recover known parameters.
 
-Tolerances: finite differences 1e-5 relative (h = 1e-6 nm on energies of order 1-100 kJ/mol);
+Tolerances: finite differences 1e-5 relative (h = 1e-6 nm);
 identities of two code paths 1e-8 to 1e-12 (float64).
 """
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from _systems import ethanal, methanol
 
 from pgm_jax.bonded import terms as T
@@ -53,6 +54,7 @@ def _all_families_model(settings_kw=None):
     return BondedModel([spec], BondedSettings(families=fams, **(settings_kw or {}))), x
 
 
+@pytest.mark.slow
 def test_every_family_gradient_and_invariance():
     """Every term family: gradient vs central differences, rigid-motion invariance, a nonzero energy.
 
@@ -128,6 +130,7 @@ def test_flux_conserves_charge_and_is_differentiable():
     assert float(jnp.max(jnp.abs(g["flux"]["jb"]))) > 0
 
 
+@pytest.mark.slow
 def test_fit_recovers_synthetic_parameters():
     """The bonded fitter recovers a known class II + pGM model from its own frames.
 
@@ -378,7 +381,7 @@ def test_electronic_families():
     invariant under a proper rotation and translation (1e-8 relative).  Physics: the p fraction of the
     pi axis is 3/4 at a tetrahedral and 1 at a planar centre (1e-6); the conjugation energy (K = 1)
     is 0, 1/2 and 1 after rotating the ester's O substituent by 0, 45 and 90 deg about C-O (within
-    0.02 kJ/mol: only the substituent is rotated); the hybrid angle terms are nearly zero at the
+    0.02 kJ/mol); the hybrid angle terms are nearly zero at the
     reference geometry (below 5 % of the fixed-hybrid energy of a distorted one; the least-squares
     hybrids cannot make every angle of this rough geometry exact), and the self-consistent hybrids are
     softer than the fixed ones.

@@ -55,6 +55,7 @@ def test_one_fast_step_is_the_ordinary_integrator(engine, thermo):
     assert abs(out[0][2] - out[1][2]) < 1e-8 * abs(out[0][2])
 
 
+@pytest.mark.slow
 def test_groups_sum_to_the_full_force_and_fast_forces_are_gradients():
     """Force groups sum to the full force, the fast forces are -grad of the fast energy, lists rebuild.
 
@@ -89,6 +90,7 @@ def test_groups_sum_to_the_full_force_and_fast_forces_are_gradients():
 
 
 @pytest.mark.parametrize("pol", ["none", "direct", "mutual"])
+@pytest.mark.slow
 def test_special_pair_split(pol):
     """split="special": fast forces are gradients and inner = 1 is the ordinary integrator.
 
@@ -134,6 +136,7 @@ def test_nve_step_is_time_reversible(case):
     assert np.abs(x1 - x0).max() < 1e-8, np.abs(x1 - x0).max()
 
 
+@pytest.mark.slow
 def test_energy_conservation():
     """MTS at outer 2h / fast h conserves the energy much better than a plain 2h step.
 
@@ -168,6 +171,7 @@ def test_energy_conservation():
         ("constraints", "langevin", "inner"),
     ],
 )
+@pytest.mark.slow
 def test_group_temperatures(engine, thermostat, o_step):
     """NVT with MTS gives the target temperature for every degree-of-freedom group.
 
@@ -193,6 +197,7 @@ def test_group_temperatures(engine, thermostat, o_step):
     assert np.all(np.abs(T - 300.0) < 15.0), T
 
 
+@pytest.mark.slow
 def test_three_levels_thermostat():
     """Three MTS levels with the O step in the middle keep the group temperatures at the target.
 
@@ -212,6 +217,7 @@ def test_three_levels_thermostat():
     assert np.all(np.abs(T - 300.0) < 20.0), T
 
 
+@pytest.mark.slow
 def test_npt_restraints_and_checkpoint(tmp_path):
     """NPT with a restraint in the fast group runs and a checkpoint continues it exactly.
 

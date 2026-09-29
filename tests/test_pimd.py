@@ -234,6 +234,7 @@ def _sim(**kw):
     )
 
 
+@pytest.mark.slow
 def test_pgm_beads_match_single_evaluations():
     """Vmapped bead forces and U equal one force evaluation per bead (1e-7 / 1e-8 relative)."""
     sim = _sim()
@@ -260,6 +261,7 @@ def test_bead_chunks_match_vmap():
     assert int(a.state.eng.induction.count) == int(b.state.eng.induction.count) == 21
 
 
+@pytest.mark.slow
 def test_contraction_forces_and_identity():
     """Contracted bead forces are -dU/dq (2e-6); P' = P is no contraction; contracted U is close."""
     sim = _sim()
@@ -303,6 +305,7 @@ def test_pgm_rpmd_conserves_ring_polymer_energy():
     assert np.isfinite(pi.pressure()) and pi.observables()["ke_H_cv_meV"] > 0
 
 
+@pytest.mark.slow
 def test_pgm_npt_barostat():
     """The PIMD Monte Carlo barostat uses the right trial energy and compresses a dilute box.
 
@@ -332,6 +335,7 @@ def test_pgm_npt_barostat():
     assert o["mc_accept"] > 0 and o["volume_nm3"] < V0, (o["mc_accept"], V0, o["volume_nm3"])
 
 
+@pytest.mark.slow
 def test_flexible_water_fit_reproduces_target():
     """The flexible-water fit reproduces its target energies and frequencies (3 %); q-TIP4P/F bands.
 

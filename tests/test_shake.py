@@ -68,6 +68,7 @@ def _clusters():
     return x, pairs, d0, np.asarray(m, float), rng
 
 
+@pytest.mark.slow
 def test_solvers_agree_and_project():
     """The dense, one-block and iterative solvers agree and satisfy the constraints and RATTLE.
 
@@ -151,6 +152,7 @@ def _cluster():
 SCL = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.7, skin=0.05, lj_lrc=False)
 
 
+@pytest.mark.slow
 def test_rules_and_degrees_of_freedom():
     """Constraint rules count the right bonds and the engine the right degrees of freedom.
 
@@ -171,6 +173,7 @@ def test_rules_and_degrees_of_freedom():
                 assert np.abs(np.asarray(sim.state.dyn.momentum).sum(0)).max() < 1e-10
 
 
+@pytest.mark.slow
 def test_constraints_every_step_and_nve():
     """Constraints hold every step, and the NVE fluctuation grows as dt^2 without drift.
 
@@ -226,6 +229,7 @@ def test_constraints_every_step_and_nve():
     assert fluct[("all-bonds", 0.002)] < 1.5 * fluct[("h-bonds", 0.002)], fluct
 
 
+@pytest.mark.slow
 def test_skipped_projection_is_exact():
     """Skipping RATTLE after the drift gives the same trajectory as projecting.
 
@@ -249,6 +253,7 @@ def test_skipped_projection_is_exact():
         assert np.abs(np.asarray(a.state.dyn.momentum - b.state.dyn.momentum)).max() < 1e-9
 
 
+@pytest.mark.slow
 def test_npt_bussi_and_mts_keep_constraints():
     """NPT, Bussi and multiple time stepping keep the constraints (1e-10).
 
@@ -301,6 +306,7 @@ def test_npt_bussi_and_mts_keep_constraints():
 
 
 @requires("rdkit")
+@pytest.mark.slow
 def test_iterative_solver_in_md():
     """The iterative solver holds a fully constrained peptide in NVE at 2 fs.
 

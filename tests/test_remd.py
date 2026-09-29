@@ -262,6 +262,7 @@ def _econs(integ, st):
     return float(integ.kinetic(st)[0] + st.epot + 0.5 * jnp.sum(st.aux * st.aux) - st.heat)
 
 
+@pytest.mark.slow
 def test_md_swap_and_batched_equals_sequential():
     """Batched and sequential MD replicas agree; a swap moves the right parts of the state.
 
@@ -365,6 +366,7 @@ def test_md_swap_and_batched_equals_sequential():
     assert sim.ff.mc > 16 and rep._template.max_occupancy > 4 and not rep._nb_failed(rep.S)
 
 
+@pytest.mark.slow
 def test_md_npt_sequential_restart(tmp_path):
     """NPT replica exchange (sequential engine) writes its files and restarts exactly.
 
@@ -425,6 +427,7 @@ def test_md_rigid_batched_checkpoint_continues_sequentially(tmp_path):
         assert abs(rs.replicas.observables(k)["econs"] - rb.replicas.observables(k)["econs"]) < 1e-6
 
 
+@pytest.mark.slow
 def test_md_replicas_split_rows_fit_every_part():
     """Batched replicas with split rows size both parts and recover from an overflow.
 

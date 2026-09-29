@@ -11,6 +11,7 @@ solvated peptide with X-H constraints and HMR at 2 fs.  The peptides need RDKit.
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from _systems import peptide, peptide_template, requires, water, water_lattice
 
 from pgm_jax import System
@@ -94,6 +95,7 @@ def test_constraints_shake_rattle():
 
 
 @requires("rdkit")
+@pytest.mark.slow
 def test_peptide_forces_match_gas_phase_model():
     """MD forces of a flexible peptide equal the gradient of its gas-phase model.
 

@@ -276,6 +276,7 @@ def test_rigid_body_forces_and_superposition(setup):
         assert np.linalg.norm(b[1] - b[0]) == pytest.approx(0.9572)
 
 
+@pytest.mark.slow
 def test_loss_gradient_matches_finite_differences(setup):
     """The gradient of QMFit.loss matches central finite differences."""
     rng, w, cm = setup
@@ -325,6 +326,7 @@ def test_fit_recovers_synthetic_target_exactly(setup):
 
 
 @pytest.mark.needs_data
+@pytest.mark.slow
 def test_committed_fit_reproduces_its_report():
     """A committed fit gives the dimer and hexamer energies of its report (2e-3 / 1e-2 kcal/mol).
 

@@ -237,6 +237,7 @@ def _cluster_restraints(pos, masses):
 
 
 @pytest.mark.parametrize("engine", ["rigid", "atoms"])
+@pytest.mark.slow
 def test_nve_with_restraints_and_force_mapping(engine):
     """NVE with restraints conserves energy; restraint forces and virial map correctly.
 
@@ -283,6 +284,7 @@ def test_nve_with_restraints_and_force_mapping(engine):
 
 
 @pytest.mark.parametrize("engine", ["rigid", "atoms"])
+@pytest.mark.slow
 def test_barostat_trials_include_restraints(engine):
     """Monte Carlo volume trials include the restraint energy (fixed vs com reference).
 
