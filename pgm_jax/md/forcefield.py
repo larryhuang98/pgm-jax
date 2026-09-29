@@ -770,25 +770,28 @@ class PGMForceField:
         d = jnp.linalg.solve(M, rp[..., None])[..., 0].reshape(nblk + 1, nb, 3)[b, l]
         return jnp.where(L["inb"][:, None], d, alpha[:, None] * r.astype(jnp.float64))
 
-    def _solve_iel(self, g, S, Gk, alpha, q, p, ind: InductionState):
+    def _solve_iel(self, g, S, Gk, alpha, q, p, ind: InductionState, ext=None):
         """Extended-Lagrangian dipoles (settings.iel).  x = ind.xl[0] are the auxiliary dipoles of this
         step (propagated at the last one).  "0scf": mu = x + alpha r(x) with r(x) = field(q, p + x) -
         x / alpha, one field sweep; "scf": iel_iter CG iterations from x (to dipole_tol if 0).  The
         first xl_warmup steps solve to dipole_tol and put the solution in place of x.  Then
         x_{n+1} = 2 x_n - x_{n-1} + kappa (mu - x_n) + a sum_k c_k x_{n-k}.  Returns mu, the shadow
         displacement delta = mu - x ("0scf"; 0 in the warm-up), iterations, residual (at x for
-        "0scf": max|alpha r(x)| / mean|alpha b|) and the new InductionState."""
+        "0scf": max|alpha r(x)| / mean|alpha b|) and the new InductionState.  ext: a uniform external
+        field as in _solve_core (the field on the right-hand side, r(x) with the field at x; constant
+        displacement also puts its kappa term into the operator)."""
         cd = self.cd
         a64 = alpha[:, None]
         qc = q.astype(cd)
-        A = self._operator(g, S, Gk, alpha)
+        A = self._operator(g, S, Gk, alpha, ext)
+        add_ext = (lambda b, x: b) if ext is None else (lambda b, x: b + self._ext_at(ext, x)[None, :])
         X = ind.xl
         x = X[0]
         first = ind.count == 0
         warm = ind.count < self.xl_warmup
 
         def converged(_):
-            b = self._field(g, S, Gk, qc, p)
+            b = add_ext(self._field(g, S, Gk, qc, p), jnp.zeros((1, 3), cd))
             ab = a64 * b.astype(jnp.float64)
             # the first step starts from ind.mu when set (a volume move's converged dipoles), else alpha b
             x0 = jnp.where(first, jnp.where(jnp.any(ind.mu != 0.0), ind.mu, ab), x)
@@ -797,7 +800,7 @@ class PGMForceField:
             return mu, jnp.zeros_like(mu), it, err, norm
 
         def extended(_):
-            r0 = self._field(g, S, Gk, qc, p + x) - _div_alpha(x, a64, self.alpha_mask).astype(cd)
+            r0 = add_ext(self._field(g, S, Gk, qc, p + x), x) - _div_alpha(x, a64, self.alpha_mask).astype(cd)
             norm = ind.norm
             if self.s.iel == "0scf":
                 d = a64 * r0.astype(jnp.float64) if self._blocks is None else self._block_solve(g, alpha, r0)
@@ -1217,6 +1220,9 @@ class PGMForceField:
         dEdd = KE * self._row_field(g, qc, dc).astype(jnp.float64)
         if ext is not None:
             Fx, e_f = self._ext_terms(ext, self.field_dipole(pos, P["q"], d, ext[1]) if M is None else M)
+            if delta is not None and ext[2] is not None:       # iEL/0-SCF at constant D: minus kappa |sum delta|^2 / 2
+                sd = jnp.sum(delta.astype(jnp.float64), axis=0)
+                e_f = e_f - 0.5 * KE * ext[2] * jnp.dot(sd, sd)
             dEdd = dEdd - KE * Fx[None, :]
         e_np, (gpos_np, gd_np) = jax.value_and_grad(self._nonpair, argnums=(0, 2))(pos, H, d, mu, P, delta)
         forces = -(KE * gx_el + gx_lj + gpos_np + vjp_p(dEdd + gd_np)[0])
@@ -1242,6 +1248,9 @@ class PGMForceField:
         phi = KE * self._row_potential(g, qc, dc).astype(jnp.float64)
         if ext is not None:                                    # the external potential -F . r at each atom
             Fx, e_f = self._ext_terms(ext, self.field_dipole(pos, P["q"], d, ext[1]) if M is None else M)
+            if delta is not None and ext[2] is not None:       # iEL/0-SCF at constant D: minus kappa |sum delta|^2 / 2
+                sd = jnp.sum(delta.astype(jnp.float64), axis=0)
+                e_f = e_f - 0.5 * KE * ext[2] * jnp.dot(sd, sd)
             dEdd = dEdd - KE * Fx[None, :]
             phi = phi - KE * (pos @ Fx)
         e_np, (gpos_np, gd_np, gq_np) = jax.value_and_grad(
@@ -1291,7 +1300,7 @@ class PGMForceField:
             if self.iel:                                       # extended-Lagrangian dipoles
                 if ind.xl is None:                             # a state from an SCF run: start the history
                     ind = ind.set(xl=jnp.zeros((self.xl_len, self.n, 3)), count=jnp.zeros_like(ind.count))
-                mu, delta, it, err, ind = self._solve_iel(ge, S, Gk, P["alpha"], P["q"], p, ind)
+                mu, delta, it, err, ind = self._solve_iel(ge, S, Gk, P["alpha"], P["q"], p, ind, ext=ext_s)
             else:
                 mu, it, err, ind = self._solve(ge, S, Gk, P, p, ind, ext=ext_s)
         else:                                                  # no induced dipoles ("q", "qp")

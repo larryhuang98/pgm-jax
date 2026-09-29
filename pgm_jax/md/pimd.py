@@ -444,6 +444,9 @@ class PGMBeads:
             raise NotImplementedError("virtual sites are not supported with path integrals yet")
         if getattr(integ, "mts", None) is not None or integ.alchemy is not None or integ.restraints is not None:
             raise NotImplementedError("path integrals with mts / alchemy / restraints are not supported yet")
+        if getattr(sim.ff, "iel", False):
+            raise NotImplementedError("path integrals with extended-Lagrangian dipoles (MDSettings.iel): every bead "
+                                      "would need its own auxiliary dipoles; use iel='none'")
         if getattr(integ, "bias", None) is not None or getattr(integ, "efield", None) is not None:
             raise NotImplementedError("path integrals with biases on collective variables (bias=) or an external "
                                       "electric field (efield=) are not supported yet")

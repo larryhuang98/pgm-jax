@@ -217,6 +217,9 @@ class PGMEngine:
         from ..md.vsites import VirtualSites
         if VirtualSites.of(sys) is not None:
             raise NotImplementedError("virtual sites are not supported by the external-code interfaces yet")
+        if getattr(settings, "iel", "none") != "none":
+            raise NotImplementedError("extended-Lagrangian dipoles (MDSettings.iel) need the native integrator's "
+                                      "sequence of steps; external codes call the engine with SCF dipoles (iel='none')")
         if stress is None:                      # rigid-molecule model: molecular virial (as the native pressure)
             stress = "molecular" if templates is None else "atomic"
         if stress not in ("atomic", "molecular"):
