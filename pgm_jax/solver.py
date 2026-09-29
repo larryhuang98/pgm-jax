@@ -38,8 +38,9 @@ def solve_linear_induction(T: jax.Array, alpha: jax.Array, F: jax.Array) -> jax.
     Parameters
     ----------
     T : jax.Array (n, n, 3, 3)
-        Dipole-dipole interaction tensors with zero diagonal blocks [1/nm^3] (the negative of the
-        field-gradient tensor of a unit dipole, without the Coulomb constant).
+        Dipole-dipole interaction tensors with zero diagonal blocks [1/nm^3], T_ij = d^2 phi_ij /
+        dr_i dr_j of the pair kernel, so that the field at i of a dipole mu_j is -T_ij mu_j (without
+        the Coulomb constant).
     alpha : jax.Array (n,)
         Isotropic atomic polarizabilities [nm^3]; must be nonzero.
     F : jax.Array (n, 3)
