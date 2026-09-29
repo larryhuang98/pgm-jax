@@ -28,7 +28,7 @@ tip4pew = Molecule(
     vsites=[VirtualSite.tip4p(3, 0, 1, 2, d_om=0.0125)],
 )  # (1 - 2a, a, a) average
 VirtualSites.of(System([tip4pew] * 512)).place(pos, H)  # positions with every site rebuilt
-sim = Simulation(System([tip4pew] * 512), pos, H, MDSettings(elec="q"), ensemble="npt", dt=0.002)
+sim = Simulation(System([tip4pew] * 512), pos, H, MDSettings(elec="q"), barostat=MonteCarloBarostat(), dt=0.002)
 
 # or from tleap (source leaprc.water.tip4pew): extra points become "amber" sites
 sim = Simulation.from_amber("tip4pew.prmtop", "tip4pew.rst7", charges="amber", settings=MDSettings(elec="q"))

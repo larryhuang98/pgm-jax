@@ -27,8 +27,8 @@ sim = FlexibleSimulation(
     H,
     MDSettings(),
     dt=0.002,
-    ensemble="npt",
     thermostat="bussi",
+    barostat=MonteCarloBarostat(),
     constraints="h-bonds",
 )  # 2 fs
 sim = FlexibleSimulation(..., dt=0.004, constraints="h-bonds", hmr=3.024)  # 4 fs

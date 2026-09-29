@@ -46,8 +46,8 @@ both sample the free ring polymer exactly, and Cayley does not resonate as P gro
 
 | mode | internal modes l > 0 | centroid |
 |---|---|---|
-| `"pimd"`, `thermostat="pile-l"` | Langevin gamma_l = 2 lam omega_l (lam = 1: critical damping) | Langevin 1/tau0 |
-| `"pimd"`, `thermostat="pile-g"` | same | Bussi global rescaling, time constant tau0 (gentler on the centroid and the dipole predictor) |
+| `"pimd"`, `thermostat=PILE("l", tau_centroid)` | Langevin gamma_l = 2 lam omega_l (lam = 1: critical damping) | Langevin 1/tau_centroid |
+| `"pimd"`, `thermostat=PILE("g", tau_centroid)` | same | Bussi global rescaling, time constant tau_centroid (gentler on the centroid and the dipole predictor) |
 | `"trpmd"` (Rossi, Ceriotti & Manolopoulos JCP 140, 234116 (2014)) | gamma_l = 2 lam omega_l, lam = 1/2 by default | none: the centroid dynamics estimates Kubo-transformed correlation functions |
 | `"rpmd"` | none | none (NVE ring polymer) |
 
@@ -134,7 +134,7 @@ only the monomer potential; comparisons with experiment are indicative.
 
 ```python
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate
-from pgm_jax.md.pimd import PIMDSimulation
+from pgm_jax.md.pimd import PILE, PIMDSimulation
 
 tpl = FlexibleTemplate.load("validation/pimd/pgm_water_flex.flex")
 sim = FlexibleSimulation(
@@ -144,23 +144,22 @@ sim = FlexibleSimulation(
     H,
     MDSettings(),
     dt=0.00025,
-    ensemble="nvt",
     temperature=298.0,
     thermostat="bussi",
 )
 sim.minimize(200)
 sim.run(8000)  # classical flexible equilibration
-pi = PIMDSimulation(sim, beads=32, thermostat="pile-g", tau0=0.1)  # contract=8: contraction
-pi.run(40000, report=200, traj=200, beads_traj=0, restart=4000, prefix="qwater", pressure=True)
+pi = PIMDSimulation(sim, beads=32, thermostat=PILE("g", tau_centroid=0.1))  # contract=8: contraction
+pi.run(40000, prefix="qwater", report_every=200, traj_every=200, checkpoint_every=4000, report_pressure=True)
 pi.set_mode("trpmd")
-pi.run(80000, report=200, traj=40, prefix="qwater_trpmd")  # dynamics
+pi.run(80000, prefix="qwater_trpmd", report_every=200, traj_every=40)  # dynamics
 pi.observables()  # temp_K, temp_centroid, epot, ekin_prim, ekin_cv, ke_H_cv_meV, ke_O_cv_meV, dipole_D, cg...
 pi.pressure()
-pi.centroid_nm()
-pi.beads_nm()
+pi.centroid()  # (N, 3) nm
+pi.beads()  # (P, N, 3) nm
 pi.molecular_dipoles()
-pi.save("q")
-pi.load("q.pimd.chk")
+pi.save_checkpoint("q.pimd.chk")
+pi.load_checkpoint("q.pimd.chk")
 ```
 
 Any potential (model systems, tests): `PIMDIntegrator(PotentialEngine(V), masses, P, T, dt, mode,
@@ -188,7 +187,7 @@ benchmarks). Errors are standard errors from 10-20 blocks.
 
 ### 1. Harmonic oscillators: exact P-bead and quantum values
 
-256 independent 3D oscillators (1.008 amu, 300 K), PILE-L (centroid 1/tau0 = omega), dt = 0.1/omega.
+256 independent 3D oscillators (1.008 amu, 300 K), PILE-L (centroid 1/tau_centroid = omega), dt = 0.1/omega.
 For the discretised oscillator <K> = <V> = (kT/2) sum_l omega^2 / (omega_l^2 + omega^2) per degree of
 freedom at every P (both estimators have this average); the quantum value is (hbar omega / 4)
 coth(beta hbar omega / 2). kJ/mol per degree of freedom (`python scripts/pimd_validate.py harmonic`):
@@ -277,7 +276,7 @@ estimators, mode temperatures, the water fit.
 ### 6. Quantum flexible pGM water
 
 512 waters (1,536 atoms), 298 K, NVT at 0.9887 g/cm^3 (the box of the rigid model's NPT run), mixed
-precision, 0.9 nm cutoff, PME, dipole tolerance 1e-5, dt 0.25 fs, PILE-G (tau0 0.1 ps, lam 1),
+precision, 0.9 nm cutoff, PME, dipole tolerance 1e-5, dt 0.25 fs, PILE-G (tau_centroid 0.1 ps, lam 1),
 Cayley step; 2 ps classical and 2 ps PIMD equilibration, then 10 ps (`scripts/pimd_water.py run`).
 Kinetic energies are per atom (centroid virial; primitive in brackets); the dipole is the
 bead-averaged molecular dipole (<|mu|> over beads in brackets); g peaks are the bead-averaged
@@ -391,8 +390,8 @@ step (the batched solve runs until its slowest bead converges). `scripts/pimd_wa
   kinetic temperature of the beads is 0.6 K low at 0.25 fs (the BAOAB kinetic-energy bias of the
   stiff stretch), which does not enter the estimators (they use T).
 - Correlation functions of the centroid (IR spectra from the bead-averaged dipoles, velocity
-  autocorrelation) are left to post-processing: `run(traj=...)` writes the centroid trajectory,
-  `beads_traj` every bead, `molecular_dipoles()` the bead-averaged molecular dipoles.
+  autocorrelation) are left to post-processing: `run(traj_every=...)` writes the centroid trajectory,
+  `beads_traj_every` every bead, `molecular_dipoles()` the bead-averaged molecular dipoles.
 - The flexible pGM water is a new model built for this validation, not refitted for quantum nuclei:
   at the rigid model's density its classical and quantum pressures are -900 and -1150 bar, and its
   quantum effects slow diffusion (section 6).

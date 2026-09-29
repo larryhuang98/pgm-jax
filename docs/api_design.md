@@ -533,7 +533,7 @@ docs + README + examples (D). Every phase updates all of them in the same commit
 
 | Old | New | S | T | D |
 |---|---|---|---|---|
-| `Simulation(sys, pos_nm, H_nm, settings, dt=, ensemble=, temperature=, gamma=, pressure=, barostat_interval=, seed=, vel_nm_ps=, params=, log=sys.stdout, neighbor_list=, thermostat="langevin", tau_t=, restraints=, alchemy=, mts=, bias=, efield=)` | `Simulation(system, positions, box, settings, *, dt, temperature, thermostat, barostat, velocities, seed, params, log=None, neighbor_list, restraints, alchemy, mts, bias, efield)` | 33/18 | 53/15 | 9/7 |
+| `Simulation(sys, pos_nm, H_nm, settings, dt=, ensemble=, temperature=, gamma=, pressure=, barostat_interval=, seed=, vel_nm_ps=, params=, log=sys.stdout, neighbor_list=, thermostat="langevin", tau_t=, restraints=, alchemy=, mts=, bias=, efield=)` | `Simulation(system, positions, box, settings, *, dt, temperature, thermostat="langevin", barostat=None, velocities, seed, params, restraints, alchemy, mts, bias, efield, neighbor_list, log=None)` | 33/18 | 53/15 | 9/7 |
 | `FlexibleSimulation(sys, templates, pos_nm, H_nm, ..., log=None, r_margin, constraints, hmr, max_single, constraint_options)` | same keywords as `Simulation` + `constraints`, `hmr`, `constraint_options` (with `max_single` inside), `r_margin` | 30/19 | 65/25 | 22/11 |
 | `ensemble="nve"` | `thermostat=None` (no barostat) | 72 (all `ensemble=`) | 127 | 12 |
 | `ensemble="nvt", thermostat="langevin", gamma=g` | `thermostat=Langevin(friction=g)` (or `"langevin"` for the default 1/ps) | 23 (`gamma=`) | 19 | 4 |
@@ -543,22 +543,25 @@ docs + README + examples (D). Every phase updates all of them in the same commit
 | `Simulation.from_amber(prmtop, coords, use_velocities, charges, **kw)` | unchanged name, new keywords as above | 5/3 | 4/3 | 3/2 |
 | `sim._advance(n)` | `sim.advance(n)` | 67/21 | 89/19 | 0 |
 | `sim.run(nsteps, report, traj, restart, prefix, pressure_every_report, append, dipoles, induced)` | `sim.run(nsteps, *, prefix, report_every, traj_every, checkpoint_every, report_pressure, append, dipoles_every, induced_every)` | 62 (all `.run(`) | 37 | 19 |
-| `sim.save(prefix)`, `sim.load(path)` | `sim.save_checkpoint(path)`, `sim.write_restart(path)`, `sim.load_checkpoint(path)` (run() still writes `prefix.chk` + `prefix.rst7`) | 16/9 | 19/15 | 3/3 |
-| `sim.positions_nm()`, `sim.velocities_nm_ps()` | `sim.positions()`, `sim.velocities()` | 41/16 | 47/15 | 10/5 |
+| `sim.save(prefix)`, `sim.load(path)` | `sim.save_checkpoint(path)`, `sim.write_restart(path)`, `sim.load_checkpoint(path)` (run() still writes `prefix.chk` + `prefix.rst7`, and `prefix.bias` with biases) | 16/9 | 19/15 | 3/3 |
+| `sim.positions_nm()`, `sim.velocities_nm_ps()` | `sim.positions()`, `sim.velocities()`, `sim.box()` | 41/16 | 47/15 | 10/5 |
 | `simulation._dedupe(read_prmtop_pgm(p, first_residue_only=False, charges=c))` | `System.from_prmtop(p, charges=c)` (identical molecules share one template) | 19/15 | 2/1 | 1/1 |
 | `PIMDSimulation(sim, beads, mode, thermostat="pile-l", tau0, lam, propagator, contract, bead_margin, seed, dt, spread, ensemble, pressure, barostat_interval, bead_chunk, log=sys.stdout)` | `PIMDSimulation(sim, beads, mode, thermostat=PILE(kind="l", tau_centroid=0.2, lam=None), propagator, contract, barostat=None, bead_margin, bead_chunk, spread, seed, dt=None, log=None)` | 2/1 | 10/3 | 2 |
-| `PIMDSimulation.run(..., beads_traj, pressure: bool)`, `set_mode(mode, thermostat, tau0, lam)` | `run(..., beads_traj_every, report_pressure)`, `set_mode(mode, thermostat=PILE(...))` | 3 | 4 | 2 |
+| `PIMDSimulation.run(..., beads_traj, pressure: bool)`, `set_mode(mode, thermostat, tau0, lam)` | `run(..., beads_traj_every, report_pressure)`, `set_mode(mode, thermostat=PILE(...))`; `centroid_nm()` / `beads_nm()` -> `centroid()` / `beads()` | 3 | 4 | 2 |
 | `RingPolymer(nbeads, ...)`, `PIMDIntegrator(engine, masses, nbeads, ...)` | `beads` | 0 | 6 | 1 |
 | `ReplicaExchange(sim, temperatures, exchange_every, batched, seed, log=sys.stdout)`; `.run(nsteps, report, traj, restart, prefix, append)`; `save(prefix)`/`load(path)` | `log=None`; `.run(nsteps, *, prefix, report_every, traj_every, checkpoint_every, append)`; `save_checkpoint`/`load_checkpoint` | 4/2 | 15/4 | 1 |
 | `FieldReplicas.run(nsteps, every, prefix, report, append, restart, extra, log)`; `save(path)`/`load(path)` | `FieldReplicas(sim, fields, seed, log=None).run(nsteps, *, sample_every, prefix, report_every, checkpoint_every, append, extra)`; `save_checkpoint`/`load_checkpoint` | 2/2 | 2/2 | 1 |
 | `Walkers(sim, n, shared, bias_states, seed)`; `.run(nsteps, report, restart, prefix, append, log)`; `save/load(path)` | `Walkers(sim, walkers, shared, bias_states, seed, log=None)`; `.run(nsteps, *, prefix, report_every, checkpoint_every, append)`; `save_checkpoint`/`load_checkpoint` | 4/2 | 5/3 | 4/1 |
-| `FreeEnergyRun(windows, sample_every, exchange_every, seed, log, meta, param_grad)`; `.run(nsteps, prefix, report, restart)`; `save(prefix)`/`load(path)`/`load_windows(path)` | `.run(nsteps, *, prefix, report_every, checkpoint_every)`; `save_checkpoint`/`load_checkpoint`/`load_windows` | 1/1 | 8/3 | 3/3 |
-| `LiquidFit(sys_, pos, H, space, objective, T, pressure, settings, dt, thermostat="bussi", tau_t, gamma, barostat_interval, ..., tol, ..., log=sys.stdout, ..., ensemble, replicas, ...)` | `LiquidFit(system, positions, box, space, objective, *, temperature, thermostat=Bussi(1.0), barostat=MonteCarloBarostat(1.0, 100) (None: NVT), settings, dt, ..., dipole_tol, ..., log=None, replicas, ...)` | 1/1 | 3/1 | 1/1 |
+| `FreeEnergyRun(windows, sample_every, exchange_every, seed, log, meta, param_grad)`; `.run(nsteps, prefix, report, restart)`; `save(prefix)`/`load(path)`/`load_windows(path)` | `FreeEnergyRun(windows, sample_every, exchange_every, seed, log=None, meta, param_grad)`; `.run(nsteps, *, prefix, report_every, checkpoint_every)`; `save_checkpoint`/`load_checkpoint`/`load_windows`, `save_samples(path)` (prefix_fe.npz) | 1/1 | 8/3 | 3/3 |
+| `LiquidFit(sys_, pos, H, space, objective, T, pressure, settings, dt, thermostat="bussi", tau_t, gamma, barostat_interval, ..., tol, ..., log=sys.stdout, ..., ensemble, replicas, ...)` | P5: `LiquidFit(sys_, pos, H, space, objective, T, settings, dt, thermostat=Bussi(), barostat=MonteCarloBarostat() (None: NVT), ..., tol, ..., log=None, ..., replicas, ...)`; P7 renames `system`, `positions`, `box`, `temperature`, `dipole_tol` | 1/1 | 3/1 | 1/1 |
 | `Integrator(ff, rigid, neighbors, dt, ensemble, temperature, gamma, pressure, barostat_interval, params, thermostat, tau_t, ...)`, `FlexibleIntegrator(...)`, MTS variants | same keywords as the engines (thermostat / barostat objects) | 0 | ~6 | 0 |
 | `make_thermostat(spec, gamma, tau)`, `Langevin(gamma)` | `make_thermostat(spec)` (string = defaults, or an object), `Langevin(friction)` | 0 | 3 | 1 |
 
 Unchanged: `observables()` keys, log-file columns and every output file format except the
-checkpoint header; `set_field`, `set_restraints`, `set_bias_state`, `restraint_energies`,
+checkpoints (P4: versioned `.npz` with a JSON header; the old pickles are still read) and the
+progress logs of `Walkers` (`prefix_walkers.log`), `FreeEnergyRun` (`prefix_fe.log`) and
+`FieldReplicas` (`prefix.log`), which became tables in the format of `Simulation.run`'s log
+(P4, `md/driver.LogTable`); `set_field`, `set_restraints`, `set_bias_state`, `restraint_energies`,
 `bias_energies`, `cv_values`, `minimize`, `MDReplicas.advance/permute/potentials/observables`,
 `LambdaWindows` (except `log`), `Alchemy`, `MTS`, `Restraints`, `ExternalField`, `VirtualSite`,
 bias classes, `PGMForceField.compute/rows_for/strain_derivative/init_induction`.
@@ -868,7 +871,8 @@ index, identity matrix). E402 is resolved by removing the `sys.path` edits (P3) 
 - P1: ruff rules E, W, F, I, UP, B (subset as above) enforced on the whole repository; D (numpy
   convention) is configured and switched on in P8/P9 together with the docstrings.
 - P2: `pgm_jax/units.py` holds every constant.  Values that differed between modules (Bohr radius of
-  three CODATA releases) are kept under their own names so that no result changes;
+  three CODATA releases) are kept under their own names so that no result changes (owner, after P3:
+  the three Bohr values stay separate for now; the owner decides later which one to keep);
   `KJMOL_NM3_PER_BAR = 1.0 / BAR_PER_KJMOL_NM3` is computed as before (bitwise the same double).
   `md.box` gained `box_from_cell` / `cell_parameters` / `centers_of_mass`, `md.io`
   `read_coordinates_nm`, `analysis/stats.py` the time-series statistics; one prmtop parser

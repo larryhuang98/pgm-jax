@@ -65,15 +65,14 @@ sim = FlexibleSimulation(
     asys.system_positions(),
     asys.box,
     MDSettings(dipole_tol=1e-4),
-    dt=0.002,
-    ensemble="npt",  # 4 fs: see below
+    dt=0.002,  # 4 fs: see below
     constraints="h-bonds",
     hmr=3.024,  # or asys.hmr({"water": 4.0, "protein": 3.024})
-    thermostat="bussi",
-    tau_t=1.0,
+    thermostat=Bussi(tau=1.0),
+    barostat=MonteCarloBarostat(pressure=1.0),
 )  # fastest with pGM (docs/thermostat_ideas.md)
 sim.minimize(300)  # after minimization, equilibrate with thermostat="langevin" (faster warm-up)
-sim.run(500000, report=5000, traj=5000, prefix="ubq")
+sim.run(500000, prefix="ubq", report_every=5000, traj_every=5000)
 ```
 
 ## Production MD with pmemd-pgm
@@ -189,10 +188,10 @@ built from the current positions, released in stages:
 ```python
 from pgm_jax.md.restraints import KCAL_A2, DihedralRestraint, harmonic
 
-x0, H0 = sim.positions_nm(), sim.state.box  # e.g. after minimize()
+x0, H0 = sim.positions(), sim.box()  # e.g. after minimize()
 for k in (10.0, 5.0, 1.0, 0.1):  # kcal/mol/A^2 on the heavy atoms
     sim.set_restraints(asys.position_restraints(k * KCAL_A2, "heavy", x0, H0))  # scaling "com"
-    sim.run(25000, report=5000, prefix=f"eq_k{k:g}")  # log column erestraint
+    sim.run(25000, prefix=f"eq_k{k:g}", report_every=5000)  # log column erestraint
 sim.set_restraints(None)
 # a phi restraint (IUPAC sign, rad): atoms in system order, e.g. from prot.atom_names
 sim.set_restraints(DihedralRestraint([[c0, n1, ca1, c1]], harmonic(np.radians(-63.0)), k=50.0))

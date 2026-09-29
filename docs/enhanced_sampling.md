@@ -27,7 +27,7 @@ sim = FlexibleSimulation(
     constraints="h-bonds",
     bias=BiasSet([metad], colvar=100),
 )
-sim.run(5_000_000, report=5000, restart=50000, prefix="ala2")  # ala2.colvar, ala2.hills, ala2.bias, ala2.chk
+sim.run(5_000_000, prefix="ala2", report_every=5000, checkpoint_every=50000)  # ala2.colvar, .hills, .bias, .chk
 sim.observables()["ebias"], sim.observables()["hills"]  # also bias_work (energy pumped in)
 sim.cv_values(), sim.bias_energies()  # current CVs and V of each bias
 sim.load_bias("ala2.bias")  # continue with a saved bias state
@@ -45,7 +45,7 @@ wk = Walkers(sim, 8, shared=True)  # or multiple walkers of one bias
 h = Harmonic(phi, at=0.0, kappa=150.0)  # umbrella windows: one centre per walker
 sim = FlexibleSimulation(..., bias=BiasSet([h], colvar=100))
 wk = Walkers(sim, 24, bias_states=[sim.state.bias._replace(parts=(h.state(at=c),)) for c in centres])
-wk.run(750000, report=5000, restart=250000, prefix="us")  # us_wNN.colvar, us.walkers.chk
+wk.run(750000, prefix="us", report_every=5000, checkpoint_every=250000)  # us_wNN.colvar, us.walkers.chk
 
 _, c = read_table("md_w00.colvar")
 _, hl = read_table("md_w00.hills")  # step, time_ps, phi, psi, bias0_metad

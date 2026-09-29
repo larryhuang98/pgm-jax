@@ -14,7 +14,7 @@ python scripts/dielectric.py ir.dip --ir ir_spectrum.dat                   # M s
 ```
 
 ```python
-sim.run(nsteps, report=5000, traj=5000, dipoles=25, induced=5000, prefix="md")  # also md.mu.nc
+sim.run(nsteps, prefix="md", report_every=5000, traj_every=5000, dipoles_every=25, induced_every=5000)  # also md.mu.nc
 from pgm_jax.md.dipoles import cell_dipole, CellDipole, read_dipoles
 
 cell_dipole(sim)  # {"charge", "perm", "ind", "total"} e nm, "debye": the same in D, "molecular" (nmol, 3)
@@ -24,7 +24,7 @@ meta, d = read_dipoles(["md.dip", "md2.dip"])  # continuation segments; supersed
 ```
 
 Both engines are supported (`Simulation`, rigid bodies; `FlexibleSimulation`, atoms with
-constraints). `dipoles=n` does not shorten the driver's blocks: M is evaluated on the device
+constraints). `dipoles_every=n` does not shorten the driver's blocks: M is evaluated on the device
 inside the block (a `lax.scan` over sub-blocks of the integrator), so sampling every step costs
 no host round trip; on 512 pGM waters (2 fs, sampling every 25 steps) the speed was unchanged
 (199 vs 196 ns/day). Samples of a block that the driver repeats after a list overflow are

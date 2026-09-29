@@ -20,8 +20,8 @@ fluctuation results of TIP3P, pGM3P-25 and the Amber test pGM water at a fractio
 ```python
 from pgm_jax.md.efield import ExternalField, displacement
 
-sim = Simulation(sys, pos, H, settings, ensemble="nvt", thermostat="bussi", efield=(0.0, 0.0, 0.1))  # V/nm
-sim.run(50000, report=1000, dipoles=25, prefix="md")  # log: efield, field_energy, Mx My Mz (e nm)
+sim = Simulation(system, positions, box, settings, thermostat="bussi", efield=(0.0, 0.0, 0.1))  # V/nm
+sim.run(50000, prefix="md", report_every=1000, dipoles_every=25)  # log: efield, field_energy, Mx My Mz (e nm)
 sim.set_field((0.0, 0.0, 0.2))  # new amplitude, no recompilation
 ExternalField.from_wavenumber((0, 0, 0.2), 200.0)  # E(t) = E0 cos(2 pi c nu t), nu in cm^-1
 ExternalField((0, 0, 0.2), omega=37.7, phase=0.0)  # omega in rad/ps

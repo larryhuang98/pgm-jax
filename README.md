@@ -117,7 +117,13 @@ python scripts/run_md.py -p water.prmtop -c water.rst7 -o md --ensemble npt --te
 Writes `md.log` (energies, translational/rotational temperatures, density, solver iterations,
 ns/day), `md.nc` (Amber NetCDF trajectory; cpptraj/VMD/MDTraj read it), `md.rst7` (Amber NetCDF
 restart) and `md.chk` (complete state; continue with `--checkpoint md.chk`). From Python:
-`Simulation.from_amber(prmtop, coords, settings=MDSettings(...), ensemble=..., ...).run(...)`.
+`Simulation.from_amber(prmtop, coords, settings=MDSettings(...), thermostat=Bussi(1.0),
+barostat=MonteCarloBarostat(1.0), ...).run(nsteps, prefix="md", report_every=1000, ...)`.  The
+thermostat is an object (`Langevin(friction)`, `Bussi(tau)`, `GLE.band()`; `None` for NVE; the
+default is Langevin 1/ps, Bussi is recommended: `pgm_jax/md/thermostats.py`), the barostat
+`MonteCarloBarostat(pressure, every)` or `None`.  The engines are quiet by default: pass
+`log=sys.stdout` to see the log table and call `pgm_jax.cli.args.setup_logging()` for the setup
+messages (Python `logging`, logger "pgm_jax").
 
 Force or dipole matching on fixed frames (any number of frames; each gets its own rows):
 
@@ -224,9 +230,9 @@ How it works:
   `restraint_energies()` by kind, `set_restraints()` to release them in stages.
   `AmberSystem.select` / `position_restraints` restrain protein heavy atoms or the backbone.
 - **Cell dipole, induced dipoles, dielectric constant** (`md/dipoles.py`, `analysis/dielectric.py`,
-  `docs/dielectric.md`): `run(dipoles=n)` (`run_md.py --dipoles n`) samples the cell dipole
+  `docs/dielectric.md`): `run(dipoles_every=n)` (`run_md.py --dipoles n`) samples the cell dipole
   M = M_q + M_perm + M_ind (e nm; molecules whole, charged molecules about their centre of mass)
-  every n steps on the device, inside the blocks, into `prefix.dip`; `induced=n` writes per-atom
+  every n steps on the device, inside the blocks, into `prefix.dip`; `induced_every=n` writes per-atom
   induced dipoles to `prefix.mu.nc`. Both engines. `scripts/dielectric.py` gives, for tin-foil
   Ewald, eps = eps_inf + (<M^2> - <M>^2) / (3 eps0 V kB T) with M the total dipole and eps_inf
   from the model's own cell polarizability (adiabatic induced dipoles carry no thermal
@@ -397,9 +403,17 @@ from pgm_jax.md.flexible import FlexibleTemplate, FlexibleSimulation, liquid_box
 tpl = FlexibleTemplate.from_fit(model, P)  # after fitting pgm_jax.bonded; .save() / .load()
 pos, H = liquid_box(tpl, 216, density=0.55)  # dilute start; NPT compresses it
 sim = FlexibleSimulation(
-    System([tpl.pgm] * 216), [tpl] * 216, pos, H, MDSettings(), dt=0.0005, ensemble="npt", temperature=298.0
+    System([tpl.pgm] * 216),
+    [tpl] * 216,
+    pos,
+    H,
+    MDSettings(),
+    dt=0.0005,
+    temperature=298.0,
+    thermostat=Bussi(1.0),
+    barostat=MonteCarloBarostat(1.0),
 )
-sim.run(200000, report=2000, prefix="meoh")  # log columns include temp_com and temp_internal
+sim.run(200000, prefix="meoh", report_every=2000)  # log columns include temp_com and temp_internal
 ```
 
 `examples/fit_bonded_template.py` (fit + export), `examples/run_flexible_liquid.py` (box, NVT,
@@ -438,7 +452,6 @@ sim = FlexibleSimulation(
     H,
     MDSettings(),
     dt=0.002,
-    ensemble="nvt",
     temperature=300.0,
     thermostat="bussi",
     constraints="h-bonds",
@@ -447,8 +460,8 @@ sim = FlexibleSimulation(
 sim.minimize(300)
 sim.run(50000)  # equilibrate at the lowest temperature
 rex = ReplicaExchange(sim, geometric_ladder(300.0, 400.0, 8), exchange_every=250)
-rex.run(2000000, report=5000, traj=500, restart=50000, prefix="ala3")  # 4 ns per replica
-rex.load("ala3.remd.chk")  # continue later (batched or sequential)
+rex.run(2000000, prefix="ala3", report_every=5000, traj_every=500, checkpoint_every=50000)  # 4 ns per replica
+rex.load_checkpoint("ala3.remd.chk")  # continue later (batched or sequential)
 ```
 
 - **One compiled step for every temperature.** kB T is a state variable (`MDState.kT`), so all
