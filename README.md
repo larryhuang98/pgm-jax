@@ -144,9 +144,11 @@ How it works:
   `pgm_jax/md/iel.py`, `docs/iel.md`): iEL/0-SCF (Albaugh, Niklasson & Head-Gordon 2017). Auxiliary
   dipoles follow Niklasson's dissipative time-reversible Verlet, and each step does one field sweep
   and a block-Jacobi update with no CG. Forces are the exact gradient of a shadow energy (computed in
-  the same row and PME passes). 512 waters, Bussi, 2 fs: 1.6x the speed of the SCF solver at
-  tol 1e-5 (4,096 waters 1.5x). NVE drift is +0.001 (1 fs) and +0.013 (2 fs) kT/ns/dof. Dipoles
-  are within 1.6e-3 RMS of converged ones, and eps, density, D and g_OO agree with SCF (docs/iel.md).
+  the same row and PME passes). 1.5x the speed of the SCF solver at tol 1e-5 (512 and 4,096
+  waters, 1 and 2 fs; 336 ns/day at 2 fs for 512). NVE drift is +0.001 (1 fs) and +0.013 to +0.020
+  (2 fs) kT/ns/dof. Dipoles are within 1.7e-3 RMS of converged ones (4e-4 at 1 fs); pGM3P-25 eps
+  34.2 +- 0.5 (SCF 33.9 +- 0.6), and density, <U>, liquid dipole, D, rotational times and g_OO
+  agree with SCF within their errors (docs/iel.md).
   iEL/SCF-k (`iel="scf"`) runs k CG iterations from the auxiliary dipoles.
 - **Rigid molecules** (every molecule; the model has no bonded terms) as JAX-MD rigid bodies:
   NO_SQUISH quaternion integration from JAX-MD `simulate`. Equivalent to SHAKE-rigid water.

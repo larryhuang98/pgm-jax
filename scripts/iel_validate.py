@@ -1,5 +1,6 @@
 """Validation of the extended-Lagrangian induced dipoles (docs/iel.md) on the pGM water box of the
-README (512 waters, or replicated): from an equilibrated checkpoint, `--seeds` segments of
+README (512 waters, or replicated; --model pgm3p25: the same box with the paper's geometry and
+Lennard-Jones, as scripts/water_dielectric.py --model pgm3p25): from an equilibrated checkpoint, `--seeds` segments of
 Bussi-NVT equilibration (fresh Maxwell velocities) followed by NVE production, sampling
 
   * the energy drift (econs = E_tot, NVE) per ns per degree of freedom and its fluctuation;
@@ -11,6 +12,7 @@ Bussi-NVT equilibration (fresh Maxwell velocities) followed by NVE production, s
 
     python scripts/iel_validate.py --checkpoint prod.chk --dt 2 --iel 0scf -o runs/iel/dyn_0scf
     python scripts/iel_validate.py --checkpoint prod.chk --dt 2 --tol 1e-5 -o runs/iel/dyn_scf
+    python scripts/iel_validate.py --model pgm3p25 --checkpoint p25.chk --npt 8 --seeds 1 --iel 0scf -o runs/iel/p25eps
 
 Writes prefix.json (every number) and prefix_rdf.dat."""
 from __future__ import annotations
@@ -27,6 +29,7 @@ import numpy as np
 
 jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
 from pgm_jax.md.iel import add_iel_arguments, iel_settings  # noqa: E402
@@ -60,6 +63,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-o", "--out", required=True)
     ap.add_argument("--checkpoint", help="equilibrated .chk of the same box (e.g. an NPT run)")
+    ap.add_argument("--model", default="pgm", choices=["pgm", "pgm3p25"], help="pgm: the README box (pGM3P-25 "
+                    "electrostatics on TIP3P's geometry and Lennard-Jones); pgm3p25: the paper's geometry and Lennard-Jones")
     ap.add_argument("--dt", type=float, default=2.0, help="fs")
     ap.add_argument("--tol", type=float, default=1e-5)
     ap.add_argument("--seeds", type=int, default=5)
@@ -77,16 +82,27 @@ def main():
     ap.add_argument("--rdf-every", type=float, default=0.2, help="ps between RDF frames")
     ap.add_argument("--err-every", type=float, default=1.0, help="ps between converged-dipole comparisons")
     ap.add_argument("--replicate", type=int, default=1)
-    ap.add_argument("--density", type=float, default=1.0178, help="g/cm^3: the checkpoint box is scaled to it "
-                    "(0: kept); default: <density> of the 15 ns SCF NPT run of the box")
+    ap.add_argument("--density", type=float, default=None, help="g/cm^3: the checkpoint box is scaled to it "
+                    "(0: kept); default: <density> of the SCF NPT run of the model (1.0178 pgm, 1.0099 pgm3p25)")
     add_iel_arguments(ap)
     a = ap.parse_args()
     if a.combine:
         return combine(a.combine, a.out)
     if a.eps:
         return pooled_eps(a.eps, a.skip, a.out)
+    if a.density is None:
+        a.density = {"pgm": 1.0178, "pgm3p25": 1.0099}[a.model]
     mols = _dedupe(read_prmtop_pgm(TOP, first_residue_only=False))
     xyz, vel, box = read_coordinates(RST)
+    if a.model == "pgm3p25":                                   # as water_dielectric.py --model pgm3p25
+        import dataclasses
+        from water_dielectric import paper_geometry
+        xyz = paper_geometry(xyz, 0.9745, 103.64, [list(m.elements) for m in mols])
+        sig, eps = 3.18156, 0.14473
+        rh = np.array([2 ** (1 / 6) * sig / 2 * 0.1, 0.0, 0.0])
+        se = np.array([np.sqrt(eps * 4.184), 0.0, 0.0])
+        new = {id(m): dataclasses.replace(m, lj_rmin_half=rh, lj_sqrt_eps=se) for m in mols}
+        mols = [new[id(m)] for m in mols]
     H = box_from_cell(*box) * 0.1
     n = a.replicate
     shifts = [i * H[0] + j * H[1] + k * H[2] for i in range(n) for j in range(n) for k in range(n)]

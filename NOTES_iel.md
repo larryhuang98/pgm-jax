@@ -80,3 +80,27 @@ Running log so the work can be resumed.
 - 1 fs Langevin block: 512 w 0.507 ms (170 ns/d), 4096 w 1.299 ms (66.5).
 - TODO at ~11:30: final pooled eps of eps_0scf_s* (scripts/iel_validate.py --eps ... --skip 50), fill
   docs/iel.md placeholders (EPS_J5, RHO_J5, U_J5, MU_J5, T_J5, TROT_TEXT), commit.
+
+## Session 2 (2026-09-28 16:45-19:45, second agent)
+- Audit (step 1): `git diff --stat master..iel` has only iEL files; flexible.py / integrate.py / mts.py /
+  simulation.py / bench_md.py / run_md.py / water_dielectric.py hunks are the iEL hooks (barostat
+  with converged energies, refusals, describe_induction, --iel options).  No any_replica /
+  vmap_replicas or other remd2 code on the branch; master = merge base; the remd2 clone has no iEL
+  code.  Nothing to remove, no cleanup commit.
+- scripts/iel_validate.py --model pgm3p25 (paper geometry + LJ, as water_dielectric.py); default
+  density per model (1.0178 / 1.0099).  Start: runs/iel/p25_scf10ns.chk = pGM-JAX-dipoles
+  runs/eps/pgm3p25.chk (10 ns SCF NPT, eps 33.90 +- 0.64, 2.1254 D).
+- pGM3P-25 dyn (runs/iel2/p25dyn{2,1}_*.json; 4 x (5 ps NVT + 50 ps NVE)): drift kT/ns/dof 2 fs SCF
+  +0.0040(2), block K7 +0.020(4), SCF-2 -0.0014(3); 1 fs SCF +0.0008(2), block K7 +0.0005(20).  mu rel
+  err 1.67e-3 (2 fs) / 4.0e-4 (1 fs); D 2.17 / 2.23 / 2.30 (2 fs), 2.17 / 2.15 (1 fs); tau2 1.56 /
+  1.65 / 1.56, 1.62 / 1.64; g_OO dev = noise (SCF 1 fs vs 2 fs).
+- pGM3P-25 eps (runs/iel2/p25eps_blk7_s10{0,1,2}, 3 x 7.3 ns after 200 ps, GPU 300 ns/day):
+  34.17 +- 0.39 jackknife (replicas 33.34, 34.92, 34.01; SE 0.46), density 1.0098, U -2110998 +- 5,
+  mu 2.1256, T_rot - T_tr -0.6 +- 0.2 (SCF -2.3 +- 0.5).
+- README box, final pools: block K7 3 x 7.8 ns 30.73 +- 0.22 (density 1.0179, U -2115067, mu 1.9866,
+  T_rot - T_tr +0.6 +- 0.4); Jacobi K5 12 x 1.45 ns 30.24 +- 0.30, density 1.0187 +- 0.0003,
+  U -2115095 +- 4, mu 1.9874, T_rot - T_tr +2.8 +- 0.4 (perturbed: heats at 2 fs).
+- Speed, one session (runs/iel2/jobS.log): 512 w Langevin 1 fs SCF 0.749 / block 0.504 / Jacobi 0.460 /
+  SCF-2 0.549 ms; Bussi 2 fs 0.791 / 0.515 / 0.467 / 0.560; 4096 w 1 fs 1.972 / 1.281 / 1.183 / 1.407;
+  2 fs 2.081 / 1.396 / 1.292 / 1.512.
+- Tests: tests/test_iel.py 14 pass (CPU 110 s); full suite 222 pass (CPU 32 cores, 33 min).
