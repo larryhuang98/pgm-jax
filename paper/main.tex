@@ -566,7 +566,7 @@ temperature, density) apply to every new template.
 \paragraph{Van der Waals parameters.}
 \begin{enumerate}[nosep,leftmargin=*]
 \item \emph{Liquid properties.} \code{scripts/fit\_liquid.py} implements \cref{sec:liquid}. The map
-from the optimization variables to the parameter table (\code{ParamMap}) is the only place that
+from the optimization variables to the parameter table (a \code{ParameterSpace}, built by \code{lj\_space}) is the only place that
 decides what is fitted: two global scales in the demonstration, or one $R^*$ and one $\varepsilon$
 scale per atom type (\code{--params type}; with more parameters than targets the Gauss--Newton step
 is the minimum-norm step, so more targets or a prior are needed). Because $\partial U/\partial\theta$ comes from \code{jax.value\_and\_grad}

@@ -3,7 +3,7 @@
     python scripts/fe_gradient_check.py --group charge runs/fg/wq090_fe.npz runs/fg/wq100_fe.npz runs/fg/wq110_fe.npz
 
 Each run (solvation_free_energy.py run --grad --solute-scale GROUP=s) gives the hydration free energy
-G(s) (MBAR) and its gradient dG/ds (fe_grad.gradient_estimate, MBAR-weighted and end-state
+G(s) (MBAR) and its gradient dG/ds (fit.free_energy.gradient_estimate, MBAR-weighted and end-state
 estimators, block jackknife errors).  The runs are independent, so G(s_j) - G(s_i) is compared with
 the integral of the gradient between them: the trapezoid rule over neighbouring runs and, for three
 equally spaced runs, Simpson's rule (exact for a cubic G(s)) and the central value
@@ -18,18 +18,41 @@ import math
 import numpy as np
 
 from pgm_jax.analysis import free_energy as fe
-from pgm_jax.md import fe_grad as fg
+from pgm_jax.fit.free_energy import gradient_estimate
+from pgm_jax.fit.params import SCALE_GROUPS, ParameterSpace
 from pgm_jax.units import KCAL
 
 
 def point(path, group, discard_ps, n_blocks, solute=True):
+    """Free energy and its gradient along one parameter-group scaling for one run.
+
+    Parameters
+    ----------
+    path : str
+        The run's _fe.npz file.
+    group : str
+        Scale group of ParameterSpace.scale_direction ("charge", "eps", ...).
+    discard_ps : float
+        Equilibration discarded from every window [ps].
+    n_blocks : int
+        Jackknife blocks.
+    solute : bool
+        Scale the solute's parameters (False: the environment's).
+
+    Returns
+    -------
+    dict
+        "s" (scale of the group in this run), "G", "G_err" (free energy of the leg and its jackknife
+        error, kcal/mol), "G_err_mbar_asymptotic", and "g_mbar", "g_end" with errors (dG/ds of the
+        MBAR and end-state estimators, kcal/mol), plus "path", "leg", "samples_per_window".
+    """
     d = fe.load(path)
     meta = d["meta"]
     s = float(meta.get("solute_scale", {}).get(group, 1.0))
     gas = {"delta_g": meta["gas_delta_g"], "grad": meta.get("gas_grad")} if "gas_delta_g" in meta else None
-    r = fg.gradient_estimate(d, discard_ps=discard_ps, gas=gas, n_blocks=n_blocks)
+    r = gradient_estimate(d, discard_ps=discard_ps, gas=gas, n_blocks=n_blocks)
     leg = "hyd" if "hyd" in r else "solv"
-    space = fg.ParamSpace.from_names(r["names"])
+    space = ParameterSpace.from_names(r["names"])
     v = space.scale_direction(np.asarray(meta["params_flat"], float), group, solute)
     out = {"path": path, "s": s, "samples_per_window": r["samples_per_window"], "leg": leg}
     m = r[leg]["mbar"]
@@ -47,7 +70,7 @@ def point(path, group, discard_ps, n_blocks, solute=True):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("npz", nargs="+", help="runs at increasing scales of the group")
-    ap.add_argument("--group", default="charge", choices=sorted(fg.SCALE_GROUPS))
+    ap.add_argument("--group", default="charge", choices=sorted(SCALE_GROUPS))
     ap.add_argument("--environment", action="store_true", help="the group's environment parameters, not the solute's")
     ap.add_argument("--discard-ps", type=float, default=200.0)
     ap.add_argument("--blocks", type=int, default=10)

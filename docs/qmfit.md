@@ -81,7 +81,7 @@ from pgm_jax import read_prmtop_pgm
 from pgm_jax.fit.qm import (
     ClusterModel,
     FitWeights,
-    ParamMap,
+    parameter_space,
     QMFit,
     QMSet,
     error_table,
@@ -95,16 +95,19 @@ data = QMSet.load("data/qm/water_qm.json")  # records + monomer properties
 train, test = data.split(lambda r: "base_4096" in r["id"] or r["id"].startswith("water27") or r["set"] == "smith")
 w = read_prmtop_pgm("p25_512.prmtop")[0]  # starting parameters
 cm = ClusterModel(w, vdw="lj", monomer_xyz_nm=rigid_water(0.9745, 103.64) * 0.1)
-pm = ParamMap(
+space = parameter_space(
     cm.table,
     [w],
     {"q": "all", "cov": "all", "radius": "all", "alpha": "all", "lj_rmin_half": ["OW"], "lj_sqrt_eps": ["OW"]},
 )
 fit = QMFit(
-    cm, pm, train, FitWeights(total=1, elst=0.1, ind=0.1, exch_disp=0.1, nb3=1, dipole=1, polarizability=1, prior=0.01)
+    cm,
+    space,
+    train,
+    FitWeights(total=1, elst=0.1, ind=0.1, exch_disp=0.1, nb3=1, dipole=1, polarizability=1, prior=0.01),
 )
 res = fit.fit()  # scipy least_squares, exact Jacobian
-P = pm.params(jnp.asarray(res.x))  # parameter pytree for every pgm_jax model
+P = space(jnp.asarray(res.x))  # parameter pytree for every pgm_jax model
 print(format_table(error_table(evaluate(cm, test, P))))  # RMSE / MAE per set, kcal/mol
 E_min, X_min = rigid_minimize(cm, test.records[0]["xyz_A"], P)  # the model's own rigid-body minimum
 ```
@@ -112,13 +115,13 @@ E_min, X_min = rigid_minimize(cm, test.records[0]["xyz_A"], P)  # the model's ow
 - `ClusterModel(mol, vdw="lj" | "gvdw")`: per-cluster components (`components`, `batch`,
   `batch_grad`), monomer dipole and polarizability. Clusters of one kind of rigid molecule
   (`System([mol] * n)`), compiled once per cluster size and batched with `jax.vmap`.
-- `ParamMap(table, molecules, free)`: `free` = {quantity: "all" | [keys]}; bounds and scales per
-  quantity (`BOUNDS`, `SCALES`); free charges move in the null space of the neutrality
+- `parameter_space(table, molecules, free)`: a `fit.params.ParameterSpace` of values; `free` =
+  {quantity: "all" | [keys]}; bounds and typical steps per quantity (`BOUNDS`, `STEPS`); free charges move in the null space of the neutrality
   constraints, so every molecule keeps its charge.
 - `FitWeights`: weights of the residual groups: `total` (the reference interaction energy
   `E.ref`), `elst`, `ind`, `exch_disp` (SAPT components, dimers), `nb3` (3-body energies of
   clusters), `force` (net force and torque on each rigid molecule), `dipole`, `polarizability`
-  (monomer), `prior` (ridge towards the starting values, in units of `SCALES`). Energy residuals
+  (monomer), `prior` (ridge towards the starting values, in units of `STEPS`). Energy residuals
   are divided by sigma_E sqrt(n_pairs) (1 + max(E_ref, 0) / e_soft), so larger clusters and
   repulsive geometries count less.
 - `QMFit.fit()` minimizes |r(theta)|^2 by trust-region reflective least squares (bounds) with the
@@ -277,7 +280,7 @@ represent SAPT exchange + dispersion, so they are not recommended despite their 
 - the per-cluster components equal the `Model` interaction energy E(ABC) - sum E(X) to 1e-10, and
   the 3-body energy of `Prepared` equals `Model.nbody`; the model's 3-body energy is pure induction
   (perm and vdw 3-body < 1e-9);
-- `ParamMap`: theta0 gives the starting parameters, any theta keeps every molecule neutral;
+- `parameter_space`: theta0 gives the starting parameters, any theta keeps every molecule neutral;
 - rigid-body forces: monomer energies exert no net force or torque; the net force from the
   interaction gradient equals the finite difference along a rigid translation (1e-6);
   `superpose_monomers` keeps the centres of mass;

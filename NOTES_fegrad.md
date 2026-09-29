@@ -1,9 +1,9 @@
 # NOTES: free energies as fitting targets (feature 8, branch fegrad)
 
 ## Plan
-- pgm_jax/md/fe_grad.py: ParamSpace (flat table), ParamGradients (dU_k/dP of the end-state
-  Hamiltonians at every window's configuration, at re-solved dipoles, vmapped), gas_leg_gradient,
-  gradient_estimate ("end" and "mbar" estimators, block jackknife errors, replicates kept),
+- pgm_jax/md/fe_grad.py: ParameterSpace.values (flat table; fit/params.py), ParameterGradients (dU_k/dP of the end-state
+  Hamiltonians at every window's configuration, at re-solved dipoles, vmapped), gas_leg_gradient;
+  pgm_jax/fit/free_energy.py (moved there in the clean-up): gradient_estimate ("end" and "mbar" estimators, block jackknife errors, replicates kept),
   FEGradient (project / chain), FreeEnergyTarget (fitting API), combine (relative / transfer / logP),
   alchemical_map (P0 -> PA), scaled_params / scale_direction (charge, eps, rmin, alpha, radius).
 - alchemy.py: FreeEnergyRun(param_grad=...) stores samples "dudp" (S, T, K, M) + meta

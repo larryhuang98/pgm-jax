@@ -26,7 +26,7 @@ gradients are right and the step is within the linear range. Results go to
 
 What to change for your own system:
 
-- **Parameters.** `ParamMap` maps theta to the parameter table. `--params global` (default)
+- **Parameters.** `lj_space` (a `pgm_jax.fit.ParameterSpace` of scales) maps theta to the parameter table. `--params global` (default)
   uses two global scales (all R* times s_R, all epsilon times s_eps); `--params type` uses one
   pair of scales per Lennard-Jones atom type with epsilon > 0 (the log lists their names, e.g.
   `ln s_R[MeOH:c3]`). With two targets and more parameters the Gauss-Newton step is the

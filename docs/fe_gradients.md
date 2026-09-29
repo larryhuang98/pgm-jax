@@ -1,7 +1,8 @@
 # Free energies as fitting targets: parameter gradients of alchemical free energies
 
-`pgm_jax/md/fe_grad.py` gives hydration (solvation) free energies, and any alchemical free
-energy computed with `pgm_jax/md/alchemy.py`, **with their gradients with respect to every
+`pgm_jax/md/fe_grad.py` (sampling) and `pgm_jax/fit/free_energy.py` (estimators, fitting targets)
+give hydration (solvation) free energies, and any alchemical free energy computed with
+`pgm_jax/md/alchemy.py`, **with their gradients with respect to every
 force-field parameter** of the solute and of the solvent, and statistical errors of both, in a
 form a fitting code can use as one more target. Units: kJ/mol, nm, e, e nm (tables also in kcal/mol).
 
@@ -35,12 +36,12 @@ K-1 (decoupled), so
   `intramolecular="keep"` the leg is part of the Hamiltonian and the identity handles it.
 - **dU/dtheta at the converged dipoles.** The pGM energy is stationary in the induced dipoles, so
   dU_k/dtheta is the partial derivative at the dipoles converged in Hamiltonian k
-  (Hellmann-Feynman for parameters; no derivative of the CG solve). `ParamGradients` re-solves the
+  (Hellmann-Feynman for parameters; no derivative of the CG solve). `ParameterGradients` re-solves the
   dipoles of every window's configuration in the two end-state Hamiltonians (from the
   configuration's own dipoles) and takes one reverse-mode pass of the fixed-dipole energy with
   respect to the whole parameter table, batched over the windows with `jax.vmap` on the device.
 - theta is the **parameter table** (`sys.table`, every quantity: q, cov, radius, alpha,
-  lj_rmin_half, lj_sqrt_eps, ...; `ParamSpace` flattens it, names `quantity:key`). Any other
+  lj_rmin_half, lj_sqrt_eps, ...; `ParameterSpace.values(table)` flattens it, names `quantity:key`). Any other
   parameterization theta' -> table follows by the chain rule (`FEGradient.chain`,
   `FreeEnergyTarget.value_and_grad(theta_fn, theta)`), e.g. scale factors, atom types shared by
   solute and solvent (`alchemical_map(sys0, sysA)` maps the original table onto the alchemical one,
@@ -70,26 +71,27 @@ smaller errors (it also uses the samples of the neighbouring windows) and is the
 ## Usage
 
 ```python
+from pgm_jax.fit.free_energy import FreeEnergyTarget, combine, gradient_estimate
 from pgm_jax.md import fe_grad as fg
 from pgm_jax.md.alchemy import FreeEnergyRun, GasPhaseLeg, LambdaWindows, standard_schedule
 
 win = LambdaWindows(sim, standard_schedule(8))
-pg = fg.ParamGradients(win)                                  # end states 0 and K-1, whole table
+pg = fg.ParameterGradients(win)                                  # end states 0 and K-1, whole table
 gas = GasPhaseLeg(alch, xyz_solute, "qpi")                   # rigid solute, annihilation
 dg_gas, g_gas = fg.gas_leg_gradient(gas, P, pg.space)
 run = FreeEnergyRun(win, sample_every=500, exchange_every=500, param_grad=pg,
                     meta={"gas_delta_g": dg_gas, "gas_grad": g_gas.tolist(), ...})
 run.run(500000, prefix="wat")
-r = fg.gradient_estimate(fe.load("wat_fe.npz"), discard_ps=100, gas={"delta_g": dg_gas, "grad": g_gas})
+r = gradient_estimate(fe.load("wat_fe.npz"), discard_ps=100, gas={"delta_g": dg_gas, "grad": g_gas})
 h = r["hyd"]["mbar"]                                         # FEGradient
 h.value, h.value_err, h.grad, h.grad_err                     # kJ/mol, per table entry
 h.project(pg.space.scale_direction(p_flat, "charge"))        # dG/d ln s_charge of the solute, error
 
 # as a fitting target (theta_fn: theta -> parameter table of the run's system)
-t = fg.FreeEnergyTarget.from_npz("wat_fe.npz", discard_ps=100, experiment=-6.3 * 4.184, sigma=0.2 * 4.184)
+t = FreeEnergyTarget.from_npz("wat_fe.npz", discard_ps=100, experiment=-6.3 * 4.184, sigma=0.2 * 4.184)
 t.value_and_grad(theta_fn, theta)      # value, grad (per theta), errors, chi2, dchi2
 t.estimate(theta_fn, theta, unit="kcal/mol")   # y, J, cov_y, J_err, leave-one-block-out replicates
-fg.combine([(1.0, a), (-1.0, b)])      # relative / transfer free energies, log P (independent runs)
+combine([(1.0, a), (-1.0, b)])      # relative / transfer free energies, log P (independent runs)
 ```
 
 ```bash

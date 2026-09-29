@@ -26,7 +26,6 @@ from pgm_jax.fit.qm import (
     KCAL,
     ClusterModel,
     FitWeights,
-    ParamMap,
     Prepared,
     QMFit,
     QMSet,
@@ -34,6 +33,7 @@ from pgm_jax.fit.qm import (
     evaluate,
     format_table,
     label,
+    parameter_space,
     rigid_minimize,
     rigid_water,
     superpose_monomers,
@@ -270,6 +270,13 @@ def parse_free(s):
 
 
 def main(a):
+    """Run one mode of the command line (baseline, fit, summary, ...).
+
+    Parameters
+    ----------
+    a : argparse.Namespace
+        Parsed options.
+    """
     data = QMSet.load(os.path.join(ROOT, a.data))
     data = data.select(lambda r: np.isfinite(label(r, "E.ref")))
     os.makedirs(os.path.join(ROOT, "runs/qmfit"), exist_ok=True)
@@ -285,17 +292,20 @@ def main(a):
         return
     cm, W = model(a.start, a.vdw, init=a.init)
     free = parse_free(a.free)
-    pm = ParamMap(cm.table, [cm.mol], free)
+    space = parameter_space(cm.table, [cm.mol], free)
     w = FitWeights(**{k: float(v) for k, v in (x.split("=") for x in a.w.split(",") if x)})
     train, test = data.split(is_test)
-    print(f"fit {a.name}: {len(pm)} parameters {pm.names}; train {len(train)} records, test {len(test)}; weights {w}")
-    fit = QMFit(cm, pm, on_geometry(train, W, cm.mol.masses), w)
-    L0 = float(fit.loss(jnp.asarray(pm.theta0)))
+    print(
+        f"fit {a.name}: {len(space)} parameters {space.names}; train {len(train)} records, "
+        f"test {len(test)}; weights {w}"
+    )
+    fit = QMFit(cm, space, on_geometry(train, W, cm.mol.masses), w)
+    L0 = float(fit.loss(jnp.asarray(space.theta0)))
     t0 = time.time()
     res = fit.fit(max_nfev=a.nfev, verbose=1)
-    P = pm.params(jnp.asarray(res.x))
+    P = space(jnp.asarray(res.x))
     print(f"loss {L0:.4g} -> {res.cost:.4g} in {time.time() - t0:.0f} s, {res.nfev} evaluations, status {res.status}")
-    named = {n: (float(x0), float(x)) for n, x0, x in zip(pm.names, pm.theta0, res.x)}
+    named = {n: (float(x0), float(x)) for n, x0, x in zip(space.names, space.theta0, res.x)}
     for n, (x0, x) in named.items():
         print(f"  {n:24s} {x0:12.6g} -> {x:12.6g}")
     mol = cm.mol

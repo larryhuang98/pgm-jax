@@ -14,13 +14,13 @@ from pgm_jax.fit.qm import (
     KCAL,
     ClusterModel,
     FitWeights,
-    ParamMap,
     Prepared,
     QMFit,
     QMSet,
     error_table,
     evaluate,
     label,
+    parameter_space,
     rigid_body_forces,
     rigid_water,
     superpose_monomers,
@@ -195,15 +195,18 @@ def test_components_match_model_and_nbody(setup):
     assert abs(float(nb["nb3"]["vdw"][0])) < 1e-10 and abs(float(nb["nb3"]["perm"][0])) < 1e-9
 
 
-def test_param_map_keeps_neutrality(setup):
+def test_parameter_space_keeps_neutrality(setup):
+    """parameter_space reproduces the table at theta0 and keeps every molecule neutral when charges vary."""
     rng, w, cm = setup
-    pm = ParamMap(cm.table, [w], {"q": "all", "cov": "all", "radius": "all", "alpha": ["OW"], "lj_rmin_half": ["OW"]})
-    assert len(pm) == 1 + 2 + 2 + 1 + 1
-    P = pm.params(jnp.asarray(pm.theta0))
+    space = parameter_space(
+        cm.table, [w], {"q": "all", "cov": "all", "radius": "all", "alpha": ["OW"], "lj_rmin_half": ["OW"]}
+    )
+    assert len(space) == 1 + 2 + 2 + 1 + 1
+    P = space(jnp.asarray(space.theta0))
     for k in P:
         assert np.allclose(np.asarray(P[k]), np.asarray(cm.table.initial()[k]))
-    th = pm.theta0 + rng.normal(size=len(pm)) * pm.scale
-    q = np.asarray(System([w]).expand(pm.params(jnp.asarray(th)))["q"])
+    th = space.theta0 + rng.normal(size=len(space)) * space.step
+    q = np.asarray(System([w]).expand(space(jnp.asarray(th)))["q"])
     assert abs(q.sum()) < 1e-12 and abs(q[0] - w.q[0]) > 1e-4
 
 
@@ -234,27 +237,28 @@ def test_rigid_body_forces_and_superposition(setup):
 
 
 def test_loss_gradient_matches_finite_differences(setup):
+    """The gradient of QMFit.loss matches central finite differences."""
     rng, w, cm = setup
     P0 = cm.table.initial()
     Pt = dict(P0)
     Pt["alpha"] = P0["alpha"] * 1.1
     Pt["lj_sqrt_eps"] = P0["lj_sqrt_eps"] * 0.9
     data = synthetic_set(np.random.default_rng(5), cm=cm, P=Pt)
-    pm = ParamMap(
+    space = parameter_space(
         cm.table,
         [w],
         {"q": "all", "cov": "all", "radius": "all", "alpha": "all", "lj_rmin_half": ["OW"], "lj_sqrt_eps": ["OW"]},
     )
     fw = FitWeights(total=1, elst=0.5, ind=0.5, exch_disp=0.5, nb3=1, force=0.1, dipole=1, polarizability=1, prior=0.1)
-    fit = QMFit(cm, pm, data, fw)
-    th = jnp.asarray(pm.theta0 + 0.3 * rng.normal(size=len(pm)) * pm.scale)
+    fit = QMFit(cm, space, data, fw)
+    th = jnp.asarray(space.theta0 + 0.3 * rng.normal(size=len(space)) * space.step)
     g = np.asarray(jax.grad(fit.loss)(th))
-    for i in range(len(pm)):
-        h = 1e-3 * pm.scale[i]
-        e = np.zeros(len(pm))
+    for i in range(len(space)):
+        h = 1e-3 * space.step[i]
+        e = np.zeros(len(space))
         e[i] = h
         fd = (float(fit.loss(th + e)) - float(fit.loss(th - e))) / (2 * h)
-        assert g[i] == pytest.approx(fd, rel=2e-5, abs=1e-6 * max(1.0, abs(fd))), pm.names[i]
+        assert g[i] == pytest.approx(fd, rel=2e-5, abs=1e-6 * max(1.0, abs(fd))), space.names[i]
 
 
 def test_fit_recovers_synthetic_target_exactly(setup):
@@ -262,17 +266,17 @@ def test_fit_recovers_synthetic_target_exactly(setup):
     (no prior) finds them again and the residual vanishes."""
     rng, w, cm = setup
     free = {"q": "all", "cov": "all", "alpha": "all", "lj_rmin_half": ["OW"], "lj_sqrt_eps": ["OW"]}
-    pm = ParamMap(cm.table, [w], free)
-    th_true = pm.theta0 + np.array([0.02, 0.001, -0.0005, 1e-4, -3e-5, 0.004, -0.05])
-    Pt = pm.params(jnp.asarray(th_true))
+    space = parameter_space(cm.table, [w], free)
+    th_true = space.theta0 + np.array([0.02, 0.001, -0.0005, 1e-4, -3e-5, 0.004, -0.05])
+    Pt = space(jnp.asarray(th_true))
     data = synthetic_set(np.random.default_rng(11), cm=cm, P=Pt)
     fw = FitWeights(total=1, elst=1, ind=1, exch_disp=1, nb3=1, force=0.1, dipole=1, polarizability=1, prior=0.0)
-    fit = QMFit(cm, pm, data, fw)
-    assert float(fit.loss(jnp.asarray(pm.theta0))) > 1.0
+    fit = QMFit(cm, space, data, fw)
+    assert float(fit.loss(jnp.asarray(space.theta0))) > 1.0
     res = fit.fit(max_nfev=100, xtol=1e-14, ftol=1e-14, gtol=1e-14)
     assert float(fit.loss(jnp.asarray(res.x))) < 1e-12
-    assert np.allclose(res.x, th_true, rtol=1e-5, atol=1e-6 * pm.scale.max())
-    ev = evaluate(cm, data, pm.params(jnp.asarray(res.x)))
+    assert np.allclose(res.x, th_true, rtol=1e-5, atol=1e-6 * space.step.max())
+    ev = evaluate(cm, data, space(jnp.asarray(res.x)))
     rows = error_table(ev)
     assert all(r["RMSE"] < 1e-5 for r in rows)
 

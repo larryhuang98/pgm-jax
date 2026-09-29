@@ -36,7 +36,7 @@ flexible engine runs everything (rigid waters by constraints, X-H bonds of the s
 Delta G_hyd = -Delta G(1 -> 0) with no separate gas leg.  Rigid solutes default to annihilation with
 the exact gas-phase leg (--intramolecular annihilate); both modes give the same free energy.
 
-Parameter gradients (pgm_jax/md/fe_grad.py, docs/fe_gradients.md): `run --grad` also samples
+Parameter gradients (pgm_jax/md/fe_grad.py, pgm_jax/fit/free_energy.py, docs/fe_gradients.md): `run --grad` also samples
 dU/dP of the two end-state Hamiltonians at every window's configuration, and `analyze` prints
 d DeltaG_hyd / dP (MBAR-weighted and end-state estimators, block jackknife errors), with the
 derivatives along scale directions of the solute's and the environment's parameters (charge =
@@ -60,6 +60,8 @@ import numpy as np
 
 from pgm_jax.analysis import free_energy as fe
 from pgm_jax.cli.args import setup_logging
+from pgm_jax.fit.free_energy import gradient_estimate
+from pgm_jax.fit.params import SCALE_GROUPS, ParameterSpace
 from pgm_jax.md import fe_grad as fg
 from pgm_jax.md.alchemy import (
     Alchemy,
@@ -225,6 +227,13 @@ def scale_to_volume(sim, V):
 
 
 def cmd_run(a):
+    """The `run` command: build the solvated system and the lambda windows, and sample them.
+
+    Parameters
+    ----------
+    a : argparse.Namespace
+        Parsed options.
+    """
     sysA, P, pos, vel, H, settings, elec, templates = build(a)
     mode = a.intramolecular or ("keep" if templates is not None else "annihilate")
     if templates is not None and mode != "keep":
@@ -234,7 +243,7 @@ def cmd_run(a):
         )
     alch = Alchemy(sysA, a.solute, sc_alpha=a.sc_alpha, intramolecular=mode)
     quant = None if not a.grad_quantities else a.grad_quantities.split(",")
-    space = fg.ParamSpace(sysA.table, quant)
+    space = ParameterSpace.values(sysA.table, quant)
     scales = parse_scales(a.solute_scale)
     if scales:
         P = fg.scaled_params(space, P, scales, solute=True)
@@ -308,7 +317,7 @@ def cmd_run(a):
     def to_steps(ps):
         return int(round(ps / (a.dt / 1000.0)))
 
-    pg = fg.ParamGradients(win, quantities=quant) if a.grad else None
+    pg = fg.ParameterGradients(win, quantities=quant) if a.grad else None
     run = FreeEnergyRun(
         win,
         sample_every=to_steps(a.sample_ps),
@@ -409,9 +418,9 @@ def grad_report(d, discard_ps, n_blocks=10):
     directions of the solute's and of the environment's parameters, and per solute entry."""
     meta = d["meta"]
     gas = {"delta_g": meta["gas_delta_g"], "grad": meta.get("gas_grad")} if "gas_delta_g" in meta else None
-    r = fg.gradient_estimate(d, discard_ps=discard_ps, gas=gas, n_blocks=n_blocks)
+    r = gradient_estimate(d, discard_ps=discard_ps, gas=gas, n_blocks=n_blocks)
     leg = "hyd" if "hyd" in r else "solv"
-    space = fg.ParamSpace.from_names(r["names"])
+    space = ParameterSpace.from_names(r["names"])
     p = np.asarray(meta["params_flat"], float)
 
     def k(x):
@@ -425,7 +434,7 @@ def grad_report(d, discard_ps, n_blocks=10):
     print("#  d/d ln s (kcal/mol)           MBAR               end states")
     out = {"value_kcal": k(m.value), "value_err_kcal": k(m.value_err), "scale": {}}
     for who, sol in (("solute", True), ("environment", False)):
-        for g in fg.SCALE_GROUPS:
+        for g in SCALE_GROUPS:
             v = space.scale_direction(p, g, sol)
             if not np.any(v):
                 continue
@@ -496,7 +505,7 @@ def cmd_bench(a):
         out[f"batched_{len(idx)}_ms_per_window_step"] = t / n / len(idx) * 1e3
         out[f"batched_{len(idx)}_sample_ms"] = ts * 1e3
         if a.grad:  # parameter gradients of the end states at every window
-            pg = fg.ParamGradients(win)
+            pg = fg.ParameterGradients(win)
             out[f"batched_{len(idx)}_grad_sample_ms"] = timed(lambda: pg.sample(), reps=2) * 1e3
     for k, v in out.items():
         print(f"{k:40s} {v:.4f}" if isinstance(v, float) else f"{k:40s} {v}")

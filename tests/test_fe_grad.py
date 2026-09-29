@@ -1,4 +1,4 @@
-"""Parameter gradients of alchemical free energies (md/fe_grad.py): dU/dP at converged dipoles
+"""Parameter gradients of alchemical free energies (md/fe_grad.py, fit/free_energy.py): dU/dP at converged dipoles
 against finite differences with the dipoles re-solved (annihilate and keep), the sampler (batched =
 sequential = direct), the estimators as exact derivatives of the reweighted free energies (end
 states: exponential averaging; MBAR with the sampled mixture) on stored frames, the gas-phase leg,
@@ -15,6 +15,8 @@ from test_grad import water
 
 from pgm_jax import System
 from pgm_jax.analysis import free_energy as fe
+from pgm_jax.fit.free_energy import FreeEnergyTarget, combine, gradient_estimate
+from pgm_jax.fit.params import ParameterSpace
 from pgm_jax.md import fe_grad as fg
 from pgm_jax.md.alchemy import (
     Alchemy,
@@ -56,7 +58,7 @@ def test_dudp_matches_finite_differences_with_resolved_dipoles(mode, lam):
     if mode == "keep":
         alch = Alchemy(sim.sys, 0, intramolecular="keep")
         alch.check(ff)
-    space = fg.ParamSpace(sim.sys.table)
+    space = ParameterSpace.values(sim.sys.table)
     lam = jnp.asarray(lam)
     U = jax.jit(lambda p: alch.energy(ff, X, Hb, cand, ff.init_induction(), space.unflatten(p, P), lam)[:2])
     p0 = space.flatten(P)
@@ -99,11 +101,12 @@ def windows(batched=True, seed=1, mode="annihilate"):
 
 
 def test_sampler_batched_equals_sequential_and_direct():
+    """The batched and sequential dU/dP samplers agree with direct derivatives of the window energies."""
     wb, P = windows(True)
     ws, _ = windows(False)
     wb.advance(8)
     ws.advance(8)
-    gb, gs = fg.ParamGradients(wb), fg.ParamGradients(ws)
+    gb, gs = fg.ParameterGradients(wb), fg.ParameterGradients(ws)
     Gb, Gs = gb.sample(), gs.sample()
     K, M = wb.n, gb.space.n
     assert Gb.shape == (2, K, M) and list(gb.targets) == [0, K - 1] and len(gb.space.names) == M
@@ -129,7 +132,7 @@ def test_estimators_are_derivatives_of_reweighted_free_energies(mode):
     free energies of the perturbed end states from the sampled mixture.  Central differences in the
     parameters (energies with the dipoles re-solved) against the analytic gradient . v."""
     w, P = windows(mode=mode)
-    pg = fg.ParamGradients(w)
+    pg = fg.ParameterGradients(w)
     space = pg.space
     ff, alch = w.sim.ff, w.alchemy
     K = w.n
@@ -168,7 +171,7 @@ def test_estimators_are_derivatives_of_reweighted_free_energies(mode):
         "time_ps": np.arange(1, 9, dtype=float),
         "meta": {"dudp_targets": [0, K - 1], "dudp_names": space.names},
     }
-    r = fg.gradient_estimate(S, n_blocks=2)
+    r = gradient_estimate(S, n_blocks=2)
     # end states, exponential averaging from the own window's samples
     U0 = u * kT
 
@@ -220,7 +223,7 @@ def test_gas_leg_gradient_and_exact_sampled_case():
         + 2.1
     )
     gas = GasPhaseLeg(alch, xyz, "qpi")
-    space = fg.ParamSpace(sysA.table)
+    space = ParameterSpace.values(sysA.table)
     dg, gg = fg.gas_leg_gradient(gas, P, space)
     assert abs(dg - gas.delta_g(P)) < 1e-10
     v = direction(space, P, 3)
@@ -256,9 +259,9 @@ def test_gas_leg_gradient_and_exact_sampled_case():
     )
     L = np.array([[1.0, 1.0], [0.5, 1.0], [0.0, 1.0]])
     win = LambdaWindows(sim, L, seed=2)
-    run = FreeEnergyRun(win, sample_every=5, exchange_every=5, log=None, param_grad=fg.ParamGradients(win))
+    run = FreeEnergyRun(win, sample_every=5, exchange_every=5, log=None, param_grad=fg.ParameterGradients(win))
     run.run(60, prefix=None)
-    r = fg.gradient_estimate(run.arrays(), gas={"delta_g": dg, "grad": gg}, n_blocks=4)
+    r = gradient_estimate(run.arrays(), gas={"delta_g": dg, "grad": gg}, n_blocks=4)
     for est in ("end", "mbar"):
         solv, hyd = r["solv"][est], r["hyd"][est]
         # the solution "leg" here is the same molecule in vacuum: DeltaG_solv = DeltaG_gas, hydration 0
@@ -304,7 +307,7 @@ def test_harmonic_oscillators_analytic_gradient_and_calibrated_errors():
             "time_ps": np.arange(1, n + 1, dtype=float),
             "meta": {"dudp_targets": [0, K - 1], "dudp_names": ["q:theta"]},
         }
-        r = fg.gradient_estimate(S, n_blocks=10)
+        r = gradient_estimate(S, n_blocks=10)
         for est in res:
             res[est].append(r["solv"][est].grad[0])
             errs[est].append(r["solv"][est].grad_err[0])
@@ -330,8 +333,9 @@ def test_harmonic_oscillators_analytic_gradient_and_calibrated_errors():
 
 # ----------------------------------------------------------------------------- driver and targets
 def test_run_outputs_restart_and_fitting_target(tmp_path):
+    """FreeEnergyRun stores dU/dP samples, restarts with them, and feeds FreeEnergyTarget."""
     w, P = windows()
-    pg = fg.ParamGradients(w)
+    pg = fg.ParameterGradients(w)
     prefix = str(tmp_path / "g")
     run = FreeEnergyRun(w, sample_every=5, exchange_every=5, log=None, param_grad=pg)
     run.run(60, prefix=prefix, checkpoint_every=30)
@@ -353,7 +357,7 @@ def test_run_outputs_restart_and_fitting_target(tmp_path):
     assert run3.step == 0 and w.time_ps == 0.0 and not run3.samples["u"]
     # the target: a scale of the solute's charges theta -> table, chain rule = projection
     space = pg.space
-    t = fg.FreeEnergyTarget.from_npz(prefix + "_fe.npz", n_blocks=2, experiment=-20.0, sigma=2.0)
+    t = FreeEnergyTarget.from_npz(prefix + "_fe.npz", n_blocks=2, experiment=-20.0, sigma=2.0)
     p0 = np.asarray(space.flatten(P))
     vq = space.scale_direction(p0, "charge")
 
@@ -386,18 +390,19 @@ def test_run_outputs_restart_and_fitting_target(tmp_path):
     # combinations (relative free energies): value and gradient add, errors in quadrature
     a = {"value": 1.0, "value_err": 0.3, "grad": np.array([1.0, 2.0]), "grad_err": np.array([0.1, 0.2])}
     b = {"value": 4.0, "value_err": 0.4, "grad": np.array([0.5, 1.0]), "grad_err": np.array([0.1, 0.0])}
-    cmb = fg.combine([(1.0, b), (-1.0, a)])
+    cmb = combine([(1.0, b), (-1.0, a)])
     assert cmb["value"] == 3.0 and abs(cmb["value_err"] - 0.5) < 1e-12 and np.allclose(cmb["grad"], [-0.5, -1.0])
 
 
-def test_param_space_and_scaled_params():
+def test_parameter_space_and_scaled_params():
+    """ParameterSpace.values flattens and restores a table; scaled_params and scale_direction act on the solute only."""
     sim, alch, P, (pos, H, sys0) = alch_sim()
-    space = fg.ParamSpace(sim.sys.table)
+    space = ParameterSpace.values(sim.sys.table)
     p = space.flatten(P)
     back = space.unflatten(p, P)
     for q in space.quantities:
         assert np.allclose(np.asarray(back[q]), np.asarray(P[q]))
-    assert fg.ParamSpace.from_names(space.names).names == space.names
+    assert ParameterSpace.from_names(space.names).names == space.names
     Q = fg.scaled_params(space, P, {"charge": 1.1, "eps": 0.81})
     sol, env = space.select(("q",), True), space.select(("q",), False)
     pq = np.asarray(space.flatten(Q))
@@ -439,7 +444,7 @@ def test_flexible_solute_keep_sampler():
     wb, ws = LambdaWindows(mk(), L, seed=1), LambdaWindows(mk(), L, batched=False, seed=1)
     wb.advance(6)
     ws.advance(6)
-    gb, gs = fg.ParamGradients(wb), fg.ParamGradients(ws)
+    gb, gs = fg.ParameterGradients(wb), fg.ParameterGradients(ws)
     Gb, Gs = gb.sample(), gs.sample()
     assert np.allclose(Gb, Gs, rtol=1e-7, atol=1e-6)
     ff, alch = wb.sim.ff, wb.alchemy

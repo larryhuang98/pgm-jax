@@ -13,7 +13,7 @@ step, and the next simulation checks the predicted change.
 
 The parameters are two scale factors on every atom's LJ parameters, theta = (ln s_R, ln s_eps):
 R*_i -> s_R R*_i, eps_i -> s_eps eps_i; or (--params type) one pair of scales per atom type
-(`ParamMap`).
+(`lj_space`, a pgm_jax.fit.ParameterSpace).
 
     python scripts/fit_liquid.py water    --start 0.0296,-0.357 --iters 6    # perturbed start
     python scripts/fit_liquid.py methanol --iters 6                         # from GAFF LJ
@@ -29,6 +29,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from pgm_jax.cli.args import setup_logging
+from pgm_jax.fit.params import Param, ParameterSpace
 from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.box import box_from_cell, volume
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
@@ -49,42 +50,47 @@ EXP = {
 }
 
 
-class ParamMap:
-    """theta -> parameter table.  "global": theta = (ln s_R, ln s_eps), every atom's R* times s_R
-    and epsilon times s_eps.  "type": one ln-scale of R* and one of epsilon per Lennard-Jones key
-    (atom type) with epsilon > 0; the Gauss-Newton step is then the minimum-norm step (two targets,
-    more parameters), so add targets or a prior before trusting individual values."""
+def lj_space(table, p0, mode: str = "global") -> ParameterSpace:
+    """The fitted Lennard-Jones parameters as a ParameterSpace of scales.
 
-    def __init__(self, table, p0, mode="global"):
-        self.mode = mode
-        if mode == "global":
-            self.names, self.kind = ["ln s_R", "ln s_eps"], np.array([0, 1])
-        else:
-            eps, rh = np.asarray(p0["lj_sqrt_eps"]), np.asarray(p0["lj_rmin_half"])
-            self.iR, self.iE = np.flatnonzero((rh > 0) & (eps > 0)), np.flatnonzero(eps > 0)
-            kR, kE = table.keys["lj_rmin_half"], table.keys["lj_sqrt_eps"]
-            self.names = [f"ln s_R[{kR[i]}]" for i in self.iR] + [f"ln s_eps[{kE[i]}]" for i in self.iE]
-            self.kind = np.array([0] * len(self.iR) + [1] * len(self.iE))
-        self.n = len(self.names)
+    Parameters
+    ----------
+    table : ParamTable
+        The parameter table of the liquid.
+    p0 : dict
+        Starting parameters.
+    mode : str
+        "global": theta = (ln s_R, ln s_eps), every atom's R* times s_R and epsilon times s_eps;
+        "type": one ln-scale of R* and one of epsilon per Lennard-Jones key (atom type) with
+        epsilon > 0 (the Gauss-Newton step is then the minimum-norm step: two targets, more
+        parameters, so add targets or a prior before trusting individual values).
 
-    def start(self, text):
-        v = np.array([float(x) for x in text.split(",")])
-        if len(v) == self.n:
-            return v
-        if len(v) == 2:  # (ln s_R, ln s_eps) for every type
-            return v[self.kind]
-        raise SystemExit(f"--start needs 2 or {self.n} values ({', '.join(self.names)})")
+    Returns
+    -------
+    ParameterSpace
+    """
+    if mode == "global":
+        return ParameterSpace(table, [Param("lj_r"), Param("lj_eps")], p0)
+    eps, rh = np.asarray(p0["lj_sqrt_eps"]), np.asarray(p0["lj_rmin_half"])
+    kR, kE = table.keys["lj_rmin_half"], table.keys["lj_sqrt_eps"]
+    params = [Param("lj_r", keys=[kR[i]]) for i in np.flatnonzero((rh > 0) & (eps > 0))]
+    params += [Param("lj_eps", keys=[kE[i]]) for i in np.flatnonzero(eps > 0)]
+    return ParameterSpace(table, params, p0)
 
-    def __call__(self, theta, p0):
-        p = dict(p0)
-        if self.mode == "global":
-            p["lj_rmin_half"] = p0["lj_rmin_half"] * jnp.exp(theta[0])
-            p["lj_sqrt_eps"] = p0["lj_sqrt_eps"] * jnp.exp(0.5 * theta[1])
-        else:
-            nR = len(self.iR)
-            p["lj_rmin_half"] = p0["lj_rmin_half"].at[self.iR].multiply(jnp.exp(theta[:nR]))
-            p["lj_sqrt_eps"] = p0["lj_sqrt_eps"].at[self.iE].multiply(jnp.exp(0.5 * theta[nR:]))
-        return p
+
+def start_theta(space: ParameterSpace, text: str) -> np.ndarray:
+    """theta from --start: one value per parameter, or (ln s_R, ln s_eps) for every type."""
+    v = np.array([float(x) for x in text.split(",")])
+    if len(v) == space.n:
+        return v
+    if len(v) == 2:
+        return v[lj_kind(space)]
+    raise SystemExit(f"--start needs 2 or {space.n} values ({', '.join(space.names)})")
+
+
+def lj_kind(space: ParameterSpace) -> np.ndarray:
+    """0 for the R* scales, 1 for the epsilon scales of the space."""
+    return np.array([0 if p.quantity == "lj_rmin_half" else 1 for p in space.params])
 
 
 # ----------------------------------------------------------------------------- systems
@@ -167,13 +173,13 @@ def advance(sim, nsteps, chunk=2000):
 
 
 # ----------------------------------------------------------------------------- one iteration
-def sample(sim, sysd, theta, p0, T, n_prod, every, to_params):
+def sample(sim, sysd, theta, T, n_prod, every, space):
     """Production run; per frame: U (kJ/mol), rho (g/cm^3), dU/dtheta."""
     ff, flexible = sim.ff, sysd["tpl"] is not None
     M = float(np.sum(sysd["sys"].masses))
 
     def U(th, pos, H, mu, idx):
-        P = ff._atoms(to_params(th, p0))
+        P = ff._atoms(space(th))
         e = ff.energy_fixed_mu(pos, H, mu, idx, P)[0]
         return e + (sim.flex.energy(pos, P) if flexible else 0.0)
 
@@ -223,6 +229,7 @@ def estimates(fr, T, N, u_gas):
 
 
 def main():
+    """Command line: parse the options, set up the liquid and gas phase, and run the fit."""
     ap = argparse.ArgumentParser()
     ap.add_argument("system", choices=["water", "methanol"])
     ap.add_argument(
@@ -261,9 +268,9 @@ def main():
         f"# {a.system}: {N} molecules, <U_gas> = {u_gas:.3f} +- {u_gas_se:.3f} kJ/mol ({time.time() - t0:.0f} s)",
         flush=True,
     )
-    to_params = ParamMap(sysd["sys"].table, p0, a.params)
-    theta = to_params.start(a.start)
-    clip = np.where(to_params.kind == 0, 0.02, 0.25)
+    space = lj_space(sysd["sys"].table, p0, a.params)
+    theta = start_theta(space, a.start)
+    clip = np.where(lj_kind(space) == 0, 0.02, 0.25)
     exp_ = dict(EXP[a.system])
     if a.targets:
         exp_["rho"], exp_["dhvap"] = (float(v) for v in a.targets.split(","))
@@ -275,20 +282,20 @@ def main():
     dt = sysd["dt"]
     for it in range(a.iters):
         t1 = time.time()
-        params = to_params(jnp.asarray(theta), p0)
+        params = space(jnp.asarray(theta))
         sim = make_sim(sysd, params, a.T, settings, pos, H, vel, seed=100 + it)
         advance(sim, int(round((a.equil0 if it == 0 else a.equil) / dt)))
-        fr = sample(sim, sysd, theta, p0, a.T, int(round(a.prod / dt)), int(round(a.every / dt)), to_params)
+        fr = sample(sim, sysd, theta, a.T, int(round(a.prod / dt)), int(round(a.every / dt)), space)
         est = estimates(fr, a.T, N, u_gas)
         y = np.array([est["rho"], est["dhvap"]])
         r = (y - y_exp) / sig
         Js = est["J"] / sig[:, None]
-        step = -np.linalg.solve(Js.T @ Js + 1e-3 * np.eye(to_params.n), Js.T @ r)
+        step = -np.linalg.solve(Js.T @ Js + 1e-3 * np.eye(space.n), Js.T @ r)
         step = np.clip(step, -clip, clip)
         rec = {
             "iter": it,
             "theta": theta.tolist(),
-            "names": to_params.names,
+            "names": space.names,
             "s_R": float(np.exp(theta[0])),
             "s_eps": float(np.exp(theta[-1])),
             "rho": est["rho"],

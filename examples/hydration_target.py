@@ -14,6 +14,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from pgm_jax.fit.free_energy import FreeEnergyTarget
+from pgm_jax.fit.params import SCALE_GROUPS
 from pgm_jax.md import fe_grad as fg
 from pgm_jax.units import KCAL
 
@@ -25,10 +27,10 @@ def main():
     ap.add_argument("npz")
     ap.add_argument("--experiment", type=float, required=True, help="kcal/mol")
     ap.add_argument("--sigma", type=float, default=0.2, help="kcal/mol")
-    ap.add_argument("--group", default="charge", choices=sorted(fg.SCALE_GROUPS))
+    ap.add_argument("--group", default="charge", choices=sorted(SCALE_GROUPS))
     ap.add_argument("--discard-ps", type=float, default=100.0)
     a = ap.parse_args()
-    t = fg.FreeEnergyTarget.from_npz(
+    t = FreeEnergyTarget.from_npz(
         a.npz, discard_ps=a.discard_ps, experiment=a.experiment * KCAL, sigma=a.sigma * KCAL, name="dG_hyd"
     )
     space = t.space

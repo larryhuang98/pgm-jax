@@ -715,11 +715,12 @@ def fe_windows():
     """Batched lambda windows (5), 12 samples of reduced energies, dU/dlambda and dU/dtheta; TI / BAR /
     MBAR and the parameter-gradient estimators on the stored samples; FreeEnergyRun 40 steps."""
     from pgm_jax.analysis import free_energy as fe
+    from pgm_jax.fit.free_energy import gradient_estimate
     from pgm_jax.md import fe_grad as fg
     from pgm_jax.md.alchemy import FreeEnergyRun
 
     w, P, sim, alch = _alch_windows()
-    pg = fg.ParamGradients(w)
+    pg = fg.ParameterGradients(w)
     us, gs, Gs = [], [], []
     for _ in range(12):
         w.advance(5)
@@ -741,7 +742,7 @@ def fe_windows():
     _put(
         out,
         "grad_est",
-        {k: v for k, v in fg.gradient_estimate(S_, n_blocks=2).items() if not isinstance(v, (str, list))},
+        {k: v for k, v in gradient_estimate(S_, n_blocks=2).items() if not isinstance(v, (str, list))},
     )
     _put(out, "fe_est", {k: v for k, v in fe.estimate(S_, discard_ps=0.0).items() if not isinstance(v, (str, list))})
     w2, _, _, _ = _alch_windows(seed=2, dipole_tol=1e-8)
@@ -952,7 +953,7 @@ def qmfit_synthetic():
     _put(out, "components3", cm.components(jnp.asarray(np.asarray(recs[3]["xyz_A"]) * 0.1), P, 3))
     prep = Q.Prepared(data, cm)
     _put(out, "predict", prep.predict(P))
-    pm = Q.ParamMap(
+    space = Q.parameter_space(
         cm.table,
         [w],
         {"q": "all", "cov": "all", "radius": "all", "alpha": "all", "lj_rmin_half": ["OW"], "lj_sqrt_eps": ["OW"]},
@@ -960,8 +961,8 @@ def qmfit_synthetic():
     fw = Q.FitWeights(
         total=1, elst=0.5, ind=0.5, exch_disp=0.5, nb3=1, force=0.0, dipole=1, polarizability=1, prior=0.1
     )
-    fit = Q.QMFit(cm, pm, data, fw)
-    th = jnp.asarray(pm.theta0 + 0.3 * rng.normal(size=len(pm)) * pm.scale)
+    fit = Q.QMFit(cm, space, data, fw)
+    th = jnp.asarray(space.theta0 + 0.3 * rng.normal(size=len(space)) * space.step)
     out["theta"], out["loss"] = _np(th), _np(fit.loss(th))
     out["grad"] = _np(jax.grad(fit.loss)(th))
     return out

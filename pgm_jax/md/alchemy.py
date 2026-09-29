@@ -746,7 +746,7 @@ class FreeEnergyRun:
             "pgm_jax.md.alchemy").
         meta : dict, optional
             JSON-serializable metadata stored with the samples.
-        param_grad : ParamGradients, optional
+        param_grad : ParameterGradients, optional
             Also sample parameter gradients of the end states (md/fe_grad.py).
 
         Raises

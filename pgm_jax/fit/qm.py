@@ -21,11 +21,12 @@ with the SAPT-like split of `channels.elec_decomposition`:
 The 3-body energy of the model is pure induction (everything else is pairwise), so the QM 3-body
 energies test the polarization model.
 
-Parameters (`ParamMap`): a chosen subset of the ParamTable (quantity -> keys) as a flat vector theta,
-with bounds; free charges move in the null space of the neutrality constraints (every molecule
-keeps its total charge).  `QMFit` builds the weighted residual vector r(theta) (energies, components,
-3-body, forces, monomer dipole and polarizability, a ridge prior towards the starting values) and
-minimizes |r|^2 with scipy's trust-region least squares and the exact Jacobian (jax.jacfwd).
+Parameters (`parameter_space`, a `fit.params.ParameterSpace` of values): a chosen subset of the
+ParamTable (quantity -> keys) as a flat vector theta, with bounds; free charges move in the null
+space of the neutrality constraints (every molecule keeps its total charge). `QMFit` builds the
+weighted residual vector r(theta) (energies, components, 3-body, forces, monomer dipole and
+polarizability, a ridge prior towards the starting values) and minimizes |r|^2 with scipy's trust-
+region least squares and the exact Jacobian (jax.jacfwd).
 
 Units: model nm, kJ/mol, e; data and reports in Angstrom and kcal/mol.
 """
@@ -45,6 +46,7 @@ from ..lj import LJChannel
 from ..system import Molecule, ParamTable, System
 from ..units import ANG_NM, DEBYE_E_NM, KCAL
 from ..vdw import GVDWChannel
+from .params import ParameterSpace
 
 
 # =================================================================== dataset ==
@@ -253,7 +255,8 @@ class Prepared:
         return res
 
 
-# ============================================================ parameter map ==
+# ============================================================ parameters ==
+# bounds and typical changes (table units) of the fitted values
 BOUNDS = {
     "q": (-np.inf, np.inf),
     "cov": (-0.2, 0.2),
@@ -266,7 +269,7 @@ BOUNDS = {
     "gvdw_b": (0.05, 20.0),
     "quad": (-1.0, 1.0),
 }
-SCALES = {
+STEPS = {
     "q": 0.05,
     "cov": 0.002,
     "radius": 0.005,
@@ -280,70 +283,45 @@ SCALES = {
 }
 
 
-class ParamMap:
-    """theta (flat) <-> parameter pytree.  `free`: {quantity: "all" | [keys]}.  Charges: theta holds
-    coordinates in the null space of the neutrality constraints of `molecules` (offsets from the
-    starting charges); every other quantity: the values themselves."""
+def parameter_space(
+    table: ParamTable,
+    molecules: list[Molecule],
+    free: dict,
+    p0=None,
+    bounds: dict | None = None,
+    steps: dict | None = None,
+) -> ParameterSpace:
+    """The parameters of a QM fit: the values of chosen table entries.
 
-    def __init__(
-        self,
-        table: ParamTable,
-        molecules: list[Molecule],
-        free: dict,
-        P0=None,
-        bounds: dict | None = None,
-        scales: dict | None = None,
-    ):
-        from scipy.linalg import null_space
+    Parameters
+    ----------
+    table : ParamTable
+        The parameter table.
+    molecules : list of Molecule
+        Molecules whose total charge the free charges keep (the charges move in the null space
+        of their neutrality constraints).
+    free : dict
+        {quantity: "all" | [keys]}.
+    p0 : dict, optional
+        Starting parameters (default: table.initial()).
+    bounds, steps : dict, optional
+        {quantity: (lower, upper)} and {quantity: typical change} overriding BOUNDS and STEPS
+        (table units).
 
-        self.table = table
-        self.P0 = {k: jnp.asarray(v) for k, v in (table.initial() if P0 is None else P0).items()}
-        bounds, scales = dict(BOUNDS, **(bounds or {})), dict(SCALES, **(scales or {}))
-        self.blocks, names, th0, lo, hi, sc = [], [], [], [], [], []
-        for qn, keys in free.items():
-            keys = list(table.keys[qn]) if keys == "all" else list(keys)
-            idx = table.index(qn, keys)
-            if qn == "q":
-                rows = []
-                for mol in {id(mm): mm for mm in molecules}.values():
-                    kq = mol.tying_keys()["q"]
-                    row = np.array([sum(1.0 for kk in kq if kk == key) for key in keys])
-                    if row.any():
-                        rows.append(row)
-                N = null_space(np.array(rows)) if rows else np.eye(len(keys))
-                self.blocks.append((qn, idx, jnp.asarray(N)))
-                names += [f"q:null{j}" for j in range(N.shape[1])]
-                th0 += [0.0] * N.shape[1]
-                lo += [-np.inf] * N.shape[1]
-                hi += [np.inf] * N.shape[1]
-                sc += [scales["q"]] * N.shape[1]
-            else:
-                self.blocks.append((qn, idx, None))
-                names += [f"{qn}:{k}" for k in keys]
-                th0 += list(np.asarray(self.P0[qn])[idx])
-                lo += [bounds[qn][0]] * len(keys)
-                hi += [bounds[qn][1]] * len(keys)
-                sc += [scales[qn]] * len(keys)
-        self.names = names
-        self.theta0 = np.array(th0, float)
-        self.lower, self.upper, self.scale = np.array(lo), np.array(hi), np.array(sc)
-        self.theta0 = np.clip(self.theta0, self.lower, self.upper)
-
-    def __len__(self):
-        return len(self.theta0)
-
-    def params(self, theta):
-        P = dict(self.P0)
-        off = 0
-        for qn, idx, N in self.blocks:
-            if N is None:
-                P[qn] = P[qn].at[idx].set(theta[off : off + len(idx)])
-                off += len(idx)
-            else:
-                k = N.shape[1]
-                P[qn] = P[qn].at[idx].add(N @ theta[off : off + k])
-                off += k
-        return P
+    Returns
+    -------
+    ParameterSpace
+        theta0 = the starting values (charges: 0, offsets in the null space); lower / upper /
+        step for the least-squares solver and the ridge prior.
+    """
+    return ParameterSpace.values(
+        table,
+        free,
+        p0=p0,
+        neutral=molecules,
+        bounds=dict(BOUNDS, **(bounds or {})),
+        steps=dict(STEPS, **(steps or {})),
+    )
 
 
 # ================================================================ the fit ==
@@ -375,8 +353,22 @@ class FitWeights:
 class QMFit:
     """Weighted least squares of pGM parameters against a QMSet."""
 
-    def __init__(self, cm: ClusterModel, pmap: ParamMap, data: QMSet, w: FitWeights = FitWeights()):
-        self.cm, self.pmap, self.data, self.w = cm, pmap, data, w
+    def __init__(self, cm: ClusterModel, space: ParameterSpace, data: QMSet, weights: FitWeights = FitWeights()):
+        """Set up the residuals.
+
+        Parameters
+        ----------
+        cm : ClusterModel
+            The model.
+        space : ParameterSpace
+            The fitted parameters (parameter_space).
+        data : QMSet
+            The QM records.
+        weights : FitWeights
+            Weights and widths of the residual groups.
+        """
+        w = weights
+        self.cm, self.space, self.data, self.w = cm, space, data, w
         self.prep = Prepared(data, cm)
         recs = data.records
         npairs = np.array([n * (n - 1) / 2 for n in self.prep.n], float)
@@ -410,7 +402,21 @@ class QMFit:
         self.mono = data.monomer
 
     def residuals(self, theta):
-        P = self.pmap.params(theta)
+        """Weighted residuals of all targets at theta.
+
+        Parameters
+        ----------
+        theta : array_like (n,)
+            Fitted parameters (see `space`).
+
+        Returns
+        -------
+        jax.Array (m,)
+            (model - reference) / sigma for the interaction-energy components, the three-body energies,
+            the forces and torques, the monomer dipole and polarizability, and the prior
+            sqrt(prior) (theta - theta0) / step, concatenated (dimensionless).
+        """
+        P = self.space(theta)
         w = self.w
         out = []
         pred = self.prep.predict(P)
@@ -432,10 +438,11 @@ class QMFit:
             a = self.cm.monomer_polarizability(P) / ANG_NM**3
             out.append(jnp.atleast_1d((a - self.mono["polarizability_A3"]) / w.sigma_pol * np.sqrt(w.polarizability)))
         if w.prior > 0:
-            out.append(np.sqrt(w.prior) * (theta - self.pmap.theta0) / self.pmap.scale)
+            out.append(np.sqrt(w.prior) * (theta - self.space.theta0) / self.space.step)
         return jnp.concatenate(out)
 
     def loss(self, theta):
+        """Half the sum of squared residuals at theta (dimensionless; differentiable with jax.grad)."""
         r = self.residuals(theta)
         return 0.5 * jnp.sum(r * r)
 
@@ -445,13 +452,13 @@ class QMFit:
 
         rf = jax.jit(self.residuals)
         jf = jax.jit(jax.jacfwd(self.residuals))
-        th0 = self.pmap.theta0 if theta0 is None else np.asarray(theta0, float)
+        th0 = self.space.theta0 if theta0 is None else np.asarray(theta0, float)
         res = least_squares(
             lambda t: np.asarray(rf(jnp.asarray(t))),
             th0,
             jac=lambda t: np.asarray(jf(jnp.asarray(t))),
-            bounds=(self.pmap.lower, self.pmap.upper),
-            x_scale=self.pmap.scale,
+            bounds=(self.space.lower, self.space.upper),
+            x_scale=self.space.step,
             method="trf",
             max_nfev=max_nfev,
             verbose=verbose,
