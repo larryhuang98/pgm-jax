@@ -211,6 +211,16 @@ How it works:
   engines: density 0.9941-0.9950 g/cm^3, <U> -11.115 to -11.119 kcal/mol per molecule (Horn et al.
   2004: 0.9954, -11.108). The flexible engine's placement and spreading cost 0.06-0.08 ms per step
   (7 % of the step for 4,096 TIP4P-Ew waters); without sites code path and results are unchanged.
+- **Enhanced sampling** (`pgm_jax/bias/`, `bias=` in `Simulation` / `FlexibleSimulation`,
+  `docs/enhanced_sampling.md`): collective variables as JAX functions of positions and box
+  (distance, angle, periodic dihedral, coordination number, RMSD, centre-of-mass distance, linear
+  combinations, any custom function), bias forces by `jax.grad` of V(s(x)); well-tempered
+  metadynamics (hills in a device buffer or on a cubic-Hermite grid for 1-2 CVs), OPES_METAD
+  (PLUMED's algorithm with kernel compression), static umbrellas and walls. Deposition inside the
+  compiled loop, forces corrected to the new bias at once, update work booked as heat; COLVAR /
+  HILLS files, checkpoints of the bias; walkers (independent or one shared bias) batched with
+  `jax.vmap`; FES from the bias, c(t) and OPES reweighting, WHAM. Validated on model potentials
+  with exact FES and on alanine dipeptide against umbrella sampling / WHAM (numbers in the doc).
 - **Alchemical free energies** (`md/alchemy.py`, `md/free_energy.py`, `docs/free_energy.md`,
   `scripts/solvation_free_energy.py`): hydration / solvation free energies of a small molecule,
   rigid (`Simulation`) or flexible (`FlexibleSimulation`). lambda_elec switches off the solute's
@@ -506,6 +516,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/md/mts.py` | multiple time stepping (r-RESPA) for both engines: `MTS` settings, force groups (bonded / special pairs / short-range pGM model; slow = full - fast), BAOAB-RESPA step, short-range pair list, anchored dipole predictor, CLI helpers |
 | `pgm_jax/md/remd.py` | temperature replica exchange for both engines: `ReplicaExchange` (exchanges, statistics, round trips, outputs, checkpoints), `MDReplicas` (replicas batched with `jax.vmap`, or sequential), `geometric_ladder`, `read_exchange_log` |
 | `pgm_jax/md/alchemy.py` | alchemical free energies: `Alchemy` (lambda Hamiltonian of one solute: annihilated electrostatics with a polarizability floor, soft-core van der Waals rows), `alchemical_system`, `LambdaWindows` (windows batched with `jax.vmap`), `FreeEnergyRun` (samples of u_k(x_n) and dU/dlambda, Hamiltonian replica exchange, outputs, checkpoints), `GasPhaseLeg`, `standard_schedule` |
+| `pgm_jax/bias/` | enhanced sampling: `cv.py` (collective variables), `core.py` (`StaticBias`, `Harmonic`, walls, `MetaD` + `HillGrid`, `OPES`, `BiasSet`), `walkers.py` (`Walkers`: independent or shared-bias walkers in one vmapped program), `analysis.py` (FES, c(t), weights, histograms, WHAM), `io.py` (COLVAR / HILLS), `toy.py` (Langevin on model potentials); `scripts/bias/` (validations, benchmark) |
 | `pgm_jax/md/free_energy.py` | estimators: MBAR (covariance), BAR, TI along a lambda path, statistical inefficiency, equilibration detection, `estimate` (hydration free energy from `FreeEnergyRun` samples) |
 | `scripts/solvation_free_energy.py` | hydration free energy of a rigid molecule: `run` (NPT at full coupling, batched windows, exchange), `analyze` (TI / BAR / MBAR, halves, equilibration), `bench` (cost per window) |
 | `pgm_jax/protein/` | proteins: `residues` (bond orders, terminal keys), `library` (`ResidueLibrary`: pGM parameters by residue and atom name, JSON), `amber` (`load_amber`: tleap system -> pgm_jax molecules; `amber_template`: ff19SB-form bonded terms + CMAP; `AmberSystem.hmr` per-kind hydrogen masses, `select` / `position_restraints`), `pmemd` (`write_pgm_prmtop`: the engine's model as a pmemd-pgm prmtop; `pmemd_mdin`, `pmemd_grid`) |

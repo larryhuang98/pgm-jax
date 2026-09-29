@@ -11,7 +11,9 @@ Virtual sites (Amber extra points, Molecule.vsites; md/vsites.py) are massless p
 templates, placed from their parents at the start.
 run(dipoles=n) also samples the cell dipole every n steps (on the device, inside the blocks) into
 prefix.dip, and run(induced=n) writes per-atom induced dipoles to prefix.mu.nc (md/dipoles.py).
-mts=MTS(...) integrates force groups with their own time steps (md/mts.py; dt is the outer step)."""
+mts=MTS(...) integrates force groups with their own time steps (md/mts.py; dt is the outer step).
+bias=... adds biases on collective variables (pgm_jax.bias: metadynamics, OPES, static biases);
+run() then writes prefix.colvar, prefix.hills and, with the restarts, prefix.bias (bias/io.py)."""
 from __future__ import annotations
 
 import os
@@ -53,7 +55,7 @@ class Simulation:
                  ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0, pressure: float = 1.0,
                  barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None, params=None, log=sys.stdout,
                  neighbor_list: str = "auto", thermostat="langevin", tau_t: float = 1.0, restraints=None,
-                 alchemy=None, mts=None):
+                 alchemy=None, mts=None, bias=None):
         H = reduce_box(H_nm)
         check_box(H, settings.pair_cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
@@ -73,7 +75,7 @@ class Simulation:
             integ, extra = MTSIntegrator, {"mts": mts}
         self.integ = integ(self.ff, self.rigid, self.nb, dt, ensemble, temperature, gamma, pressure,
                            barostat_interval, params, thermostat=thermostat, tau_t=tau_t, restraints=restraints,
-                           alchemy=alchemy, **extra)
+                           alchemy=alchemy, bias=bias, **extra)
         self.dt, self.ensemble, self.T0 = dt, ensemble, temperature
         body = self.rigid.body0
         mom = None
@@ -95,6 +97,11 @@ class Simulation:
             self._print(f"# alchemical region: {alchemy.describe()}")
         if mts is not None:
             self._print(f"# {self.integ.describe_mts()}")
+        self._describe_bias()
+
+    def _describe_bias(self):
+        if self.integ.bias is not None:
+            self._print(f"# biases: {self.integ.bias.describe()}")
 
     @classmethod
     def from_amber(cls, prmtop: str, coords: str, use_velocities: bool = True, charges: str = "pgm",
@@ -125,6 +132,10 @@ class Simulation:
                "cg_mean": float(st.cg_total) / max(int(st.step), 1)}
         if self.integ.restraints is not None:             # part of epot
             out["erestraint"] = float(sum(self.restraint_energies().values()))
+        if self.integ.bias is not None and st.bias is not None:       # part of epot
+            out["ebias"] = float(np.sum(self.bias_energies()))
+            out["bias_work"] = float(st.bias.work)
+            out.update(self.integ.bias.info(st.bias))
         if self.ensemble == "npt":
             tries, acc = int(st.mc[0]), int(st.mc[1])
             out["mc_accept"] = acc / max(tries, 1)
@@ -138,6 +149,37 @@ class Simulation:
             self._restraint_jit = jax.jit(self.integ.restraints.energies)
         st = self.state
         return {k: float(v) for k, v in self._restraint_jit(self.rigid.positions(st.dyn.position), st.box).items()}
+
+    # ----------------------------------------------------------------- biases (pgm_jax.bias)
+    def bias_energies(self) -> np.ndarray:
+        """Energy of each bias (kJ/mol) at the current state."""
+        if self.integ.bias is None:
+            return np.zeros(0)
+        if getattr(self, "_bias_jit", None) is None or self._bias_jit[0] is not self.integ.bias:
+            b = self.integ.bias
+            self._bias_jit = (b, jax.jit(lambda st: b.energies(st.bias, self.rigid.positions(st.dyn.position), st.box)))
+        return np.asarray(self._bias_jit[1](self.state))
+
+    def cv_values(self) -> list:
+        """The CV vectors of each bias at the current state."""
+        st = self.state
+        return [np.asarray(v) for v in self.integ.bias.cv_values(self.rigid.positions(st.dyn.position), st.box)]
+
+    def set_bias_state(self, bias_state):
+        """Replace the bias state (e.g. BiasSet.load of a converged bias for a static run) and
+        recompute the forces; epot and econs jump by the change of the bias energy."""
+        st = self.state
+        self.state = self.integ.forces(st.set(bias=bias_state), False).set(induction=st.induction)
+
+    def load_bias(self, path: str):
+        """Continue with the bias state saved in `path` (prefix.bias, BiasSet.save)."""
+        self.set_bias_state(self.integ.bias.load(path))
+
+    def bias_rows(self) -> np.ndarray:
+        """COLVAR rows collected since the last call (step, CVs, bias energies), when not writing files."""
+        rows = getattr(self, "_bias_rows", [])
+        self._bias_rows = []
+        return np.concatenate(rows) if rows else np.zeros((0, self.integ.bias.ncol))
 
     def set_restraints(self, restraints):
         """Replace the restraints (md/restraints.py; None removes them), e.g. to release positional
@@ -161,7 +203,7 @@ class Simulation:
             W = self.ff.strain_derivative(pos, st.box, idx, st.induction.mu, self.integ.params)
         else:
             W = self.integ.alchemy.strain_derivative(self.ff, pos, st.box, idx, st.induction.mu, self.integ.params, st.lam)
-        W = W + self.integ.restraint_strain(pos, st.box)
+        W = W + self.integ.restraint_strain(pos, st.box, st.bias)
         ke_t = self.integ.kinetic(st)[1]
         return (2.0 * ke_t - jnp.trace(W)) / (3.0 * volume(st.box)) * 16.605390671738466
 
@@ -237,6 +279,9 @@ class Simulation:
 
     def _advance_block(self, n: int):
         start = self.state
+        bias = self.integ.bias
+        if bias is not None and start.bias is not None:            # room for the block's hills and COLVAR rows
+            start = start.set(bias=bias.reserve(start.bias, n))
         for attempt in range(6):
             new = self.integ.run(start, n) if self._recorder is None else self._recorder.run(start, n)
             jax.block_until_ready(new.epot)
@@ -261,6 +306,11 @@ class Simulation:
             self._recorder.keep()
         body = self.rigid.wrap(new.dyn.position, new.box)
         self.state = new.set(dyn=new.dyn.set(position=body))
+        if bias is not None and new.bias is not None:
+            rows, bs = bias.drain(new.bias)
+            self.state = self.state.set(bias=bs)
+            if len(rows):
+                self._bias_rows = getattr(self, "_bias_rows", []) + [rows]
         self.time_ps += n * self.dt
         if not np.isfinite(float(new.epot)):
             raise FloatingPointError(f"energy is not finite at step {int(new.step)}")
@@ -276,6 +326,11 @@ class Simulation:
         tfile = NetCDFTrajectory(prefix + ".nc", self.sys.n, append=append) if traj else None
         self._recorder = DipoleRecorder(self, prefix + ".dip", dipoles, append=append) if dipoles else None
         mufile = InducedDipoleFile(prefix + ".mu.nc", self.sys.n, append=append) if induced else None
+        bout = None
+        if self.integ.bias is not None:
+            from ..bias.io import BiasOutput
+            self.bias_rows()                                            # rows of earlier _advance calls
+            bout = BiasOutput(self.integ.bias, prefix, self.dt, self.T0, append=append, state=self.state.bias)
         logf = open(prefix + ".log", "a" if append else "w")
         cols = None
         t0, s0 = time.time(), int(self.state.step)
@@ -287,6 +342,8 @@ class Simulation:
             step = int(self.state.step)
             if self._recorder is not None:
                 self._recorder.flush()
+            if bout is not None:
+                bout.write(self.bias_rows(), self.state.bias)
             if mufile is not None and step % induced == 0:
                 mufile.write(step, self.time_ps, self.state.induction.mu)
             if report and step % report == 0:
@@ -324,6 +381,16 @@ class Simulation:
         host = jax.tree_util.tree_map(np.asarray, self.state.set(nbr=None))
         with open(prefix + ".chk", "wb") as fh:
             pickle.dump({"state": host, "time_ps": self.time_ps}, fh)
+        if self.integ.bias is not None and self.state.bias is not None:
+            self.integ.bias.save(self.state.bias, prefix + ".bias")
+
+    def _bias_of_checkpoint(self, st):
+        """A checkpoint's bias state if this simulation has biases (a fresh one if it had none)."""
+        if self.integ.bias is None:
+            return st.set(bias=None) if getattr(st, "bias", None) is not None else st
+        if getattr(st, "bias", None) is None:
+            return st.set(bias=self.integ.bias.init())
+        return st
 
     def load(self, path: str):
         """Continue from a checkpoint written by `save` (same system and settings)."""
@@ -331,6 +398,7 @@ class Simulation:
             d = pickle.load(fh)
         st = jax.tree_util.tree_map(jnp.asarray, d["state"])
         st = upgrade_state(st, self.state.aux)          # checkpoints from before the thermostat fields
+        st = self._bias_of_checkpoint(st)
         nbr = self.nb.allocate(self.rigid.positions(st.dyn.position), st.dyn.position.center, st.box)
         self.state = st.set(nbr=nbr)                   # forces, dipoles and history are part of the state
         self.time_ps = d["time_ps"]

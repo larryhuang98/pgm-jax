@@ -262,6 +262,10 @@ class MDReplicas:
             raise ValueError("replica exchange needs a thermostat (ensemble nvt or npt)")
         if getattr(integ, "mts", None) is not None:
             raise ValueError("replica exchange with multiple time stepping (mts=) is not supported yet")
+        if getattr(integ, "bias", None) is not None and integ.bias.dynamic:
+            raise NotImplementedError("replica exchange with a time-dependent bias (metadynamics / OPES: the bias "
+                                      "would have to stay with its slot and enter the criterion); static biases "
+                                      "are part of every replica's energy and work")
         if batched and sim.ensemble == "npt":
             raise ValueError("batched replicas run NVT only (under vmap the barostat's trial energy would be "
                              "evaluated every step); use batched=False for NPT")
