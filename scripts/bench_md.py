@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pgm_jax.md.forcefield import DSUM_TOL, MDSettings, ewald_beta_for  # noqa: E402
 from pgm_jax.md.io import box_from_cell, read_coordinates  # noqa: E402
+from pgm_jax.md.iel import add_iel_arguments, iel_settings  # noqa: E402
 from pgm_jax.md.mts import add_mts_arguments, mts_from_args, mts_stats  # noqa: E402
 from pgm_jax.md.simulation import Simulation, _dedupe  # noqa: E402
 from pgm_jax.param import read_prmtop_pgm  # noqa: E402
@@ -62,6 +63,7 @@ def main():
     ap.add_argument("--rdf", default=None, help="with --ps: O-O radial distribution function of the samples to this file "
                     "(r in nm, g) and its first peak in the log")
     add_mts_arguments(ap)
+    add_iel_arguments(ap)
     a = ap.parse_args()
     mts = mts_from_args(a)
     mols = _dedupe(read_prmtop_pgm(TOP, first_residue_only=False))
@@ -76,7 +78,7 @@ def main():
     per = a.grid if a.grid is not None else int(np.ceil(48 * (beta / 4.0) ** 1.6 / 4.0 - 1e-9)) * 4
     grid = tuple(per * n for _ in range(3))
     st = MDSettings(cutoff=a.cut, skin=a.skin, ewald_beta=beta, pme_grid=grid, pme_order=a.order, lj_lrc=bool(a.lrc),
-                    dipole_tol=a.tol, precision=a.precision, elec_cutoff=a.elec_cut)
+                    dipole_tol=a.tol, precision=a.precision, elec_cutoff=a.elec_cut, **iel_settings(a))
     if a.engine == "rigid":
         sim = Simulation(sys_, pos, H * n, settings=st, ensemble=a.ensemble, temperature=298.0, gamma=a.gamma,
                          barostat_interval=a.barostat_interval, dt=a.dt, vel_nm_ps=v, log=sys.stdout,
@@ -100,7 +102,7 @@ def main():
     o = sim.observables()
     print(f"{a.engine}: {sys_.nmol} waters ({sys_.n} atoms), dt {a.dt * 1000:g} fs, {a.precision}, {a.ensemble}, "
           f"{st.describe_cutoffs()}, beta {beta:.4f}, PME {grid} order {a.order}, "
-          f"tol {a.tol:g}, skin {a.skin}, rows {sim.ff.mc} (electrostatic {sim.ff.mc_e or sim.ff.mc}): {el / done * 1e3:.3f} ms/step, "
+          f"{st.describe_induction()}, skin {a.skin}, rows {sim.ff.mc} (electrostatic {sim.ff.mc_e or sim.ff.mc}): {el / done * 1e3:.3f} ms/step, "
           f"{done * a.dt / 1000 / el * 86400:.1f} ns/day; T {o['temp_K']:.1f} K, density {o['density_g_cm3']:.4f}, "
           f"CG iters {(float(sim.state.cg_total) - cg0) / (int(sim.state.step) - s0):.2f} mean per step, max "
           f"{o['cg_iter_max']}{'; ' + str(mts_stats(sim)) if mts else ''}", flush=True)

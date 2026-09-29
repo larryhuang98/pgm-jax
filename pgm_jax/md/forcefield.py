@@ -57,6 +57,18 @@ bond lengths.  Every energy evaluation takes them at its own positions (charges_
 charge gradient, pulled back through the bond-local flux map by one vector-Jacobian product
 (_energy_forces_flux).  Without flux none of this code runs.
 
+Extended-Lagrangian dipoles (`iel`, docs/iel.md; Albaugh, Niklasson & Head-Gordon, JPCL 8, 1714
+(2017)): auxiliary dipoles x ride along with the atoms, x_{n+1} = 2 x_n - x_{n-1} + kappa (mu_n - x_n)
++ a sum_k c_k x_{n-k} (Niklasson's dissipative Verlet), and replace the predictor + CG:
+  * "0scf" (iEL/0-SCF): one field sweep, r = field(q, p + x) - x/alpha, mu = x + delta with
+    delta = alpha r, and the shadow energy U~(R, x) = U(R, x) - sum alpha |r|^2 / 2
+    = U(R, x + delta) - U_es(0, delta), which is stationary in delta, so its exact forces are the
+    fixed-dipole forces at mu minus the fixed-dipole forces of U_es(0, delta) (the dipole-dipole
+    energy of delta alone: rows, PME, self, in the same passes as the forces).  E_kin + U~ is conserved;
+    U~ - U* is second order in the error of x.
+  * "scf" (iEL/SCF): iel_iter CG iterations started from x, forces at fixed mu.
+The first steps (and those after an accepted Monte Carlo volume move) are solved to dipole_tol.
+
 Differentiability: E(pos, H, theta) at fixed mu is differentiable throughout (forces, virial,
 dE/dtheta by Hellmann-Feynman).  With `differentiable=True`, compute() also returns forces and
 dipoles with exact derivatives: the dipole solve is a jax.custom_vjp whose backward pass solves
@@ -129,6 +141,20 @@ class MDSettings:
                                       # "qpi" pGM (options.py); quadrupoles are not in the MD engine yet
     vdw: str = "lj"                   # "lj" | "gvdw" (vdw.py; pmemd-pgm igvdw=1) | "none"
     gvdw_rep: str = "gauss"           # GVDW repulsion: "gauss" (gvdw_rep_form=0) | "slater" (=1)
+    # extended-Lagrangian induced dipoles (docs/iel.md): auxiliary dipoles x propagated by Niklasson's
+    # time-reversible Verlet with dissipation, x' = 2x - x_ - kappa (mu - x) + a sum_k c_k x_k
+    iel: str = "none"                 # "none": SCF from the predictor (above) | "0scf": iEL/0-SCF, no CG:
+                                      # mu = x + alpha r(x) and exact forces of the shadow energy |
+                                      # "scf": iEL/SCF, CG started from x (iel_iter iterations)
+    iel_iter: int = 1                 # "scf": CG iterations per step (0: to dipole_tol)
+    iel_order: int = 7                # Niklasson dissipation order K (3..9; 0: none, exactly time-reversible)
+    iel_kappa: float | None = None    # kappa = (omega dt)^2; None: Niklasson's value for K (1.0 for K = 0)
+    iel_alpha: float | None = None    # dissipation strength a; None: Niklasson's value for K
+    iel_precond: str = "block"        # "0scf": delta = omega alpha r ("jacobi") or omega M^-1 r with M = 1/alpha +
+                                      # the intramolecular row blocks of molecules of <= 8 atoms ("block")
+    iel_omega: float = 1.0            # "0scf": mu = x + omega alpha r(x) (omega < 1: damped Jacobi step)
+    iel_shadow: bool = True           # "0scf": energy and forces of the shadow potential (exact, conserved);
+                                      # False: fixed-dipole forces at mu (error second order in mu - x)
 
     @property
     def perm_dipoles(self) -> bool:
@@ -152,6 +178,20 @@ class MDSettings:
         """Cutoff of the pair rows and of the neighbour list (nm): the larger of the electrostatics
         and van der Waals cutoffs (the latter only with a van der Waals term)."""
         return self.elec_rc if self.vdw == "none" else max(float(self.cutoff), self.elec_rc)
+
+    def describe_induction(self) -> str:
+        """Induced-dipole scheme for log headers."""
+        if self.iel == "none":
+            return f"predictor {self.predictor}{' (fused)' if self.fused else ''}, dipole tol {self.dipole_tol:g}"
+        kap, a, _ = _XL[self.iel_order]
+        kap = kap if self.iel_kappa is None else self.iel_kappa
+        a = a if self.iel_alpha is None else self.iel_alpha
+        what = ("iEL/0-SCF" if self.iel_shadow else "iEL/0-SCF (fixed-dipole forces)") if self.iel == "0scf" else \
+            f"iEL/SCF ({self.iel_iter} CG iterations)" if self.iel_iter > 0 else "iEL/SCF (CG to tol)"
+        om = f", omega {self.iel_omega:g}" if (self.iel == "0scf" and self.iel_omega != 1.0) else ""
+        om += ", block preconditioner" if (self.iel == "0scf" and self.iel_precond == "block") else ""
+        return (f"{what} extended-Lagrangian dipoles (K {self.iel_order}, kappa {kap:g}, a {a:g}{om}), "
+                f"dipole tol {self.dipole_tol:g} (warm-up)")
 
     def describe_cutoffs(self) -> str:
         """Cutoffs for log headers."""
@@ -208,6 +248,17 @@ def elec_cutoff_settings(elec_cutoff: float, dsum_tol: float = DSUM_TOL, exponen
 
 _PRED = {"mu3": (3.0, -3.0, 1.0), "mu4": (4.0, -6.0, 4.0, -1.0)}
 
+# Niklasson's dissipative extended-Lagrangian Verlet (Niklasson et al., JCP 130, 214109 (2009),
+# Table I): K -> (kappa, a, c_0..c_K); x_{n+1} = 2 x_n - x_{n-1} + kappa (mu_n - x_n) + a sum_k c_k x_{n-k}
+_XL = {0: (1.0, 0.0, (0.0,)),
+       3: (1.69, 0.150, (-2, 3, 0, -1)),
+       4: (1.75, 0.057, (-3, 6, -2, -2, 1)),
+       5: (1.82, 0.018, (-6, 14, -8, -3, 4, -1)),
+       6: (1.84, 0.0055, (-14, 36, -27, -2, 12, -6, 1)),
+       7: (1.86, 0.0016, (-36, 99, -88, 11, 32, -25, 8, -1)),
+       8: (1.88, 0.00044, (-99, 286, -286, 78, 78, -90, 42, -10, 1)),
+       9: (1.89, 0.00012, (-286, 858, -936, 364, 168, -300, 184, -63, 12, -1))}
+
 
 @dataclasses.dataclass
 class InductionState:
@@ -219,6 +270,7 @@ class InductionState:
     rec: jnp.ndarray         # (4, S, N, 3) "ls" records: alpha b, mu, mu - pred1, mu - pred2
     pred: jnp.ndarray        # (2, N, 3) "ls" order-1 and order-2 predictions
     lscount: jnp.ndarray     # (4,) int32
+    xl: jnp.ndarray = None   # (K1, N, 3) extended-Lagrangian auxiliary dipoles x_{n+1}, x_n, ... (settings.iel)
 
 
 class Result(NamedTuple):
@@ -269,6 +321,19 @@ class PGMForceField:
             raise ValueError(f"unknown predictor {settings.predictor!r}")
         check_vdw(settings.vdw, settings.gvdw_rep)
         self.pd, self.ind = elec_flags(settings.elec)
+        if settings.iel not in ("none", "0scf", "scf"):
+            raise ValueError(f"unknown iel {settings.iel!r} (none | 0scf | scf)")
+        if settings.iel != "none":
+            if settings.iel_order not in _XL:
+                raise ValueError(f"iel_order must be one of {sorted(_XL)}, got {settings.iel_order}")
+            if settings.differentiable:
+                raise ValueError("iel (extended-Lagrangian dipoles) and differentiable=True are exclusive")
+            if settings.iel_iter < 0:
+                raise ValueError("iel_iter must be >= 0")
+            if not 0.0 < settings.iel_omega < 2.0:
+                raise ValueError("iel_omega must be in (0, 2)")
+            if settings.iel_precond not in ("jacobi", "block"):
+                raise ValueError(f"iel_precond must be jacobi or block, got {settings.iel_precond!r}")
         if any(len(m.quad) for m in sys.molecules):
             import warnings
             warnings.warn("quadrupole terms are ignored by the MD engine (gas phase only for now)")
@@ -307,6 +372,9 @@ class PGMForceField:
         first = np.searchsorted(mol, np.arange(sys.nmol)) if np.all(np.diff(mol) >= 0) else \
             np.array([int(np.nonzero(mol == k)[0][0]) for k in range(sys.nmol)])
         self.first = jnp.asarray(first)
+        self._blocks = None
+        if settings.iel == "0scf" and settings.iel_precond == "block":
+            self._blocks = self._block_layout(mol, first, sys.nmol)
         self.flux = flux                  # md/flux.py ChargeFlux (geometry-dependent q and c) or None
         if flux is not None and (flux.n_atoms != sys.n or len(flux.cov_bond) != len(sys.cov_i)):
             raise ValueError(f"charge flux for {flux.n_atoms} atoms / {len(flux.cov_bond)} covalent dipoles; the "
@@ -609,9 +677,146 @@ class PGMForceField:
     def init_induction(self) -> InductionState:
         dt = jnp.float64
         z = jnp.zeros((self.n, 3), dt)
+        xl = jnp.zeros((self.xl_len, self.n, 3), dt) if self.iel else None
         return InductionState(mu=z, hist=jnp.zeros((4, self.n, 3), dt), count=jnp.zeros((), jnp.int32),
                               norm=jnp.ones((), dt), rec=jnp.zeros((4, self.S, self.n, 3), dt),
-                              pred=jnp.zeros((2, self.n, 3), dt), lscount=jnp.zeros(4, jnp.int32))
+                              pred=jnp.zeros((2, self.n, 3), dt), lscount=jnp.zeros(4, jnp.int32), xl=xl)
+
+    # ------------------------------------------------------------------ extended Lagrangian (iEL)
+    @property
+    def iel(self) -> bool:
+        """Extended-Lagrangian induced dipoles (settings.iel != "none", with induction)."""
+        return self.s.iel != "none" and self.ind
+
+    @property
+    def shadow(self) -> bool:
+        """iEL/0-SCF: the energy and forces are those of the shadow potential U~(R, x) (not the
+        converged U*(R)); the barostat then evaluates U* at both volumes."""
+        return self.iel and self.s.iel == "0scf"
+
+    @property
+    def xl_coefficients(self):
+        """(kappa, a, c_0..c_K) of the auxiliary-dipole recurrence."""
+        kap, a, c = _XL[self.s.iel_order]
+        kap = kap if self.s.iel_kappa is None else float(self.s.iel_kappa)
+        a = a if self.s.iel_alpha is None else float(self.s.iel_alpha)
+        return kap, a, tuple(float(v) for v in c)
+
+    @property
+    def xl_len(self) -> int:
+        """Auxiliary dipoles kept: x_{n+1} and x_n ... x_{n-K} after a step (at least 3)."""
+        return max(len(_XL[self.s.iel_order][2]) + 1, 3)
+
+    @property
+    def xl_warmup(self) -> int:
+        """Steps solved to dipole_tol at the start (and after an accepted volume move) that fill the
+        auxiliary history with converged dipoles."""
+        return max(self.s.iel_order, 2) + 1
+
+    BLOCK_MAX = 8                     # atoms per molecule in the block preconditioner (larger ones: Jacobi)
+
+    def _block_layout(self, mol, first, nmol):
+        """Static layout of the block preconditioner: molecules of 2..BLOCK_MAX atoms each get a block;
+        per atom its block (nblk for none) and local index, per block slot its atom (n for padding)."""
+        n = self.n
+        sizes = np.bincount(mol, minlength=nmol)
+        small = (sizes >= 2) & (sizes <= self.BLOCK_MAX)
+        nblk = int(small.sum())
+        if nblk == 0:
+            return None
+        blk_of_mol = np.full(nmol, nblk)
+        blk_of_mol[small] = np.arange(nblk)
+        nb = int(sizes[small].max())
+        blk = blk_of_mol[mol]
+        loc = np.arange(n) - np.asarray(first)[mol]
+        loc = np.where(blk < nblk, loc, 0)
+        slot = np.full((nblk + 1, nb), n)
+        inb = blk < nblk
+        slot[blk[inb], loc[inb]] = np.nonzero(inb)[0]
+        return {"blk": jnp.asarray(blk, jnp.int32), "loc": jnp.asarray(loc, jnp.int32), "slot": jnp.asarray(slot, jnp.int32),
+                "pad": jnp.asarray(slot == n), "nblk": nblk, "nb": nb, "inb": jnp.asarray(inb)}
+
+    def _block_mask(self, k):
+        """(N, C) 1 for row entries (special columns) that pair two atoms of the same block, else 0."""
+        L = self._blocks
+        ni = self.special.shape[1]
+        kk = k[:, :ni]
+        b = L["blk"]
+        m = (b[kk] == b[:, None]) & (b[:, None] < L["nblk"]) & (kk != jnp.arange(self.n)[:, None])
+        return jnp.concatenate([m, jnp.zeros((self.n, k.shape[1] - ni), bool)], axis=1)
+
+    def _block_solve(self, g, alpha, r):
+        """delta = M^-1 r, M = diag(1/alpha) + the same-molecule row tensors G1 I - G2 x x^T of the
+        special columns, one dense (3 nb)^2 block per small molecule (float64); alpha r elsewhere."""
+        L = self._blocks
+        ni = self.special.shape[1]
+        nblk, nb = L["nblk"], L["nb"]
+        k = g["k"][:, :ni]
+        m = self._block_mask(g["k"])[:, :ni].astype(jnp.float64)
+        G1 = g["G1"][:, :ni].astype(jnp.float64) * m
+        G2 = g["G2"][:, :ni].astype(jnp.float64) * m
+        x = jnp.stack([c[:, :ni].astype(jnp.float64) for c in g["x"]], -1)            # (N, ni, 3)
+        T = G1[..., None, None] * jnp.eye(3) - G2[..., None, None] * x[..., :, None] * x[..., None, :]
+        b, l = L["blk"], L["loc"]
+        M = jnp.zeros((nblk + 1, nb, 3, nb, 3))
+        M = M.at[jnp.broadcast_to(b[:, None], k.shape), jnp.broadcast_to(l[:, None], k.shape), :, l[k], :].add(T)
+        inv_a = _div_alpha(1.0, alpha, self.alpha_mask)
+        M = M.at[b, l, :, l, :].add(jnp.where(L["inb"], inv_a, 0.0)[:, None, None] * jnp.eye(3))
+        bi = jnp.broadcast_to(jnp.arange(nblk + 1)[:, None], L["slot"].shape)
+        li = jnp.broadcast_to(jnp.arange(nb)[None, :], L["slot"].shape)
+        M = M.at[bi, li, :, li, :].add(L["pad"][..., None, None] * jnp.eye(3))
+        M = M.reshape(nblk + 1, 3 * nb, 3 * nb)
+        rp = jnp.concatenate([r.astype(jnp.float64), jnp.zeros((1, 3))])[L["slot"]].reshape(nblk + 1, 3 * nb)
+        d = jnp.linalg.solve(M, rp[..., None])[..., 0].reshape(nblk + 1, nb, 3)[b, l]
+        return jnp.where(L["inb"][:, None], d, alpha[:, None] * r.astype(jnp.float64))
+
+    def _solve_iel(self, g, S, Gk, alpha, q, p, ind: InductionState):
+        """Extended-Lagrangian dipoles (settings.iel).  x = ind.xl[0] are the auxiliary dipoles of this
+        step (propagated at the last one).  "0scf": mu = x + alpha r(x) with r(x) = field(q, p + x) -
+        x / alpha, one field sweep; "scf": iel_iter CG iterations from x (to dipole_tol if 0).  The
+        first xl_warmup steps solve to dipole_tol and put the solution in place of x.  Then
+        x_{n+1} = 2 x_n - x_{n-1} + kappa (mu - x_n) + a sum_k c_k x_{n-k}.  Returns mu, the shadow
+        displacement delta = mu - x ("0scf"; 0 in the warm-up), iterations, residual (at x for
+        "0scf": max|alpha r(x)| / mean|alpha b|) and the new InductionState."""
+        cd = self.cd
+        a64 = alpha[:, None]
+        qc = q.astype(cd)
+        A = self._operator(g, S, Gk, alpha)
+        X = ind.xl
+        x = X[0]
+        first = ind.count == 0
+        warm = ind.count < self.xl_warmup
+
+        def converged(_):
+            b = self._field(g, S, Gk, qc, p)
+            ab = a64 * b.astype(jnp.float64)
+            # the first step starts from ind.mu when set (a volume move's converged dipoles), else alpha b
+            x0 = jnp.where(first, jnp.where(jnp.any(ind.mu != 0.0), ind.mu, ab), x)
+            norm = jnp.mean(jnp.abs(ab)) + 1e-300
+            mu, it, err = self._cg(g, A, alpha, x0, b - A(x0.astype(cd)), norm)
+            return mu, jnp.zeros_like(mu), it, err, norm
+
+        def extended(_):
+            r0 = self._field(g, S, Gk, qc, p + x) - _div_alpha(x, a64, self.alpha_mask).astype(cd)
+            norm = ind.norm
+            if self.s.iel == "0scf":
+                d = a64 * r0.astype(jnp.float64) if self._blocks is None else self._block_solve(g, alpha, r0)
+                d = float(self.s.iel_omega) * d
+                return x + d, d, jnp.zeros((), jnp.int32), jnp.max(jnp.abs(d)) / norm, norm
+            k = int(self.s.iel_iter)
+            mu, it, err = self._cg(g, A, alpha, x, r0, norm, tol=(0.0 if k > 0 else None),
+                                   max_iter=(k if k > 0 else None))
+            return mu, mu - x, it, err, norm
+
+        mu, d, it, err, norm = jax.lax.cond(warm, converged, extended, None)
+        kap, a, c = self.xl_coefficients
+        Xh = jnp.where(first, jnp.broadcast_to(mu, X.shape), jnp.where(warm, X.at[0].set(mu), X))
+        dx = jnp.where(warm, 0.0, d)
+        x_new = 2.0 * Xh[0] - Xh[1] + kap * dx
+        if a != 0.0:
+            x_new = x_new + a * sum(ck * Xh[k] for k, ck in enumerate(c) if ck != 0.0)
+        ind = ind.set(mu=mu, xl=_push(Xh, x_new), hist=_push(ind.hist, mu), count=ind.count + 1, norm=norm)
+        return mu, dx, it, err, ind
 
     def _extrapolate_ls(self, st: InductionState, new):
         """pmemd-pgm CPU multi-order least-squares extrapolation (dipole_scf_init = 3)."""
@@ -657,11 +862,12 @@ class PGMForceField:
         return lambda v: (v * inv_a - self._field(g, S, Gk, zq, v)
                           + (kappa * jnp.sum(v.astype(jnp.float64), axis=0)).astype(cd)[None, :])
 
-    def _cg(self, g, A, alpha, x, r, norm, tol=None, peek=None):
+    def _cg(self, g, A, alpha, x, r, norm, tol=None, peek=None, max_iter=None):
         """Preconditioned CG from (x0, r0 = b - A x0); returns mu (float64), iterations, residual."""
         cd, s = self.cd, self.s
         tol = s.dipole_tol if tol is None else tol
         peek = s.peek if peek is None else peek
+        max_iter = s.max_iter if max_iter is None else int(max_iter)
         inv_a = _div_alpha(1.0, alpha, self.alpha_mask).astype(cd)[:, None]
         a_c = alpha.astype(cd)[:, None]
 
@@ -694,7 +900,7 @@ class PGMForceField:
         z = precond(r)
 
         def cond(c):
-            return (c[6] > tol) & (c[5] < s.max_iter)
+            return (c[6] > tol) & (c[5] < max_iter)
 
         def body(c):
             x, r, z, p, rz, it, _ = c
@@ -810,11 +1016,19 @@ class PGMForceField:
         return mu, it, err, ind
 
     # ------------------------------------------------------------------ energy terms
-    def _nonpair(self, pos, H, d, mu, P):
-        """PME + self + background + polarisation energies (kJ/mol), as a function of (pos, d)."""
+    def _nonpair(self, pos, H, d, mu, P, delta=None):
+        """PME + self + background + polarisation energies (kJ/mol), as a function of (pos, d).  With
+        delta (iEL/0-SCF), minus the PME and self energies of the dipoles delta alone."""
         q = P["q"]
-        u_rec = self.pme.energy(self.pme.setup(pos, H), self.pme.influence(H), q, d)
+        S, G = self.pme.setup(pos, H), self.pme.influence(H)
+        u_rec = self.pme.energy(S, G, q, d)
         u_self = -(self.b0 / _SQRT_PI) * jnp.sum(q * q) - 0.5 * self.c_self * jnp.sum(d * d)
+        if delta is not None:
+            u_rec = u_rec - self.pme.energy(S, G, jnp.zeros_like(q), delta)
+            u_self = u_self + 0.5 * self.c_self * jnp.sum(delta * delta)
+            c = 1.0 - 1.0 / float(self.s.iel_omega)            # damped Jacobi step: - c |delta|^2 / (2 alpha)
+            if c != 0.0:
+                u_self = u_self - c * jnp.sum(_div_alpha(delta * delta, 2.0 * P["alpha"][:, None], self.alpha_mask))
         u_bg = -jnp.pi * jnp.sum(q) ** 2 / (2.0 * volume(H) * self.b0 ** 2)
         u_pol = jnp.sum(_div_alpha(mu * mu, 2.0 * P["alpha"][:, None], self.alpha_mask)) if self.ind else 0.0
         return KE * (u_rec + u_self + u_bg + u_pol)
@@ -937,11 +1151,12 @@ class PGMForceField:
         _, e_f = self._ext_terms(ext, self.field_dipole(pos, P["q"], d, ext[1]))
         return e_elec + e_lj + e_f, {"elec": e_elec, "vdw": e_lj, "field": e_f}
 
-    def _row_terms(self, g, q, d):
+    def _row_terms(self, g, q, d, delta=None):
         """Pair energies (each pair counted in both rows) and the row sums of de_ik/dx_ik, from
         the kernels G0..G3 (grad_x G_n = -G_{n+1} x); charges q and total dipoles d, compute dtype.
         Electrostatics over the electrostatic rows, van der Waals over those and the van der Waals
-        rows of split rows."""
+        rows of split rows.  With delta (iEL/0-SCF shadow energy), minus the pair energies of the
+        dipoles delta alone and their gradient, in the same pass over the rows."""
         k, x = g["k"], g["x"]
         G0, G1, G2, G3 = g["G0"], g["G1"], g["G2"], g["G3"]
         qi, qk = q[:, None], q[k]
@@ -952,11 +1167,29 @@ class PGMForceField:
         dkx = dk[0] * x[0] + dk[1] * x[1] + dk[2] * x[2]
         didk = di[0] * dk[0] + di[1] * dk[1] + di[2] * dk[2]
         t = qi * dkx - qk * dix
-        e = qi * qk * G0 + t * G1 - G2 * dix * dkx + G1 * didk
-        radial = -qi * qk * G1 - t * G2 + G3 * dix * dkx - G2 * didk
+        dd = dix * dkx
+        if delta is None:
+            e = qi * qk * G0 + t * G1 - G2 * dd + G1 * didk
+            radial = -qi * qk * G1 - t * G2 + G3 * dd - G2 * didk
+            cross = [di[j] * dkx + dk[j] * dix for j in range(3)]
+        else:                                                  # minus the delta-delta pair terms
+            Dkk = delta[k]
+            Dk = (Dkk[..., 0], Dkk[..., 1], Dkk[..., 2])
+            Di = tuple(delta[:, j][:, None] for j in range(3))
+            if self._blocks is not None:                       # block preconditioner: M / omega holds these pairs
+                w_blk = 1.0 - 1.0 / float(self.s.iel_omega)
+                keep = jnp.where(self._block_mask(k), w_blk, 1.0).astype(x[0].dtype)
+                Di = tuple(Di[j] * keep for j in range(3))
+            Dix = Di[0] * x[0] + Di[1] * x[1] + Di[2] * x[2]
+            Dkx = Dk[0] * x[0] + Dk[1] * x[1] + Dk[2] * x[2]
+            dd = dd - Dix * Dkx
+            didk = didk - (Di[0] * Dk[0] + Di[1] * Dk[1] + Di[2] * Dk[2])
+            e = qi * qk * G0 + t * G1 - G2 * dd + G1 * didk
+            radial = -qi * qk * G1 - t * G2 + G3 * dd - G2 * didk
+            cross = [di[j] * dkx + dk[j] * dix - Di[j] * Dkx - Dk[j] * Dix for j in range(3)]
         elj, glj = self._vdw_rows(g["r"], g["vp"], g["wv"], grad=True)
         qiG1, qkG1 = qi * G1, qk * G1
-        gx = jnp.stack([jnp.sum(radial * x[j] + qiG1 * dk[j] - qkG1 * di[j] - G2 * (di[j] * dkx + dk[j] * dix), axis=1)
+        gx = jnp.stack([jnp.sum(radial * x[j] + qiG1 * dk[j] - qkG1 * di[j] - G2 * cross[j], axis=1)
                         for j in range(3)], -1)
         glx = jnp.stack([jnp.sum(glj * x[j], axis=1) for j in range(3)], -1).astype(jnp.float64)
         rowsum = lambda v: jnp.sum(jnp.sum(v, axis=1).astype(jnp.float64))   # rows in compute dtype, total in float64
@@ -968,24 +1201,24 @@ class PGMForceField:
             sl = sl + rowsum(elt)
         return rowsum(e), sl, gx.astype(jnp.float64), glx
 
-    def _energy_forces(self, pos, H, mu, g, P, flux_pull=None, ext=None, M=None):
+    def _energy_forces(self, pos, H, mu, g, P, flux_pull=None, ext=None, M=None, delta=None):
         """Energy and forces at fixed mu: analytic row forces for the pair terms (no scatter-adds),
         autodiff for PME, one vector-Jacobian product through the covalent-dipole frames.  With
         charge flux (flux_pull: the pull-back of the flux map at pos; P holds q(R), c(R)):
         _energy_forces_flux.  ext (_ext) or None: the field F at M = sum q r + sum d + offset adds its
         energy (_ext_terms), KE q F to the forces and -KE F to dE/dd (torques)."""
         if flux_pull is not None:
-            return self._energy_forces_flux(pos, H, mu, g, P, flux_pull, ext, M)
+            return self._energy_forces_flux(pos, H, mu, g, P, flux_pull, ext, M, delta)
         cd = self.cd
         p, vjp_p = jax.vjp(lambda y: self.perm_dipoles(y, H, P["cov"]), pos)
         d = p + mu
         qc, dc = P["q"].astype(cd), d.astype(cd)
-        se, sl, gx_el, gx_lj = self._row_terms(g, qc, dc)
+        se, sl, gx_el, gx_lj = self._row_terms(g, qc, dc, None if delta is None else delta.astype(cd))
         dEdd = KE * self._row_field(g, qc, dc).astype(jnp.float64)
         if ext is not None:
             Fx, e_f = self._ext_terms(ext, self.field_dipole(pos, P["q"], d, ext[1]) if M is None else M)
             dEdd = dEdd - KE * Fx[None, :]
-        e_np, (gpos_np, gd_np) = jax.value_and_grad(self._nonpair, argnums=(0, 2))(pos, H, d, mu, P)
+        e_np, (gpos_np, gd_np) = jax.value_and_grad(self._nonpair, argnums=(0, 2))(pos, H, d, mu, P, delta)
         forces = -(KE * gx_el + gx_lj + gpos_np + vjp_p(dEdd + gd_np)[0])
         e_elec = 0.5 * KE * se + e_np
         e_lj = 0.5 * sl + self._vdw_tail(P, H)
@@ -994,7 +1227,7 @@ class PGMForceField:
         forces = forces + KE * P["q"][:, None] * Fx[None, :]
         return {"elec": e_elec, "vdw": e_lj, "field": e_f, "total": e_elec + e_lj + e_f}, forces
 
-    def _energy_forces_flux(self, pos, H, mu, g, P, flux_pull, ext=None, M=None):
+    def _energy_forces_flux(self, pos, H, mu, g, P, flux_pull, ext=None, M=None, delta=None):
         """_energy_forces with charge flux; P holds q(R) and c(R).  F = -dE/dR|_{q,c,mu}
         - phi . dq/dR - (dE/dc) . dc/dR: the potential phi = dE/dq (rows, and PME, self and
         background terms from the autodiff of _nonpair with q among the arguments) and dE/dc (the
@@ -1004,7 +1237,7 @@ class PGMForceField:
         p, vjp_p = jax.vjp(lambda y, c: self.perm_dipoles(y, H, c), pos, P["cov"])
         d = p + mu
         qc, dc = P["q"].astype(cd), d.astype(cd)
-        se, sl, gx_el, gx_lj = self._row_terms(g, qc, dc)
+        se, sl, gx_el, gx_lj = self._row_terms(g, qc, dc, None if delta is None else delta.astype(cd))
         dEdd = KE * self._row_field(g, qc, dc).astype(jnp.float64)
         phi = KE * self._row_potential(g, qc, dc).astype(jnp.float64)
         if ext is not None:                                    # the external potential -F . r at each atom
@@ -1012,7 +1245,7 @@ class PGMForceField:
             dEdd = dEdd - KE * Fx[None, :]
             phi = phi - KE * (pos @ Fx)
         e_np, (gpos_np, gd_np, gq_np) = jax.value_and_grad(
-            lambda y, dd, q: self._nonpair(y, H, dd, mu, dict(P, q=q)), argnums=(0, 1, 2))(pos, d, P["q"])
+            lambda y, dd, q: self._nonpair(y, H, dd, mu, dict(P, q=q), delta), argnums=(0, 1, 2))(pos, d, P["q"])
         gpos_p, gcov = vjp_p(dEdd + gd_np)
         forces = -(KE * gx_el + gx_lj + gpos_np + gpos_p + flux_pull((phi + gq_np, gcov))[0])
         e_elec = 0.5 * KE * se + e_np
@@ -1051,14 +1284,22 @@ class PGMForceField:
         p = self.perm_dipoles(pos, H, P["cov"])
         S = self.pme.setup(pos, H)
         Gk = self.pme.influence(H)
+        delta = None
         if self.ind:                                           # the solve sees the electrostatic rows only
             ge = {key: v for key, v in g.items() if key != "vdw_rows"}
             ext_s = None if ext is None else (ext[0], self.field_dipole(pos, P["q"], p, ext[1]), ext[2])
-            mu, it, err, ind = self._solve(ge, S, Gk, P, p, ind, ext=ext_s)
+            if self.iel:                                       # extended-Lagrangian dipoles
+                if ind.xl is None:                             # a state from an SCF run: start the history
+                    ind = ind.set(xl=jnp.zeros((self.xl_len, self.n, 3)), count=jnp.zeros_like(ind.count))
+                mu, delta, it, err, ind = self._solve_iel(ge, S, Gk, P["alpha"], P["q"], p, ind)
+            else:
+                mu, it, err, ind = self._solve(ge, S, Gk, P, p, ind, ext=ext_s)
         else:                                                  # no induced dipoles ("q", "qp")
             mu, it, err = jnp.zeros((self.n, 3)), jnp.zeros((), jnp.int32), jnp.zeros(())
         M = None if ext is None else self.field_dipole(pos, P["q"], p + mu, ext[1])
-        energy, forces = self._energy_forces(pos, H, mu, g, P, pull, ext, M)
+        # iEL/0-SCF: U~ = U(mu) - U_es(0, delta) and its exact forces (iel_shadow), in the same passes
+        energy, forces = self._energy_forces(pos, H, mu, g, P, pull, ext, M,
+                                             delta if (self.shadow and self.s.iel_shadow) else None)
         return Result(energy, forces, ind, it, err, g["overflow"], g if keep_geometry else None, M)
 
     def energy(self, pos, H, idx, ind: InductionState, params=None, efield=None):
@@ -1086,6 +1327,8 @@ class PGMForceField:
         else:
             mu, it = jnp.zeros((self.n, 3)), jnp.zeros((), jnp.int32)
         e, _ = self.energy_fixed_mu(pos, H, mu, idx, P, efield)
+        if self.iel:                                           # auxiliary dipoles restart at the new geometry
+            return e, ind.set(mu=mu, count=jnp.zeros_like(ind.count)), it, g["overflow"]
         return e, ind.set(mu=mu), it, g["overflow"]
 
     def strain_derivative(self, pos, H, idx, mu, params=None, molecular: bool = True, efield=None):

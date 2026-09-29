@@ -156,6 +156,9 @@ class _MTSMixin:
             raise TypeError("mts must be an MTS instance")
         self.mts = mts
         self.ms = None                                   # capacity of the short-range list (sized in init)
+        ff = args[0] if args else kw.get("ff")
+        if ff is not None and getattr(ff, "iel", False):
+            raise NotImplementedError("extended-Lagrangian dipoles (iel) with multiple time stepping")
         super().__init__(*args, **kw)
         self._configure()
 

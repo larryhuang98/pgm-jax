@@ -28,6 +28,7 @@ jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pgm_jax.md.forcefield import DSUM_TOL, MDSettings, ewald_beta_for  # noqa: E402
+from pgm_jax.md.iel import add_iel_arguments, iel_settings  # noqa: E402
 from pgm_jax.md.mts import add_mts_arguments, mts_from_args  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
 
@@ -97,6 +98,7 @@ def main(argv=None):
     ap.add_argument("--efield-freq", type=float, default=0.0, help="cm^-1: E(t) = E0 cos(2 pi c nu t) (0: static)")
     ap.add_argument("--displacement", type=float, nargs=3, help="constant electric displacement D/eps0 (V/nm)")
     add_mts_arguments(ap, "--dt")
+    add_iel_arguments(ap)
     a = ap.parse_args(argv)
     if a.ew_coeff is None:
         a.ew_coeff = 0.4 if a.es_cut is None else ewald_beta_for(a.es_cut / 10, a.dsum_tol) / 10
@@ -108,7 +110,7 @@ def main(argv=None):
                     lj_lrc=bool(a.vdwmeth), dipole_tol=a.dipole_tol, max_iter=a.max_iter, local_cut=a.local_cut / 10,
                     local_niter=a.local_niter, peek=a.peek, predictor=a.predictor,
                     extrap_order=a.extrap_order, extrap_steps=a.extrap_steps,
-                    precision=a.precision, elec="q" if a.charges == "amber" else "qpi")
+                    precision=a.precision, elec="q" if a.charges == "amber" else "qpi", **iel_settings(a))
     sim = Simulation.from_amber(a.prmtop, a.coords, use_velocities=not a.no_velocities, settings=st, charges=a.charges,
                                 dt=a.dt / 1000, ensemble=a.ensemble, temperature=a.temp, gamma=a.gamma,
                                 thermostat=a.thermostat, tau_t=a.tautp,

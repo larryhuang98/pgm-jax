@@ -158,6 +158,16 @@ How it works:
   inner-CG preconditioner (`scf_local_niter`) are available; on the GPU a Jacobi iteration is
   cheaper than the iterations they save. Forces are Hellmann-Feynman at the converged dipoles
   (the energy is variational in mu).
+- **Extended-Lagrangian induced dipoles** (`MDSettings(iel="0scf")`, `--iel 0scf`;
+  `pgm_jax/md/iel.py`, `docs/iel.md`): iEL/0-SCF (Albaugh, Niklasson & Head-Gordon 2017). Auxiliary
+  dipoles follow Niklasson's dissipative time-reversible Verlet, and each step does one field sweep
+  and a block-Jacobi update with no CG. Forces are the exact gradient of a shadow energy (computed in
+  the same row and PME passes). 1.5x the speed of the SCF solver at tol 1e-5 (512 and 4,096
+  waters, 1 and 2 fs; 336 ns/day at 2 fs for 512). NVE drift is +0.001 (1 fs) and +0.013 to +0.020
+  (2 fs) kT/ns/dof. Dipoles are within 1.7e-3 RMS of converged ones (4e-4 at 1 fs); pGM3P-25 eps
+  34.2 +- 0.5 (SCF 33.9 +- 0.6), and density, <U>, liquid dipole, D, rotational times and g_OO
+  agree with SCF within their errors (docs/iel.md).
+  iEL/SCF-k (`iel="scf"`) runs k CG iterations from the auxiliary dipoles.
 - **Rigid molecules** (every molecule; the model has no bonded terms) as JAX-MD rigid bodies:
   NO_SQUISH quaternion integration from JAX-MD `simulate`. Equivalent to SHAKE-rigid water.
 - **Bond constraints** (`constraints="h-bonds" | "all-bonds"` in `FlexibleSimulation`,
@@ -585,6 +595,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/md/vsites.py` | virtual sites: `VirtualSite` (average2, average3, outofplane, local, amber), `VirtualSites` (placement, force spreading by the transposed Jacobian, checks), `amber_extra_points` (Amber's EP frames from the bond graph); `scripts/validate_vsites.py` (TIP4P-Ew vs sander, NVE, NPT, speed) |
 | `pgm_jax/md/flux.py` | charge flux in MD: `ChargeFlux` (per-bond charge and covalent-dipole flux of fitted templates, or built directly; `charges(pos)` -> q(R), c(R)), `molecule_at` (charges frozen at a geometry for rigid molecules); `scripts/validate_flux.py`, `scripts/flux_md.py` (liquid, NVE, speed, gas phase) |
 | `pgm_jax/md/pimd.py` | path-integral MD: `RingPolymer` (normal modes, exact / Cayley free ring polymer, `contraction_matrix`), `PILE` (PILE-L / PILE-G, TRPMD, RPMD), `PIMDIntegrator` (BAOAB, estimators, Monte Carlo NPT), `PotentialEngine` (any potential, optional contracted part), `PGMBeads` (pGM force field on every bead, contraction with the monomer reference), `PIMDSimulation` (driver: logs, trajectories, checkpoints, pressure, dipoles), `flexible_water` (flexible pGM water with the q-TIP4P/F monomer surface); `scripts/pimd_water.py`, `scripts/pimd_validate.py`, `scripts/pimd_openmm.py` |
+| `pgm_jax/md/iel.py` | extended-Lagrangian induced dipoles (engine in `forcefield.py`: `_solve_iel`, shadow terms, block preconditioner): CLI options, `spectral_radius`, `response_spectrum`; `scripts/iel_validate.py` (NVE drift, dipole error, D, rotations, g_OO; NPT replicas; pooled eps), `scripts/iel_cost.py` |
 | `pgm_jax/md/mts.py` | multiple time stepping (r-RESPA) for both engines: `MTS` settings, force groups (bonded / special pairs / short-range pGM model; slow = full - fast), BAOAB-RESPA step, short-range pair list, anchored dipole predictor, CLI helpers |
 | `pgm_jax/md/efield.py`, `pgm_jax/md/finite_field.py` | external electric fields: `ExternalField` (static, E0 cos(w t + phi), constant D), units and the finite-field eps formulas; `FieldReplicas` (+-E copies batched with `jax.vmap`), `read_series`, `analyse` (per replica, per +-E pair, saturation fit, zero-field fluctuations); `scripts/finite_field.py` (runs and analysis), `scripts/validate_efield.py`, `scripts/openmm_tip3p_field.py` |
 | `pgm_jax/md/remd.py` | temperature replica exchange for both engines: `ReplicaExchange` (exchanges, statistics, round trips, outputs, checkpoints), `MDReplicas` (replicas batched with `jax.vmap`, or sequential), `geometric_ladder`, `read_exchange_log` |

@@ -34,6 +34,7 @@ jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
+from pgm_jax.md.iel import add_iel_arguments, iel_settings  # noqa: E402
 from pgm_jax.md.io import box_from_cell, read_coordinates  # noqa: E402
 from pgm_jax.md.simulation import Simulation, _dedupe  # noqa: E402
 from pgm_jax.param import read_prmtop_pgm  # noqa: E402
@@ -79,6 +80,7 @@ def main():
     ap.add_argument("--checkpoint", help="continue from this .chk (appends to the outputs)")
     ap.add_argument("--prmtop", default=TOP, help="pGM water prmtop (--model pgm/tip3p; default: the pGM3P box)")
     ap.add_argument("--coords", default=RST, help="restart matching --prmtop")
+    add_iel_arguments(ap)
     a = ap.parse_args()
     mols = _dedupe(read_prmtop_pgm(a.prmtop, first_residue_only=False))
     elec = "qpi"
@@ -104,7 +106,7 @@ def main():
     v = None if vel is None else np.concatenate([vel * 0.1] * len(shifts))
     sys_ = System(mols * len(shifts))
     st = MDSettings(cutoff=0.9, skin=0.1, ewald_beta=4.0, pme_grid=(48 * n,) * 3, pme_order=6, lj_lrc=True,
-                    dipole_tol=a.tol, precision="mixed", elec=elec)
+                    dipole_tol=a.tol, precision="mixed", elec=elec, **iel_settings(a))
     kw = dict(settings=st, ensemble=a.ensemble, temperature=298.0, pressure=1.0, barostat_interval=100,
               dt=a.dt / 1000, log=sys.stdout, thermostat="bussi", tau_t=1.0, seed=a.seed)
     if a.engine == "rigid":

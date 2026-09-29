@@ -88,8 +88,7 @@ class Simulation:
                     f"{'' if self.vsites is None else f' ({self.vsites.n_sites} virtual sites)'}, {ensemble.upper()}{thermo}, "
                     f"dt {dt * 1000:g} fs, "
                     f"{settings.precision} precision, PME grid {self.ff.pme.K} order {settings.pme_order}, "
-                    f"{settings.describe_cutoffs()}, {self.nb.kind} neighbour list, predictor {settings.predictor}"
-                    f"{' (fused)' if settings.fused else ''}, dipole tol {settings.dipole_tol:g}, "
+                    f"{settings.describe_cutoffs()}, {self.nb.kind} neighbour list, {settings.describe_induction()}, "
                     f"template fit RMSD {self.rigid.fit_rmsd:.2e} nm, device {jax.devices()[0]}")
         if self.integ.restraints is not None:
             self._print(f"# restraints: {self.integ.restraints.describe()}")
