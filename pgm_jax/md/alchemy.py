@@ -116,6 +116,7 @@ import numpy as np
 from ..lj import lj_long_range
 from ..system import ATOM_QUANTITIES, QUANTITIES, System
 from .box import min_image, volume
+from .forcefield import full_strain_derivative
 from .integrate import KB
 from .io import write_restart
 from .remd import ExchangeStatistics, MDReplicas, _nocount, _stack, _take, exchange_pairs, metropolis
@@ -409,17 +410,12 @@ class Alchemy:
         W = ff.strain_derivative(pos, H, cand, mu, self.params(params, lam), molecular)
         if self.vdw == "none" and self.intramolecular != "keep":
             return W
+        com = None
         if molecular:
             w = ff.masses
             com = jax.ops.segment_sum(w[:, None] * pos, ff.mol, self.sys.nmol) / \
                 jax.ops.segment_sum(w, ff.mol, self.sys.nmol)[:, None]
-
-        def e(eps):
-            F = jnp.eye(3) + eps
-            x = pos + ((com @ eps.T)[ff.mol] if molecular else pos @ eps.T)
-            return self.extra_energy(x, H @ F.T, cand, params, lam)
-
-        W = W + jax.grad(e)(jnp.zeros((3, 3)))
+        W = W + full_strain_derivative(lambda x, h: self.extra_energy(x, h, cand, params, lam), pos, H, ff.mol, com)
         if self.bound[2]:
             P = self.sys.expand(self.params0 if params is None else params)
             W = W - lam[1] * self._tail(P, H) * jnp.eye(3)

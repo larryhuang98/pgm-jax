@@ -86,11 +86,13 @@ res.induced_dipoles, res.dipole                     # e nm (fetched from the dev
   as the native pressure) or `"atomic"` (default with templates: every atom scaled, what ASE's
   stress and i-PI's virial mean for flexible molecules). Both include the long-range-correction
   impulse term of `MDSettings.lj_lrc` as `Simulation.pressure()` does.
-  `PGMForceField.strain_derivative` is exact only for strains that keep the box lower triangular
-  (the diagonal and eps_ab with a < b); its lower off-diagonal components were wrong (a 3e-3
-  relative error found by finite differences here; the native code uses only the trace). The
-  engine returns the symmetric tensor built from the exact components, which matches finite
-  differences of the energy to 3e-13.
+  `PGMForceField.strain_derivative` used to be exact only for strains that keep the box lower
+  triangular (the diagonal and eps_ab with a < b); its lower off-diagonal components were wrong (a
+  3e-3 relative error found by finite differences here; the native code uses only the trace). Since
+  the integration of the feature branches (docs/CHANGES_2026-09.md) it returns the full tensor (the
+  lower components from rotation invariance, tested against finite differences in
+  `tests/test_integration.py`). The engine returns the symmetric tensor built from the upper
+  components, which matches finite differences of the energy to 3e-13.
 
 ### ASE
 

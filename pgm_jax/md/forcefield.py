@@ -248,6 +248,29 @@ def elec_cutoff_settings(elec_cutoff: float, dsum_tol: float = DSUM_TOL, exponen
 
 _PRED = {"mu3": (3.0, -3.0, 1.0), "mu4": (4.0, -6.0, 4.0, -1.0)}
 
+
+def full_strain_derivative(energy, pos, H, mol=None, com=None, vectors=()):
+    """dE/d eps (3, 3) of energy(x, H, *vectors), evaluated by code that assumes a lower-triangular box
+    (the row displacements subtract lattice vectors component by component), under
+    x -> x + (com eps^T)[mol] (molecular scaling; com None: x -> x (1 + eps)^T), H -> H (1 + eps)^T
+    and the vectors held fixed (induced dipoles, an external field: arrays of rows (..., 3)).
+    Strains eps_ab with a < b and the diagonal keep H lower triangular and are differentiated
+    directly; the lower components follow from rotation invariance of energy(x R^T, H R^T,
+    v R^T, ...): the atomic strain derivative W_at = W + G, G_ab = sum_i dE/dx_ia (x_i - c_i)_b (zero
+    for atomic scaling), satisfies W_at - W_at^T = T^T - T with T_ab = sum_v sum_k dE/dv_ka v_kb (zero
+    for converged induced dipoles and no field)."""
+    def e(eps, dx, *vs):
+        x = pos + dx + ((com @ eps.T)[mol] if com is not None else pos @ eps.T)
+        return energy(x, H @ (jnp.eye(3) + eps).T, *vs)
+
+    grads = jax.grad(e, argnums=tuple(range(2 + len(vectors))))(jnp.zeros((3, 3)), jnp.zeros_like(pos), *vectors)
+    W, g = grads[0], grads[1]
+    G = jnp.zeros((3, 3)) if com is None else g.T @ (pos - com[mol])
+    T = jnp.zeros((3, 3))
+    for v, gv in zip(vectors, grads[2:]):
+        T = T + jnp.reshape(gv, (-1, 3)).T @ jnp.reshape(v, (-1, 3))
+    return jnp.triu(W) + jnp.tril(W.T + G.T - G + T.T - T, -1)
+
 # Niklasson's dissipative extended-Lagrangian Verlet (Niklasson et al., JCP 130, 214109 (2009),
 # Table I): K -> (kappa, a, c_0..c_K); x_{n+1} = 2 x_n - x_{n-1} + kappa (mu_n - x_n) + a sum_k c_k x_{n-k}
 _XL = {0: (1.0, 0.0, (0.0,)),
@@ -1345,20 +1368,27 @@ class PGMForceField:
         efield: the external-field term is included (zero for neutral molecules under molecular
         scaling; md/efield.py).
         molecular: molecules translated with their centres of mass (virtual sites move with them);
-        otherwise every position is scaled affinely, which virtual sites do not follow (refused)."""
+        otherwise every position is scaled affinely, which virtual sites do not follow (refused).
+        The full tensor: the components that would take the box out of lower-triangular form come
+        from rotation invariance (full_strain_derivative, with mu, the field and its dipole offset
+        as the vectors held fixed)."""
         if not molecular and self.has_vsites:
             raise NotImplementedError("atomic (affine) strain derivative with virtual sites: the sites would have to be "
                                       "rebuilt from the deformed parents; use molecular=True")
         pos, H = jnp.asarray(pos, jnp.float64), jnp.asarray(H, jnp.float64)
         P = self._atoms(params)
+        com = None
         if molecular:
             w = self.masses
             com = jax.ops.segment_sum(w[:, None] * pos, self.mol, self.sys.nmol) / jax.ops.segment_sum(w, self.mol, self.sys.nmol)[:, None]
-
-        def e(eps):
-            F = jnp.eye(3) + eps
-            x = pos + ((com @ eps.T)[self.mol] if molecular else pos @ eps.T)
-            return self.energy_fixed_mu(x, H @ F.T, mu, idx, P, efield)[0]
-
-        W = jax.grad(e)(jnp.zeros((3, 3)))
+        mu = jnp.asarray(mu, jnp.float64)
+        if efield is None:
+            W = full_strain_derivative(lambda x, h, m: self.energy_fixed_mu(x, h, m, idx, P)[0], pos, H, self.mol,
+                                       com, (mu,))
+        else:
+            kind, off = tuple(efield[2:]), efield[1]
+            vecs = (mu, jnp.asarray(efield[0], jnp.float64)) + (() if off is None else (jnp.asarray(off, jnp.float64),))
+            W = full_strain_derivative(
+                lambda x, h, m, E, *o: self.energy_fixed_mu(x, h, m, idx, P, (E, o[0] if o else None) + kind)[0],
+                pos, H, self.mol, com, vecs)
         return W - self._vdw_tail(P, H) * jnp.eye(3)

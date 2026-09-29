@@ -217,3 +217,52 @@ def test_refused_combinations():
             PGMEngine.from_simulation(flex(**kw), templates=[tpl] * sys.nmol)
     with pytest.raises(NotImplementedError):
         PGMEngine(sys, pos, H, MDSettings(cutoff=0.5, skin=0.05, iel="0scf"), templates=[tpl] * sys.nmol)
+
+
+# ----------------------------------------------------------------------------- full virial tensor
+def _rotated_energy(ff, pos, H, mu, P, eps, com, efield=None):
+    """Energy at fixed mu of the strained configuration, rotated back to a lower-triangular box
+    (everything rotates: positions, box, induced dipoles and the field), where the engine is exact."""
+    F = np.eye(3) + eps
+    Hs = H @ F.T
+    x = pos + ((com @ eps.T)[np.asarray(ff.mol)] if com is not None else pos @ eps.T)
+    Q, R = np.linalg.qr(Hs.T)
+    Q = Q @ np.diag(np.sign(np.diag(R)))                       # Hs Q lower triangular, positive diagonal
+    L = Hs @ Q
+    assert np.abs(np.triu(L, 1)).max() < 1e-12
+    x2 = jnp.asarray(x @ Q)
+    fld = None if efield is None else (jnp.asarray(np.asarray(efield[0]) @ Q),) + tuple(efield[1:])
+    idx = ff.rows_for(x2, jnp.asarray(L))
+    return float(ff.energy_fixed_mu(x2, jnp.asarray(L), jnp.asarray(np.asarray(mu) @ Q), idx, P, fld)[0])
+
+
+@pytest.mark.parametrize("molecular,field", [(True, None), (False, None), (False, "E"), (True, "D")])
+def test_strain_derivative_full_tensor_matches_finite_differences(molecular, field):
+    """PGMForceField.strain_derivative returns the whole tensor: every component (including the lower
+    off-diagonal ones, which take the box out of lower-triangular form) against central differences of
+    the energy of strained configurations rotated back to a lower-triangular box."""
+    sys, pos, H = small_box(4)
+    ff = PGMForceField(sys, H, settings(lj_lrc=True))
+    idx = ff.rows_for(jnp.asarray(pos), H)
+    fld = None if field is None else _field(field)
+    mu = ff.compute(jnp.asarray(pos), H, idx, ff.init_induction(), efield=fld).induction.mu
+    P = ff._atoms(None)
+    W = np.asarray(ff.strain_derivative(jnp.asarray(pos), H, idx, mu, molecular=molecular, efield=fld))
+    m = np.asarray(ff.masses)
+    mol = np.asarray(ff.mol)
+    com = None
+    if molecular:
+        com = np.stack([np.bincount(mol, weights=m * pos[:, c]) for c in range(3)], 1) / np.bincount(mol, weights=m)[:, None]
+    h = 1e-5
+    fd = np.zeros((3, 3))
+    for a in range(3):
+        for b in range(3):
+            e = np.zeros((3, 3))
+            e[a, b] = h
+            fd[a, b] = (_rotated_energy(ff, pos, np.asarray(H), mu, P, e, com, fld)
+                        - _rotated_energy(ff, pos, np.asarray(H), mu, P, -e, com, fld)) / (2 * h)
+    fd = fd - float(ff._vdw_tail(P, H)) * np.eye(3)
+    scale = np.abs(fd).max()
+    assert np.abs(W - fd).max() < 1e-6 * scale, (W - fd) / scale
+    if not molecular and field is None:
+        assert np.abs(W - W.T).max() < 1e-6 * scale

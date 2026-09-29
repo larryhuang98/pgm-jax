@@ -395,9 +395,9 @@ class PGMEngine:
     def _virial(self, x, H, cand, mu, gb):
         molecular = self.stress_mode == "molecular"
         W = self.ff.strain_derivative(x, H, cand, mu, self.params, molecular=molecular)
-        # the force field assumes a lower-triangular box: strains with eps_ab, a < b (and the
-        # diagonal) keep H @ (1 + eps)^T lower triangular and are differentiated exactly; the energy
-        # is rotation invariant, so W is symmetric and its lower triangle is the transposed upper one
+        # strain_derivative returns the full tensor (its lower components from rotation invariance);
+        # external codes get the symmetric tensor built from the upper triangle (for the atomic
+        # virial the tensor itself; for the molecular one its antisymmetric torque part is dropped)
         W = jnp.triu(W) + jnp.triu(W, 1).T
         if gb is not None and not molecular:
             W = W + gb.T @ x                           # bonded energy under x -> x (1 + eps)^T: sum_i g_i (x) x_i
