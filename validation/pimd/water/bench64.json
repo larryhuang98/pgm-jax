@@ -1,0 +1,26 @@
+[
+ {
+  "beads": 64,
+  "contract": 0,
+  "chunk": 8,
+  "dt_fs": 0.25,
+  "ms_per_step": 16.14630937576294,
+  "ns_per_day": 1.3377670089998113,
+  "cg_per_step": 9.0,
+  "temp_K": 296.51708820085236,
+  "ke_H_cv_meV": 150.41421648777052,
+  "device": "cuda:0"
+ },
+ {
+  "beads": 64,
+  "contract": 16,
+  "chunk": 8,
+  "dt_fs": 0.25,
+  "ms_per_step": 7.919248342514038,
+  "ns_per_day": 2.727531587062577,
+  "cg_per_step": 8.01,
+  "temp_K": 296.49164281369474,
+  "ke_H_cv_meV": 151.5100288791728,
+  "device": "cuda:0"
+ }
+]

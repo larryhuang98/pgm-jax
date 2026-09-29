@@ -1,0 +1,50 @@
+[
+ {
+  "beads": 32,
+  "contract": 0,
+  "chunk": 0,
+  "dt_fs": 0.25,
+  "ms_per_step": 15.215578079223633,
+  "ns_per_day": 1.4195977233026777,
+  "cg_per_step": 9.0,
+  "temp_K": 297.36529837857074,
+  "ke_H_cv_meV": 148.75465079072475,
+  "device": "cuda:0"
+ },
+ {
+  "beads": 32,
+  "contract": 0,
+  "chunk": 4,
+  "dt_fs": 0.25,
+  "ms_per_step": 9.416089057922363,
+  "ns_per_day": 2.2939460180473255,
+  "cg_per_step": 9.0,
+  "temp_K": 297.3652984638459,
+  "ke_H_cv_meV": 148.75464925466665,
+  "device": "cuda:0"
+ },
+ {
+  "beads": 32,
+  "contract": 0,
+  "chunk": 8,
+  "dt_fs": 0.25,
+  "ms_per_step": 7.988783518473307,
+  "ns_per_day": 2.703790877553765,
+  "cg_per_step": 9.0,
+  "temp_K": 297.3652984689029,
+  "ke_H_cv_meV": 148.75465029297538,
+  "device": "cuda:0"
+ },
+ {
+  "beads": 32,
+  "contract": 0,
+  "chunk": 16,
+  "dt_fs": 0.25,
+  "ms_per_step": 8.273460070292156,
+  "ns_per_day": 2.610757750262189,
+  "cg_per_step": 9.0,
+  "temp_K": 297.3652984070579,
+  "ke_H_cv_meV": 148.75465010378394,
+  "device": "cuda:0"
+ }
+]

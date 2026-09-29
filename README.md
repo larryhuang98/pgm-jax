@@ -18,7 +18,8 @@ any order. Validated against Amber (sander, pmemd-pgm) and PyRESP.
   **molecular dynamics with JAX-MD** (`pgm_jax.md`: smooth PME, neighbour lists, pmemd-pgm's induction
   solver, rigid or flexible molecules, NVE / NVT (Langevin, Bussi, smooth GLE) / Monte Carlo NPT,
   restraints, temperature replica exchange with batched replicas, cell dipole and dielectric
-  constant, Amber inputs and outputs).
+  constant, path-integral MD (PIMD / TRPMD / RPMD) for nuclear quantum effects, Amber inputs and
+  outputs).
 - **Interfaces to other codes** (`pgm_jax.interfaces`, `docs/interfaces.md`): an ASE calculator
   (energy, forces, stress, dipoles; vectorised SHAKE / RATTLE for rigid water), an i-PI socket client
   (classical and path-integral MD driven by i-PI, batched beads) and an OpenMM `PythonForce` (OpenMM's
@@ -271,6 +272,22 @@ How it works:
   count; with Bussi the fitted methanol needs 0.04-0.3 more CG iterations per step (+2-5 % in
   all), with Langevin 0.3-1 (+5-10 %: per-atom noise jitters bond lengths and charges). Without
   flux the compiled step is unchanged.
+- **Path-integral MD** (`md/pimd.py`, `docs/pimd.md`, `scripts/pimd_water.py`): nuclear quantum
+  effects for flexible molecules. P beads per atom batched with `jax.vmap` over the force field
+  (each bead with its own induced dipoles and predictor history; one neighbour list of the centroid
+  with a bead margin; beads in `lax.map` chunks of 8), normal-mode propagation (exact or Cayley
+  free ring polymer, BAOAB), PILE-L / PILE-G thermostats for PIMD, thermostatted RPMD and RPMD,
+  primitive and centroid-virial kinetic energies per element, molecular centroid-virial pressure,
+  Monte Carlo NPT, bead-averaged dipoles, and ring-polymer contraction of the intermolecular part
+  (the fitted gas-phase monomer model on every bead). Checked against exact harmonic-oscillator
+  results for P = 1-64, free-particle mode temperatures, RPMD energy conservation and OpenMM's
+  RPMDIntegrator (with contraction). A flexible pGM water (`pimd.flexible_water`: bonded terms that
+  give the gas-phase monomer the q-TIP4P/F intramolecular surface, new `bond_quartic` family;
+  `validation/pimd/pgm_water_flex.flex`): 512 waters at 298 K, P = 32, KE_H = 148.5 +- 0.1 meV
+  (about 152 extrapolated; q-TIP4P/F about 143, experiment 143-156), broadened O-H and H-H
+  hydrogen-bond peaks, TRPMD diffusion 2.2e-5 cm^2/s (classical 4.1: in this model quantum effects
+  slow diffusion). 512 waters, dt 0.25 fs: P = 32 at 7.8 ms/step (2.8 ns/day), contracted to 8
+  beads 4.2 ms/step. Rigid bodies and constraints are not path-integral molecules (flexible only).
 - **Precision**: `mixed` (default) evaluates pair kernels, PME and CG vectors in float32 and keeps
   positions, energies and dot products in float64; `double` is float64 throughout. float32 matrix
   products are requested at full precision: by default NVIDIA GPUs use TF32 for them, which made
@@ -533,6 +550,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/md/flexible.py` | flexible molecules in MD: `FlexibleTemplate` (bonded fit -> MD), `RigidTemplate` (water, ions by constraints), `FlexibleSimulation` (atoms, g-BAOAB with SHAKE / RATTLE, `constraints="h-bonds"`, `hmr`), `liquid_box` |
 | `pgm_jax/md/vsites.py` | virtual sites: `VirtualSite` (average2, average3, outofplane, local, amber), `VirtualSites` (placement, force spreading by the transposed Jacobian, checks), `amber_extra_points` (Amber's EP frames from the bond graph); `scripts/validate_vsites.py` (TIP4P-Ew vs sander, NVE, NPT, speed) |
 | `pgm_jax/md/flux.py` | charge flux in MD: `ChargeFlux` (per-bond charge and covalent-dipole flux of fitted templates, or built directly; `charges(pos)` -> q(R), c(R)), `molecule_at` (charges frozen at a geometry for rigid molecules); `scripts/validate_flux.py`, `scripts/flux_md.py` (liquid, NVE, speed, gas phase) |
+| `pgm_jax/md/pimd.py` | path-integral MD: `RingPolymer` (normal modes, exact / Cayley free ring polymer, `contraction_matrix`), `PILE` (PILE-L / PILE-G, TRPMD, RPMD), `PIMDIntegrator` (BAOAB, estimators, Monte Carlo NPT), `PotentialEngine` (any potential, optional contracted part), `PGMBeads` (pGM force field on every bead, contraction with the monomer reference), `PIMDSimulation` (driver: logs, trajectories, checkpoints, pressure, dipoles), `flexible_water` (flexible pGM water with the q-TIP4P/F monomer surface); `scripts/pimd_water.py`, `scripts/pimd_validate.py`, `scripts/pimd_openmm.py` |
 | `pgm_jax/md/mts.py` | multiple time stepping (r-RESPA) for both engines: `MTS` settings, force groups (bonded / special pairs / short-range pGM model; slow = full - fast), BAOAB-RESPA step, short-range pair list, anchored dipole predictor, CLI helpers |
 | `pgm_jax/md/remd.py` | temperature replica exchange for both engines: `ReplicaExchange` (exchanges, statistics, round trips, outputs, checkpoints), `MDReplicas` (replicas batched with `jax.vmap`, or sequential), `geometric_ladder`, `read_exchange_log` |
 | `pgm_jax/md/alchemy.py` | alchemical free energies: `Alchemy` (lambda Hamiltonian of one solute: annihilated electrostatics with a polarizability floor, soft-core van der Waals rows), `alchemical_system`, `LambdaWindows` (windows batched with `jax.vmap`), `FreeEnergyRun` (samples of u_k(x_n) and dU/dlambda, Hamiltonian replica exchange, outputs, checkpoints), `GasPhaseLeg`, `standard_schedule` |
@@ -628,6 +646,9 @@ Conventions worth knowing:
 - GVDW per atom type (geometric A and C6, arithmetic b) generalises pmemd-pgm's single global
   set for LJ-bearing pairs; identical for pGM3P water.
 - The gas-phase induction solve is dense (3n × 3n): fine up to a few thousand atoms.
+- Path integrals (`md/pimd.py`): flexible molecules without constraints or virtual sites; no
+  multiple time stepping, restraints or alchemical regions with beads; the KE_H of flexible pGM water
+  needs P >= 32 and contraction to >= 8-16 beads (`docs/pimd.md`).
 - Replica exchange: temperature ladders, and Hamiltonian exchange between the lambda windows of
   an alchemical region (`alchemy.py`; other per-replica Hamiltonians are not implemented); batched replicas are NVT only (NPT runs the
   replicas sequentially); under vmap JAX-MD's neighbour-list update runs its rebuild branch every

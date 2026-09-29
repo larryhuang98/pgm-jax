@@ -36,6 +36,23 @@ class BondHarm(Family):
 
 
 @register
+class BondQuartic(Family):
+    """Quartic bond K2 db^2 / 2 + K3 db^3 + K4 db^4: a Morse bond to fourth order, as the O-H bonds of
+    q-TIP4P/F; flexible enough to absorb the strong all-pair pGM electrostatics of a small molecule
+    near its minimum (bounded below for K4 > 0)."""
+    name = "bond_quartic"
+    params = {"K2": ((), 2.5e5), "K3": ((), 0.0), "K4": ((), 0.0)}   # kJ/mol/nm^2, /nm^3, /nm^4
+    linear = ("K2", "K3", "K4")
+
+    def index(self, top, keyf):
+        return {"i": np.arange(len(top.bonds))}, [keyf(b, "bond") for b in top.bonds]
+
+    def energy(self, G, dev, I, p):
+        db = dev["db"][I["i"]]
+        return jnp.sum(0.5 * p["K2"] * db ** 2 + p["K3"] * db ** 3 + p["K4"] * db ** 4)
+
+
+@register
 class AngleCos(Family):
     name = "angle_cos"
     params = {"Ka": ((), 400.0)}                # kJ/mol

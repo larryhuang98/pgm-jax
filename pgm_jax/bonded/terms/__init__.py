@@ -28,7 +28,7 @@ from __future__ import annotations
 
 # importing the modules registers their families; the names stay available as terms.<name>
 from .core import REGISTRY, Family, _dihedral, _mask_n, _N, _pair_index, geometry, morse_depth, register  # noqa: F401
-from .classical import (AngleCos, AngleCubic, AngleHarm, BondHarm, BondMorse, Improper, ImproperAmber,  # noqa: F401
+from .classical import (AngleCos, AngleCubic, AngleHarm, BondHarm, BondMorse, BondQuartic, Improper, ImproperAmber,  # noqa: F401
                         Torsion, TorsionAmber)
 from .class2 import (AngleAngle, AngleAngleTorsion, AngleAngleX, BondAngle, BondAngleX, BondBond,  # noqa: F401
                      TorsionAngle, TorsionBond, TorsionModulated)
