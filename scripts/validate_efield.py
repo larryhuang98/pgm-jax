@@ -29,7 +29,7 @@ sys.path.insert(0, ROOT)
 from pgm_jax import ElecChannel, Model, System  # noqa: E402
 from pgm_jax.channels import molecular_polarizability  # noqa: E402
 from pgm_jax.md import efield as EF  # noqa: E402
-from pgm_jax.param import read_prmtop_pgm  # noqa: E402
+from pgm_jax.param import read_prmtop_molecules, read_prmtop_pgm  # noqa: E402
 from pgm_jax.units import AMU_NM3_TO_G_CM3, DEBYE_E_NM, KB, KE  # noqa: E402
 
 P25 = os.path.expanduser("~/project/epsp/p25_512.prmtop")
@@ -156,12 +156,12 @@ def part_nve(ps: float = 20.0, only=None):
     from pgm_jax.md.box import box_from_cell
     from pgm_jax.md.forcefield import MDSettings
     from pgm_jax.md.io import read_coordinates
-    from pgm_jax.md.simulation import Simulation, _dedupe
+    from pgm_jax.md.simulation import Simulation
 
     sys.path.insert(0, os.path.join(ROOT, "scripts"))
     from finite_field import scale_to
 
-    mols = _dedupe(read_prmtop_pgm(P25, first_residue_only=False))
+    mols = read_prmtop_molecules(P25)
     sys_ = System(mols)
     xyz, vel, box = read_coordinates(P25_RST)
     pos, H = scale_to(sys_, xyz * 0.1, box_from_cell(*box) * 0.1, float(np.sum(sys_.masses)) / 1.010 * AMU_NM3_TO_G_CM3)
@@ -235,12 +235,12 @@ def part_speed(nsteps: int = 5000):
     from pgm_jax.md.finite_field import FieldReplicas
     from pgm_jax.md.forcefield import MDSettings
     from pgm_jax.md.io import read_coordinates
-    from pgm_jax.md.simulation import Simulation, _dedupe
+    from pgm_jax.md.simulation import Simulation
 
     sys.path.insert(0, os.path.join(ROOT, "scripts"))
     from finite_field import scale_to
 
-    mols = _dedupe(read_prmtop_pgm(P25, first_residue_only=False))
+    mols = read_prmtop_molecules(P25)
     sys_ = System(mols)
     xyz, vel, box = read_coordinates(P25_RST)
     pos, H = scale_to(sys_, xyz * 0.1, box_from_cell(*box) * 0.1, float(np.sum(sys_.masses)) / 1.010 * AMU_NM3_TO_G_CM3)

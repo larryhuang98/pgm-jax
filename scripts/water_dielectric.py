@@ -38,8 +38,8 @@ from pgm_jax.md.box import box_from_cell  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.md.iel import add_iel_arguments, iel_settings  # noqa: E402
 from pgm_jax.md.io import read_coordinates  # noqa: E402
-from pgm_jax.md.simulation import Simulation, _dedupe  # noqa: E402
-from pgm_jax.param import read_prmtop_pgm  # noqa: E402
+from pgm_jax.md.simulation import Simulation  # noqa: E402
+from pgm_jax.param import read_prmtop_molecules  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
 from pgm_jax.units import KCAL
 
@@ -85,7 +85,7 @@ def main():
     ap.add_argument("--coords", default=RST, help="restart matching --prmtop")
     add_iel_arguments(ap)
     a = ap.parse_args()
-    mols = _dedupe(read_prmtop_pgm(a.prmtop, first_residue_only=False))
+    mols = read_prmtop_molecules(a.prmtop)
     elec = "qpi"
     if a.model == "tip3p":
         if any(list(m.elements) != ["O", "H", "H"] for m in mols):

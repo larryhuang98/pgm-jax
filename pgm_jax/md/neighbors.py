@@ -163,7 +163,3 @@ class MoleculeNeighbors:
         return self.table[kept].reshape(self.n, -1), jnp.max(count) > cap
 
     failed = staticmethod(_failed)
-
-
-# backwards-compatible name
-Neighbors = AtomNeighbors

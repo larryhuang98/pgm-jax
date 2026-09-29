@@ -340,6 +340,14 @@ class System:
     def atom_slice(self, k: int) -> slice:
         return slice(int(self.offsets[k]), int(self.offsets[k + 1]))
 
+    @classmethod
+    def from_prmtop(cls, path: str, charges: str = "pgm") -> System:
+        """System of every molecule of an Amber prmtop (param.read_prmtop_molecules: identical
+        molecules share one Molecule, so that MD builds one template per kind)."""
+        from .param import read_prmtop_molecules
+
+        return cls(read_prmtop_molecules(path, charges=charges))
+
     def sub(self, mols: tuple[int, ...]) -> tuple[System, np.ndarray]:
         """Subsystem of the given molecules (same ParamTable) and the atom index map into this system."""
         idx = np.concatenate([np.arange(self.offsets[k], self.offsets[k + 1]) for k in mols])

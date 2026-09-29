@@ -78,8 +78,8 @@ from pgm_jax.md.box import (
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.md.io import read_coordinates  # noqa: E402
 from pgm_jax.md.rigid import RigidBody  # noqa: E402
-from pgm_jax.md.simulation import Simulation, _dedupe  # noqa: E402
-from pgm_jax.param import read_prmtop_pgm  # noqa: E402
+from pgm_jax.md.simulation import Simulation  # noqa: E402
+from pgm_jax.param import read_prmtop_molecules  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
 from pgm_jax.units import AMU_NM3_TO_G_CM3, KCAL
 
@@ -90,7 +90,7 @@ RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
 def water_model(model: str):
     """(molecules, xyz (A), velocities (A/ps) or None, box (a, b, c, alpha, beta, gamma), elec level)
     of the 512-water box with the chosen water model."""
-    mols = _dedupe(read_prmtop_pgm(TOP, first_residue_only=False))
+    mols = read_prmtop_molecules(TOP)
     xyz, vel, box = read_coordinates(RST)
     elec = "qpi"
     if model == "tip3p":
@@ -163,7 +163,7 @@ def insert_solute(tpl, mols, xyz_nm, H, clear: float):
 def build(a):
     templates = None
     if a.prmtop:
-        mols = _dedupe(read_prmtop_pgm(a.prmtop, first_residue_only=False))
+        mols = read_prmtop_molecules(a.prmtop)
         xyz, vel, box = read_coordinates(a.coords)
         elec = a.elec
     else:

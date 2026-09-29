@@ -28,8 +28,8 @@ from pgm_jax.interfaces import PGMEngine  # noqa: E402
 from pgm_jax.md.box import box_from_cell  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.md.io import read_coordinates  # noqa: E402
-from pgm_jax.md.simulation import Simulation, _dedupe  # noqa: E402
-from pgm_jax.param import read_prmtop_pgm  # noqa: E402
+from pgm_jax.md.simulation import Simulation  # noqa: E402
+from pgm_jax.param import read_prmtop_molecules  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
 
 TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
@@ -37,7 +37,7 @@ RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
 
 
 def system(n):
-    mols = _dedupe(read_prmtop_pgm(TOP, first_residue_only=False))
+    mols = read_prmtop_molecules(TOP)
     xyz, vel, box = read_coordinates(RST)
     H = box_from_cell(*box) * 0.1
     shifts = [i * H[0] + j * H[1] + k * H[2] for i in range(n) for j in range(n) for k in range(n)]

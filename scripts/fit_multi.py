@@ -33,8 +33,7 @@ from pgm_jax.fit.liquid import LiquidFit  # noqa: E402
 from pgm_jax.md.box import box_from_cell  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, elec_cutoff_settings  # noqa: E402
 from pgm_jax.md.io import read_coordinates  # noqa: E402
-from pgm_jax.md.simulation import _dedupe  # noqa: E402
-from pgm_jax.param import read_prmtop_pgm  # noqa: E402
+from pgm_jax.param import read_prmtop_molecules  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
 
 MODELS = {
@@ -143,7 +142,7 @@ def setup(a):
     top, crd = MODELS[a.model]
     top, crd = a.prmtop or top, a.coords or crd
     top, crd = os.path.expanduser(top), os.path.expanduser(crd)
-    mols = _dedupe(read_prmtop_pgm(top, first_residue_only=False))
+    mols = read_prmtop_molecules(top)
     xyz, vel, box = read_coordinates(crd)
     if len(xyz) != sum(m.n for m in mols):  # another box of the same (single) molecule
         if any(list(m.elements) != list(mols[0].elements) for m in mols) or len(xyz) % mols[0].n:

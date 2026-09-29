@@ -316,11 +316,8 @@ class PGMEngine:
     def from_amber(cls, prmtop: str, coords: str, charges: str = "pgm", **kw) -> PGMEngine:
         """Rigid-molecule model from a pGM prmtop and coordinates (as Simulation.from_amber)."""
         from ..md.io import read_coordinates_nm
-        from ..md.simulation import _dedupe
-        from ..param import read_prmtop_pgm
 
-        mols = _dedupe(read_prmtop_pgm(prmtop, first_residue_only=False, charges=charges))
-        sys = System(mols)
+        sys = System.from_prmtop(prmtop, charges=charges)
         pos, _, H = read_coordinates_nm(coords)
         if H is None:
             raise ValueError(f"{coords}: the coordinates have no periodic box")

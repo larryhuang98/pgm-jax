@@ -25,8 +25,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..param import read_prmtop_pgm
-from ..system import Molecule, System
+from ..system import System
 from ..units import AMU_NM3_TO_G_CM3, BAR_PER_KJMOL_NM3, KB
 from .box import check_box, reduce_box, volume
 from .dipoles import DipoleRecorder, InducedDipoleFile
@@ -36,26 +35,6 @@ from .io import NetCDFTrajectory, read_coordinates_nm, write_restart
 from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .rigid import RigidMolecules
 from .vsites import VirtualSites
-
-
-def _dedupe(mols: list[Molecule]) -> list[Molecule]:
-    seen, out = {}, []
-    for m in mols:
-        key = (
-            m.name,
-            tuple(m.elements),
-            tuple(m.types),
-            m.q.tobytes(),
-            m.radius.tobytes(),
-            m.alpha.tobytes(),
-            tuple(m.cov),
-            m.lj_rmin_half.tobytes(),
-            m.lj_sqrt_eps.tobytes(),
-            tuple(m.bonds),
-            tuple(m.vsites),
-        )
-        out.append(seen.setdefault(key, m))
-    return out
 
 
 class Simulation:
@@ -159,8 +138,7 @@ class Simulation:
     ) -> Simulation:
         """charges: "pgm" (a pGM prmtop) or "amber" (the point charges of a classical prmtop, e.g.
         TIP4P-Ew; with MDSettings(elec="q")); extra points become virtual sites (read_prmtop_pgm)."""
-        mols = _dedupe(read_prmtop_pgm(prmtop, first_residue_only=False, charges=charges))
-        sys = System(mols)
+        sys = System.from_prmtop(prmtop, charges=charges)
         pos, vel, H = read_coordinates_nm(coords)
         if H is None:
             raise ValueError(f"{coords}: the coordinates have no periodic box")

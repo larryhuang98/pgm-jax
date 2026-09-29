@@ -42,8 +42,7 @@ from pgm_jax.md.box import (
 from pgm_jax.md.dipoles import DIP_COLUMNS, CellDipole  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
 from pgm_jax.md.neighbors import AtomNeighbors, _failed  # noqa: E402
-from pgm_jax.md.simulation import _dedupe  # noqa: E402
-from pgm_jax.param import read_prmtop_pgm  # noqa: E402
+from pgm_jax.param import read_prmtop_molecules  # noqa: E402
 from pgm_jax.prmtop import Prmtop  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
 from pgm_jax.units import DEBYE_E_NM  # noqa: E402
@@ -83,7 +82,7 @@ def main(argv=None):
     ap.add_argument("--skip", type=float, default=0.0, help="ps skipped by the --point-charges summary")
     a = ap.parse_args(argv)
 
-    mols = _dedupe(read_prmtop_pgm(a.prmtop, first_residue_only=False))
+    mols = read_prmtop_molecules(a.prmtop)
     S = System(mols)
     it = frames(a.traj)
     t, pos, H = next(it)

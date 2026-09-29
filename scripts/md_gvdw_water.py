@@ -20,8 +20,8 @@ import numpy as np
 from pgm_jax.md.box import box_from_cell
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.io import read_coordinates
-from pgm_jax.md.simulation import Simulation, _dedupe
-from pgm_jax.param import read_prmtop_pgm
+from pgm_jax.md.simulation import Simulation
+from pgm_jax.param import read_prmtop_molecules
 from pgm_jax.system import System
 from pgm_jax.vdw import PGM3P_GVDW, set_gvdw
 
@@ -33,7 +33,7 @@ ap.add_argument("--equil", type=float, default=20.0)
 ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
 rst = os.path.expanduser(f"~/pgm-gvdw-data/inputs/{a.model if a.model != 'gauss' else 'gaussian'}/inpcrd.restrt")
-mols = _dedupe(read_prmtop_pgm(TOP, first_residue_only=False))
+mols = read_prmtop_molecules(TOP)
 vdw, rep = "lj", "gauss"
 if a.model != "lj":
     par = PGM3P_GVDW[a.model]

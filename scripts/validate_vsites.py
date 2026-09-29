@@ -47,9 +47,9 @@ sys.path.insert(0, ROOT)
 from pgm_jax.md.box import box_from_cell  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
 from pgm_jax.md.io import read_coordinates  # noqa: E402
-from pgm_jax.md.simulation import Simulation, _dedupe  # noqa: E402
+from pgm_jax.md.simulation import Simulation  # noqa: E402
 from pgm_jax.md.vsites import VirtualSites  # noqa: E402
-from pgm_jax.param import read_prmtop_pgm  # noqa: E402
+from pgm_jax.param import read_prmtop_molecules  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
 from pgm_jax.units import (
     KB,
@@ -98,7 +98,7 @@ def ideal_water():
 
 
 def load(prmtop=TOP, coords=CRD):
-    mols = _dedupe(read_prmtop_pgm(prmtop, first_residue_only=False, charges="amber"))
+    mols = read_prmtop_molecules(prmtop, charges="amber")
     xyz, vel, box = read_coordinates(coords)
     sys_ = System(mols)
     return sys_, xyz * 0.1, None if vel is None else vel * 0.1, box_from_cell(*box) * 0.1
@@ -617,7 +617,7 @@ sys.path.insert(0, sys.argv[1])
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.io import read_coordinates
 from pgm_jax.md.box import box_from_cell
-from pgm_jax.md.simulation import Simulation, _dedupe
+from pgm_jax.md.simulation import Simulation
 from pgm_jax.param import read_prmtop_pgm
 from pgm_jax.system import System
 import os
@@ -626,14 +626,14 @@ rst = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
 xyz, vel, box = read_coordinates(rst); H = box_from_cell(*box) * 0.1
 out = {}
 for prec in ("mixed", "double"):
-    sys_ = System(_dedupe(read_prmtop_pgm(top, first_residue_only=False)))
+    sys_ = System.from_prmtop(top)
     sim = Simulation(sys_, xyz * 0.1, H, MDSettings(precision=prec),
                      dt=0.001, ensemble="npt", seed=5, log=None)
     sim.run(200, report=0, prefix=sys.argv[2] + prec)
     out[prec + "_pos"] = sim.positions_nm(); out[prec + "_mu"] = np.asarray(sim.state.induction.mu)
     out[prec + "_epot"] = np.array(sim.state.epot)
 from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
-mols = _dedupe(read_prmtop_pgm(top, first_residue_only=False)); sysf = System(mols)
+mols = read_prmtop_molecules(top); sysf = System(mols)
 tpl = RigidTemplate(mols[0], xyz[:3] * 0.1)
 fs = FlexibleSimulation(sysf, [tpl] * sysf.nmol, xyz * 0.1, H, MDSettings(), dt=0.002, ensemble="nvt",
                         constraints="none",

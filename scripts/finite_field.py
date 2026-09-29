@@ -45,12 +45,11 @@ def build(a, ensemble="nvt"):
     from pgm_jax.md.box import box_from_cell
     from pgm_jax.md.forcefield import MDSettings
     from pgm_jax.md.io import read_coordinates
-    from pgm_jax.md.simulation import _dedupe
-    from pgm_jax.param import read_prmtop_pgm
+    from pgm_jax.param import read_prmtop_molecules
     from pgm_jax.system import System
 
     top, crd, charges = MODELS[a.model] if a.model else (a.prmtop, a.coords, "amber" if a.amber_charges else "pgm")
-    mols = _dedupe(read_prmtop_pgm(top, first_residue_only=False, charges=charges))
+    mols = read_prmtop_molecules(top, charges=charges)
     sys_ = System(mols)
     xyz, vel, box = read_coordinates(crd)
     pos, H = xyz * 0.1, box_from_cell(*box) * 0.1

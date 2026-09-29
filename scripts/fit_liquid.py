@@ -36,8 +36,7 @@ import numpy as np
 from pgm_jax.md.box import box_from_cell, volume
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.md.io import read_coordinates
-from pgm_jax.md.simulation import Simulation, _dedupe
-from pgm_jax.param import read_prmtop_pgm
+from pgm_jax.md.simulation import Simulation
 from pgm_jax.system import System
 from pgm_jax.units import AMU_NM3_TO_G_CM3, KB, KCAL
 
@@ -90,7 +89,7 @@ class ParamMap:
 # ----------------------------------------------------------------------------- systems
 def build(name, n_meth=216):
     if name == "water":
-        sys_ = System(_dedupe(read_prmtop_pgm(WATER_TOP, first_residue_only=False)))
+        sys_ = System.from_prmtop(WATER_TOP)
         xyz, _, box = read_coordinates(WATER_RST)
         return {"sys": sys_, "pos": xyz * 0.1, "H": box_from_cell(*box) * 0.1, "tpl": None, "dt": 0.001}
     from pgm_jax.md.flexible import FlexibleTemplate, liquid_box

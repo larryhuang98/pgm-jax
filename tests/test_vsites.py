@@ -16,10 +16,10 @@ from pgm_jax.md.box import box_from_cell, lower_triangular_frame, reduce_box
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, RigidTemplate, liquid_box
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.md.io import read_coordinates
-from pgm_jax.md.simulation import Simulation, _dedupe
+from pgm_jax.md.simulation import Simulation
 from pgm_jax.md.topology import MDTopology, MoleculeRule
 from pgm_jax.md.vsites import VirtualSite, VirtualSites, amber_extra_points
-from pgm_jax.param import molecule_from_dict, molecule_to_dict, read_prmtop_pgm
+from pgm_jax.param import molecule_from_dict, molecule_to_dict, read_prmtop_molecules, read_prmtop_pgm, share_identical
 from pgm_jax.system import Molecule, System
 from pgm_jax.units import KB
 
@@ -210,7 +210,7 @@ def test_definitions_are_validated():
         np.r_[w.alpha, 0.0],
         vsites=[VirtualSite.tip4p(3, 0, 1, 2, 0.02)],
     )
-    assert len({id(m) for m in _dedupe([ok, back, plain])}) == 2  # sites are part of the identity
+    assert len({id(m) for m in share_identical([ok, back, plain])}) == 2  # sites are part of the identity
     # degenerate frames are refused at setup (a local frame with parallel x and y directions)
     loc = Molecule(
         "W",
@@ -420,7 +420,7 @@ def _tip4pew_ideal():
     """The small tleap TIP4P-Ew box with every water at the model geometry (Amber's SHAKE lengths
     0.9572 / 1.5136 A) and the extra points placed."""
     prm = os.path.join(DATA, "tip4pew_small.prmtop")
-    mols = _dedupe(read_prmtop_pgm(prm, first_residue_only=False, charges="amber"))
+    mols = read_prmtop_molecules(prm, charges="amber")
     xyz, _, box = read_coordinates(os.path.join(DATA, "tip4pew_small.inpcrd"))
     H = box_from_cell(*box) * 0.1
     X = (xyz * 0.1).reshape(-1, 4, 3)

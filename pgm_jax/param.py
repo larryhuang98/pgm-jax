@@ -20,6 +20,7 @@ import re
 
 import numpy as np
 
+from .prmtop import Prmtop
 from .system import Molecule
 from .units import ANG_NM, BOHR_NM, KCAL
 
@@ -42,41 +43,11 @@ Z2EL = {
 }
 
 
-def _prmtop_sections(path: str) -> dict[str, list[str]]:
-    sec, cur, fmt = {}, None, {}
-    for line in open(path):
-        if line.startswith("%FLAG"):
-            cur = line.split()[1]
-            sec[cur] = []
-        elif line.startswith("%FORMAT"):
-            fmt[cur] = re.search(r"\((.*)\)", line).group(1)
-        elif line.startswith("%COMMENT") or cur is None:
-            continue
-        else:
-            sec[cur].append(line.rstrip("\n"))
-    out = {}
-    for k, lines in sec.items():
-        f = fmt.get(k, "")
-        m = re.match(r"(\d+)([aAiIeEfF])(\d+)", f)
-        if not m:
-            out[k] = lines
-            continue
-        width = int(m.group(3))
-        toks = []
-        for ln in lines:
-            for s in range(0, len(ln), width):
-                t = ln[s : s + width].strip()
-                if t:
-                    toks.append(t)
-        out[k] = toks
-    return out
-
-
 AMBER_CHARGE = 18.2223  # prmtop CHARGE unit: e -> sqrt(kcal A / mol)
 
 
 def prmtop_extra_points(s) -> dict:
-    """Amber extra points of parsed prmtop sections (`_prmtop_sections`): {atom: VirtualSite}
+    """Amber extra points of a parsed prmtop (prmtop.Prmtop): {atom: VirtualSite}
     (global indices) from the bond graph by Amber's rules (md/vsites.py amber_extra_points).
     Custom frames (pmemd's VIRTUAL_SITE_FRAMES) are not read: they raise."""
     from .md.vsites import amber_extra_points
@@ -117,7 +88,7 @@ def read_prmtop_pgm(
     covalent dipoles (run with MDSettings(elec="q")).
     Extra points (atom type EP, mass 0) become virtual sites (Molecule.vsites) with Amber's frames
     (md/vsites.py); their element is "EP"."""
-    s = _prmtop_sections(path)
+    s = Prmtop.read(path)
     names = s["ATOM_NAME"]
     types = s["AMBER_ATOM_TYPE"]
     res_ptr = [int(x) - 1 for x in s["RESIDUE_POINTER"]] + [len(names)]
@@ -194,6 +165,46 @@ def read_prmtop_pgm(
             )
         )
     return mols
+
+
+def share_identical(mols: list[Molecule]) -> list[Molecule]:
+    """The molecules with identical ones (topology, parameters, virtual sites) replaced by the first
+    of them, so that the MD engines build one template per kind of molecule."""
+    seen, out = {}, []
+    for m in mols:
+        key = (
+            m.name,
+            tuple(m.elements),
+            tuple(m.types),
+            m.q.tobytes(),
+            m.radius.tobytes(),
+            m.alpha.tobytes(),
+            tuple(m.cov),
+            m.lj_rmin_half.tobytes(),
+            m.lj_sqrt_eps.tobytes(),
+            tuple(m.bonds),
+            tuple(m.vsites),
+        )
+        out.append(seen.setdefault(key, m))
+    return out
+
+
+def read_prmtop_molecules(path: str, charges: str = "pgm", point_radius: float | None = None) -> list[Molecule]:
+    """Every molecule (residue) of a prmtop, identical ones shared (share_identical).
+
+    Parameters
+    ----------
+    path : str
+        Amber prmtop (a pGM prmtop, or a classical one with charges="amber").
+    charges, point_radius
+        As in read_prmtop_pgm.
+
+    Returns
+    -------
+    list of Molecule
+        One entry per residue, in prmtop order.
+    """
+    return share_identical(read_prmtop_pgm(path, first_residue_only=False, charges=charges, point_radius=point_radius))
 
 
 def _prmtop_lj(s) -> tuple[np.ndarray, np.ndarray]:

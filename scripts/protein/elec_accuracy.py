@@ -43,13 +43,11 @@ top = None
 if a.water:
     from pgm_jax.md.box import box_from_cell
     from pgm_jax.md.io import read_coordinates
-    from pgm_jax.md.simulation import _dedupe
-    from pgm_jax.param import read_prmtop_pgm
     from pgm_jax.system import System
 
     TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
     RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
-    system = System(_dedupe(read_prmtop_pgm(TOP, first_residue_only=False)))
+    system = System.from_prmtop(TOP)
     xyz, _, cell = read_coordinates(RST)
     pos, H = xyz * 0.1, box_from_cell(*cell) * 0.1
 else:

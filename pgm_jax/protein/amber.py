@@ -28,7 +28,7 @@ import numpy as np
 
 from ..bonded.model import MolSpec
 from ..md.io import read_coordinates_nm
-from ..param import _prmtop_lj, _prmtop_sections, prmtop_extra_points
+from ..param import _prmtop_lj, prmtop_extra_points
 from ..prmtop import Prmtop
 from ..system import Molecule, System
 from .library import ResidueLibrary
@@ -216,11 +216,10 @@ def load_amber(prmtop: str, inpcrd: str, electrostatics="placeholder", water: Mo
     """Molecules of an Amber topology with pGM electrostatics (ResidueLibrary, "prmtop" for a pGM
     prmtop, or "placeholder") and the prmtop's Lennard-Jones parameters."""
     pt = Prmtop.read(prmtop)
-    s = _prmtop_sections(prmtop)
     names = pt.get("ATOM_NAME")
     n = len(names)
     Z = pt.get("ATOMIC_NUMBER")
-    eps = prmtop_extra_points(s)  # extra points -> virtual sites
+    eps = prmtop_extra_points(pt)  # extra points -> virtual sites
     el = ["EP" if a in eps else _EL[int(z)] for a, z in enumerate(Z)]
     types = pt.get("AMBER_ATOM_TYPE")
     mass = pt.get("MASS")
@@ -232,7 +231,7 @@ def load_amber(prmtop: str, inpcrd: str, electrostatics="placeholder", water: Mo
     resn = [labels[r] for r in resi]
     B = np.concatenate([pt.get("BONDS_INC_HYDROGEN"), pt.get("BONDS_WITHOUT_HYDROGEN")]).reshape(-1, 3)[:, :2] // 3
     bonds = [tuple(sorted((int(a), int(b)))) for a, b in B]
-    rh, se = _prmtop_lj(s)
+    rh, se = _prmtop_lj(pt)
     pos, _, H = read_coordinates_nm(inpcrd)
     # electrostatics per atom
     if isinstance(electrostatics, str) and electrostatics == "placeholder":

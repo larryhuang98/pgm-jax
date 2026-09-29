@@ -257,8 +257,6 @@ def _engine_factory(args):
 
     jax.config.update("jax_enable_x64", True)
     from ..md.forcefield import MDSettings
-    from ..md.simulation import _dedupe
-    from ..param import read_prmtop_pgm
     from ..system import System
     from .engine import PGMEngine
 
@@ -277,7 +275,7 @@ def _engine_factory(args):
         sys_ = System([tpl.pgm] * n_mol)
         templates = [tpl] * n_mol
     else:
-        sys_ = System(_dedupe(read_prmtop_pgm(args.prmtop, first_residue_only=False)))
+        sys_ = System.from_prmtop(args.prmtop)
 
     def make(pos, cell):
         return PGMEngine(sys_, pos, cell, settings, templates=templates, slots=args.slots, stress=args.stress)

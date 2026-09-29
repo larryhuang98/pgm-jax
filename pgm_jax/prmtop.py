@@ -134,7 +134,16 @@ class Prmtop:
     def __contains__(self, name: str) -> bool:
         return name in self.sections
 
-    def get(self, name: str):
+    def __getitem__(self, name: str):
+        """Typed values of a section (as get); KeyError if it is missing."""
+        return self.get(name)
+
+    def get(self, name: str, default=KeyError):
+        """Typed values of section `name`: int or float numpy array, list of stripped strings for
+        character sections, the raw lines for unparsed formats; `default` if the section is missing
+        (KeyError is raised when no default is given)."""
+        if name not in self.sections and default is not KeyError:
+            return default
         s = self.sections[name]
         if s.raw:
             return list(s.values)

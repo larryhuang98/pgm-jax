@@ -10,7 +10,7 @@ from test_md import settings, small_box
 
 from pgm_jax import PeriodicModel, PeriodicPGM, System, set_gvdw
 from pgm_jax.md.forcefield import PGMForceField
-from pgm_jax.md.neighbors import Neighbors
+from pgm_jax.md.neighbors import AtomNeighbors
 
 GV = {"OW": (60.0, 0.05, 4.0), "c3": (40.0, 0.06, 3.5), "oh": (55.0, 0.05, 4.2), "h1": (8.0, 0.01, 3.0)}
 
@@ -22,7 +22,7 @@ def _gvdw_box(seed=0):
 
 
 def _list(sys, pos, H, s):
-    return Neighbors(sys.n, H, s.cutoff, s.skin).allocate(pos, None, H).idx
+    return AtomNeighbors(sys.n, H, s.cutoff, s.skin).allocate(pos, None, H).idx
 
 
 @pytest.mark.parametrize("elec", ["q", "qp", "qi"])

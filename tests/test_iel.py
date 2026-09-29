@@ -16,7 +16,7 @@ from test_md_macro import _water_box
 from pgm_jax import System
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.md.iel import spectral_radius
-from pgm_jax.md.neighbors import Neighbors
+from pgm_jax.md.neighbors import AtomNeighbors
 from pgm_jax.md.simulation import Simulation
 from pgm_jax.units import KB
 
@@ -49,7 +49,7 @@ def test_niklasson_recurrence_is_stable_on_the_pgm_water_spectrum():
 def _ff_state(settings, seed=1):
     sys, pos, H = small_box(seed)
     ff = PGMForceField(sys, H, settings)
-    idx = Neighbors(sys.n, H, settings.cutoff, settings.skin).allocate(pos, None, H).idx
+    idx = AtomNeighbors(sys.n, H, settings.cutoff, settings.skin).allocate(pos, None, H).idx
     return ff, jnp.asarray(pos), jnp.asarray(H), idx
 
 

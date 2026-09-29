@@ -28,8 +28,8 @@ from pgm_jax.md.forcefield import DSUM_TOL, MDSettings, ewald_beta_for  # noqa: 
 from pgm_jax.md.iel import add_iel_arguments, iel_settings  # noqa: E402
 from pgm_jax.md.io import read_coordinates  # noqa: E402
 from pgm_jax.md.mts import add_mts_arguments, mts_from_args, mts_stats  # noqa: E402
-from pgm_jax.md.simulation import Simulation, _dedupe  # noqa: E402
-from pgm_jax.param import read_prmtop_pgm  # noqa: E402
+from pgm_jax.md.simulation import Simulation  # noqa: E402
+from pgm_jax.param import read_prmtop_molecules  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
 
 TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
@@ -90,7 +90,7 @@ def main():
     add_iel_arguments(ap)
     a = ap.parse_args()
     mts = mts_from_args(a)
-    mols = _dedupe(read_prmtop_pgm(TOP, first_residue_only=False))
+    mols = read_prmtop_molecules(TOP)
     xyz, vel, box = read_coordinates(RST)
     H = box_from_cell(*box) * 0.1
     n = a.replicate

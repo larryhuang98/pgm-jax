@@ -12,7 +12,7 @@ import numpy as np
 from test_md import settings, small_box
 
 from pgm_jax.md.forcefield import DSUM_TOL, PGMForceField, elec_cutoff_settings, ewald_beta_for
-from pgm_jax.md.neighbors import Neighbors
+from pgm_jax.md.neighbors import AtomNeighbors
 from pgm_jax.md.simulation import Simulation
 from pgm_jax.md.topology import MDTopology, MoleculeRule
 
@@ -22,7 +22,7 @@ RC_E, RC_V = 0.45, 0.6
 def _setup(sys, pos, H, s, capacity=True, topology=None):
     """Force field, candidate rows (pair cutoff + skin) and, with `capacity`, sized (compacted) rows."""
     ff = PGMForceField(sys, H, s, topology=topology)
-    idx = Neighbors(sys.n, H, s.pair_cutoff, s.skin).allocate(pos, None, H).idx
+    idx = AtomNeighbors(sys.n, H, s.pair_cutoff, s.skin).allocate(pos, None, H).idx
     if capacity:
         ff.size_rows(jnp.asarray(pos), jnp.asarray(H), idx)
     return ff, idx

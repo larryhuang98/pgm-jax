@@ -14,7 +14,7 @@ from pgm_jax.md.box import min_image, reduce_box
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.md.integrate import Integrator
 from pgm_jax.md.io import NetCDFTrajectory, read_coordinates, write_restart
-from pgm_jax.md.neighbors import Neighbors
+from pgm_jax.md.neighbors import AtomNeighbors
 from pgm_jax.md.rigid import RigidMolecules, matrix_to_quaternion
 from pgm_jax.md.simulation import Simulation
 from pgm_jax.units import KB
@@ -73,7 +73,7 @@ def settings(**kw):
 def ff_and_list(sys, pos, H, **kw):
     s = settings(**kw)
     ff = PGMForceField(sys, H, s)
-    nb = Neighbors(sys.n, H, s.cutoff, s.skin)
+    nb = AtomNeighbors(sys.n, H, s.cutoff, s.skin)
     return ff, nb.allocate(pos, None, H).idx
 
 
@@ -172,7 +172,7 @@ def test_neighbor_list_is_complete_in_skewed_box():
     rng = np.random.default_rng(3)
     H = reduce_box(np.array([[2.72, 0, 0], [-0.9067, 2.5645, 0], [-0.9067, -1.2823, 2.2210]]))  # truncated octahedron
     pos = rng.uniform(size=(600, 3)) @ H
-    nb = Neighbors(600, H, 0.9, 0.1)
+    nb = AtomNeighbors(600, H, 0.9, 0.1)
     idx = np.asarray(nb.allocate(pos, None, H).idx)
     got = {(i, int(j)) for i in range(600) for j in idx[i] if j < 600}
     d = np.asarray(min_image(jnp.asarray(pos[:, None] - pos[None]), jnp.asarray(H)))
@@ -212,7 +212,9 @@ def test_langevin_equipartition():
     sys, pos, H = small_box(6)
     ff, _ = ff_and_list(sys, pos, H)
     rig = RigidMolecules(sys, pos, H)
-    integ = Integrator(ff, rig, Neighbors(sys.n, H, 0.6, 0.05), dt=0.002, ensemble="nvt", temperature=300.0, gamma=5.0)
+    integ = Integrator(
+        ff, rig, AtomNeighbors(sys.n, H, 0.6, 0.05), dt=0.002, ensemble="nvt", temperature=300.0, gamma=5.0
+    )
     from pgm_jax.md._jaxmd import simulate
     from pgm_jax.md.integrate import Dynamics
 

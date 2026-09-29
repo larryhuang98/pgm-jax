@@ -23,8 +23,7 @@ from pgm_jax.md.box import box_from_cell  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
 from pgm_jax.md.io import read_coordinates  # noqa: E402
 from pgm_jax.md.neighbors import AtomNeighbors  # noqa: E402
-from pgm_jax.md.simulation import _dedupe  # noqa: E402
-from pgm_jax.param import read_prmtop_pgm  # noqa: E402
+from pgm_jax.param import read_prmtop_molecules  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
 
 TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
@@ -36,7 +35,7 @@ def main():
     ap.add_argument("--replicate", type=int, default=1)
     ap.add_argument("--reps", type=int, default=50)
     a = ap.parse_args()
-    mols = _dedupe(read_prmtop_pgm(TOP, first_residue_only=False))
+    mols = read_prmtop_molecules(TOP)
     xyz, vel, box = read_coordinates(RST)
     H = box_from_cell(*box) * 0.1
     n = a.replicate

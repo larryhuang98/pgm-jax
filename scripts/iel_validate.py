@@ -37,8 +37,8 @@ from pgm_jax.md.box import box_from_cell  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
 from pgm_jax.md.iel import add_iel_arguments, iel_settings  # noqa: E402
 from pgm_jax.md.io import read_coordinates  # noqa: E402
-from pgm_jax.md.simulation import Simulation, _dedupe  # noqa: E402
-from pgm_jax.param import read_prmtop_pgm  # noqa: E402
+from pgm_jax.md.simulation import Simulation  # noqa: E402
+from pgm_jax.param import read_prmtop_molecules  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
 from pgm_jax.units import AMU_NM3_TO_G_CM3, DEBYE_E_NM, KB, KCAL
 
@@ -109,7 +109,7 @@ def main():
         return pooled_eps(a.eps, a.skip, a.out)
     if a.density is None:
         a.density = {"pgm": 1.0178, "pgm3p25": 1.0099}[a.model]
-    mols = _dedupe(read_prmtop_pgm(TOP, first_residue_only=False))
+    mols = read_prmtop_molecules(TOP)
     xyz, vel, box = read_coordinates(RST)
     if a.model == "pgm3p25":  # as water_dielectric.py --model pgm3p25
         import dataclasses

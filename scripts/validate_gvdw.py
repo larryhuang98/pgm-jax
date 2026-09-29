@@ -28,8 +28,7 @@ from validate_amber import PMEMD, REF, RST, TOP, mdout_step0, read_nc_frames, re
 
 from pgm_jax.lj import PeriodicLJ  # noqa: E402
 from pgm_jax.md.box import box_from_cell  # noqa: E402
-from pgm_jax.md.simulation import _dedupe  # noqa: E402
-from pgm_jax.param import read_prmtop_pgm  # noqa: E402
+from pgm_jax.param import read_prmtop_molecules  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
 from pgm_jax.units import KCAL
 from pgm_jax.vdw import PGM3P_GVDW, PeriodicGVDW, set_gvdw  # noqa: E402
@@ -62,7 +61,7 @@ def compare():
     xyz, cell = read_restart(RST)
     H = box_from_cell(cell[0], cell[1]) * 0.1
     pos = jnp.asarray(xyz * 0.1)
-    mols = _dedupe(read_prmtop_pgm(TOP, first_residue_only=False))
+    mols = read_prmtop_molecules(TOP)
 
     def to_kcal_A(F):
         return np.asarray(F) / KCAL / 10.0
