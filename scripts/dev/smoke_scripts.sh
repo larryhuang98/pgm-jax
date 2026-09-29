@@ -25,7 +25,7 @@ run md_continue python scripts/md/run_md.py -p "$PRM" -c "$RST" -o $O/md2 --cont
                   --report-every 10
 run md_nve      python -m pgm_jax.cli md -p "$PRM" -c "$RST" -o $O/md_nve --nsteps 10 --report-every 5 \
                   --thermostat none --barostat none --dt-fs 0.5
-run dielectric  python -m pgm_jax.cli dielectric $O/md.dip --skip-ps 0 --blocks 2
+run dielectric  python -m pgm_jax.cli dielectric $O/md.dip --skip-ps 0 --blocks 2 --eps-inf 1.0
 run traj_dip    python scripts/dielectric/trajectory_dipoles.py -o $O/td "$PRM" $O/md.nc
 run water_diel  python scripts/dielectric/water_dielectric.py --model pgm -o $O/wd --time-ns 0.00002 \
                   --dipoles-every 5 --report-every 10
@@ -36,7 +36,7 @@ run bench_md    python scripts/benchmarks/bench_md.py --steps 20
 run pimd_valid  python scripts/pimd/pimd_validate.py harmonic --beads 4 --time-ps 1 --samples 1 -o $O/pv
 run pimd_water  python scripts/pimd/pimd_water.py run --beads 2 --time-ps 0.005 --classical-ps 0 --equil-ps 0 \
                   --report-ps 0.0025 -o $O/pimd
-run solvation   python scripts/free_energy/solvation_free_energy.py run --model pgm -o $O/fe --lattice 3 \
+run solvation   python scripts/free_energy/solvation_free_energy.py run --model pgm -o $O/fe --lattice 4 \
                   --cutoff-nm 0.4 --nfft 16 16 16 --npt-ps 0.002 --time-ns 0.000004 --n-elec 2 --vdw 0.5,0 \
                   --sample-ps 0.001 --exchange-ps 0.002 --report-ps 0.002 --checkpoint-ps 0.004
 run solv_anal   python scripts/free_energy/solvation_free_energy.py analyze $O/fe_fe.npz --discard-ps 0

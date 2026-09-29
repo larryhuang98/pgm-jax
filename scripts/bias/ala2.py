@@ -188,7 +188,7 @@ def run(a: argparse.Namespace, sim: FlexibleSimulation, prefix: str, ns: float) 
 
 def record_only(a: argparse.Namespace, phi: object, psi: object) -> BiasSet:
     """Return a zero bias that records phi and psi every --colvar-every steps."""
-    return BiasSet([StaticBias([phi, psi], lambda s: 0.0 * s[0], name="none")], colvar=a.colvar_every_every)
+    return BiasSet([StaticBias([phi, psi], lambda s: 0.0 * s[0], name="none")], colvar=a.colvar_every)
 
 
 def cmd_metad(a: argparse.Namespace) -> None:
