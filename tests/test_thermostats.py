@@ -7,12 +7,13 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-jax.config.update("jax_enable_x64", True)
-
-from pgm_jax.md.thermostats import GLE, Bussi, Langevin, make_thermostat  # noqa: E402
+from pgm_jax.md.thermostats import GLE, Bussi, Langevin, make_thermostat
 
 KT = 2.4777
-IDENT = lambda u: u  # noqa: E731
+
+
+def IDENT(u):
+    return u
 
 
 def _run(th, v, aux, n, h=0.002, dof=None, seed=0):

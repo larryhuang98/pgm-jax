@@ -149,7 +149,10 @@ def gas_energy(sysd, p0, T, settings):
     from md_check import MASS, langevin
 
     P = jax.tree_util.tree_map(jnp.asarray, tpl.P)
-    efun = lambda R: tpl.model.energy(tpl.index, R, P)[0]
+
+    def efun(R):
+        return tpl.model.energy(tpl.index, R, P)[0]
+
     x0 = jnp.asarray(tpl.spec.ref_xyz)
     offset = (e_md(np.asarray(x0)) + tpl.bonded_energy(x0)) - float(efun(x0))
     Xs, Es = langevin(efun, x0, [MASS[e] for e in tpl.spec.elements], T, 0.0005, 200000, 100, 16, jax.random.PRNGKey(7))
@@ -199,12 +202,18 @@ def sample(sim, sysd, theta, p0, T, n_prod, every, to_params):
 def estimates(fr, T, N, u_gas):
     beta = 1.0 / (KB * T)
     U, rho, dU = fr["U"], fr["rho"], fr["dU"]
-    cov = lambda a: (a[:, None] * dU).mean(0) - a.mean() * dU.mean(0)
+
+    def cov(a):
+        return (a[:, None] * dU).mean(0) - a.mean() * dU.mean(0)
+
     d_rho = -beta * cov(rho)
     d_U = dU.mean(0) - beta * cov(U)
     dh = (u_gas - U / N + KB * T) / KCAL
     J = np.stack([d_rho, -d_U / N / KCAL])
-    blocks = lambda a: np.array([b.mean() for b in np.array_split(a, 5)]).std(ddof=1) / np.sqrt(5)
+
+    def blocks(a):
+        return np.array([b.mean() for b in np.array_split(a, 5)]).std(ddof=1) / np.sqrt(5)
+
     return {
         "rho": rho.mean(),
         "rho_se": blocks(rho),

@@ -9,10 +9,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-jax.config.update("jax_enable_x64", True)
-
-from pgm_jax import ElecChannel, LJChannel, Model, Molecule, System  # noqa: E402
-from pgm_jax.qmfit import (  # noqa: E402
+from pgm_jax import ElecChannel, LJChannel, Model, Molecule, System
+from pgm_jax.qmfit import (
     KCAL,
     ClusterModel,
     FitWeights,
@@ -128,8 +126,8 @@ def synthetic_set(rng, labels_from=None, cm=None, P=None):
                 }
         for c, k in enumerate(prep.clusters):
             recs[k]["nb"] = {"nb3": float(pr["nb3"][c]), "nb2": float(pr["nb2"][c])}
-        for n, (ks, F, T) in prep.forces(P).items():
-            for b, k in enumerate(ks):
+        for n, (ks, _F, _T) in prep.forces(P).items():
+            for _b, k in enumerate(ks):
                 X = np.asarray(recs[k]["xyz_A"]) * 0.1
                 g = np.asarray(cm.batch_grad(n)(jnp.asarray(X[None]), P)[0])
                 recs[k]["grad_int"] = (g / (KCAL / 0.1)).tolist()  # kcal/mol/A
@@ -221,7 +219,10 @@ def test_rigid_body_forces_and_superposition(setup):
     g = cm.batch_grad(2)(X[None], None)[0]
     F, _ = rigid_body_forces(g, X, w.masses, 3)
     h, u = 1e-5, jnp.array([0.3, -0.5, 0.8])
-    e = lambda t: cm.components(X.at[3:].add(t * u), None, 2)["total"]  # noqa: E731
+
+    def e(t):
+        return cm.components(X.at[3:].add(t * u), None, 2)["total"]
+
     assert float(F[1] @ u) == pytest.approx(-float((e(h) - e(-h)) / (2 * h)), rel=1e-6)
     # superposition onto another rigid geometry keeps the centres of mass
     Y = superpose_monomers(np.asarray(X) * 10, rigid_water(0.9572, 104.52), w.masses)
@@ -259,7 +260,6 @@ def test_fit_recovers_synthetic_target_exactly(setup):
     """Labels made by the model at perturbed parameters; the fit from the original parameters
     (no prior) finds them again and the residual vanishes."""
     rng, w, cm = setup
-    P0 = cm.table.initial()
     free = {"q": "all", "cov": "all", "alpha": "all", "lj_rmin_half": ["OW"], "lj_sqrt_eps": ["OW"]}
     pm = ParamMap(cm.table, [w], free)
     th_true = pm.theta0 + np.array([0.02, 0.001, -0.0005, 1e-4, -3e-5, 0.004, -0.05])

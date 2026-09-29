@@ -276,7 +276,10 @@ class PGMEngine:
                 t.terms.mols[t.index].top.bonds if t.has_bonded else sys.molecules[k].bonds
                 for k, t in enumerate(templates)
             ]
-            bonds_of = lambda k: tb[k]
+
+            def bonds_of(k):
+                return tb[k]
+
         from ..md.restraints import as_restraints
 
         self.restraints = as_restraints(restraints)
@@ -534,7 +537,7 @@ class PGMEngine:
             slot.ind = None  # new configuration: restart the predictor
             self.stats["resets"] += 1
         xd = jnp.asarray(x)
-        for attempt in range(8):
+        for _attempt in range(8):
             if slot.nbr is None:
                 xw = self._whole_c(xd, Hd)
                 slot.nbr = self.nb.allocate(xw, self._centers(xw), Hd)
@@ -674,8 +677,12 @@ class PGMEngine:
             packed, ind_new, dev = vf(X, ind)
         else:  # chunks of vmapped structures, one after the other
             count = ind.count
-            split = lambda a: a.reshape((B // chunk, chunk) + a.shape[1:])  # noqa: E731
-            merge = lambda a: a.reshape((B,) + a.shape[2:])  # noqa: E731
+
+            def split(a):
+                return a.reshape((B // chunk, chunk) + a.shape[1:])
+
+            def merge(a):
+                return a.reshape((B,) + a.shape[2:])
 
             def body(args):
                 xc, ic = args
@@ -690,7 +697,10 @@ class PGMEngine:
         ref = c[self._group] if nb.kind == "molecule" else qc
         ext = jnp.max(jnp.sqrt(jnp.sum((Xall - ref[None]) ** 2, axis=-1)))
         flags = jnp.stack([nbr.error.code.astype(jnp.float64), ext])
-        put = lambda full, new: full.at[idx].set(new)  # noqa: E731
+
+        def put(full, new):
+            return full.at[idx].set(new)
+
         ind_new = jax.tree_util.tree_map(put, ind_full.set(count=None), ind_new.set(count=None)).set(
             count=ind_new.count
         )
@@ -799,7 +809,7 @@ class PGMEngine:
         st["seen"] |= present
         t0 = time.perf_counter()
         Xd, Hd, md = jnp.asarray(full), jnp.asarray(H), jnp.asarray(idx)
-        for attempt in range(8):
+        for _attempt in range(8):
             packed, flags, ind_new, nbr_new, dev = self._bfn(
                 Xd, Hd, st["ind"], st["nbr"], md, virial=bool(virial), chunk=chunk, dipole=bool(self.with_dipole)
             )

@@ -492,9 +492,14 @@ class FlexibleIntegrator(Integrator):
         sm = jnp.sqrt(dyn.mass)
         q = dyn.position
         if self.cons is None:
-            project = lambda u: u  # noqa: E731
+
+            def project(u):
+                return u
         else:
-            project = lambda u: self.cons.momenta(q, u * sm, self.flex.masses) / sm  # noqa: E731
+
+            def project(u):
+                return self.cons.momenta(q, u * sm, self.flex.masses) / sm
+
         mask = None if self.vsites is None else jnp.broadcast_to(self.flex.real, dyn.momentum.shape)  # sites: no noise
         return dyn.momentum / sm, mask, (lambda v: dyn.set(momentum=v * sm)), project
 
@@ -613,7 +618,8 @@ class FlexibleSimulation(Simulation):
     """Simulation driver for flexible molecules (same reporting, trajectories and checkpoints as
     `Simulation`); `templates[k]` (FlexibleTemplate or RigidTemplate) belongs to `sys.molecules[k]`.
     constraints: "none" | "h-bonds" (X-H bonds of the flexible templates) | "all-bonds" (every bond;
-    rigid templates are always constrained; md/constraints.py, docs/shake.md); hmr: hydrogen mass (amu) for mass repartitioning (the mass comes from the
+    rigid templates are always constrained; md/constraints.py, docs/shake.md); hmr: hydrogen mass (amu) for mass
+    repartitioning (the mass comes from the
     bonded heavy atom), None, or one value (or None) per molecule, e.g. AmberSystem.hmr({"water":
     4.0, "protein": 3.024}) (constraints.hmr_masses); restraints: md/restraints.py; alchemy: an
     alchemical region (md/alchemy.py); mts: multiple time stepping (md/mts.py: MTS settings; dt is
@@ -753,7 +759,7 @@ class FlexibleSimulation(Simulation):
         pos, F, box = st.dyn.position, st.dyn.force, st.box
         induction, nbr, E = st.induction, st.nbr, float(st.epot)
         h, n_acc = float(max_step), 0
-        for it in range(int(steps)):
+        for it in range(int(steps)):  # noqa: B007  (it + 1 = evaluations used, reported below)
             fmax = float(jnp.max(jnp.linalg.norm(F, axis=1)))
             if fmax < ftol:
                 break

@@ -9,15 +9,12 @@ import io
 import jax
 import jax.numpy as jnp
 import numpy as np
+from test_md import settings, small_box
 
-jax.config.update("jax_enable_x64", True)
-
-from test_md import settings, small_box  # noqa: E402
-
-from pgm_jax.md.forcefield import DSUM_TOL, PGMForceField, elec_cutoff_settings, ewald_beta_for  # noqa: E402
-from pgm_jax.md.neighbors import Neighbors  # noqa: E402
-from pgm_jax.md.simulation import Simulation  # noqa: E402
-from pgm_jax.md.topology import MDTopology, MoleculeRule  # noqa: E402
+from pgm_jax.md.forcefield import DSUM_TOL, PGMForceField, elec_cutoff_settings, ewald_beta_for
+from pgm_jax.md.neighbors import Neighbors
+from pgm_jax.md.simulation import Simulation
+from pgm_jax.md.topology import MDTopology, MoleculeRule
 
 RC_E, RC_V = 0.45, 0.6
 

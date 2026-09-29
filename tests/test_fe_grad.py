@@ -10,16 +10,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_alchemy import alch_sim, frame, settings
+from test_grad import water
 
-jax.config.update("jax_enable_x64", True)
-
-from test_alchemy import alch_sim, frame, settings  # noqa: E402
-from test_grad import water  # noqa: E402
-
-from pgm_jax import System  # noqa: E402
-from pgm_jax.md import fe_grad as fg  # noqa: E402
-from pgm_jax.md import free_energy as fe  # noqa: E402
-from pgm_jax.md.alchemy import (  # noqa: E402
+from pgm_jax import System
+from pgm_jax.md import fe_grad as fg
+from pgm_jax.md import free_energy as fe
+from pgm_jax.md.alchemy import (
     Alchemy,
     FreeEnergyRun,
     GasPhaseLeg,
@@ -27,8 +24,8 @@ from pgm_jax.md.alchemy import (  # noqa: E402
     alchemical_system,
     standard_schedule,
 )
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.simulation import Simulation  # noqa: E402
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.simulation import Simulation
 
 
 def direction(space, P, seed=0):
@@ -69,7 +66,8 @@ def test_dudp_matches_finite_differences_with_resolved_dipoles(mode, lam):
         h = 1e-5
         fd = (float(U(p0 + h * v)[0]) - float(U(p0 - h * v)[0])) / (2 * h)
         print(
-            f"[fe_grad] HF {mode} {tuple(np.asarray(lam).tolist())}: FD {fd:.8f} autodiff {g @ v:.8f} rel {abs(fd - g @ v) / abs(fd):.1e}"
+            f"[fe_grad] HF {mode} {tuple(np.asarray(lam).tolist())}: FD {fd:.8f} autodiff {g @ v:.8f} rel "
+            f"{abs(fd - g @ v) / abs(fd):.1e}"
         )
         assert abs(fd - g @ v) < 1e-6 * max(1.0, abs(fd)), (mode, lam, fd, g @ v)
     # parameters the Hamiltonian does not see there have zero derivative
@@ -173,7 +171,9 @@ def test_estimators_are_derivatives_of_reweighted_free_energies(mode):
     r = fg.gradient_estimate(S, n_blocks=2)
     # end states, exponential averaging from the own window's samples
     U0 = u * kT
-    zw = lambda a: -kT * np.log(np.mean(np.exp(-a / kT)))  # noqa: E731
+
+    def zw(a):
+        return -kT * np.log(np.mean(np.exp(-a / kT)))
 
     def end(sg):
         i = 0 if sg > 0 else 1
@@ -267,7 +267,8 @@ def test_gas_leg_gradient_and_exact_sampled_case():
         scale = np.abs(gg).max()
         print(
             f"[fe_grad] lone solute {est}: DeltaG {solv.value:.6f} exact {dg:.6f}; max |grad - exact| "
-            f"{np.abs(solv.grad - gg).max():.2e} of max |exact| {scale:.1f}; max grad error bar {np.abs(solv.grad_err).max():.1e}"
+            f"{np.abs(solv.grad - gg).max():.2e} of max |exact| {scale:.1f}; max grad error bar "
+            f"{np.abs(solv.grad_err).max():.1e}"
         )
         assert np.abs(solv.grad - gg).max() < 1e-3 * scale, (est, np.abs(solv.grad - gg).max(), scale)
         assert np.abs(solv.grad_err).max() < 1e-6 * scale and solv.value_err < 1e-6
@@ -288,7 +289,7 @@ def test_harmonic_oscillators_analytic_gradient_and_calibrated_errors():
     res = {"end": [], "mbar": []}
     errs = {"end": [], "mbar": []}
     vals, verrs = [], []
-    for rep in range(40):
+    for _rep in range(40):
         X = np.zeros((n, K))
         e = rng.normal(size=(n, K)) / np.sqrt(Kk)
         X[0] = e[0]
@@ -320,7 +321,8 @@ def test_harmonic_oscillators_analytic_gradient_and_calibrated_errors():
         assert 0.7 < np.mean(errs[est]) / a.std() < 1.4, (est, np.mean(errs[est]), a.std())
     vals = np.array(vals)
     print(
-        f"[fe_grad] harmonic value: mean {vals.mean():.5f} +- {vals.std() / np.sqrt(len(vals)):.5f} exact {exact_f:.5f}; "
+        f"[fe_grad] harmonic value: mean {vals.mean():.5f} +- {vals.std() / np.sqrt(len(vals)):.5f} exact "
+        f"{exact_f:.5f}; "
         f"error bar / spread {np.mean(verrs) / vals.std():.3f}"
     )
     assert abs(vals.mean() - exact_f) < 3 * vals.std() / np.sqrt(len(vals))
@@ -418,19 +420,22 @@ def test_flexible_solute_keep_sampler():
 
     tpl, sys0, tpls, X, H = flex_box()
     sysA, P = alchemical_system(sys0, 0)
-    mk = lambda: FlexibleSimulation(
-        sysA,
-        tpls,
-        X,
-        H,
-        settings(dipole_tol=1e-9),
-        dt=0.001,
-        log=None,
-        params=P,  # noqa: E731
-        alchemy=Alchemy(sysA, 0, intramolecular="keep"),
-        constraints="h-bonds",
-        thermostat="bussi",
-    )
+
+    def mk():
+        return FlexibleSimulation(
+            sysA,
+            tpls,
+            X,
+            H,
+            settings(dipole_tol=1e-9),
+            dt=0.001,
+            log=None,
+            params=P,
+            alchemy=Alchemy(sysA, 0, intramolecular="keep"),
+            constraints="h-bonds",
+            thermostat="bussi",
+        )
+
     L = standard_schedule(2, [0.4, 0.0])
     wb, ws = LambdaWindows(mk(), L, seed=1), LambdaWindows(mk(), L, batched=False, seed=1)
     wb.advance(6)
@@ -439,7 +444,6 @@ def test_flexible_solute_keep_sampler():
     Gb, Gs = gb.sample(), gs.sample()
     assert np.allclose(Gb, Gs, rtol=1e-7, atol=1e-6)
     ff, alch = wb.sim.ff, wb.alchemy
-    K = wb.n
     st = wb.state(1)
     Y, cand, _ = fg._frame(wb, st)
     lam = jnp.zeros(2)

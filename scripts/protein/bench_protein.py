@@ -150,13 +150,15 @@ sim = FlexibleSimulation(
 )
 m = np.asarray(sim.flex.masses)
 el = np.array(sim.sys.elements)
+prot_sl = sim.sys.atom_slice(prot[0])
+h_prot = sorted({float(x) for x in np.round(m[prot_sl][el[prot_sl] == "H"], 4)})
 wat = [sim.sys.atom_slice(k) for k, mm in enumerate(asys.molecules) if mm.kind == "water"]
 print(
     f"setup {time.time() - t0:.1f} s: {sim.sys.n} atoms, {len(prot)} protein chain(s) "
     f"({sum(asys.molecules[k].n for k in prot)} atoms), {sim.topology.n_group} groups, "
     f"special width {sim.topology.special.shape[1]}, rows {sim.ff.mc} (electrostatic {sim.ff.mc_e or sim.ff.mc}); "
     f"{st.describe_cutoffs()}, beta {beta:.4f} /nm, spacing {spacing:.4f} nm; hydrogen masses: protein "
-    f"{sorted({float(x) for x in np.round(m[sim.sys.atom_slice(prot[0])][el[sim.sys.atom_slice(prot[0])] == 'H'], 4)})}, "
+    f"{h_prot}, "
     f"water {np.round(m[wat[0]], 4).tolist() if wat else '-'}, lightest heavy atom {m[el != 'H'].min():.3f} amu",
     flush=True,
 )
@@ -174,7 +176,8 @@ el_t = time.time() - t0
 o = sim.observables()
 print(
     f"{sim.sys.n} atoms, dt {a.dt * 1000:g} fs, {a.precision}: {el_t / done * 1e3:.3f} ms/step, "
-    f"{done * a.dt / 1000 / el_t * 86400:.1f} ns/day; T {o['temp_K']:.1f} K, CG iters {o['cg_mean']:.2f} mean (max {o['cg_iter_max']}), "
+    f"{done * a.dt / 1000 / el_t * 86400:.1f} ns/day; T {o['temp_K']:.1f} K, CG iters {o['cg_mean']:.2f} mean (max "
+    f"{o['cg_iter_max']}), "
     f"rows {sim.ff.mc} (electrostatic {sim.ff.mc_e or sim.ff.mc}), "
     f"shake {o['shake_err']:.1e}{'; ' + str(mts_stats(sim)) if a.mts else ''}",
     flush=True,
@@ -236,10 +239,12 @@ if a.prod_ps > 0:
     steps = int(sim.state.step) - s0
     print(
         f"production {a.prod_ps:g} ps, dt {a.dt * 1000:g} fs, H masses protein {a.hmr} / water "
-        f"{a.hmr if a.hmr_water is None else a.hmr_water}: <U> {U.mean():.1f} +- {Ub.std(ddof=1) / np.sqrt(nb):.1f} kJ/mol "
+        f"{a.hmr if a.hmr_water is None else a.hmr_water}: <U> {U.mean():.1f} +- {Ub.std(ddof=1) / np.sqrt(nb):.1f} "
+        "kJ/mol "
         f"(std {U.std():.1f}), <T> {T.mean():.2f} K (min {T.min():.1f}, max {T.max():.1f}; centre of mass "
         f"{X[:, 6].mean():.2f}, internal {X[:, 7].mean():.2f}), density {X[:, 8].mean():.4f} +- "
-        f"{X[len(X) - n :, 8].reshape(nb, -1).mean(1).std(ddof=1) / np.sqrt(nb):.4f} g/cm3, shake max {X[:, 4].max():.1e}, "
+        f"{X[len(X) - n :, 8].reshape(nb, -1).mean(1).std(ddof=1) / np.sqrt(nb):.4f} g/cm3, shake max "
+        f"{X[:, 4].max():.1e}, "
         f"econs drift {drift:+.4f} kT/ns/dof, CG {(float(sim.state.cg_total) - cg0) / steps:.2f} mean "
         f"(max {int(X[:, 5].max())}), {steps * a.dt / 1000 / wall * 86400:.1f} ns/day"
         f"{'; ' + str(mts_stats(sim)) if a.mts else ''}",
@@ -257,7 +262,8 @@ if a.prod_ps > 0:
             rg.append(np.sqrt(np.mean(np.sum(h * h, 1))))
         rmsd, rg, half = np.array(rmsd), np.array(rg), len(frames) // 2
         print(
-            f"{len(frames)} frames: CA RMSD to the first (A) mean {rmsd.mean():.2f}, second half {rmsd[half:].mean():.2f}, "
+            f"{len(frames)} frames: CA RMSD to the first (A) mean {rmsd.mean():.2f}, second half "
+            f"{rmsd[half:].mean():.2f}, "
             f"max {rmsd.max():.2f}; radius of gyration of the heavy atoms (A) {rg.mean():.2f} +- {rg.std():.2f} "
             f"(halves {rg[:half].mean():.2f} / {rg[half:].mean():.2f})",
             flush=True,

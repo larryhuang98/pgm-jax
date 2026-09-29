@@ -240,7 +240,10 @@ class FrameAnalyzer:
     def _fn(self, grad: bool):
         key = (grad, self.width)
         if key not in self._fns:
-            f = lambda th, pos, H, mu: self._frame(th, pos, H, mu, self.width, grad)
+
+            def f(th, pos, H, mu):
+                return self._frame(th, pos, H, mu, self.width, grad)
+
             self._fns[key] = jax.jit(jax.vmap(f, in_axes=(None, 0, 0, 0)))
         return self._fns[key]
 

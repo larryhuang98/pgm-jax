@@ -829,7 +829,8 @@ def interfaces_engine():
     return out
 
 
-# ============================================================================= restraints, proteins, QM fitting, analysis
+# ============================================================================= restraints, proteins, QM fitting,
+# analysis
 @case("md_restraints_npt", needs="pgm3p25", group="g")
 def md_restraints_npt():
     """Rigid pGM3P-25 water, NPT with restraints of every kind (position: fixed / fractional / com,

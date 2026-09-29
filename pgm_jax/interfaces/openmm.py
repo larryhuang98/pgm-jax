@@ -80,7 +80,6 @@ class PGMOpenMM:
         rigid: hold every molecule of up to three atoms rigid by distance constraints (the
         rigid-molecule model; OpenMM applies SETTLE to water); constraints="h-bonds": also X-H
         bonds of larger molecules at their current lengths.  cmm: remove centre-of-mass motion."""
-        eng = self.engine
         s = openmm.System()
         for m in np.asarray(self.sys.masses, float):
             s.addParticle(float(m))

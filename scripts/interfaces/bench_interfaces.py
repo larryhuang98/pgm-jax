@@ -63,7 +63,7 @@ def main():
         sim._advance(100)
         t0 = time.perf_counter()
         frames = []
-        for k in range(a.steps // 100):
+        for _k in range(a.steps // 100):
             sim._advance(100)
             if len(frames) < 200:
                 frames.append(sim.positions_nm())
@@ -71,7 +71,7 @@ def main():
         # the engine alone on consecutive MD frames: run a short native trajectory with frames every step
         sim1 = Simulation(sysm, frames[-1], H, s, dt=a.dt, ensemble="nve", vel_nm_ps=sim.velocities_nm_ps(), log=None)
         fr = []
-        for k in range(300):
+        for _k in range(300):
             sim1._advance(1)
             fr.append(sim1.positions_nm())
         eng = PGMEngine(sysm, fr[0], H, s)

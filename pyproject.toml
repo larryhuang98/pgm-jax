@@ -39,7 +39,6 @@ ignore = ["E741", "B905", "B008", "B023"]
 # sys.path edits before the imports: removed in P3
 "scripts/**" = ["E402"]
 "examples/**" = ["E402"]
-"tests/**" = ["E402"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"

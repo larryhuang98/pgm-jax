@@ -153,7 +153,8 @@ def main(argv=None):
     t0, k = time.time(), 0
     with open(a.out, "w") as fh:
         fh.write("".join(f"# {s}\n" for s in head))
-        for j, (t, pos, H) in enumerate(_chain((t, pos, H), it)):
+        first = (t, pos, H)
+        for j, (t, pos, H) in enumerate(_chain(first, it)):
             if j % a.stride:
                 continue
             P, HH = jnp.asarray(pos), jnp.asarray(H)

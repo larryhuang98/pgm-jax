@@ -9,16 +9,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_grad import water
 
-jax.config.update("jax_enable_x64", True)
-
-from test_grad import water  # noqa: E402
-
-from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec  # noqa: E402
-from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.integrate import KB  # noqa: E402
-from pgm_jax.md.pimd import (  # noqa: E402
+from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
+from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.integrate import KB
+from pgm_jax.md.pimd import (
     HBAR,
     WATER_FAMILIES,
     PIMDIntegrator,
@@ -32,7 +29,7 @@ from pgm_jax.md.pimd import (  # noqa: E402
     qtip4pf_intra,
     water_geometry,
 )
-from pgm_jax.system import System  # noqa: E402
+from pgm_jax.system import System
 
 T = 300.0
 
@@ -76,8 +73,13 @@ def test_potential_engine_contraction():
     """Contracted soft potential: forces are -dU/dq, P' = P is no contraction, P' = 1 gives every bead
     the centroid force (the model of scripts/pimd_openmm.py, checked there against OpenMM)."""
     P, n = 8, 5
-    stiff = lambda x, box: jnp.sum(1e4 * x[:, 0] ** 2 + 3e5 * x[:, 0] ** 4)  # noqa: E731
-    soft = lambda x, box: jnp.sum(50.0 * jnp.sum(x * x, -1) + 400.0 * x[:, 1] ** 3)  # noqa: E731
+
+    def stiff(x, box):
+        return jnp.sum(1e4 * x[:, 0] ** 2 + 3e5 * x[:, 0] ** 4)
+
+    def soft(x, box):
+        return jnp.sum(50.0 * jnp.sum(x * x, -1) + 400.0 * x[:, 1] ** 3)
+
     q = 0.05 * jax.random.normal(jax.random.PRNGKey(0), (P, n, 3))
     box = jnp.eye(3)
     full = PotentialEngine(lambda x, b: stiff(x, b) + soft(x, b)).compute(q, box, None)
@@ -106,7 +108,10 @@ def test_free_ring_polymer_propagation(kind):
     st1 = integ.run(st, n)
     q1, p1 = r.to_nm(st1.q), r.to_nm(st1.p)
     w = r.omega[:, None, None]
-    e = lambda q, p: 0.5 * p * p / m + 0.5 * m * w * w * q * q  # noqa: E731
+
+    def e(q, p):
+        return 0.5 * p * p / m + 0.5 * m * w * w * q * q
+
     assert np.allclose(e(q1, p1), e(q0, p0), rtol=1e-10, atol=1e-12)
     if kind == "exact":
         t = n * dt
@@ -125,7 +130,6 @@ def test_harmonic_oscillator_estimators(thermostat):
         integ = PIMDIntegrator(eng, np.full(n, m), P, T, 0.0005, "pimd", thermostat, tau0=0.02)
         st = integ.run(integ.init(jnp.zeros((n, 3)), jnp.eye(3), jax.random.PRNGKey(P)), 2000)
         est = jax.jit(integ.estimators)
-        V, Kp, Kc = [], [], []
 
         def body(st, _):
             st = integ._run(st, 25)
@@ -258,7 +262,10 @@ def test_contraction_forces_and_identity():
         rpc = PIMDSimulation(sim, beads=P, contract=Pc, log=None, seed=2)
         st = rpc.state
         eng = rpc.engine
-        f = lambda q: eng.compute(q, st.box, st.eng)  # noqa: E731
+
+        def f(q):
+            return eng.compute(q, st.box, st.eng)
+
         d = jnp.asarray(np.random.default_rng(Pc).normal(size=st.q.shape))
         h = 1e-5
         dU = (float(f(st.q + h * d)[1]) - float(f(st.q - h * d)[1])) / (2 * h)

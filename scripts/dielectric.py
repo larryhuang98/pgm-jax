@@ -95,7 +95,8 @@ def main(argv=None):
     if np.isfinite(tau):
         print(
             f"# tau_M = {tau:.2f} ps (exponential fit of the dipole autocorrelation); expected relative error "
-            f"sqrt(2 tau / 3 T_run) = {np.sqrt(2 * tau / (3 * span)) * 100:.2f} % -> +- {np.sqrt(2 * tau / (3 * span)) * r['fluct']:.3f}"
+            f"sqrt(2 tau / 3 T_run) = {np.sqrt(2 * tau / (3 * span)) * 100:.2f} % -> +- "
+            f"{np.sqrt(2 * tau / (3 * span)) * r['fluct']:.3f}"
         )
     print("# jackknife error of the fluctuation term against the number of blocks (block length ps)")
     be = D.block_errors(M, V, T)

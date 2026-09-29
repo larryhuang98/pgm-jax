@@ -10,19 +10,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_grad import water
+from test_hmr import _cluster
 
-jax.config.update("jax_enable_x64", True)
-
-from test_grad import water  # noqa: E402
-from test_hmr import _cluster  # noqa: E402
-
-from pgm_jax import System  # noqa: E402
-from pgm_jax.bias import OPES, BiasSet, Harmonic, LowerWall, MetaD, StaticBias, UpperWall, cv  # noqa: E402
-from pgm_jax.bias import analysis as A  # noqa: E402
-from pgm_jax.bias.core import KB  # noqa: E402
-from pgm_jax.bias.toy import ToyLangevin, double_well, ring  # noqa: E402
-from pgm_jax.md.box import reduce_box  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
+from pgm_jax import System
+from pgm_jax.bias import OPES, BiasSet, Harmonic, LowerWall, MetaD, StaticBias, UpperWall, cv
+from pgm_jax.bias import analysis as A
+from pgm_jax.bias.core import KB
+from pgm_jax.bias.toy import ToyLangevin, double_well, ring
+from pgm_jax.md.box import reduce_box
+from pgm_jax.md.forcefield import MDSettings
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
 
@@ -124,17 +121,16 @@ def test_metad_hills_heights_and_periodicity():
     st = b.init()
     st = b.reserve(st, 12)
     assert st.heights.shape[0] >= 12
-    V = lambda C, H, s: sum(
-        h
-        * np.exp(
-            -0.5
-            * (
-                ((s[0] - c[0]) / 0.05) ** 2  # noqa: E731
-                + ((np.mod(s[1] - c[1] + np.pi, 2 * np.pi) - np.pi) / 0.4) ** 2
+
+    def V(C, H, s):
+        return sum(
+            h
+            * np.exp(
+                -0.5 * (((s[0] - c[0]) / 0.05) ** 2 + ((np.mod(s[1] - c[1] + np.pi, 2 * np.pi) - np.pi) / 0.4) ** 2)
             )
+            for c, h in zip(C, H)
         )
-        for c, h in zip(C, H)
-    )
+
     C, Hs = [], []
     for i, s in enumerate(S):
         w = 1.5 * np.exp(-V(C, Hs, s) / (kT * 5.0))

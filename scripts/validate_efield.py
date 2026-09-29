@@ -64,7 +64,8 @@ def part_gas():
     out = {}
     print("# gas phase, E = (0.02, -0.05, 0.1) V/nm")
     print(
-        f"{'system':32s} {'|dmu - alpha E| / |alpha E|':>28s} {'energy error (kJ/mol)':>22s} {'max |F - F_fd| (kJ/mol/nm)':>28s}"
+        f"{'system':32s} {'|dmu - alpha E| / |alpha E|':>28s} {'energy error (kJ/mol)':>22s} "
+        f"{'max |F - F_fd| (kJ/mol/nm)':>28s}"
     )
     for name, (sys_, x) in _water_and_methanol().items():
         x = jnp.asarray(x)
@@ -80,7 +81,10 @@ def part_gas():
             + np.asarray(a0["p"]).sum(0)
             + np.asarray(a0["mu"]).sum(0)
         )
-        tot = lambda e: float(sum(e.values()))  # noqa: E731
+
+        def tot(e):
+            return float(sum(e.values()))
+
         expect = tot(e0) - KE * (Ei @ M0 + 0.5 * Ei @ A @ Ei)
         f = Model([ElecChannel(efield=tuple(E))]).energy_fn(sys_)
         F = np.asarray(-jax.grad(lambda y: f(y)["total"])(x))
@@ -99,7 +103,8 @@ def part_gas():
             "alpha_iso_A3": float(np.trace(A) / 3 * 1000),
         }
         print(
-            f"{name:32s} {rel:28.2e} {tot(e1) - expect:22.2e} {err:28.2e}   (alpha_iso {np.trace(A) / 3 * 1000:.4f} A^3)"
+            f"{name:32s} {rel:28.2e} {tot(e1) - expect:22.2e} {err:28.2e}   (alpha_iso {np.trace(A) / 3 * 1000:.4f} "
+            "A^3)"
         )
     _save("gas", out)
 
@@ -325,7 +330,8 @@ def part_fluct(files, seg_ns: float, skip_ps: float):
     if len(files) > 1:
         e = np.array([out[f]["eps"] for f in files])
         print(
-            f"# {len(files)} runs: eps {e.mean():.2f} +- {e.std(ddof=1) / np.sqrt(len(e)):.2f}; all {len(segs)} segments "
+            f"# {len(files)} runs: eps {e.mean():.2f} +- {e.std(ddof=1) / np.sqrt(len(e)):.2f}; all {len(segs)} "
+            "segments "
             f"of {seg_ns:g} ns: std {np.std(segs, ddof=1):.2f}"
         )
     out["segments_std"] = float(np.std(segs, ddof=1))

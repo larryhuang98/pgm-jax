@@ -4,16 +4,13 @@ invariance, the pGM part equal to the gas-phase ElecChannel, classical exclusion
 import jax
 import jax.numpy as jnp
 import numpy as np
+from test_grad import methanol
 
-jax.config.update("jax_enable_x64", True)
-
-from test_grad import methanol  # noqa: E402
-
-from pgm_jax.bonded import terms as T  # noqa: E402
-from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec  # noqa: E402
-from pgm_jax.bonded.topology import build_topology  # noqa: E402
-from pgm_jax.channels import ElecChannel  # noqa: E402
-from pgm_jax.system import System  # noqa: E402
+from pgm_jax.bonded import terms as T
+from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
+from pgm_jax.bonded.topology import build_topology
+from pgm_jax.channels import ElecChannel
+from pgm_jax.system import System
 
 
 def ethanal():
@@ -187,7 +184,10 @@ def test_twist_angle():
     # pyramidalise C1 (both substituents folded to one side of the C0-C1-substituent plane, as the
     # amide N at the rotation barrier): the twist is unchanged, the individual dihedrals move by ~20 deg
     t3, p3 = tau(y)
-    perp = lambda v: v - ax * np.dot(ax, v)
+
+    def perp(v):
+        return v - ax * np.dot(ax, v)
+
     n = np.cross(ax, perp(y[2] - x[1]))
     n /= np.linalg.norm(n)
     z = y.copy()
@@ -246,9 +246,13 @@ def test_fitted_typed_charges():
 
     m, x = methanol()
     R = jnp.asarray(x)
-    mk = lambda q: BondedModel(
-        [MolSpec("MeOH", m.elements, m.bonds, [1] * 5, 0, x, pgm=m)], BondedSettings(families=("angle_cos",), qfit=q)
-    )
+
+    def mk(q):
+        return BondedModel(
+            [MolSpec("MeOH", m.elements, m.bonds, [1] * 5, 0, x, pgm=m)],
+            BondedSettings(families=("angle_cos",), qfit=q),
+        )
+
     model = mk(8)
     P = model.init_params()
     assert model.nb_dynamic and "elec" in P
@@ -287,10 +291,13 @@ def test_separate_induction_exclusion():
     molecular dipole); excluding only their induction keeps the permanent energy."""
     m, x = methanol()
     R = jnp.asarray(x)
-    mk = lambda **kw: BondedModel(
-        [MolSpec("MeOH", m.elements, m.bonds, [1] * 5, 0, x, pgm=m)],
-        BondedSettings(families=("angle_cos",), lj_min_sep=99, **kw),
-    )
+
+    def mk(**kw):
+        return BondedModel(
+            [MolSpec("MeOH", m.elements, m.bonds, [1] * 5, 0, x, pgm=m)],
+            BondedSettings(families=("angle_cos",), lj_min_sep=99, **kw),
+        )
+
     e0, d0, s0 = mk().nonbonded(0, R, state=True)
     e1, d1, s1 = mk(elec_exclude=2, ind_exclude=0).nonbonded(0, R, state=True)
     e2, d2, s2 = mk(elec_exclude=0, ind_exclude=2).nonbonded(0, R, state=True)
@@ -384,11 +391,14 @@ def test_electronic_families():
             Ph[f] = jax.tree_util.tree_map(jnp.zeros_like, Ph[f])
     e_ref = float(model.bonded_energy(0, jnp.asarray(x), Ph))
     Y = jnp.asarray(x + 0.01 * rng.normal(size=x.shape))
-    only = lambda f: {
-        **{k: jax.tree_util.tree_map(jnp.zeros_like, v) for k, v in Ph.items() if k != "ref"},
-        "ref": Ph["ref"],
-        f: Ph[f],
-    }
+
+    def only(f):
+        return {
+            **{k: jax.tree_util.tree_map(jnp.zeros_like, v) for k, v in Ph.items() if k != "ref"},
+            "ref": Ph["ref"],
+            f: Ph[f],
+        }
+
     e_fix, e_sc = (
         float(model.bonded_energy(0, Y, only("angle_hyb"))),
         float(model.bonded_energy(0, Y, only("angle_hybsc"))),

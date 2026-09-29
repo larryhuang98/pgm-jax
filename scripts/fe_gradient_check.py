@@ -66,7 +66,8 @@ def main():
     print("#     s    samples     G (MBAR)          [asympt.]   dG/ds MBAR-weighted    dG/ds end states")
     for p in pts:
         print(
-            f"  {p['s']:6.3f} {p['samples_per_window']:7d}  {p['G']:9.4f} +- {p['G_err']:.4f} [{p['G_err_mbar_asymptotic']:.4f}]"
+            f"  {p['s']:6.3f} {p['samples_per_window']:7d}  {p['G']:9.4f} +- {p['G_err']:.4f} "
+            f"[{p['G_err_mbar_asymptotic']:.4f}]"
             f"  {p['g_mbar']:9.3f} +- {p['g_mbar_err']:.3f}   {p['g_end']:9.3f} +- {p['g_end_err']:.3f}"
         )
     res = {"points": pts, "pairs": []}

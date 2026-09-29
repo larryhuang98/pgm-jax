@@ -81,7 +81,7 @@ class IPIClient:
 
     # ------------------------------------------------------------------ socket helpers
     def _connect(self, retries: int = 600, wait: float = 0.5):
-        for k in range(retries):
+        for _k in range(retries):
             try:
                 if self.unix:
                     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

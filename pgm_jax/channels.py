@@ -41,7 +41,9 @@ def perm_dipoles(pos, sys: System, cov_c):
 
 
 def _pair_perm(ri, rj, qi, pi, qj, pj, b, phi):
-    f = lambda a, c: phi(jnp.linalg.norm(a - c), b)
+    def f(a, c):
+        return phi(jnp.linalg.norm(a - c), b)
+
     gi = jax.grad(f, 0)(ri, rj)
     gj = jax.grad(f, 1)(ri, rj)
     H = jax.jacfwd(jax.grad(f, 0), 1)(ri, rj)
@@ -49,8 +51,12 @@ def _pair_perm(ri, rj, qi, pi, qj, pj, b, phi):
 
 
 def _field_at_i(ri, rj, qj, pj, b, phi):
-    f = lambda a, c: phi(jnp.linalg.norm(a - c), b)
-    V = lambda x: qj * f(x, rj) + pj @ jax.grad(f, 1)(x, rj)
+    def f(a, c):
+        return phi(jnp.linalg.norm(a - c), b)
+
+    def V(x):
+        return qj * f(x, rj) + pj @ jax.grad(f, 1)(x, rj)
+
     return -jax.grad(V)(ri)
 
 
@@ -66,7 +72,9 @@ def quadrupole_field(x, a, Tj):
 
 
 def _dipole_tensor(ri, rj, b, phi):
-    f = lambda a, c: phi(jnp.linalg.norm(a - c), b)
+    def f(a, c):
+        return phi(jnp.linalg.norm(a - c), b)
+
     return jax.jacfwd(jax.grad(f, 0), 1)(ri, rj)
 
 
@@ -213,7 +221,10 @@ def elec_decomposition(pos, sys: System, params=None, density: str = "gaussian",
     mu = solve_linear_induction(T, al, F)
     mu0 = solve_linear_induction(T * same_blk, al, F0)
     Tm = T.transpose(0, 2, 1, 3).reshape(3 * n, 3 * n)
-    G = lambda m: jnp.sum(m * m / (2 * al[:, None])) - jnp.sum(m * F) + 0.5 * m.reshape(-1) @ Tm @ m.reshape(-1)
+
+    def G(m):
+        return jnp.sum(m * m / (2 * al[:, None])) - jnp.sum(m * F) + 0.5 * m.reshape(-1) @ Tm @ m.reshape(-1)
+
     e_perm_int = jnp.sum(e_pair * (1 - intra_pair))
     e_mono_ind = -0.5 * jnp.sum(mu0 * F0)
     e_frozen_ind = G(mu0)

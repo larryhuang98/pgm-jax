@@ -37,7 +37,12 @@ from pgm_jax.system import System
 path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "runs/flux/methanol_flux2.flex")
 tpl = FlexibleTemplate.load(path)
 rng = np.random.default_rng(0)
-rel = lambda a, b: float(np.max(np.abs(np.asarray(a) - np.asarray(b))) / max(np.max(np.abs(np.asarray(b))), 1e-300))
+
+
+def rel(a, b):
+    return float(np.max(np.abs(np.asarray(a) - np.asarray(b))) / max(np.max(np.abs(np.asarray(b))), 1e-300))
+
+
 print(f"template {path}: {tpl.name}, flux {tpl.settings['flux']}")
 
 # ------------------------------------------------------------------ 1. single molecule
@@ -80,7 +85,8 @@ print(
     f"1c MD engine (one molecule, {L} nm box): flux {float(r_f.energy['elec']):.10f} kJ/mol vs no flux at the "
     f"same charges {float(r_0.energy['elec']):.10f}: rel. diff "
     f"{abs(float(r_f.energy['elec'] - r_0.energy['elec'])) / abs(float(r_0.energy['elec'])):.1e}; induced "
-    f"dipoles {rel(r_f.induction.mu, r_0.induction.mu):.1e} rel.; vs gas phase {float(r_f.energy['elec'] - e_gas):+.2e} "
+    f"dipoles {rel(r_f.induction.mu, r_0.induction.mu):.1e} rel.; vs gas phase "
+    f"{float(r_f.energy['elec'] - e_gas):+.2e} "
     f"kJ/mol (periodic images); flux forces max {float(jnp.abs(r_f.forces - r_0.forces).max()):.1f} kJ/mol/nm"
 )
 F = np.asarray(sim_f.state.dyn.force)
@@ -125,7 +131,8 @@ res = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
 mu = res.induction.mu
 db = np.asarray(ff.flux.deviations(pos, H))
 print(
-    f"\n2. {n} flexible {tpl.name} in a {float(H[0, 0]):.3f} nm box, bonds off reference by up to {np.abs(db).max():.4f} nm"
+    f"\n2. {n} flexible {tpl.name} in a {float(H[0, 0]):.3f} nm box, bonds off reference by up to "
+    f"{np.abs(db).max():.4f} nm"
 )
 Pb = ff._atoms(None)
 F_ad = -jax.grad(lambda y: ff.energy_fixed_mu(y, H, mu, idx, Pb)[0])(pos)
@@ -195,7 +202,8 @@ for label, only_flux in (("all parameters", False), ("jb, jc, jc2 only", True)):
         fd = (fp - fm) / (2 * hh)
         ad = sum(float(jnp.sum(a * b)) for a, b in zip(jax.tree_util.tree_leaves(g_th), jax.tree_util.tree_leaves(vt)))
         print(
-            f"    {label:18s} direction {trial}: AD {ad:+.10e}  FD {fd:+.10e}  rel. {abs(fd - ad) / max(1.0, abs(fd)):.1e}"
+            f"    {label:18s} direction {trial}: AD {ad:+.10e}  FD {fd:+.10e}  rel. "
+            f"{abs(fd - ad) / max(1.0, abs(fd)):.1e}"
         )
 for trial in range(2):
     dx = rng.normal(size=pos.shape) * 1e-3
@@ -203,7 +211,8 @@ for trial in range(2):
     fd = (float(Lj(theta0, pos + hh * dx, H)) - float(Lj(theta0, pos - hh * dx, H))) / (2 * hh)
     ad = float(jnp.sum(g_x * dx))
     print(
-        f"    positions          direction {trial}: AD {ad:+.10e}  FD {fd:+.10e}  rel. {abs(fd - ad) / max(1.0, abs(fd)):.1e}"
+        f"    positions          direction {trial}: AD {ad:+.10e}  FD {fd:+.10e}  rel. "
+        f"{abs(fd - ad) / max(1.0, abs(fd)):.1e}"
     )
 dH = np.tril(rng.normal(size=(3, 3))) * 1e-3
 hh = 1e-4
@@ -221,6 +230,7 @@ for k, v in theta0["flux"].items():
         fd = (float(Ej(up)) - float(Ej(dn))) / (2 * hh)
         worst = max(worst, abs(fd - float(gE[k][j])) / max(1.0, abs(fd)))
 print(
-    f"2e dE/d(jb, jc, jc2) ({sum(len(v) for v in theta0['flux'].values())} parameters) vs central differences: max rel. {worst:.1e}; "
+    f"2e dE/d(jb, jc, jc2) ({sum(len(v) for v in theta0['flux'].values())} parameters) vs central differences: max "
+    f"rel. {worst:.1e}; "
     f"dE/djb = {np.round(np.asarray(gE['jb']), 2).tolist()} kJ/mol per e/nm"
 )

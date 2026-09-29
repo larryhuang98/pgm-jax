@@ -9,17 +9,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_grad import water
+from test_hmr import _cluster
+from test_md_macro import _water_box
 
-jax.config.update("jax_enable_x64", True)
-
-from test_grad import water  # noqa: E402
-from test_hmr import _cluster  # noqa: E402
-from test_md_macro import _water_box  # noqa: E402
-
-from pgm_jax import System  # noqa: E402
-from pgm_jax.md.box import reduce_box  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.restraints import (  # noqa: E402
+from pgm_jax import System
+from pgm_jax.md.box import reduce_box
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.restraints import (
     AngleRestraint,
     COMDistanceRestraint,
     DihedralRestraint,
@@ -135,7 +132,10 @@ def test_forces_and_strain_derivative_match_finite_differences():
         for j in range(3):
             eps = np.zeros((3, 3))
             eps[i, j] = h
-            ep = lambda s: float(E(pos + (com @ (s * eps).T)[mol], H @ (np.eye(3) + s * eps).T))  # noqa: E731
+
+            def ep(s):
+                return float(E(pos + (com @ (s * eps).T)[mol], H @ (np.eye(3) + s * eps).T))
+
             fd = (ep(1.0) - ep(-1.0)) / (2 * h)
             assert abs(fd - W[i, j]) < 1e-6 * max(1.0, abs(fd)), (i, j, fd, W[i, j])
 
@@ -157,7 +157,10 @@ def test_dihedral_sign_and_periodicity():
         assert abs(float(dihedral(*quad(phi))) - phi) < 1e-12
     k2, k3 = 30.0, 50.0
     dr = DihedralRestraint([0, 1, 2, 3], np.radians([150.0, 170.0, 190.0, 210.0]), k2=k2, k3=k3)
-    E = lambda deg: float(dr.energy(quad(np.radians(deg)), H))  # noqa: E731
+
+    def E(deg):
+        return float(dr.energy(quad(np.radians(deg)), H))
+
     assert E(175.0) == 0.0 and E(-175.0) == 0.0 and E(-170.0) == 0.0  # the window crosses +-180
     assert abs(E(-160.0) - k3 * np.radians(10.0) ** 2) < 1e-12  # -160 = 200 deg: upper wall
     assert abs(E(160.0) - k2 * np.radians(10.0) ** 2) < 1e-12
@@ -202,13 +205,16 @@ def test_reference_scaling():
 def _cluster_restraints(pos, masses):
     """Restraints of every kind between the cluster's waters (oxygens 3k), pulling: ~50 kJ/mol
     move between the restraints and the molecules within a short run."""
-    O = lambda k: 3 * k  # noqa: E731
+
+    def oxygen(k):
+        return 3 * k
+
     return Restraints(
         [
-            PositionRestraint([O(7)], pos[[O(7)]] + [0.1, 0.0, 0.0], k=1500.0),
-            DistanceRestraint([[O(0), O(1)]], harmonic(0.40), k=2000.0),
-            AngleRestraint([[O(2), O(3), O(7)]], harmonic(np.radians(70.0)), k=100.0),
-            DihedralRestraint([[O(4), O(5), O(6), O(0)]], harmonic(np.radians(30.0)), k=10.0),
+            PositionRestraint([oxygen(7)], pos[[oxygen(7)]] + [0.1, 0.0, 0.0], k=1500.0),
+            DistanceRestraint([[oxygen(0), oxygen(1)]], harmonic(0.40), k=2000.0),
+            AngleRestraint([[oxygen(2), oxygen(3), oxygen(7)]], harmonic(np.radians(70.0)), k=100.0),
+            DihedralRestraint([[oxygen(4), oxygen(5), oxygen(6), oxygen(0)]], harmonic(np.radians(30.0)), k=10.0),
             COMDistanceRestraint(range(12, 15), range(18, 21), (0.0, 0.15, 0.2, 0.25), k=800.0, masses=masses),
         ]
     )
@@ -336,7 +342,10 @@ def test_flexible_engine_restrained_atom_held():
         log=None,
     )
     L = H[0, 0]
-    dist = lambda: float(np.linalg.norm((lambda v: v - np.round(v / L) * L)(sim.positions_nm()[0] - ref[0])))  # noqa: E731
+
+    def dist():
+        return float(np.linalg.norm((lambda v: v - np.round(v / L) * L)(sim.positions_nm()[0] - ref[0])))
+
     d = [dist()]
     for _ in range(6):
         sim._advance(50)

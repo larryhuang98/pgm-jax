@@ -155,7 +155,8 @@ def cmd_analyse(a):
     print("# single replicas: E_z (V/nm)  <M.e> (e nm)  eps  tau_M (ps)")
     for r in res["single"]:
         print(
-            f"  {r['E'][2]:+8.4f}  {r['M_par']:9.4f} +- {r['M_par_err']:.4f}   {r['eps']:8.2f} +- {r['err']:.2f}   {r['tau_ps']:.1f}"
+            f"  {r['E'][2]:+8.4f}  {r['M_par']:9.4f} +- {r['M_par_err']:.4f}   {r['eps']:8.2f} +- {r['err']:.2f}   "
+            f"{r['tau_ps']:.1f}"
         )
     print("# +-E pairs: |E|  eps")
     for r in res["pairs"]:
@@ -167,7 +168,8 @@ def cmd_analyse(a):
         )
     for r in res["zero"]:
         print(
-            f"# zero field replica {r['replica']}: fluctuation eps {r['eps']:.2f} +- {r['err']:.2f}, tau_M(z) {r['tau_ps']:.1f} ps"
+            f"# zero field replica {r['replica']}: fluctuation eps {r['eps']:.2f} +- {r['err']:.2f}, tau_M(z) "
+            f"{r['tau_ps']:.1f} ps"
         )
     if res["pairs"] and res["zero"]:
         tau = np.mean([r["tau_ps"] for r in res["zero"]])

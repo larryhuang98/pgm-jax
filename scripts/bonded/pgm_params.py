@@ -32,7 +32,8 @@ def gaff_types(elements, xyz, charge, wd):
     with open(os.path.join(wd, "mol.pdb"), "w") as fh:
         for k, (e, x) in enumerate(zip(elements, xyz)):
             fh.write(
-                f"HETATM{k + 1:5d} {e + str(k + 1):<4s} MOL A   1    {x[0]:8.3f}{x[1]:8.3f}{x[2]:8.3f}  1.00  0.00          {e:>2s}\n"
+                f"HETATM{k + 1:5d} {e + str(k + 1):<4s} MOL A   1    {x[0]:8.3f}{x[1]:8.3f}{x[2]:8.3f}  1.00  0.00    "
+                f"      {e:>2s}\n"
             )
         fh.write("END\n")
     subprocess.run(
@@ -89,7 +90,7 @@ def gaff_lj(path=os.path.join(AMBER, "dat/leap/parm/gaff.dat")):
 def prep():
     table = read_pol_table()
     names = []
-    for name, (smi, charge, subset) in MOLECULES.items():
+    for name, (_smi, charge, _subset) in MOLECULES.items():
         fr = os.path.join(ROOT, "data/bonded/frames", f"{name}_md.npz")
         if not os.path.exists(fr):
             fr = os.path.join(ROOT, "data/bonded/frames", f"{name}_min.npz")
@@ -137,7 +138,10 @@ def fit():
             print(f"{name:20s} no ESP yet")
             continue
         inp = json.load(open(os.path.join(wd, "input.json")))
-        sh = lambda cmd: subprocess.run(cmd, cwd=wd, env=ENV, check=True, capture_output=True, text=True)
+
+        def sh(cmd):
+            return subprocess.run(cmd, cwd=wd, env=ENV, check=True, capture_output=True, text=True)
+
         nconf = len(inp.get("xyz_A_list", [0]))
         sh(
             [
@@ -205,7 +209,8 @@ def fit():
         save_molecule(m, os.path.join(OUT, f"{name}.json"))
         rr = [ln for ln in open(os.path.join(wd, "2nd.out")) if "RRMS" in ln.upper()]
         print(
-            f"{name:20s} q {' '.join(f'{x:+.3f}' for x in m.q)}  ncov {len(m.cov)}  sum {m.q.sum():+.3f}  {rr[-1].strip() if rr else ''}"
+            f"{name:20s} q {' '.join(f'{x:+.3f}' for x in m.q)}  ncov {len(m.cov)}  sum {m.q.sum():+.3f}  "
+            f"{rr[-1].strip() if rr else ''}"
         )
 
 

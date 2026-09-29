@@ -3,15 +3,12 @@ residue library, Amber-form bonded terms from ff19SB, a solvated peptide in MD w
 
 import os
 
-import jax
 import numpy as np
 
-jax.config.update("jax_enable_x64", True)
-
-from pgm_jax.bonded.amber import read_bonded  # noqa: E402
-from pgm_jax.md.flexible import FlexibleSimulation  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.protein import ResidueLibrary, amber_template, load_amber  # noqa: E402
+from pgm_jax.bonded.amber import read_bonded
+from pgm_jax.md.flexible import FlexibleSimulation
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.protein import ResidueLibrary, amber_template, load_amber
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
 PRM, CRD = (

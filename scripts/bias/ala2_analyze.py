@@ -146,7 +146,8 @@ if a.remd:
     }
     refs["remd"] = (Fr, er, a.fmax_remd)
     print(
-        f"REMD 300 K ({len(phi_r)} frames): dG(phi>0) = {res['remd']['dG_aL']:.2f} +- {res['remd']['dG_aL_err']:.2f} kJ/mol"
+        f"REMD 300 K ({len(phi_r)} frames): dG(phi>0) = {res['remd']['dG_aL']:.2f} +- {res['remd']['dG_aL_err']:.2f} "
+        "kJ/mol"
     )
     if Fref is not None:
         m = (Fref < a.fmax) & np.isfinite(Fr)
@@ -186,12 +187,14 @@ def compare(name, Fs1, dgs, Fs2=None, Fbias=None):
             o["rmsd_bias"] = A.align_rmsd(np.mean([A.align_rmsd(f, Fr, m)[2] for f in fb], 0), Fr, m)[0]
         out["vs_" + rname] = o
         print(
-            f"{name} vs {rname} ({int(m.sum())} bins, F < {fmax:g}): F(phi) RMSD {r:.3f} kJ/mol (max {mx:.2f}; per run {np.mean(o['rmsd_runs']):.3f}), "
+            f"{name} vs {rname} ({int(m.sum())} bins, F < {fmax:g}): F(phi) RMSD {r:.3f} kJ/mol (max {mx:.2f}; per "
+            f"run {np.mean(o['rmsd_runs']):.3f}), "
             f"chi2/bin {o['chi2_per_bin']:.2f}, mean error {o['mean_err']:.3f}"
             + (f"; from the final bias RMSD {o['rmsd_bias']:.3f}" if Fbias is not None else "")
         )
     print(
-        f"{name}: dG(phi>0) {out['dG_aL']:.2f} +- {out['dG_aL_err'] if out['dG_aL_err'] is not None else float('nan'):.2f} "
+        f"{name}: dG(phi>0) {out['dG_aL']:.2f} +- "
+        f"{out['dG_aL_err'] if out['dG_aL_err'] is not None else float('nan'):.2f} "
         f"({len(Fs1)} runs)"
     )
     if Fs2 is not None:

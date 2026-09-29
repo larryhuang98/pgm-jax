@@ -43,7 +43,10 @@ def _aa_key(top, keyf, m1, m2):
     a1, a2 = top.angles[m1], top.angles[m2]
     shared = sorted(set([a1[0], a1[2]]) & set([a2[0], a2[2]]))
     others = sorted(set([a1[0], a1[2], a2[0], a2[2]]) - set(shared))
-    cl = lambda x: keyf([x], "atom")
+
+    def cl(x):
+        return keyf([x], "atom")
+
     if len(set(a1) & set(a2)) >= 2 and a1[1] == a2[1] and shared:
         return "aa|" + cl(a1[1]) + "|" + cl(shared[0]) + "|" + "-".join(sorted(cl(o) for o in others))
     return "aax|" + "-".join(sorted([keyf(a1, "angle"), keyf(a2, "angle")]))

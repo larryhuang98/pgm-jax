@@ -43,7 +43,10 @@ def relaxed_scan(model, m, P, X0, torsion, angles_deg, k_restr=1e4, maxiter=500,
         x0 = np.asarray(X, float).ravel()
         phi0 = float(_dihedral(*[jnp.asarray(X[i]) for i in t]))  # restrain to the reference angle as measured
         del a
-        f = lambda x: tuple(np.asarray(v, float) for v in vg(jnp.asarray(x), phi0))
+
+        def f(x):
+            return tuple(np.asarray(v, float) for v in vg(jnp.asarray(x), phi0))
+
         r = minimize(
             f,
             x0,

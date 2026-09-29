@@ -97,7 +97,10 @@ def kvector_indices(H: np.ndarray, kcut: float) -> np.ndarray:
 
 def _pair_tensors(x, bij, b0):
     """Direct-space kernel g(|x|) = (erf(bij r) - erf(b0 r))/r, its gradient and Hessian in x."""
-    g = lambda v: (erf(bij * jnp.linalg.norm(v)) - erf(b0 * jnp.linalg.norm(v))) / jnp.linalg.norm(v)
+
+    def g(v):
+        return (erf(bij * jnp.linalg.norm(v)) - erf(b0 * jnp.linalg.norm(v))) / jnp.linalg.norm(v)
+
     return g(x), jax.grad(g)(x), jax.hessian(g)(x)
 
 
@@ -188,7 +191,10 @@ class PeriodicPGM:
 
     def _solve(self, theta):
         z = jnp.zeros((self.sys.n, 3))
-        gradG = lambda mu: jax.grad(self._G)(mu, theta)
+
+        def gradG(mu):
+            return jax.grad(self._G)(mu, theta)
+
         g0, hvp = jax.linearize(gradG, z)  # G is quadratic: the Hessian is constant
         mu, _ = jax.scipy.sparse.linalg.cg(hvp, -g0, tol=self.cg_tol, maxiter=2000)
         return mu

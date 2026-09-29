@@ -23,7 +23,8 @@ from pgm_jax.bonded.molecules import MOLECULES  # noqa: E402
 
 out = {}
 print(
-    f"{'molecule':20s} {'sd resid pGM':>12s} {'sd resid cls':>12s} {'sd E_nb pGM':>11s} {'|F_nb| min pGM':>14s} {'cls':>6s} {'dip err D':>9s} {'|dip| D':>7s}"
+    f"{'molecule':20s} {'sd resid pGM':>12s} {'sd resid cls':>12s} {'sd E_nb pGM':>11s} {'|F_nb| min pGM':>14s} "
+    f"{'cls':>6s} {'dip err D':>9s} {'|dip| D':>7s}"
 )
 for name in MOLECULES:
     te = frames(name, "test298")
@@ -47,7 +48,9 @@ for name in MOLECULES:
         }
     out[name] = r
     print(
-        f"{name:20s} {r['pgm']['sd_resid']:12.2f} {r['cls']['sd_resid']:12.2f} {r['pgm']['sd_Enb']:11.2f} {r['pgm']['F_min']:14.2f} {r['cls']['F_min']:6.2f} {r['pgm']['dip_rmse_D']:9.3f} {r['pgm']['dip_mean_D']:7.2f}",
+        f"{name:20s} {r['pgm']['sd_resid']:12.2f} {r['cls']['sd_resid']:12.2f} {r['pgm']['sd_Enb']:11.2f} "
+        f"{r['pgm']['F_min']:14.2f} {r['cls']['F_min']:6.2f} {r['pgm']['dip_rmse_D']:9.3f} "
+        f"{r['pgm']['dip_mean_D']:7.2f}",
         flush=True,
     )
 os.makedirs(os.path.join(ROOT, "runs/bonded/results"), exist_ok=True)

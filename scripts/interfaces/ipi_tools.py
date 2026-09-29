@@ -32,7 +32,10 @@ def ipi_command():
 def cell_abc(H_nm):
     H = np.asarray(H_nm, float) * 10.0
     a, b, c = (np.linalg.norm(v) for v in H)
-    ang = lambda u, v: np.degrees(np.arccos(np.dot(u, v) / np.linalg.norm(u) / np.linalg.norm(v)))
+
+    def ang(u, v):
+        return np.degrees(np.arccos(np.dot(u, v) / np.linalg.norm(u) / np.linalg.norm(v)))
+
     return a, b, c, ang(H[1], H[2]), ang(H[0], H[2]), ang(H[0], H[1])
 
 
@@ -109,7 +112,8 @@ def write_input(
     if pressure is not None:
         ens += f'<pressure units="bar"> {pressure} </pressure>'
     traj = (
-        f'<trajectory filename="pos" stride="{traj_stride}" format="xyz" cell_units="angstrom"> x_centroid{{angstrom}} </trajectory>'
+        f'<trajectory filename="pos" stride="{traj_stride}" format="xyz" cell_units="angstrom"> '
+        "x_centroid{angstrom} </trajectory>"
         if traj_stride
         else ""
     )

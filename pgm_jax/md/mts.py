@@ -58,8 +58,8 @@ step).  With `anchor` (default with fast induced dipoles) the history holds mu -
 short-range part is removed, and the guess is mu_fast(x_new) + extrapolation(mu - mu_fast): mu_fast
 is known at the new positions before the solve (the last fast evaluation), so the fused initial
 residual of the solver still applies (ubiquitin, 8 fs outer step: 18.1 CG iterations, 17.4 with
-the quadratic predictor mu3, against 16.9 per step at 4 fs without MTS).  MDState.induction.mu stays the converged dipoles; only the history
-(and so the checkpoint's induction state) is in the anchored form.
+the quadratic predictor mu3, against 16.9 per step at 4 fs without MTS).  MDState.induction.mu stays the converged
+dipoles; only the history (and so the checkpoint's induction state) is in the anchored form.
 
 Barostat: the Monte Carlo barostat runs at outer steps (its trial energy is the full energy); an
 accepted move re-evaluates every group at the scaled positions.  Replica exchange (remd.py) does
@@ -317,8 +317,8 @@ class _MTSMixin:
         N = ff.n
         P = ff._atoms(self.params)
         p, vjp_p = jax.vjp(lambda y: ff.perm_dipoles(y, H, P["cov"]), pos)
-        at = (lambda v: v) if rows is None else (lambda v: v[rows])  # noqa: E731
-        full = (lambda v: v) if rows is None else (lambda v: jnp.zeros((N,) + v.shape[1:], v.dtype).at[rows].set(v))  # noqa: E731
+        at = (lambda v: v) if rows is None else (lambda v: v[rows])
+        full = (lambda v: v) if rows is None else (lambda v: jnp.zeros((N,) + v.shape[1:], v.dtype).at[rows].set(v))
         pr = at(pos)
         x = [pr[:, c][:, None] - pos[:, c][ks] for c in range(3)]  # float64 differences, minimum image
         for c in (2, 1, 0):
@@ -343,7 +343,10 @@ class _MTSMixin:
         pc = p.astype(cd)
         pk = [pc[:, c][ks] for c in range(3)]
         pi = [at(pc)[:, c][:, None] for c in range(3)]
-        rowsum = lambda v: jnp.sum(v, axis=1)  # noqa: E731
+
+        def rowsum(v):
+            return jnp.sum(v, axis=1)
+
         alpha = at(P["alpha"])[:, None]
         corr = 0.0  # polarization energy not in the pair sum (units of KE)
         if self.pol != "none":  # nu0 = alpha E_short, E_short = -dU_pair/dd at d = p
@@ -620,13 +623,12 @@ class _MTSMixin:
         else:
             n = self.levels[j + 1][1]
             hs = h / n
-            loop = lambda s, count: (
-                s
-                if count == 0
-                else jax.lax.fori_loop(  # noqa: E731
-                    0, count, lambda _, c: self._level(c, j + 1, hs, False), s
+
+            def loop(s, count):
+                return (
+                    s if count == 0 else jax.lax.fori_loop(0, count, lambda _, c: self._level(c, j + 1, hs, False), s)
                 )
-            )
+
             if o_mid and n % 2 == 0:
                 st = self._o(loop(st, n // 2), self.dt)
                 st = loop(st, n // 2)

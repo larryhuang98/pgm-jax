@@ -4,8 +4,9 @@ constant, gas-phase dipole and polarizability, O-O g(r); parameter uncertainties
 docs/liquid_fit.md).
 
     # the owner's goal: the base pGM water toward experiment (eps included)
-    python scripts/fit_multi.py -o runs/fit/demo --params q,cov,alpha,radius,lj_r,lj_eps \
-        --targets density=0.997:0.002,hvap=10.52:0.05,eps=78.4:1.5,gas_dipole=1.855:0.01,gas_polarizability=1.47:0.01,liquid_dipole \
+    T=density=0.997:0.002,hvap=10.52:0.05,eps=78.4:1.5,gas_dipole=1.855:0.01
+    T=$T,gas_polarizability=1.47:0.01,liquid_dipole
+    python scripts/fit_multi.py -o runs/fit/demo --params q,cov,alpha,radius,lj_r,lj_eps --targets $T \\
         --equil 50 --prod 2000 --iters 6
     # measure only (all targets without values): observables, Jacobians, errors at --start
     python scripts/fit_multi.py -o runs/fit/s0 --params q --targets density,hvap,eps,liquid_dipole --iters 1

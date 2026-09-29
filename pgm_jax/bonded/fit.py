@@ -241,7 +241,10 @@ class Fitter:
             z_start = carry[0]
             if verbose:
                 print(f"    adam: {adam_steps} steps, loss {float(Ls[-1]):.4g} ({time.time() - t0:.1f} s)", flush=True)
-        f = lambda z: tuple(np.asarray(v, float) for v in vg(jnp.asarray(z)))
+
+        def f(z):
+            return tuple(np.asarray(v, float) for v in vg(jnp.asarray(z)))
+
         res = minimize(
             f,
             np.asarray(z_start),
@@ -251,7 +254,8 @@ class Fitter:
         )
         if verbose:
             print(
-                f"    fit: loss {float(obj(jnp.zeros_like(z0))):.4g} -> {res.fun:.4g} in {res.nit} it, {time.time() - t0:.1f} s ({res.message})",
+                f"    fit: loss {float(obj(jnp.zeros_like(z0))):.4g} -> {res.fun:.4g} in {res.nit} it, "
+                f"{time.time() - t0:.1f} s ({res.message})",
                 flush=True,
             )
         return theta(jnp.asarray(res.x))

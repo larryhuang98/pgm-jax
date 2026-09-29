@@ -5,17 +5,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_grad import methanol
 
-jax.config.update("jax_enable_x64", True)
-
-from test_grad import methanol  # noqa: E402
-
-from pgm_jax.bonded import terms as T  # noqa: E402
-from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec  # noqa: E402
-from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.integrate import KB  # noqa: E402
-from pgm_jax.system import System  # noqa: E402
+from pgm_jax.bonded import terms as T
+from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
+from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.integrate import KB
+from pgm_jax.system import System
 
 BONDS = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)]
 

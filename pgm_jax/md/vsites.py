@@ -387,7 +387,7 @@ class VirtualSites:
         pos = jnp.asarray(pos, jnp.float64)
         Hj = None if H is None else jnp.asarray(H, jnp.float64)
         placed = self.place(pos, Hj)
-        for fn, idx, arrs in self._kernels:
+        for fn, _idx, arrs in self._kernels:
             if fn is _linear:
                 continue
             kind = "local" if fn is _local else "amber"

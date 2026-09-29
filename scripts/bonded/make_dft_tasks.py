@@ -60,7 +60,8 @@ if tasks and len(sys.argv) > 1:
 cd {ROOT}
 export PSI_SCRATCH=/tmp/larry/pgmjax_dft_${{SLURM_ARRAY_JOB_ID}}_${{SLURM_ARRAY_TASK_ID}}; mkdir -p $PSI_SCRATCH
 export OMP_NUM_THREADS=8
-~/miniconda3/envs/psi4/bin/python scripts/bonded/dft_labels.py $SLURM_ARRAY_TASK_ID --threads 8 --memory {os.environ.get("PMEM", "5")} --tasks {ROOT}/runs/bonded/dft_tasks_{sys.argv[1]}.txt
+~/miniconda3/envs/psi4/bin/python scripts/bonded/dft_labels.py $SLURM_ARRAY_TASK_ID --threads 8 \\
+    --memory {os.environ.get("PMEM", "5")} --tasks {ROOT}/runs/bonded/dft_tasks_{sys.argv[1]}.txt
 rm -rf $PSI_SCRATCH
 """)
     os.rename(

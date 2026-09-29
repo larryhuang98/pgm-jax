@@ -13,13 +13,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_md import small_box
 
-jax.config.update("jax_enable_x64", True)
-
-from test_md import small_box  # noqa: E402
-
-from pgm_jax.interfaces import GasPhaseEngine, PGMEngine  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
+from pgm_jax.interfaces import GasPhaseEngine, PGMEngine
+from pgm_jax.md.forcefield import MDSettings, PGMForceField
 
 
 def settings(**kw):
@@ -162,9 +159,9 @@ def test_compute_batch_matches_single_structures():
     rng = np.random.default_rng(1)
     X = np.stack([pos + 0.004 * rng.normal(size=pos.shape) for _ in range(4)])
     X[2, :3] += np.asarray(H)[0]  # a whole molecule of bead 2 one cell over
-    for chunk, s in ((None, s), (2, settings(dipole_tol=1e-10))):  # molecule list, then atom list
-        ref = [PGMEngine(sysm, pos, H, s, stress="atomic").compute(x, H, virial=True) for x in X]
-        eng = PGMEngine(sysm, pos, H, s, stress="atomic", bead_margin=0.02)
+    for chunk, sc in ((None, s), (2, settings(dipole_tol=1e-10))):  # molecule list, then atom list
+        ref = [PGMEngine(sysm, pos, H, sc, stress="atomic").compute(x, H, virial=True) for x in X]
+        eng = PGMEngine(sysm, pos, H, sc, stress="atomic", bead_margin=0.02)
         out = eng.compute_batch(X, H, virial=True, chunk=chunk)
         for r, q in zip(out, ref):
             assert abs(r.energy - q.energy) < 1e-9 * abs(q.energy)
@@ -177,7 +174,7 @@ def test_compute_batch_matches_single_structures():
         assert len(part) == 3 and part[1].energy == part[2].energy
         full = eng.compute_batch(Y[::-1] + 1e-4, H)
         for r, x in zip(full + part[:2], list(Y[::-1] + 1e-4) + [Y[3], Y[1]]):
-            q = PGMEngine(sysm, pos, H, s).compute(x, H)
+            q = PGMEngine(sysm, pos, H, sc).compute(x, H)
             assert abs(r.energy - q.energy) < 1e-9 * abs(q.energy)
         st = eng.stats
         assert st["batches"] == 3 and st["calls"] == 10 and st["slot_evaluations"] == 10 and st["resets"] == 0

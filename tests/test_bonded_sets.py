@@ -4,14 +4,11 @@ bonded terms (symmetry, rotation invariance, gradients, freezing for MD)."""
 import jax
 import jax.numpy as jnp
 import numpy as np
+from test_bonded import ethanal
+from test_grad import methanol
 
-jax.config.update("jax_enable_x64", True)
-
-from test_bonded import ethanal  # noqa: E402
-from test_grad import methanol  # noqa: E402
-
-from pgm_jax.bonded import terms as T  # noqa: E402
-from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec  # noqa: E402
+from pgm_jax.bonded import terms as T
+from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
 
 BONDS = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)]
 
@@ -60,7 +57,10 @@ def test_nnb_symmetry_invariance_gradients_and_freeze():
     Kb = np.asarray(C["bond_morse"]["Kb"])
     assert len(ch) == 3 and np.allclose(Kb[ch], Kb[ch[0]], rtol=1e-12) and np.ptp(Kb) > 0
     y = jnp.asarray(x + 0.004 * rng.normal(size=x.shape))
-    E = lambda R: model.bonded_energy(0, R, P)
+
+    def E(R):
+        return model.bonded_energy(0, R, P)
+
     Q = np.linalg.qr(rng.normal(size=(3, 3)))[0]
     assert abs(float(E(y @ Q.T)) - float(E(y))) < 1e-9 * max(1.0, abs(float(E(y))))
     _fd_check(E, np.asarray(y), rng)

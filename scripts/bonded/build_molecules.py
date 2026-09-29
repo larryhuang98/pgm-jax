@@ -14,5 +14,6 @@ for name in MOLECULES:
     d = build(name)
     json.dump(d, open(os.path.join(out, f"{name}.json"), "w"), indent=1)
     print(
-        f"{name:20s} {d['subset']} q={d['charge']:+d} atoms {len(d['elements']):2d} bonds {len(d['bonds']):2d} conformers {len(d['conformers'])}"
+        f"{name:20s} {d['subset']} q={d['charge']:+d} atoms {len(d['elements']):2d} bonds {len(d['bonds']):2d} "
+        f"conformers {len(d['conformers'])}"
     )

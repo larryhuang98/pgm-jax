@@ -55,10 +55,10 @@ def read_inpcrd(path):
 
 def write_inpcrd(path, X):
     with open(path, "w") as fh:
-        fh.write("perturbed\n%6d\n" % len(X))
+        fh.write(f"perturbed\n{len(X):6d}\n")
         flat = X.ravel()
         for i in range(0, len(flat), 6):
-            fh.write("".join("%12.7f" % v for v in flat[i : i + 6]) + "\n")
+            fh.write("".join(f"{v:12.7f}" for v in flat[i : i + 6]) + "\n")
 
 
 def sander(prmtop, crd):
@@ -68,7 +68,10 @@ def sander(prmtop, crd):
     sh(f"sander -O -i sp.in -p {prmtop} -c {crd} -o sp.out")
     txt = open(os.path.join(WD, "sp.out")).read()
     txt = txt[txt.index("NSTEP       ENERGY") :]
-    get = lambda name: float(re.search(re.escape(name) + r"\s*=\s*(-?[\d.]+)", txt).group(1))
+
+    def get(name):
+        return float(re.search(re.escape(name) + r"\s*=\s*(-?[\d.]+)", txt).group(1))
+
     return {k: get(k) for k in ("BOND", "ANGLE", "DIHED", "CMAP", "1-4 VDW", "1-4 EEL")}
 
 

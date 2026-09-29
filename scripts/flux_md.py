@@ -202,7 +202,10 @@ elif a.cmd == "gas":
     kT = KB * T
     gamma, nrep = 5.0, 256
     ef = jax.value_and_grad(lambda R: model.energy(tpl.index, R, P)[0])
-    dipf = lambda R: jnp.linalg.norm(model.energy(tpl.index, R, P)[1])
+
+    def dipf(R):
+        return jnp.linalg.norm(model.energy(tpl.index, R, P)[1])
+
     c1 = np.exp(-gamma * dt)
     c2 = np.sqrt((1.0 - c1 * c1) * kT)
 
@@ -236,7 +239,10 @@ elif a.cmd == "gas":
             U.append(np.asarray(e))
             D.append(np.asarray(d))
     U, D = np.array(U), np.array(D)  # (samples, replicas)
-    se = lambda v: float(np.std(v.mean(0), ddof=1) / np.sqrt(v.shape[1]))
+
+    def se(v):
+        return float(np.std(v.mean(0), ddof=1) / np.sqrt(v.shape[1]))
+
     out = {
         "template": a.template,
         "flux": tpl.settings.get("flux", 0),
@@ -324,6 +330,6 @@ else:
     print(json.dumps({k: v for k, v in out.items() if k != "rounds"}), flush=True)
     json.dump(
         out,
-        open(stem + f"_speed{k}_{a.thermostat}{'_it%d' % a.fixed_iter if a.fixed_iter else ''}.json", "w"),
+        open(stem + f"_speed{k}_{a.thermostat}{f'_it{a.fixed_iter}' if a.fixed_iter else ''}.json", "w"),
         indent=1,
     )

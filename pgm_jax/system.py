@@ -243,7 +243,8 @@ class ParamTable:
         ]
         if bad:
             warnings.warn(
-                "tied values differ (quantity, key, spread): " + ", ".join(f"{a} {b} {c:.3g}" for a, b, c in bad[:10])
+                "tied values differ (quantity, key, spread): " + ", ".join(f"{a} {b} {c:.3g}" for a, b, c in bad[:10]),
+                stacklevel=2,
             )
 
     def initial(self) -> dict[str, jnp.ndarray]:

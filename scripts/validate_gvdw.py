@@ -62,7 +62,10 @@ def compare():
     H = box_matrix(*cell[0], *cell[1]) * 0.1
     pos = jnp.asarray(xyz * 0.1)
     mols = _dedupe(read_prmtop_pgm(TOP, first_residue_only=False))
-    to_kcal_A = lambda F: np.asarray(F) / KCAL / 10.0
+
+    def to_kcal_A(F):
+        return np.asarray(F) / KCAL / 10.0
+
     lj_amb = mdout_step0(os.path.join(REF, "pmemd_pbc", "mdout"))
     f_lj_amb = read_nc_frames(os.path.join(REF, "pmemd_pbc", "mdfrc"), "forces")[0]
     sys_lj = System(mols)

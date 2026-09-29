@@ -11,15 +11,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_grad import water
+from test_md_macro import _water_box
 
-jax.config.update("jax_enable_x64", True)
-
-from test_grad import water  # noqa: E402
-from test_md_macro import _water_box  # noqa: E402
-
-from pgm_jax import System  # noqa: E402
-from pgm_jax.md import free_energy as fe  # noqa: E402
-from pgm_jax.md.alchemy import (  # noqa: E402
+from pgm_jax import System
+from pgm_jax.md import free_energy as fe
+from pgm_jax.md.alchemy import (
     Alchemy,
     FreeEnergyRun,
     GasPhaseLeg,
@@ -27,9 +24,9 @@ from pgm_jax.md.alchemy import (  # noqa: E402
     alchemical_system,
     standard_schedule,
 )
-from pgm_jax.md.box import min_image  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
-from pgm_jax.md.simulation import Simulation  # noqa: E402
+from pgm_jax.md.box import min_image
+from pgm_jax.md.forcefield import MDSettings, PGMForceField
+from pgm_jax.md.simulation import Simulation
 
 
 def settings(**kw):
@@ -492,7 +489,10 @@ def test_flexible_windows_and_lone_solute_gas_leg():
     gsim = FlexibleSimulation(
         sub, [tpl], x, Hg, sg, log=None, params=P, alchemy=alch_g, ensemble="nve", neighbor_list="atom"
     )
-    E = lambda le: float(gsim.integ.forces(gsim.state.set(lam=jnp.array([le, 1.0])), False).epot)  # noqa: E731
+
+    def E(le):
+        return float(gsim.integ.forces(gsim.state.set(lam=jnp.array([le, 1.0])), False).epot)
+
     gas = GasPhaseLeg(alch_g, np.asarray(gsim.state.dyn.position), "qpi")
     e0 = E(0.0)
     for le in (1.0, 0.4):
@@ -515,7 +515,7 @@ def test_mbar_bar_ti_on_harmonic_oscillators():
     exact = 0.5 * np.log(K / K[0])
     rng = np.random.default_rng(11)
     est, errs, bars, bar_errs = [], [], [], []
-    for rep in range(40):
+    for _rep in range(40):
         xs, u = _harmonic(rng, K, x0, 400)
         f, Th = fe.mbar(u, np.full(len(K), 400))
         D, dD = fe.mbar_differences(f, Th)

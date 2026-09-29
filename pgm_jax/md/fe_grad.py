@@ -264,7 +264,10 @@ class ParamGradients:
 def gas_leg_gradient(gas, params, space: ParamSpace) -> tuple:
     """(Delta G_gas(1 -> 0), d Delta G_gas / dP (M,)) of a rigid solute's gas-phase leg
     (alchemy.GasPhaseLeg: E_gas(0) - E_gas(1), exact), kJ/mol."""
-    f = lambda P: gas._e(jnp.asarray(0.0), P) - gas._e(jnp.asarray(1.0), P)  # noqa: E731
+
+    def f(P):
+        return gas._e(jnp.asarray(0.0), P) - gas._e(jnp.asarray(1.0), P)
+
     v, g = jax.value_and_grad(f)(params)
     return float(v), np.asarray(space.flatten(g), float)
 
@@ -457,7 +460,9 @@ class FreeEnergyTarget:
         return cls.from_samples(fe.load(path), **kw)
 
     def _J(self, theta_fn, theta, space):
-        flat = lambda th: space.flatten(theta_fn(th))  # noqa: E731
+        def flat(th):
+            return space.flatten(theta_fn(th))
+
         th = jnp.asarray(theta, jnp.float64)
         p = np.asarray(flat(th), float)
         if p.shape != self.p.shape or not np.allclose(p, self.p, rtol=1e-8, atol=1e-12):

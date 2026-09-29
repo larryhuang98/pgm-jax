@@ -27,7 +27,8 @@ Forces are -dE/dR at fixed mu (E is variational in mu).  Pair terms run over row
 its special partners (a fixed table from md/topology.py: the rest of a small molecule, the nearby
 heavy-atom groups of a large one, each with a van der Waals weight) followed by its candidates
 from the neighbour list (van der Waals weight 1), compacted every step to the pairs inside the
-cutoff (fixed capacity; the driver re-sizes and repeats on overflow).  Rows are stored as a structure of arrays (index, x, y,
+cutoff (fixed capacity; the driver re-sizes and repeats on overflow).  Rows are stored as a structure of arrays
+(index, x, y,
 z, G0..G3): the row kernels are memory bound and read each component with unit stride.
 Intramolecular displacements come from offsets within the molecule (exact in float32).  Every pair
 appears in both rows: per-atom sums with no scatter-adds, and the pair forces are row sums of the
@@ -228,7 +229,10 @@ def ewald_beta_for(elec_cutoff: float, dsum_tol: float = DSUM_TOL) -> float:
     rc = float(elec_cutoff)
     if not rc > 0.0:
         raise ValueError(f"elec_cutoff must be positive, got {elec_cutoff}")
-    f = lambda b: math.erfc(b * rc) / (10.0 * rc) - dsum_tol
+
+    def f(b):
+        return math.erfc(b * rc) / (10.0 * rc) - dsum_tol
+
     if not (0.0 < dsum_tol and f(0.0) > 0.0):
         raise ValueError(f"dsum_tol must be in (0, 1/rc_A) = (0, {1.0 / (10.0 * rc):.3g}), got {dsum_tol}")
     lo, hi = 0.0, 1.0
@@ -384,7 +388,7 @@ class PGMForceField:
         if any(len(m.quad) for m in sys.molecules):
             import warnings
 
-            warnings.warn("quadrupole terms are ignored by the MD engine (gas phase only for now)")
+            warnings.warn("quadrupole terms are ignored by the MD engine (gas phase only for now)", stacklevel=2)
         self.cd = settings.dtype
         self.n = sys.n
         self.b0 = float(settings.ewald_beta)
@@ -625,7 +629,10 @@ class PGMForceField:
         per cent), in multiples of 8, at most the candidate width; split rows size each part."""
         ce, cv = (int(c) for c in jax.jit(self.pair_counts)(jnp.asarray(pos), jnp.asarray(H), idx))
         width = int(idx.shape[1]) + int(self.special.shape[1])
-        cap = lambda c: min(int(np.ceil((c * (1.0 + 0.5 * (factor - 1.0)) + 8) / 8.0) * 8), width)
+
+        def cap(c):
+            return min(int(np.ceil((c * (1.0 + 0.5 * (factor - 1.0)) + 8) / 8.0) * 8), width)
+
         self.mc_e = cap(ce) if self.split else None
         self.mc = self.mc_e + cap(cv) if self.split else cap(ce)
         return self.capacity
@@ -899,7 +906,10 @@ class PGMForceField:
         bv = jnp.einsum("snd,nd->s", rec1, new.astype(jnp.float64))
         ridge = 1e-12 * jnp.trace(M) + 1e-300
         c = jnp.linalg.solve(M + ridge * jnp.eye(S), bv)
-        lin = lambda R: jnp.einsum("s,snd->nd", c, R.astype(jnp.float64))
+
+        def lin(R):
+            return jnp.einsum("s,snd->nd", c, R.astype(jnp.float64))
+
         p1 = lin(st.rec[1])
         p2 = p1 + lin(st.rec[2])
         p3 = p2 + lin(st.rec[3])
@@ -952,7 +962,10 @@ class PGMForceField:
             if s.local_niter <= 0:
                 return z
             gs = g["short"]
-            A_loc = lambda v: v * inv_a + self._row_field(gs, None, v)
+
+            def A_loc(v):
+                return v * inv_a + self._row_field(gs, None, v)
+
             rr = r - A_loc(z)
             zz = rr * a_c
             rz = _dot(rr, zz)
@@ -971,7 +984,9 @@ class PGMForceField:
             z, *_ = jax.lax.fori_loop(0, s.local_niter, inner, (z, rr, zz, rz))
             return z
 
-        err_of = lambda r: jnp.max(jnp.abs(r * a_c).astype(jnp.float64)) / norm
+        def err_of(r):
+            return jnp.max(jnp.abs(r * a_c).astype(jnp.float64)) / norm
+
         x, r = x.astype(cd), r.astype(cd)
         z = precond(r)
 
@@ -1289,7 +1304,10 @@ class PGMForceField:
             [jnp.sum(radial * x[j] + qiG1 * dk[j] - qkG1 * di[j] - G2 * cross[j], axis=1) for j in range(3)], -1
         )
         glx = jnp.stack([jnp.sum(glj * x[j], axis=1) for j in range(3)], -1).astype(jnp.float64)
-        rowsum = lambda v: jnp.sum(jnp.sum(v, axis=1).astype(jnp.float64))  # rows in compute dtype, total in float64
+
+        def rowsum(v):
+            return jnp.sum(jnp.sum(v, axis=1).astype(jnp.float64))  # rows in compute dtype, total in float64
+
         sl = rowsum(elj)
         if "vdw_rows" in g:  # split rows: van der Waals beyond elec_cutoff
             t = g["vdw_rows"]

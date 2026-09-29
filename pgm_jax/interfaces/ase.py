@@ -169,8 +169,11 @@ class FixRigidMolecules(FixConstraint):
         for c, P in self.pairs.items():  # P: (M, c, 2)
             ds = self.bondlengths[c]
             a, b = P[..., 0], P[..., 1]
+
             # C_kl = e(a_k, l) / m_a_k - e(b_k, l) / m_b_k,  e(i, l) = [i == a_l] - [i == b_l]
-            e = lambda i: (i[:, :, None] == a[:, None, :]).astype(float) - (i[:, :, None] == b[:, None, :])
+            def e(i):
+                return (i[:, :, None] == a[:, None, :]).astype(float) - (i[:, :, None] == b[:, None, :])
+
             Cm = e(a) / m[a][:, :, None] - e(b) / m[b][:, :, None]
             self._groups.append((a, b, np.array(ds), Cm))
         self._masses = m
@@ -197,7 +200,7 @@ class FixRigidMolecules(FixConstraint):
             u0 = new[a] - new[b] - r0 + s0
             lam = np.zeros(d.shape)
             G = Cm[..., None] * s0[:, None, :, :]  # (M, c, c, 3): d u_k / d lam_l
-            for it in range(self.maxiter):
+            for _it in range(self.maxiter):
                 u = u0 + np.einsum("mkl,mklx->mkx", np.broadcast_to(lam[:, None, :], Cm.shape), G)
                 f = np.sum(u * u, -1) - d * d
                 if np.max(np.abs(f) / (d * d)) < self.tolerance:
@@ -214,7 +217,7 @@ class FixRigidMolecules(FixConstraint):
         m = self._masses
         v = p / m[:, None]
         n = len(atoms)
-        for a, b, d, Cm in self._groups:
+        for a, b, _d, Cm in self._groups:
             s = self._mic(x[a] - x[b], atoms.cell, atoms.pbc)
             dv = v[a] - v[b]
             A = Cm * np.einsum("mkx,mlx->mkl", s, s)

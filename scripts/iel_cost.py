@@ -57,7 +57,7 @@ def main():
     ff0 = PGMForceField(sys_, H, base)
     ff0.size_rows(pos, H, idx)
     print(f"# {sys_.nmol} waters, rows {ff0.mc}, device {jax.devices()[0]}", flush=True)
-    cases = [("scf-%d" % k, dataclasses.replace(base, iel="scf", iel_iter=k)) for k in (1, 2, 3, 4, 6)]
+    cases = [(f"scf-{k}", dataclasses.replace(base, iel="scf", iel_iter=k)) for k in (1, 2, 3, 4, 6)]
     cases += [("0scf", dataclasses.replace(base, iel="0scf")), ("mu4 tol 1e-5", base)]
     for name, s in cases:
         ff = PGMForceField(sys_, H, s)

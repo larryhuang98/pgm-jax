@@ -8,14 +8,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_grad import water
+from test_md import settings, small_box
 
-jax.config.update("jax_enable_x64", True)
-
-from test_grad import water  # noqa: E402
-from test_md import settings, small_box  # noqa: E402
-
-from pgm_jax import ElecChannel, System  # noqa: E402
-from pgm_jax.fit import (  # noqa: E402
+from pgm_jax import ElecChannel, System
+from pgm_jax.fit import (
     FrameAnalyzer,
     GasPhase,
     LiquidSamples,
@@ -25,11 +22,11 @@ from pgm_jax.fit import (  # noqa: E402
     RDFSpec,
     Target,
 )
-from pgm_jax.fit.estimators import KB, KCAL  # noqa: E402
-from pgm_jax.fit.optimize import Estimate  # noqa: E402
-from pgm_jax.md.dipoles import CellDipole  # noqa: E402
-from pgm_jax.md.forcefield import PGMForceField  # noqa: E402
-from pgm_jax.units import DEBYE_E_NM, KE  # noqa: E402
+from pgm_jax.fit.estimators import KB, KCAL
+from pgm_jax.fit.optimize import Estimate
+from pgm_jax.md.dipoles import CellDipole
+from pgm_jax.md.forcefield import PGMForceField
+from pgm_jax.units import DEBYE_E_NM, KE
 
 QTY = ["q", "cov", "alpha", "radius", "lj_r", "lj_eps"]
 
@@ -141,7 +138,10 @@ def test_jacobians_are_the_fluctuation_formulas():
     fr, s = _synthetic_samples()
     beta = 1.0 / (KB * s.T)
     th0 = np.zeros(3)
-    gas = lambda th: {"gas_energy": 5.0 + 2.0 * th[0], "gas_dipole": 1.8 + th[1], "gas_polarizability": 1.4 + th[2]}
+
+    def gas(th):
+        return {"gas_energy": 5.0 + 2.0 * th[0], "gas_dipole": 1.8 + th[1], "gas_polarizability": 1.4 + th[2]}
+
     obj = Objective(
         [
             Target("density", 1.0),
@@ -155,12 +155,15 @@ def test_jacobians_are_the_fluctuation_formulas():
     )
     est = obj.estimate(s, th0)
     dU = fr["dU"]
-    cov = lambda a: np.mean(
-        (a - a.mean(0))[:, None] * (dU - dU.mean(0))
-        if a.ndim == 1
-        else (a - a.mean(0))[:, :, None] * (dU - dU.mean(0))[:, None, :],
-        axis=0,
-    )
+
+    def cov(a):
+        return np.mean(
+            (a - a.mean(0))[:, None] * (dU - dU.mean(0))
+            if a.ndim == 1
+            else (a - a.mean(0))[:, :, None] * (dU - dU.mean(0))[:, None, :],
+            axis=0,
+        )
+
     V, M = fr["V"], fr["M"]
     rho = 9000.0 / V * 1.66053906660e-3
     d_rho = -beta * cov(rho)
@@ -420,8 +423,13 @@ def test_thermal_expansion_and_compressibility_gradients():
     beta, kT, p = s.beta, KB * s.T, 1.0 / 16.605390671738466
     V, U, dU = fr["V"], fr["U"], fr["dU"]
     Hh = U + p * V
-    m = lambda a: a.mean(0)
-    cov = lambda a: m((a - m(a))[:, None] * (dU - m(dU)))
+
+    def m(a):
+        return a.mean(0)
+
+    def cov(a):
+        return m((a - m(a))[:, None] * (dU - m(dU)))
+
     a_p = (m(V * Hh) - m(V) * m(Hh)) / (KB * s.T**2 * m(V))
     k_t = (m(V * V) - m(V) ** 2) / (kT * m(V)) / 16.605390671738466
     dVH = m(V[:, None] * dU) - beta * cov(V * Hh)

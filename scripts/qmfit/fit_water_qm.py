@@ -148,7 +148,8 @@ def report(cm, W, P, data, name, extra=None):
             "ref_rel": float(ev["ref"][i] - e0q),
         }
         print(
-            f"  {sid:32s} E {ev['total'][i]:7.3f} ref {ev['ref'][i]:7.3f}   rel {ev['total'][i] - e0m:6.3f} ref {ev['ref'][i] - e0q:6.3f}"
+            f"  {sid:32s} E {ev['total'][i]:7.3f} ref {ev['ref'][i]:7.3f}   rel {ev['total'][i] - e0m:6.3f} ref "
+            f"{ev['ref'][i] - e0q:6.3f}"
         )
     # hexamers
     out["hexamers"] = {}
@@ -214,7 +215,8 @@ def report(cm, W, P, data, name, extra=None):
         "qm": {k: data.monomer.get(k) for k in ("dipole_D", "polarizability_A3")},
     }
     print(
-        f"monomer: dipole {mu:.4f} D (QM {data.monomer.get('dipole_D')}), polarizability {al:.4f} A^3 (QM {data.monomer.get('polarizability_A3')})"
+        f"monomer: dipole {mu:.4f} D (QM {data.monomer.get('dipole_D')}), polarizability {al:.4f} A^3 (QM "
+        f"{data.monomer.get('polarizability_A3')})"
     )
     out.update(extra or {})
     return out
@@ -240,7 +242,8 @@ def summary(names):
 
     hdr = (
         f"{'model':16s} {'Eint tr':>8s} {'Eint te':>8s} {'MAE te':>7s} {'elst te':>8s} {'ind te':>7s} {'ex+di te':>8s} "
-        f"{'3b te':>6s} {'3b W27':>8s} {'dimer':>7s} {'dim min':>7s} {'hex order':>10s} {'mu D':>6s} {'a A3':>6s} {'F te':>6s}"
+        f"{'3b te':>6s} {'3b W27':>8s} {'dimer':>7s} {'dim min':>7s} {'hex order':>10s} {'mu D':>6s} {'a A3':>6s} "
+        f"{'F te':>6s}"
     )
     lines = [hdr]
     for n, r in reps.items():
@@ -249,10 +252,12 @@ def summary(names):
         rat = r.get("nb3_ratio", {})
         lines.append(
             f"{n:16s} {get(r, 'train (all)', 'E_int'):8.3f} {get(r, 'test (all)', 'E_int'):8.3f} "
-            f"{get(r, 'test (all)', 'E_int', 'MAE'):7.3f} {get(r, 'test (all)', 'elst'):8.3f} {get(r, 'test (all)', 'ind'):7.3f} "
+            f"{get(r, 'test (all)', 'E_int', 'MAE'):7.3f} {get(r, 'test (all)', 'elst'):8.3f} "
+            f"{get(r, 'test (all)', 'ind'):7.3f} "
             f"{get(r, 'test (all)', 'exch+disp'):8.3f} {get(r, 'test (all)', '3-body'):6.3f} "
             f"{rat.get('water27', float('nan')):8.3f} {r['dimer']['E_at_ref_min']:7.3f} "
-            f"{r['dimer']['model_min']:7.3f} {ok:>10s} {r['monomer']['dipole_D']:6.3f} {r['monomer']['polarizability_A3']:6.3f} "
+            f"{r['dimer']['model_min']:7.3f} {ok:>10s} {r['monomer']['dipole_D']:6.3f} "
+            f"{r['monomer']['polarizability_A3']:6.3f} "
             f"{r.get('forces', {}).get('test', {}).get('F_RMSE', float('nan')):6.3f}"
         )
     print("\n".join(lines))

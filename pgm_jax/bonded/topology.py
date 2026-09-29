@@ -236,7 +236,9 @@ def build_topology(elements, bonds, bond_orders=None, xyz=None, classes=None, de
     near = near_pairs(nbr, 3)
     ring = _ring_bonds([tuple(b) for b in bonds], nbr)
     bidx = {tuple(b): k for k, b in enumerate(bonds)}
-    bond_of = lambda i, j: bidx[tuple(sorted((i, j)))]
+
+    def bond_of(i, j):
+        return bidx[tuple(sorted((i, j)))]
 
     angles = [(i, j, k) for j in range(n) for a, i in enumerate(sorted(nbr[j])) for k in sorted(nbr[j])[a + 1 :]]
     angles = np.array(angles, int).reshape(-1, 3)
@@ -291,7 +293,7 @@ def build_topology(elements, bonds, bond_orders=None, xyz=None, classes=None, de
         [(bond_of(a_[0], a_[1]), m) for m, (i, j, k) in enumerate(angles) for a_ in ((i, j), (j, k))], int
     ).reshape(-1, 2)
     by_centre = {}
-    for m, (i, j, k) in enumerate(angles):
+    for m, (_i, j, _k) in enumerate(angles):
         by_centre.setdefault(int(j), []).append(m)
     aa = []
     for ms in by_centre.values():  # angle pairs share their centre

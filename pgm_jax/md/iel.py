@@ -94,9 +94,14 @@ def response_spectrum(ff, pos, H, idx, params=None, iters: int = 60, precond: st
     if precond == "block":
         if ff._blocks is None:
             ff._blocks = ff._block_layout(np.asarray(ff.sys.mol), np.asarray(ff.first), ff.sys.nmol)
-        W = lambda v: ff._block_solve(g, alpha, v)
+
+        def W(v):
+            return ff._block_solve(g, alpha, v)
     else:
-        W = lambda v: alpha[:, None] * v
+
+        def W(v):
+            return alpha[:, None] * v
+
     WA = jax.jit(lambda v: W(A(v.astype(ff.cd)).astype(jnp.float64)))
 
     def power(op, v):

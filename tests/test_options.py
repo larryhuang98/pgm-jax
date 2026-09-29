@@ -7,22 +7,19 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax.scipy.special import erf
+from test_grad import cluster, methanol, water
 
-jax.config.update("jax_enable_x64", True)
-
-from jax.scipy.special import erf  # noqa: E402
-from test_grad import cluster, methanol, water  # noqa: E402
-
-from pgm_jax import System  # noqa: E402
-from pgm_jax.channels import ElecChannel  # noqa: E402
-from pgm_jax.multipole import (  # noqa: E402
+from pgm_jax import System
+from pgm_jax.channels import ElecChannel
+from pgm_jax.multipole import (
     S_tensor,
     multipole_field,
     multipole_pair_energy,
     quadrupoles,
     with_quadrupoles,
 )
-from pgm_jax.vdw import C0, GVDWChannel, gvdw_G, gvdw_pair, set_gvdw  # noqa: E402
+from pgm_jax.vdw import C0, GVDWChannel, gvdw_G, gvdw_pair, set_gvdw
 
 
 def _rand_quad(rng, n):
@@ -33,7 +30,10 @@ def _rand_quad(rng, n):
 
 def _operator_energy(x, a, qi, pi, Ti, qj, pj, Tj):
     """E = O_i O_j phi by nested automatic derivatives (the definition)."""
-    f = lambda v: erf(a * jnp.linalg.norm(v)) / jnp.linalg.norm(v)
+
+    def f(v):
+        return erf(a * jnp.linalg.norm(v)) / jnp.linalg.norm(v)
+
     g, H = jax.grad(f), jax.hessian(f)
     T3 = jax.jacfwd(H)
     T4 = jax.jacfwd(T3)
@@ -66,8 +66,11 @@ def test_multipole_kernels_match_operator_form():
             jnp.asarray(Tj)[None],
         )[0]
         assert abs(float(got) - float(ref)) < 1e-9 * max(1.0, abs(float(ref))), (scale, got, ref)
+
         # field at i = -grad_x of the potential of j
-        V = lambda v: _operator_energy(v, a, 1.0, jnp.zeros(3), jnp.zeros((3, 3)), qj, jnp.asarray(pj), jnp.asarray(Tj))
+        def V(v):
+            return _operator_energy(v, a, 1.0, jnp.zeros(3), jnp.zeros((3, 3)), qj, jnp.asarray(pj), jnp.asarray(Tj))
+
         E_ref = -jax.grad(V)(jnp.asarray(x))
         E = multipole_field(
             jnp.asarray(x)[None], jnp.asarray([a]), jnp.asarray([qj]), jnp.asarray(pj)[None], jnp.asarray(Tj)[None]
@@ -131,7 +134,10 @@ def test_quadrupoles_zero_strength_and_forces():
     assert abs(float(e0["perm"] + e0["ind"] - e_ref["perm"] - e_ref["ind"])) < 1e-9
     P = dict(sys.params0)
     P["quad"] = jnp.asarray(rng.normal(size=P["quad"].shape) * 2e-3)
-    E = lambda y: sum(ch.energy(y, sys, P)[0].values())
+
+    def E(y):
+        return sum(ch.energy(y, sys, P)[0].values())
+
     F = -jax.grad(E)(pos)
     d = np.zeros(pos.shape)
     d[2, 1] = 1e-6

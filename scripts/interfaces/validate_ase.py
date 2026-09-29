@@ -129,7 +129,7 @@ def main():
     nat._advance(rep)  # compile
     t, E, U = [], [], []
     t0 = time.perf_counter()
-    for k in range(n_nve // rep):
+    for _k in range(n_nve // rep):
         nat._advance(rep)
         o = nat.observables()
         t.append(o["time_ps"])
@@ -183,7 +183,7 @@ def main():
     )
     Tn, Un, Ttr, Trot = [], [], [], []
     t0 = time.perf_counter()
-    for k in range(n_nvt // rep):
+    for _k in range(n_nvt // rep):
         natv._advance(rep)
         o = natv.observables()
         Tn.append(o["temp_K"])

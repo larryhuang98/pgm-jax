@@ -4,7 +4,8 @@ check of the ensemble gradients, calibration of the parameter uncertainties.
     # observables, Jacobians and jackknife errors from saved frames (segments of one run at fixed theta)
     python scripts/liquid_fit_tools.py combine runs/fit/c0 --params q --targets density,hvap,eps,liquid_dipole
     # finite differences between independent runs at theta -/+ delta e_j vs the fluctuation-formula gradient
-    python scripts/liquid_fit_tools.py fd --minus runs/fit/m --center runs/fit/c0 --plus runs/fit/p --delta 0.1 --param 0 \
+    python scripts/liquid_fit_tools.py fd --minus runs/fit/m --center runs/fit/c0 --plus runs/fit/p --delta 0.1 \
+        --param 0 \
         --params q --targets density,hvap,eps,liquid_dipole
     # spread of fitted parameters over independent fits vs the predicted sampling errors
     python scripts/liquid_fit_tools.py calib runs/fit/cal_s*.json
@@ -115,8 +116,10 @@ def cmd_fd(S, a):
             }
         )
         print(
-            f"   {n:16s} y {em.y[i]:10.4f} {ec.y[i]:10.4f} {ep.y[i]:10.4f} (+- {ec.err[i]:.4f})  FD {fd:11.4f} +- {fd_err:9.4f}  "
-            f"gradient {g[0]:11.4f} {g[1]:11.4f} {g[2]:11.4f} (+- {ge[1]:.4f})  Simpson {simpson:11.4f} +- {simpson_err:9.4f}  z {z:+.2f}"
+            f"   {n:16s} y {em.y[i]:10.4f} {ec.y[i]:10.4f} {ep.y[i]:10.4f} (+- {ec.err[i]:.4f})  FD {fd:11.4f} +- "
+            f"{fd_err:9.4f}  "
+            f"gradient {g[0]:11.4f} {g[1]:11.4f} {g[2]:11.4f} (+- {ge[1]:.4f})  Simpson {simpson:11.4f} +- "
+            f"{simpson_err:9.4f}  z {z:+.2f}"
         )
     if a.json:
         json.dump(rows, open(a.json, "w"), indent=1, default=float)
@@ -142,7 +145,8 @@ def cmd_calib(a):
         lo, hi = sd[k] * np.sqrt((n - 1) / chi2.ppf(0.975, n - 1)), sd[k] * np.sqrt((n - 1) / chi2.ppf(0.025, n - 1))
         print(
             f"   {nm:12s} mean {th[:, k].mean():+.5f}  spread {sd[k]:.5f} (95 % {lo:.5f}-{hi:.5f})  "
-            f"predicted (jackknife) {np.sqrt(np.mean(err[:, k] ** 2)):.5f}  bootstrap {np.sqrt(np.nanmean(errb[:, k] ** 2)):.5f}"
+            f"predicted (jackknife) {np.sqrt(np.mean(err[:, k] ** 2)):.5f}  bootstrap "
+            f"{np.sqrt(np.nanmean(errb[:, k] ** 2)):.5f}"
         )
 
 
@@ -193,7 +197,8 @@ def cmd_calib_rep(S, a):
             }
         )
         print(
-            f"   {nm:14s} fitted {fits[:, j].mean():+.5f}  spread {sd:.5f} (95 % {lo:.5f}-{hi:.5f})  predicted {pj:.5f}  bootstrap {pb:.5f}"
+            f"   {nm:14s} fitted {fits[:, j].mean():+.5f}  spread {sd:.5f} (95 % {lo:.5f}-{hi:.5f})  predicted "
+            f"{pj:.5f}  bootstrap {pb:.5f}"
         )
     names = obj.layout()[0]
     for i, nm in enumerate(names):

@@ -233,7 +233,8 @@ def estimate(samples, discard_ps: float = 0.0, gas=None, stride: int = 1, end_ps
     """Free energy of switching the solute off (lambda = first window -> last window), by TI, BAR
     and MBAR, from the samples of alchemy.FreeEnergyRun (a dict or np.load(prefix_fe.npz)).
 
-    Per window, samples after discard_ps (and up to end_ps, if given) are subsampled with the statistical inefficiency of the
+    Per window, samples after discard_ps (and up to end_ps, if given) are subsampled with the statistical
+    inefficiency of the
     energy difference to the neighbouring window ('dE', for BAR / MBAR; alchemlyb's choice) and of
     dU/dlambda along the path (TI).  gas: optional gas-phase leg, {"delta_g": Delta G_gas(1 -> 0),
     "dudl": <dE_gas/dlambda_elec> at each window's lambda_elec} in kJ/mol, optionally with
@@ -311,7 +312,10 @@ def estimate(samples, discard_ps: float = 0.0, gas=None, stride: int = 1, end_ps
         out["ti_vdw"] = ti(L[s:], means[s:], sems[s:])[0]
     # ---- hydration free energy with the gas-phase leg
     if gas is not None:
-        by = lambda v, m: float(v[m]) if isinstance(v, dict) else float(v)  # noqa: E731
+
+        def by(v, m):
+            return float(v[m]) if isinstance(v, dict) else float(v)
+
         out["gas"] = by(gas["delta_g"], "mbar")
         for m in ("ti", "bar", "mbar"):
             ge = by(gas.get("delta_g_err", 0.0), m)

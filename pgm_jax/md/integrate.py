@@ -114,7 +114,10 @@ def strided_loop(st, n, step, post, stride: int):
     st = jax.lax.cond((h == head) & (head > 0), post, lambda s: s, st)
     rem = n - h
     nch = rem // stride
-    inner = lambda s: jax.lax.fori_loop(0, stride, lambda _, t: step(t), s)  # noqa: E731
+
+    def inner(s):
+        return jax.lax.fori_loop(0, stride, lambda _, t: step(t), s)
+
     st = jax.lax.fori_loop(0, nch, lambda _, s: post(inner(s)), st)
     return jax.lax.fori_loop(0, rem - nch * stride, lambda _, s: step(s), st)
 
@@ -297,7 +300,10 @@ class Integrator:
             e1, g1 = jax.value_and_grad(self.bias.energy, argnums=1)(new, pos, box)
             dF = self._map_atom_forces(x, box, g0 - g1)
             de = e1 - e0
-            add = lambda a, b: jax.tree_util.tree_map(jnp.add, a, b)  # noqa: E731
+
+            def add(a, b):
+                return jax.tree_util.tree_map(jnp.add, a, b)
+
             st = st.set(
                 bias=new._replace(work=new.work + de),
                 dyn=st.dyn.set(force=add(st.dyn.force, dF)),
@@ -499,7 +505,10 @@ class Integrator:
 
     def _run(self, st: MDState, n) -> MDState:
         st = st.set(max_iters=jnp.zeros((), jnp.int32), resid=jnp.zeros((), jnp.float64), overflow=jnp.zeros((), bool))
-        step = lambda s: self._book_field(s, self._step(s))  # noqa: E731
+
+        def step(s):
+            return self._book_field(s, self._step(s))
+
         if self.bias is None or self.bias.stride == 0:
             return jax.lax.fori_loop(0, n, lambda _, s: step(s), st)
         return strided_loop(st, n, step, self._bias_post, self.bias.stride)

@@ -25,7 +25,7 @@ class TorsionOOP(Family):
     def index(self, top, keyf):
         centre = {int(m[0]): i for i, m in enumerate(top.impropers)}
         t_, m_, keys = [], [], []
-        for t, (i, j, k, l) in enumerate(top.propers):
+        for t, (_i, j, k, _l) in enumerate(top.propers):
             for c in (int(j), int(k)):
                 if c in centre:
                     t_.append(t)
@@ -77,7 +77,7 @@ class Twist(Family):
     def index(self, top, keyf):
         tp = _twist_pairs(top)
         keys, mask = [], []
-        for t1, t2, i, j, k, l1, l2 in tp:
+        for _t1, _t2, i, j, k, l1, l2 in tp:
             c1, c2 = keyf([l1], "atom"), keyf([l2], "atom")
             keys.append("tw|" + "-".join(keyf([x], "atom") for x in (i, j, k)) + "|" + "-".join(sorted([c1, c2])))
             mask.append([1, 1, 1, 1] if c1 != c2 else [0, 1, 0, 1])
@@ -207,7 +207,10 @@ class Conjugation(Family):
             if len(nb[i]) in (2, 3) and len(nb[j]) in (2, 3):
                 rows.append((i, j, _pad3(nb[i]), _pad3(nb[j]), len(nb[i]), len(nb[j])))
                 keys.append("conj|" + keyf([i, j], "bond"))
-        z = lambda k, sh=(): np.array([r[k] for r in rows], int).reshape((-1,) + sh)
+
+        def z(k, sh=()):
+            return np.array([r[k] for r in rows], int).reshape((-1,) + sh)
+
         return {"ci": z(0), "cj": z(1), "ni": z(2, (3,)), "nj": z(3, (3,)), "di": z(4), "dj": z(5)}, keys
 
     def energy(self, G, dev, I, p):
@@ -298,7 +301,10 @@ class HyperconjLone(Family):
                         continue
                     rows.append((j, k, l, _pad3(nb[j]), len(nb[j])))
                     keys.append("nlp|" + keyf([j], "atom") + "|" + keyf([k, l], "bond"))
-        z = lambda q, sh=(): np.array([r[q] for r in rows], int).reshape((-1,) + sh)
+
+        def z(q, sh=()):
+            return np.array([r[q] for r in rows], int).reshape((-1,) + sh)
+
         return {"j": z(0), "k": z(1), "l": z(2), "nj": z(3, (3,)), "dj": z(4)}, keys
 
     def energy(self, G, dev, I, p):

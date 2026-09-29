@@ -130,7 +130,7 @@ def main():
     nat._advance(rep)
     t, E = [], []
     t0 = time.perf_counter()
-    for k in range(n_nve // rep):
+    for _k in range(n_nve // rep):
         nat._advance(rep)
         o = nat.observables()
         t.append(o["time_ps"])
@@ -154,7 +154,7 @@ def main():
         om.stats.update(calls=0, t_call=0.0, t_convert=0.0)
         t, E = [], []
         t0 = time.perf_counter()
-        for k in range(n_nve // rep):
+        for _k in range(n_nve // rep):
             integ.step(rep)
             s_ = ctx.getState(getEnergy=True)
             t.append(s_.getTime().value_in_unit(PS))
@@ -183,7 +183,7 @@ def main():
         sysm, pos0, H, s, dt=dt, ensemble="nvt", temperature=T, gamma=1.0, vel_nm_ps=vel0, log=None, seed=5
     )
     Tn, Un = [], []
-    for k in range(n_nvt // rep):
+    for _k in range(n_nvt // rep):
         natv._advance(rep)
         o = natv.observables()
         Tn.append(o["temp_K"])
@@ -196,7 +196,7 @@ def main():
     ndof = 3 * system.getNumParticles() - system.getNumConstraints() - 3
     To, Uo = [], []
     t0 = time.perf_counter()
-    for k in range(n_nvt // rep):
+    for _k in range(n_nvt // rep):
         integ.step(rep)
         s_ = ctx.getState(getEnergy=True)
         To.append(2 * s_.getKineticEnergy().value_in_unit(KJ) / (ndof * KB))
@@ -237,7 +237,7 @@ def main():
             seed=6,
         )
         rn = []
-        for k in range(n_npt // rep):
+        for _k in range(n_npt // rep):
             natp._advance(rep)
             rn.append(natp.observables()["density_g_cm3"])
         eng = PGMEngine(sysm, pos0, H, s)
@@ -247,7 +247,7 @@ def main():
         ctx, system = context(om, integ, p, pos0, vel0, openmm.MonteCarloBarostat(1.0 * unit.bar, T * unit.kelvin, 25))
         ro = []
         t0 = time.perf_counter()
-        for k in range(n_npt // rep):
+        for _k in range(n_npt // rep):
             integ.step(rep)
             V = ctx.getState().getPeriodicBoxVolume().value_in_unit(unit.nanometer**3)
             ro.append(mass / V * AMU_NM3_TO_G_CM3)

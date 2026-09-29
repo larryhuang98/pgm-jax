@@ -7,19 +7,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_grad import water
+from test_hmr import _cluster
+from test_md import settings, small_box
 
-jax.config.update("jax_enable_x64", True)
-
-from test_grad import water  # noqa: E402
-from test_hmr import _cluster  # noqa: E402
-from test_md import settings, small_box  # noqa: E402
-
-from pgm_jax import System  # noqa: E402
-from pgm_jax.bias import BiasSet, Harmonic, cv  # noqa: E402
-from pgm_jax.md import efield as EF  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
-from pgm_jax.md.integrate import KB  # noqa: E402
-from pgm_jax.md.simulation import Simulation  # noqa: E402
+from pgm_jax import System
+from pgm_jax.bias import BiasSet, Harmonic, cv
+from pgm_jax.md import efield as EF
+from pgm_jax.md.forcefield import MDSettings, PGMForceField
+from pgm_jax.md.integrate import KB
+from pgm_jax.md.simulation import Simulation
 
 E1 = np.array([0.3, -0.5, 0.8])  # V/nm
 DD = np.array([1.0, -2.0, 3.0])  # D / eps0, V/nm

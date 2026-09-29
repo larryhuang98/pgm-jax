@@ -102,7 +102,10 @@ def rotatable_torsions():
         b_ = [x for x in nbr[kk] if x != j]
         if not a_ or not b_:
             continue
-        pick = lambda c: sorted(c, key=lambda x: (el[x] == "H", x))[0]
+
+        def pick(c):
+            return sorted(c, key=lambda x: (el[x] == "H", x))[0]
+
         out.append((pick(a_), j, kk, pick(b_)))
     return out
 
@@ -154,7 +157,8 @@ if "md" in a.what:
         out[tag + "_E"] = np.concatenate(Es)
         out[tag + "_conf"] = np.array(C)
         print(
-            f"  {tag}: {len(out[tag])} frames, E range {np.ptp(out[tag + '_E']) * 23.06:.1f} kcal/mol, {time.time() - t0:.0f} s",
+            f"  {tag}: {len(out[tag])} frames, E range {np.ptp(out[tag + '_E']) * 23.06:.1f} kcal/mol, "
+            f"{time.time() - t0:.0f} s",
             flush=True,
         )
     np.savez(os.path.join(out_dir, f"{a.name}_md.npz"), **out)
@@ -181,7 +185,8 @@ if "scan" in a.what and "scan2d" not in a.what:
         out[f"scan{t}_angle"] = grid
         out[f"scan{t}_fmax"] = np.array(FM)
         print(
-            f"  scan {dih}: barrier {np.ptp(E) * 23.06:.2f} kcal/mol, max residual force {max(FM):.3f} eV/A (constraint direction included), {time.time() - t0:.0f} s",
+            f"  scan {dih}: barrier {np.ptp(E) * 23.06:.2f} kcal/mol, max residual force {max(FM):.3f} eV/A "
+            f"(constraint direction included), {time.time() - t0:.0f} s",
             flush=True,
         )
     np.savez(os.path.join(out_dir, f"{a.name}_scan.npz"), **out)

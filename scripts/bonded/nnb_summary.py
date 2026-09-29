@@ -57,7 +57,10 @@ if mols:
         row["class_ii"] = baseline(m, "paper")
         row["class_i"] = baseline(m, "diag")
         summary["loo"][m] = row
-        f = lambda v: "" if v is None else f"{v[0]:.2f} / {v[1]:.1f}"
+
+        def f(v):
+            return "" if v is None else f"{v[0]:.2f} / {v[1]:.1f}"
+
         print(f"| {m} | " + " | ".join(f(row[k]) for k in cols) + " |")
     complete = [m for m in mols if all(summary["loo"][m][k] is not None for k in cols)]
     mean = {k: tuple(np.mean([summary["loo"][m][k] for m in complete], 0)) for k in cols} if complete else {}
@@ -74,6 +77,7 @@ if per:
     for m, r in per.items():
         summary["permol"][m] = {k: (v["E_MAE"], v["F_MAE"]) for k, v in r.items()}
         print(
-            f"| {m} | {r['nnb']['E_MAE']:.2f} / {r['nnb']['F_MAE']:.2f} | {r['paper']['E_MAE']:.2f} / {r['paper']['F_MAE']:.2f} |"
+            f"| {m} | {r['nnb']['E_MAE']:.2f} / {r['nnb']['F_MAE']:.2f} | {r['paper']['E_MAE']:.2f} / "
+            f"{r['paper']['F_MAE']:.2f} |"
         )
 json.dump(summary, open(os.path.join(NNB, "summary.json"), "w"), indent=1)

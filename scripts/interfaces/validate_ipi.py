@@ -5,7 +5,8 @@ of the PIMD work, validation/interfaces/pgm_water_flex.flex), 298 K, dt 0.25 fs.
                                                       # (shared by every run; --work / --out: run directories, results)
     python scripts/interfaces/validate_ipi.py nve     # i-PI NVE vs native NVE from the same state (trajectories, drift)
     python scripts/interfaces/validate_ipi.py nvt     # classical i-PI (SVR thermostat) vs native Bussi: T, <U>
-    python scripts/interfaces/validate_ipi.py pimd --beads 8   # i-PI PIMD (PILE-G) vs native PIMD: KE_H, KE_O (centroid virial)
+    # i-PI PIMD (PILE-G) vs native PIMD: KE_H, KE_O (centroid virial)
+    python scripts/interfaces/validate_ipi.py pimd --beads 8
 
 Results are appended to validation/interfaces/ipi.json.  i-PI is found through IPI_ROOT (see
 ipi_tools.py).  Native PIMD numbers for the comparison come from the PIMD branch
@@ -153,7 +154,7 @@ def cmd_nve(args):
     nat = native_sim(tpl, s, pos, H, "nve", vel)
     t, E, U = [0.0], [nat.observables()["etot"]], [nat.observables()["epot"]]
     t0 = time.perf_counter()
-    for k in range(steps // rep):
+    for _k in range(steps // rep):
         nat._advance(rep)
         o = nat.observables()
         t.append(o["time_ps"])
@@ -184,7 +185,10 @@ def cmd_nve(args):
     Ui, Ei = props["potential"], props["conserved"]
     m = min(len(Ui), len(U))
     dof = 3 * sysm.n - 3
-    slope = lambda tt, ee: float(np.polyfit(np.asarray(tt) / 1000.0, ee, 1)[0] / (KB * 298.0) / dof)
+
+    def slope(tt, ee):
+        return float(np.polyfit(np.asarray(tt) / 1000.0, ee, 1)[0] / (KB * 298.0) / dof)
+
     ti = props["time"]
     save(
         "nve" + ("_novirial" if args.no_virial else ""),
@@ -220,7 +224,7 @@ def cmd_nvt(args):
     nat = native_sim(tpl, s, pos, H, "nvt", vel, seed=3)
     Tn, Un = [], []
     t0 = time.perf_counter()
-    for k in range(steps // rep):
+    for _k in range(steps // rep):
         nat._advance(rep)
         o = nat.observables()
         Tn.append(o["temp_K"])
@@ -250,7 +254,10 @@ def cmd_nvt(args):
     sk = len(Tn) // 10
     Ti, Ui = props["temperature"], props["potential"] / n
     ski = len(Ti) // 10
-    be = lambda x: float(np.std([np.mean(y) for y in np.array_split(np.asarray(x), 5)], ddof=1) / np.sqrt(5))
+
+    def be(x):
+        return float(np.std([np.mean(y) for y in np.array_split(np.asarray(x), 5)], ddof=1) / np.sqrt(5))
+
     # i-PI's temperature counts 3N degrees of freedom (no centre-of-mass correction): rescale to 3N - 3
     corr = 3 * sysm.n / (3 * sysm.n - 3)
     save(
@@ -312,7 +319,10 @@ def cmd_pimd(args):
     keH = props["kinetic_cv(H)"][eq:] / nH * T.KJMOL_MEV
     keO = props["kinetic_cv(O)"][eq:] / nO * T.KJMOL_MEV
     U = props["potential"][eq:]
-    be = lambda x: float(np.std([np.mean(y) for y in np.array_split(np.asarray(x), 5)], ddof=1) / np.sqrt(5))
+
+    def be(x):
+        return float(np.std([np.mean(y) for y in np.array_split(np.asarray(x), 5)], ddof=1) / np.sqrt(5))
+
     eng = client.engine
     blocks = np.array_split(np.asarray(U), 5)
     out = {

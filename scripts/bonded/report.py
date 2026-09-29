@@ -74,7 +74,8 @@ def table_main():
         ("class II + learned 1-2/1-3/1-4 pair scales (F10)", "b2_paper_es_pgm"),
     ]
     lines = [
-        "| Bonded form | Electrostatics | Energy MAE (kcal/mol) | Force MAE (kcal/mol/A) | Relaxed-scan max error (kcal/mol) | Dipole RMSE (D) | Parameters per molecule |",
+        "| Bonded form | Electrostatics | Energy MAE (kcal/mol) | Force MAE (kcal/mol/A) | Relaxed-scan max error "
+        "(kcal/mol) | Dipole RMSE (D) | Parameters per molecule |",
         "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for label, *names in rows:
@@ -88,7 +89,8 @@ def table_main():
         m = means(n)
         if m:
             lines.append(
-                f"| {label} | pGM, all pairs | {m['E']:.2f} | {m['F']:.1f} | {m['S']:.2f} | {m['mu']:.2f} | {m['P']:.0f} |"
+                f"| {label} | pGM, all pairs | {m['E']:.2f} | {m['F']:.1f} | {m['S']:.2f} | {m['mu']:.2f} | "
+                f"{m['P']:.0f} |"
             )
     return "\n".join(lines)
 
@@ -180,7 +182,8 @@ def loo():
         r = json.load(open(f))["molecules"][head]
         rows.setdefault(fam, {}).setdefault(head, {})[el] = (r["test"]["E_MAE"], r["test"]["F_MAE"])
     lines = [
-        "| Bonded form (element-typed) | Held-out molecules | Energy MAE pGM | Energy MAE classical | Force MAE pGM | Force MAE classical | pGM better (energy) |",
+        "| Bonded form (element-typed) | Held-out molecules | Energy MAE pGM | Energy MAE classical | Force MAE pGM "
+        "| Force MAE classical | pGM better (energy) |",
         "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for fam, mols in rows.items():
@@ -189,7 +192,8 @@ def loo():
             continue
         a = np.array(pairs)
         lines.append(
-            f"| {fam} | {len(pairs)} | {a[:, 0, 0].mean():.2f} | {a[:, 1, 0].mean():.2f} | {a[:, 0, 1].mean():.1f} | {a[:, 1, 1].mean():.1f} | {int(np.sum(a[:, 0, 0] < a[:, 1, 0]))}/{len(pairs)} |"
+            f"| {fam} | {len(pairs)} | {a[:, 0, 0].mean():.2f} | {a[:, 1, 0].mean():.2f} | {a[:, 0, 1].mean():.1f} | "
+            f"{a[:, 1, 1].mean():.1f} | {int(np.sum(a[:, 0, 0] < a[:, 1, 0]))}/{len(pairs)} |"
         )
     return "\n".join(lines), rows
 
@@ -234,7 +238,7 @@ def fig_forms():
     ]
     fig, axs = plt.subplots(1, 2, figsize=(9, 3.6))
     for ax, key, lab in ((axs[0], "E", "test energy MAE (kcal/mol)"), (axs[1], "F", "test force MAE (kcal/mol/A)")):
-        for k, (name, base) in enumerate(rows):
+        for k, (_name, base) in enumerate(rows):
             for j, (el, col) in enumerate((("pgm", C["pgm"]), ("cls", C["cls"]), ("amber", C["amber"]))):
                 m = means(f"{base}_{el}")
                 if m:
@@ -320,7 +324,10 @@ def table_loo_groups():
     ]
     for fam, lab in LOO_NAMES.items():
         for g, v in d.get(fam, {}).items():
-            cell = lambda el: f"{v[el][0]:.2f} / {v[el][1]:.1f}" if el in v else ""
+
+            def cell(el):
+                return f"{v[el][0]:.2f} / {v[el][1]:.1f}" if el in v else ""
+
             lines.append(f"| {lab} | {g} | {cell('pgm')} | {cell('cls')} | {cell('x13')} |")
     return (
         "\n".join(lines)
@@ -356,7 +363,8 @@ def table_md():
         ("class II + ext. + pairs, pGM", "md_all_pgm_500"),
     ]
     lines = [
-        "| Force field | T (K) | Stable replicas | Bond fluctuation / MACE | Angle fluctuation / MACE | Torsion histogram L1 |",
+        "| Force field | T (K) | Stable replicas | Bond fluctuation / MACE | Angle fluctuation / MACE | Torsion "
+        "histogram L1 |",
         "| --- | --- | --- | --- | --- | --- |",
     ]
     for lab, n in runs:
@@ -367,9 +375,13 @@ def table_md():
         ms = {k: v for k, v in d["molecules"].items() if k not in EXCL}
         st = sum(sum(v["stable"]) for v in ms.values())
         tot = sum(len(v["stable"]) for v in ms.values())
-        g = lambda k: np.median([v[k] for v in ms.values() if k in v])
+
+        def g(k):
+            return np.median([v[k] for v in ms.values() if k in v])
+
         lines.append(
-            f"| {lab} | {d['args']['T']:.0f} | {st}/{tot} | {g('bond_std_ratio'):.2f} | {g('angle_std_ratio'):.2f} | {g('torsion_hist_L1'):.2f} |"
+            f"| {lab} | {d['args']['T']:.0f} | {st}/{tot} | {g('bond_std_ratio'):.2f} | {g('angle_std_ratio'):.2f} | "
+            f"{g('torsion_hist_L1'):.2f} |"
         )
     return "\n".join(lines) + (
         "\n\nMedian over molecules; fluctuations are standard deviations over the MD relative to the "
@@ -388,7 +400,8 @@ def table_dipeptide():
         ("class II + ext. + pairs + twist", "alltw"),
     ]
     lines = [
-        "| Bonded form | Electrostatics | phi/psi test half MAE | RMSE | max | MAE below 7 kcal/mol | 298 K MD energy / force MAE | Parameters |",
+        "| Bonded form | Electrostatics | phi/psi test half MAE | RMSE | max | MAE below 7 kcal/mol | 298 K MD "
+        "energy / force MAE | Parameters |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for lab, tag in names:
@@ -401,7 +414,8 @@ def table_dipeptide():
             md = d.get("md_test") or {}
             mdc = f"{md['E_MAE']:.2f} / {md['F_MAE']:.1f}" if md else ""
             lines.append(
-                f"| {lab} | {eln} | {t['MAE']:.2f} | {t['RMSE']:.2f} | {t['max']:.2f} | {t['MAE_below7']:.2f} | {mdc} | {d['n_params']} |"
+                f"| {lab} | {eln} | {t['MAE']:.2f} | {t['RMSE']:.2f} | {t['max']:.2f} | {t['MAE_below7']:.2f} | {mdc} "
+                f"| {d['n_params']} |"
             )
     return (
         "\n".join(lines)
@@ -416,13 +430,15 @@ def table_rigid():
         return ""
     mols = sorted({m for v in D.values() if v for m in v})
     lines = [
-        "| Molecule | class I pGM | class I classical | class I Amber-like | class II pGM | class II classical | class II Amber-like | Dipole RMSE pGM / classical (D) |",
+        "| Molecule | class I pGM | class I classical | class I Amber-like | class II pGM | class II classical | "
+        "class II Amber-like | Dipole RMSE pGM / classical (D) |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for m in mols:
-        cell = lambda c: (
-            f"{D[c][m]['test']['E_MAE']:.2f} / {D[c][m]['test']['F_MAE']:.1f}" if D[c] and m in D[c] else ""
-        )
+
+        def cell(c):
+            return f"{D[c][m]['test']['E_MAE']:.2f} / {D[c][m]['test']['F_MAE']:.1f}" if D[c] and m in D[c] else ""
+
         dip = (
             f"{D[('paper', 'pgm')][m]['test']['mu_RMSE_D']:.2f} / {D[('paper', 'cls')][m]['test']['mu_RMSE_D']:.2f}"
             if D[("paper", "pgm")] and D[("paper", "cls")] and m in D[("paper", "cls")]
@@ -472,7 +488,8 @@ def table_qfit():
         ("ESP charges + typed bond-charge increments, E/F/dipole + ESP (w = 10)", "joint_diag_b1e10_pgm"),
     ]
     lines = [
-        "| Electrostatics (class I bonded terms, element-typed, fitted on all 12) | Energy MAE | Force MAE | Dipole RMSE (D) | ESP RMSE (mhartree/e) |",
+        "| Electrostatics (class I bonded terms, element-typed, fitted on all 12) | Energy MAE | Force MAE | Dipole "
+        "RMSE (D) | ESP RMSE (mhartree/e) |",
         "| --- | --- | --- | --- | --- |",
     ]
     for lab, n in runs:
@@ -480,13 +497,17 @@ def table_qfit():
         if d is None:
             continue
         ms = [m for m in d if m not in EXCL]
-        g = lambda k: np.mean([d[m]["test"].get(k, np.nan) for m in ms])
+
+        def g(k):
+            return np.mean([d[m]["test"].get(k, np.nan) for m in ms])
+
         esp = g("esp_RMSE_mEh")
         fx = os.path.join(RES, "esp_fixed.json")
         if n == "joint_diag_pgm" and os.path.exists(fx):  # fixed ESP charges (per-molecule py_resp fits)
             esp = np.mean([v[0] for k, v in json.load(open(fx)).items() if k in ms])
         lines.append(
-            f"| {lab} | {g('E_MAE'):.2f} | {g('F_MAE'):.1f} | {g('mu_RMSE_D'):.2f} | {'' if np.isnan(esp) else f'{esp:.2f}'} |"
+            f"| {lab} | {g('E_MAE'):.2f} | {g('F_MAE'):.1f} | {g('mu_RMSE_D'):.2f} | "
+            f"{'' if np.isnan(esp) else f'{esp:.2f}'} |"
         )
     return "\n".join(lines) + (
         "\n\nkcal/mol, kcal/mol/A; 298 K frames. ESP: B3LYP/aug-cc-pVTZ potential at the MACE-OFF minimum "
@@ -551,12 +572,16 @@ NEW_FORMS = [
 def table_new_forms():
     d = _loo_json()
     lines = [
-        "| Bonded form | Parameters per molecule | Energy MAE | Force MAE | Relaxed-scan max | Transfer (leave one out), all 12 | Transfer, N/P group | Dipeptide phi/psi, grid-trained | Dipeptide phi/psi, MD-only |",
+        "| Bonded form | Parameters per molecule | Energy MAE | Force MAE | Relaxed-scan max | Transfer (leave one "
+        "out), all 12 | Transfer, N/P group | Dipeptide phi/psi, grid-trained | Dipeptide phi/psi, MD-only |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
-    x6 = lambda n: (lambda p: f"{json.load(open(p))['test_half']['MAE']:.2f}" if os.path.exists(p) else "")(
-        os.path.join(RES, f"{n}.json")
-    )
+
+    def x6(n):
+        return (lambda p: f"{json.load(open(p))['test_half']['MAE']:.2f}" if os.path.exists(p) else "")(
+            os.path.join(RES, f"{n}.json")
+        )
+
     for lab, tag, run in NEW_FORMS:
         m = means(run)
         if m is None:
@@ -570,7 +595,8 @@ def table_new_forms():
         )
         xt = {"diag+ub": "diagub"}.get(tag, tag)
         lines.append(
-            f"| {lab} | {m['P']:.0f} | {m['E']:.2f} | {m['F']:.1f} | {m['S']:.2f} | {t_all} | {t_np} | {x6('x6_' + xt + '_pgm')} | {x6('x6ng_' + xt + '_pgm')} |"
+            f"| {lab} | {m['P']:.0f} | {m['E']:.2f} | {m['F']:.1f} | {m['S']:.2f} | {t_all} | {t_np} | "
+            f"{x6('x6_' + xt + '_pgm')} | {x6('x6ng_' + xt + '_pgm')} |"
         )
     return "\n".join(lines) + (
         "\n\npGM electrostatics throughout; kcal/mol and kcal/mol/A. Per-molecule columns: 12 molecules, 298 K "

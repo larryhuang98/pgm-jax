@@ -800,7 +800,7 @@ class BiasSet:
 
     def columns(self) -> list:
         cols = ["step"]
-        for k, b in enumerate(self.biases):
+        for _k, b in enumerate(self.biases):
             cols += [f"{n}" for n in b.cvs.names]
         cols += [f"bias{k}_{b.kind}" for k, b in enumerate(self.biases)]
         return cols

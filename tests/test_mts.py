@@ -7,19 +7,16 @@ three levels), NPT + restraints + checkpoints, and the settings that must be ref
 import jax
 import numpy as np
 import pytest
+from test_flexible import _box
+from test_grad import water
+from test_md_macro import _water_box
 
-jax.config.update("jax_enable_x64", True)
-
-from test_flexible import _box  # noqa: E402
-from test_grad import water  # noqa: E402
-from test_md_macro import _water_box  # noqa: E402
-
-from pgm_jax import System  # noqa: E402
-from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.integrate import KB  # noqa: E402
-from pgm_jax.md.mts import MTS  # noqa: E402
-from pgm_jax.md.simulation import Simulation  # noqa: E402
+from pgm_jax import System
+from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.integrate import KB
+from pgm_jax.md.mts import MTS
+from pgm_jax.md.simulation import Simulation
 
 S_WATER = MDSettings(precision="double", dipole_tol=1e-12, max_iter=300, cutoff=0.55, skin=0.05)
 
@@ -124,7 +121,9 @@ def test_special_pair_split(pol):
 
 
 def _reverse(integ, st, n):
-    flip = lambda s: s.set(dyn=s.dyn.set(momentum=jax.tree_util.tree_map(lambda p: -p, s.dyn.momentum)))  # noqa: E731
+    def flip(s):
+        return s.set(dyn=s.dyn.set(momentum=jax.tree_util.tree_map(lambda p: -p, s.dyn.momentum)))
+
     back = integ.run(flip(integ.run(st, n)), n)
     return st, back
 
@@ -226,16 +225,19 @@ def test_npt_restraints_and_checkpoint(tmp_path):
     pos, H, w = _water_box(n_side=4, spacing=0.31)
     rest = PositionRestraint([0, 3], pos[[0, 3]], k=500.0)
     s = MDSettings(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
-    mk = lambda: water_sim(
-        "constraints",
-        MTS(inner=2, r_short=0.4, buffer=0.1),
-        dt=0.004,
-        ensemble="npt",  # noqa: E731
-        thermostat="bussi",
-        settings=s,
-        barostat_interval=5,
-        restraints=rest,
-    )
+
+    def mk():
+        return water_sim(
+            "constraints",
+            MTS(inner=2, r_short=0.4, buffer=0.1),
+            dt=0.004,
+            ensemble="npt",
+            thermostat="bussi",
+            settings=s,
+            barostat_interval=5,
+            restraints=rest,
+        )
+
     sim = mk()
     sim._advance(100)
     assert int(sim.state.mc[0]) == 20 and np.isfinite(sim.observables()["econs"])

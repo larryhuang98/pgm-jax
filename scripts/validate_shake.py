@@ -1,9 +1,12 @@
 """Validation of holonomic bond constraints in the flexible engine (docs/shake.md).
 
 Liquid methanol with the fitted pGM model (runs/flex/methanol.flex; 216 molecules, 1,296 atoms):
-    python scripts/validate_shake.py equil                  # NVT 2 ps + NPT 150 ps (X-H constraints, 2 fs) -> runs/shake/eq.npz
-    python scripts/validate_shake.py nve --prec mixed       # NVE drift of every configuration -> runs/shake/nve_mixed.json
-    python scripts/validate_shake.py sample hb-2 --ns 2     # NPT, Langevin 1/ps: density, U, T, RDF, angles -> runs/shake/sample_hb-2.npz
+    # NVT 2 ps + NPT 150 ps (X-H constraints, 2 fs) -> runs/shake/eq.npz
+    python scripts/validate_shake.py equil
+    # NVE drift of every configuration -> runs/shake/nve_mixed.json
+    python scripts/validate_shake.py nve --prec mixed
+    # NPT, Langevin 1/ps: density, U, T, RDF, angles -> runs/shake/sample_hb-2.npz
+    python scripts/validate_shake.py sample hb-2 --ns 2
     python scripts/validate_shake.py analyze                # table of the samples with block errors
 Configurations (CONFIGS): none-0.5 (no constraints, 0.5 fs), hb-* (X-H bonds), hmr-* (X-H bonds and 3.024 amu
 hydrogens), ab-* (every bond); the number is the time step in fs."""
@@ -57,7 +60,10 @@ def atoms_of(tpl):
     el = list(tpl.spec.elements)
     bonds = [tuple(b) for b in tpl.spec.bonds]
     C, O = el.index("C"), el.index("O")
-    nb = lambda a: [j if i == a else i for i, j in bonds if a in (i, j)]  # noqa: E731
+
+    def nb(a):
+        return [j if i == a else i for i, j in bonds if a in (i, j)]
+
     HO = [h for h in nb(O) if el[h] == "H"][0]
     HC = [h for h in nb(C) if el[h] == "H"]
     return C, O, HO, HC
@@ -139,7 +145,7 @@ def nve(prec, names, ps):
             err_x, err_v = max(err_x, o.get("shake_err", 0.0)), max(err_v, o.get("rattle_err", 0.0))
         every = max(1, int(round(0.1 / dt)))
         s._advance(every)  # compiled for this block length
-        t, E, T, cg = [], [], [], []
+        t, E, T = [], [], []
         c0, n0, w0 = float(s.state.cg_total), int(s.state.step), time.time()
         for _ in range(int(round(ps / 0.1))):
             s._advance(every)
@@ -391,10 +397,14 @@ def compare_rows(paths, names, nmol, out):
         r["dih_trans_frac"] = block_stats(dist["dih"] @ ecl, len(dist["dih"]))
         rows[name] = r
     ref = names[0]
-    f = lambda t, p=4: f"{t[0]:.{p}f}+-{t[1]:.{p}f}" if isinstance(t, tuple) else "-"  # noqa: E731
+
+    def f(t, p=4):
+        return f"{t[0]:.{p}f}+-{t[1]:.{p}f}" if isinstance(t, tuple) else "-"
+
     print(
         f"{'run':10s} {'ns/day':>7s} {'density':>16s} {'U kJ/mol/mol':>17s} {'T':>13s} {'T_half':>13s} {'T_com':>13s} "
-        f"{'T_int':>13s} {'C-O-H deg':>13s} {'C-O nm':>18s} {'trans':>14s} {'gOO peak':>10s} {'max dev (sigma) gOO/gOH/dih/COH/CO':>36s}"
+        f"{'T_int':>13s} {'C-O-H deg':>13s} {'C-O nm':>18s} {'trans':>14s} {'gOO peak':>10s} "
+        f"{'max dev (sigma) gOO/gOH/dih/COH/CO':>36s}"
     )
     for name, r in rows.items():
         dev = []
@@ -408,7 +418,8 @@ def compare_rows(paths, names, nmol, out):
         m = r["meta"]
         print(
             f"{name:10s} {m.get('ns_per_day') or 0:7.1f} {f(r.get('density'))} {f(r['u_per_mol_kJ'], 3)} "
-            f"{f(r.get('temp'), 2)} {f(r.get('temp_half'), 2)} {f(r.get('temp_com'), 2)} {f(r.get('temp_internal'), 2)} "
+            f"{f(r.get('temp'), 2)} {f(r.get('temp_half'), 2)} {f(r.get('temp_com'), 2)} "
+            f"{f(r.get('temp_internal'), 2)} "
             f"{f(r['coh_mean'], 2)} "
             f"{f(r['co_mean'], 5)} {f(r['dih_trans_frac'], 4)} {r['g_oo_peak'][0]:.3f}/{r['g_oo_peak'][1]:.2f} "
             f"P {f(r.get('press'), 0)} "
@@ -563,7 +574,8 @@ def nve_table(prec):
     print("|---|---|---|---|---|---|---|---|---|---|---|")
     for r in rows:
         print(
-            f"| {r['name']} | {r['constraints']} | {r['dt_fs']:g} | {r['hmr'] or 1.008} | {r['drift_kT_per_ns_per_dof']:+.4f} | "
+            f"| {r['name']} | {r['constraints']} | {r['dt_fs']:g} | {r['hmr'] or 1.008} | "
+            f"{r['drift_kT_per_ns_per_dof']:+.4f} | "
             f"{r['fluct_rms_kJmol']:.2f} | {r['fluct_over_kT_sqrt_dof']:.4f} | {r['max_shake_err']:.1e} | "
             f"{r['max_rattle_err']:.1e} | {r['cg_per_step']:.2f} | {r['ms_per_step']:.2f} |"
         )

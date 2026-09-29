@@ -210,8 +210,9 @@ def run(a):
             ]
             print(
                 f"  {spec.name:20s} E_MAE {mt[k]['E_MAE']:.3f}  F_MAE {mt[k]['F_MAE']:.2f}  "
-                f"(train {mtr[k]['E_MAE']:.3f}/{mtr[k]['F_MAE']:.2f})  scan max {np.max(sc) if sc else float('nan'):.2f}"
-                f"  params {npar}{'  HELD OUT coverage %.2f' % r['coverage'] if k in hold else ''}",
+                f"(train {mtr[k]['E_MAE']:.3f}/{mtr[k]['F_MAE']:.2f})  scan max "
+                f"{np.max(sc) if sc else float('nan'):.2f}"
+                f"  params {npar}{'  HELD OUT coverage {:.2f}'.format(r['coverage']) if k in hold else ''}",
                 flush=True,
             )
     out["time_s"] = time.time() - t0
@@ -255,7 +256,8 @@ def l1path(a):
             nlin = int(sum(np.size(v) for f in model.fams for p, v in P[f].items() if p in T.REGISTRY[f].linear))
             rows.append({"lam": lam, "E_MAE": mt["E_MAE"], "F_MAE": mt["F_MAE"], "n_active": nz, "n_linear": nlin})
             print(
-                f"  {spec.name:20s} l1 {lam:8.1e}  active {nz:4d}/{nlin:4d}  E_MAE {mt['E_MAE']:.3f}  F_MAE {mt['F_MAE']:.2f}",
+                f"  {spec.name:20s} l1 {lam:8.1e}  active {nz:4d}/{nlin:4d}  E_MAE {mt['E_MAE']:.3f}  F_MAE "
+                f"{mt['F_MAE']:.2f}",
                 flush=True,
             )
         out["molecules"][spec.name] = rows
@@ -283,7 +285,8 @@ def summarize(names, exclude=("methanethiol",)):
         s = np.array([scan_max(v) for v in ms.values()])
         fin = s[np.isfinite(s)]
         print(
-            f"{n:28s} mols {len(ms):2d}  E_MAE {np.mean(e):.3f}  F_MAE {np.mean(f):.2f}  scan max {np.mean(fin) if len(fin) else np.nan:.2f} kcal/mol"
+            f"{n:28s} mols {len(ms):2d}  E_MAE {np.mean(e):.3f}  F_MAE {np.mean(f):.2f}  scan max "
+            f"{np.mean(fin) if len(fin) else np.nan:.2f} kcal/mol"
             f"  (relax failures {int(np.sum(np.isinf(s)))})"
         )
 

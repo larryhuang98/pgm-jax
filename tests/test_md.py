@@ -7,19 +7,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_grad import methanol, water
 
-jax.config.update("jax_enable_x64", True)
-
-from test_grad import methanol, water  # noqa: E402
-
-from pgm_jax import PeriodicPGM, System  # noqa: E402
-from pgm_jax.md.box import min_image, reduce_box  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
-from pgm_jax.md.integrate import KB, Integrator  # noqa: E402
-from pgm_jax.md.io import NetCDFTrajectory, read_coordinates, write_restart  # noqa: E402
-from pgm_jax.md.neighbors import Neighbors  # noqa: E402
-from pgm_jax.md.rigid import RigidMolecules, matrix_to_quaternion  # noqa: E402
-from pgm_jax.md.simulation import Simulation  # noqa: E402
+from pgm_jax import PeriodicPGM, System
+from pgm_jax.md.box import min_image, reduce_box
+from pgm_jax.md.forcefield import MDSettings, PGMForceField
+from pgm_jax.md.integrate import KB, Integrator
+from pgm_jax.md.io import NetCDFTrajectory, read_coordinates, write_restart
+from pgm_jax.md.neighbors import Neighbors
+from pgm_jax.md.rigid import RigidMolecules, matrix_to_quaternion
+from pgm_jax.md.simulation import Simulation
 
 TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
 RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
@@ -84,7 +81,6 @@ def test_pme_matches_exact_ewald():
     ff, idx = ff_and_list(sys, pos, H)
     res = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
     ew = PeriodicPGM(sys, H, pos, b0=6.0, rc=0.6).energy(pos)[0]["total"]
-    P = ff._atoms(None)
     e_elec = res.energy["elec"]
     assert abs(float(e_elec) - float(ew)) < 2e-6 * abs(float(ew)), (float(e_elec), float(ew))
     mu_ew = PeriodicPGM(sys, H, pos, b0=6.0, rc=0.6).induced_dipoles(pos)

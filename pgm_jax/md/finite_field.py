@@ -153,7 +153,8 @@ class FieldReplicas(MDReplicas):
                 el = time.time() - t0
                 nsd = done * self.dt / 1000.0 / max(el, 1e-9) * 86400.0
                 line = (
-                    f"step {step} t {self.time_ps:.2f} ps  T {np.mean(T):.1f} (min {np.min(T):.1f} max {np.max(T):.1f})  "
+                    f"step {step} t {self.time_ps:.2f} ps  T {np.mean(T):.1f} (min {np.min(T):.1f} max "
+                    f"{np.max(T):.1f})  "
                     f"cg {float(np.mean(np.asarray(self.S.cg_total))) / max(step, 1):.2f}  "
                     f"{nsd:.2f} ns/day per replica, {nsd * self.n:.1f} aggregate"
                 )

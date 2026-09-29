@@ -62,7 +62,7 @@ def graph_inputs(spec, top, ref: str = "geometry", pgm_features: bool = True) ->
     pg = spec.pgm
     cov_abs = np.zeros(n)
     if pg is not None:
-        for i, j, c in pg.cov:
+        for i, _j, c in pg.cov:
             cov_abs[i] += abs(c)
     X = []
     for i, e in enumerate(spec.elements):

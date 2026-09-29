@@ -130,11 +130,11 @@ def intramolecular(sys_, pos):
 
 def write_inpcrd(path, xyz_A, box_A, title="pgm_jax"):
     with open(path, "w") as fh:
-        fh.write(title + "\n%6d\n" % len(xyz_A))
+        fh.write(f"{title}\n{len(xyz_A):6d}\n")
         flat = np.asarray(xyz_A).ravel()
         for s in range(0, len(flat), 6):
-            fh.write("".join("%12.7f" % v for v in flat[s : s + 6]) + "\n")
-        fh.write("".join("%12.7f" % v for v in list(box_A) + [90.0, 90.0, 90.0]) + "\n")
+            fh.write("".join(f"{v:12.7f}" for v in flat[s : s + 6]) + "\n")
+        fh.write("".join(f"{v:12.7f}" for v in list(box_A) + [90.0, 90.0, 90.0]) + "\n")
 
 
 def tleap(script, cwd):
@@ -161,7 +161,8 @@ def build(a):
                 k += 1
                 for name, x in zip(("O", "H1", "H2", "EPW"), (y[0], y[1], y[2], ep)):
                     lines.append(
-                        "ATOM  %5d %-4s WAT %5d    %8.3f%8.3f%8.3f  1.00  0.00" % (len(lines) + 1, name, k, *x)
+                        f"ATOM  {len(lines) + 1:5d} {name:<4s} WAT {k:5d}    {x[0]:8.3f}{x[1]:8.3f}{x[2]:8.3f}  1.00  "
+                        "0.00"
                     )
                 lines.append("TER")
     open(os.path.join(OUT, "w512.pdb"), "w").write("\n".join(lines) + "\nEND\n")
@@ -238,7 +239,10 @@ def sander(a):
 def _step0(path):
     txt = open(path).read()
     blk = txt[txt.index("NSTEP =        0") :]
-    get = lambda k: float(re.search(rf"{k}\s*=\s*(-?\d+\.\d+)", blk).group(1))  # noqa: E731
+
+    def get(k):
+        return float(re.search(rf"{k}\s*=\s*(-?\d+\.\d+)", blk).group(1))
+
     return {k: get(k) for k in ("EELEC", "VDWAALS", "BOND", "EPtot")}
 
 
@@ -297,7 +301,9 @@ def compare(a):
         "sander_ep_force_max": float(np.abs(F_amb[ep]).max()),
         "ep_position_max_diff_A": float(np.abs(X_amb[ep] - pos[ep] * 10).max()),
         "real_position_max_diff_A": float(np.abs(X_amb[real] - pos[real] * 10).max()),
-        "settings": f"PME {a.grid}^3 order 8, ew_coeff 0.4 A^-1, eedmeth 3 (exact erfc), netfrc 0, cut 9 A, vdwmeth 1, float64",
+        "settings": (
+            f"PME {a.grid}^3 order 8, ew_coeff 0.4 A^-1, eedmeth 3 (exact erfc), netfrc 0, cut 9 A, vdwmeth 1, float64"
+        ),
     }
     print(json.dumps(out, indent=1))
     update_json("sander_single_point", out)
@@ -327,7 +333,7 @@ def nve(a):
             nrep = int(round(1.0 / dt)) // 10  # 0.1 ps
             t, E, T = [], [], []
             t0 = time.time()
-            for k in range(int(a.ps * 10)):
+            for _k in range(int(a.ps * 10)):
                 sim._advance(nrep)
                 o = sim.observables()
                 t.append(o["time_ps"])
@@ -574,7 +580,10 @@ def pgm(a):
         for j in range(3):
             eps = np.zeros((3, 3))
             eps[i, j] = 1e-6
-            ee = lambda sgn: float(e(pos + (com @ (sgn * eps).T)[sys_.mol], H @ (np.eye(3) + sgn * eps).T))  # noqa: E731
+
+            def ee(sgn):
+                return float(e(pos + (com @ (sgn * eps).T)[sys_.mol], H @ (np.eye(3) + sgn * eps).T))
+
             fd = (ee(1.0) - ee(-1.0)) / 2e-6 - (tail if i == j else 0.0)
             werr.append(abs(fd - W[i, j]) / max(1.0, abs(fd)))
     out = {
@@ -608,11 +617,13 @@ from pgm_jax.md.simulation import Simulation, _dedupe
 from pgm_jax.param import read_prmtop_pgm
 from pgm_jax.system import System
 import os
-top = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop"); rst = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
+top = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
+rst = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
 xyz, vel, box = read_coordinates(rst); H = box_from_cell(*box) * 0.1
 out = {}
 for prec in ("mixed", "double"):
-    sim = Simulation(System(_dedupe(read_prmtop_pgm(top, first_residue_only=False))), xyz * 0.1, H, MDSettings(precision=prec),
+    sys_ = System(_dedupe(read_prmtop_pgm(top, first_residue_only=False)))
+    sim = Simulation(sys_, xyz * 0.1, H, MDSettings(precision=prec),
                      dt=0.001, ensemble="npt", seed=5, log=None)
     sim.run(200, report=0, prefix=sys.argv[2] + prec)
     out[prec + "_pos"] = sim.positions_nm(); out[prec + "_mu"] = np.asarray(sim.state.induction.mu)
@@ -620,7 +631,8 @@ for prec in ("mixed", "double"):
 from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
 mols = _dedupe(read_prmtop_pgm(top, first_residue_only=False)); sysf = System(mols)
 tpl = RigidTemplate(mols[0], xyz[:3] * 0.1)
-fs = FlexibleSimulation(sysf, [tpl] * sysf.nmol, xyz * 0.1, H, MDSettings(), dt=0.002, ensemble="nvt", constraints="none",
+fs = FlexibleSimulation(sysf, [tpl] * sysf.nmol, xyz * 0.1, H, MDSettings(), dt=0.002, ensemble="nvt",
+                        constraints="none",
                         thermostat="langevin", seed=5, log=None)
 fs._advance(100); out["flex_pos"] = fs.positions_nm()
 np.savez(sys.argv[2] + ".npz", **out)

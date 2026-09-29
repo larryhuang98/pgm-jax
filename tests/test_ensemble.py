@@ -3,14 +3,11 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+from test_protein_bonded import ACE_ALA_GLY_NME, peptide_spec
 
-jax.config.update("jax_enable_x64", True)
-
-from test_protein_bonded import ACE_ALA_GLY_NME, peptide_spec  # noqa: E402
-
-from pgm_jax.bonded import terms as T  # noqa: E402
-from pgm_jax.bonded.model import BondedSettings, BondedTerms  # noqa: E402
-from pgm_jax.ensemble import ALPHA_BOX, KARPLUS, KB, Reweighting, backbone_torsions, in_region, karplus  # noqa: E402
+from pgm_jax.bonded import terms as T
+from pgm_jax.bonded.model import BondedSettings, BondedTerms
+from pgm_jax.ensemble import ALPHA_BOX, KARPLUS, KB, Reweighting, backbone_torsions, in_region, karplus
 
 
 def test_karplus_and_regions():
@@ -24,8 +21,13 @@ def test_karplus_and_regions():
 def test_reweighting_gradient_is_the_covariance_formula():
     rng = np.random.default_rng(0)
     X = jnp.asarray(rng.normal(size=(200, 4, 3)))
-    g = lambda R: jnp.stack([jnp.sum(jnp.cos(R)), jnp.sum(R[0] * R[1])])
-    f = lambda th, R: th @ g(R)
+
+    def g(R):
+        return jnp.stack([jnp.sum(jnp.cos(R)), jnp.sum(R[0] * R[1])])
+
+    def f(th, R):
+        return th @ g(R)
+
     th0 = jnp.asarray([0.3, -0.2])
     rw = Reweighting(f, th0, X, temperature=300.0)
     O = jnp.asarray(rng.normal(size=200)) + jnp.sum(X[:, 2], -1)

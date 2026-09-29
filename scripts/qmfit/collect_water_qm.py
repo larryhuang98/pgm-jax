@@ -76,7 +76,10 @@ def main(a):
     byid = {}
     for g in geoms["records"]:
         r = {k: g[k] for k in ("id", "set", "n", "xyz_A", "meta")}
-        get = lambda j: R.get((g["id"], j), {}).get("res")  # noqa: E731
+
+        def get(j):
+            return R.get((g["id"], j), {}).get("res")
+
         if g["set"] == "monomer":
             p = get("props:ccsd:aug-cc-pvtz")
             if p:
@@ -135,7 +138,10 @@ def main(a):
             m = get("mbe:mp2:aug-cc-pvtz:3") or get("mbe:mp2:aug-cc-pvtz:1")
             n = g["n"]
             if m:
-                Ek = lambda S: m[",".join(map(str, S))]["mp2"]  # noqa: E731
+
+                def Ek(S):
+                    return m[",".join(map(str, S))]["mp2"]
+
                 nb["int_mp2_atz"] = (Ek(range(n)) - sum(Ek([i]) for i in range(n))) * EH
                 if "0,1" in m:
                     e2 = {(i, j): (Ek([i, j]) - Ek([i]) - Ek([j])) * EH for i, j in itertools.combinations(range(n), 2)}

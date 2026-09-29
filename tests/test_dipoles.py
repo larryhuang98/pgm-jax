@@ -5,19 +5,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_grad import methanol, water
+from test_md import need_water_box, settings, small_box
 
-jax.config.update("jax_enable_x64", True)
-
-from test_grad import methanol, water  # noqa: E402
-from test_md import need_water_box, settings, small_box  # noqa: E402
-
-from pgm_jax import ElecChannel, Molecule, System  # noqa: E402
-from pgm_jax.channels import molecular_polarizability, perm_dipoles  # noqa: E402
-from pgm_jax.md import dielectric as D  # noqa: E402
-from pgm_jax.md.dipoles import DIP_COLUMNS, CellDipole, DipoleRecorder, cell_dipole, read_dipoles  # noqa: E402
-from pgm_jax.md.forcefield import PGMForceField  # noqa: E402
-from pgm_jax.md.simulation import Simulation  # noqa: E402
-from pgm_jax.units import KE  # noqa: E402
+from pgm_jax import ElecChannel, Molecule, System
+from pgm_jax.channels import molecular_polarizability, perm_dipoles
+from pgm_jax.md import dielectric as D
+from pgm_jax.md.dipoles import DIP_COLUMNS, CellDipole, DipoleRecorder, cell_dipole, read_dipoles
+from pgm_jax.md.forcefield import PGMForceField
+from pgm_jax.md.simulation import Simulation
+from pgm_jax.units import KE
 
 KB = 0.0083144626181532
 

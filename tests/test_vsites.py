@@ -10,21 +10,18 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_grad import methanol, water
 
-jax.config.update("jax_enable_x64", True)
-
-from test_grad import methanol, water  # noqa: E402
-
-from pgm_jax.md.box import lower_triangular_frame, reduce_box  # noqa: E402
-from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, RigidTemplate, liquid_box  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
-from pgm_jax.md.integrate import KB  # noqa: E402
-from pgm_jax.md.io import box_from_cell, read_coordinates  # noqa: E402
-from pgm_jax.md.simulation import Simulation, _dedupe  # noqa: E402
-from pgm_jax.md.topology import MDTopology, MoleculeRule  # noqa: E402
-from pgm_jax.md.vsites import VirtualSite, VirtualSites, amber_extra_points  # noqa: E402
-from pgm_jax.param import molecule_from_dict, molecule_to_dict, read_prmtop_pgm  # noqa: E402
-from pgm_jax.system import Molecule, System  # noqa: E402
+from pgm_jax.md.box import lower_triangular_frame, reduce_box
+from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, RigidTemplate, liquid_box
+from pgm_jax.md.forcefield import MDSettings, PGMForceField
+from pgm_jax.md.integrate import KB
+from pgm_jax.md.io import box_from_cell, read_coordinates
+from pgm_jax.md.simulation import Simulation, _dedupe
+from pgm_jax.md.topology import MDTopology, MoleculeRule
+from pgm_jax.md.vsites import VirtualSite, VirtualSites, amber_extra_points
+from pgm_jax.param import molecule_from_dict, molecule_to_dict, read_prmtop_pgm
+from pgm_jax.system import Molecule, System
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
 TET = np.radians(54.735)
@@ -68,7 +65,10 @@ def methanol_sites():
 def reference_sites(x):
     """The sites of methanol_sites from the published formulas, absolute coordinates, numpy."""
     C, O, H1, H2, H3, HO = x[:6]
-    unit = lambda v: v / np.linalg.norm(v)  # noqa: E731
+
+    def unit(v):
+        return v / np.linalg.norm(v)
+
     out = [
         0.3 * C + 0.7 * O,  # TwoParticleAverageSite
         0.5 * O + 0.3 * C + 0.2 * HO,
@@ -156,8 +156,11 @@ def test_spread_is_the_transposed_jacobian():
     # every kind is equivariant under rigid motions: total force and torque are conserved
     assert np.abs(Fs.sum(0) - F.sum(0)).max() < 1e-12
     assert np.abs(np.cross(x, Fs).sum(0) - np.cross(x, F).sum(0)).max() < 1e-12
+
     # work: F . d(place(x))/dx along random directions of the real atoms, by central differences
-    E = lambda y: float(jnp.sum(jnp.asarray(F) * vs.place(y)))  # noqa: E731
+    def E(y):
+        return float(jnp.sum(jnp.asarray(F) * vs.place(y)))
+
     for _ in range(3):
         d = np.zeros_like(x)
         d[:6] = rng.normal(size=(6, 3))
@@ -371,10 +374,11 @@ def test_pgm_forces_and_strain_derivative_with_sites():
     for i, j in [(0, 0), (1, 2), (2, 0)]:
         eps = np.zeros((3, 3))
         eps[i, j] = h
+
         # the engine assumes a lower-triangular box: strained boxes are rotated back
-        ee = lambda s: float(
-            e(*lower_triangular_frame(pos + (com @ (s * eps).T)[sys.mol], H @ (np.eye(3) + s * eps).T))
-        )  # noqa: E731
+        def ee(s):
+            return float(e(*lower_triangular_frame(pos + (com @ (s * eps).T)[sys.mol], H @ (np.eye(3) + s * eps).T)))
+
         fd = (ee(1.0) - ee(-1.0)) / (2 * h) - (tail if i == j else 0.0)
         assert abs(fd - W[i, j]) < 1e-5 * max(1.0, abs(fd)), (i, j, fd, W[i, j])
     with pytest.raises(NotImplementedError):

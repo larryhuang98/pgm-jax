@@ -317,7 +317,10 @@ class MDReplicas:
     def _exchange_one(self, dst, src, s):
         """dst's slot with src's configuration: momenta and thermostat auxiliaries scaled by
         s = sqrt(T_dst / T_src); the energy change of the slot is booked as heat."""
-        ke = lambda st: self.integ.kinetic(st)[0]  # noqa: E731
+
+        def ke(st):
+            return self.integ.kinetic(st)[0]
+
         e0 = ke(dst) + dst.epot + 0.5 * jnp.sum(dst.aux * dst.aux)
         mom = jax.tree_util.tree_map(lambda p: p * s, src.dyn.momentum)
         new = dst.set(
@@ -426,7 +429,7 @@ class MDReplicas:
     def _advance_batched(self, n: int):
         sim = self.sim
         start = self.S
-        for attempt in range(6):
+        for _attempt in range(6):
             new = self._run(start, n)
             jax.block_until_ready(new.epot)
             nb_bad, row_bad = self._nb_failed(new), bool(np.any(np.asarray(new.overflow)))

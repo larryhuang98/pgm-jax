@@ -300,7 +300,10 @@ def cmd_run(a):
             meta["gas_grad"] = [0.0] * space.n
     t0 = time.time()
     win = LambdaWindows(sim, lam, batched=not a.sequential, seed=a.seed + 1)
-    to_steps = lambda ps: int(round(ps / (a.dt / 1000.0)))  # noqa: E731
+
+    def to_steps(ps):
+        return int(round(ps / (a.dt / 1000.0)))
+
     pg = fg.ParamGradients(win, quantities=quant) if a.grad else None
     run = FreeEnergyRun(
         win,
@@ -326,7 +329,10 @@ def report(d, discard_ps):
     meta = d["meta"]
     gas = {"delta_g": meta["gas_delta_g"], "dudl": meta["gas_dudl"]} if "gas_delta_g" in meta else None
     r = fe.estimate(d, discard_ps=discard_ps, gas=gas)
-    k = lambda x: x / KCAL  # noqa: E731
+
+    def k(x):
+        return x / KCAL
+
     print(
         f"# {r['windows']} windows, {r['samples_per_window']} samples each after {discard_ps} ps; "
         f"kT = {r['kT']:.4f} kJ/mol"
@@ -400,7 +406,10 @@ def grad_report(d, discard_ps, n_blocks=10):
     leg = "hyd" if "hyd" in r else "solv"
     space = fg.ParamSpace.from_names(r["names"])
     p = np.asarray(meta["params_flat"], float)
-    k = lambda x: x / KCAL  # noqa: E731
+
+    def k(x):
+        return x / KCAL
+
     m, e = r[leg]["mbar"], r[leg]["end"]
     print(
         f"# parameter gradients of {'the hydration free energy' if leg == 'hyd' else 'Delta G(first -> last)'}, "
@@ -484,10 +493,12 @@ def cmd_bench(a):
         if a.grad:  # parameter gradients of the end states at every window
             pg = fg.ParamGradients(win)
             out[f"batched_{len(idx)}_grad_sample_ms"] = timed(lambda: pg.sample(), reps=2) * 1e3
-        del win
     for k, v in out.items():
         print(f"{k:40s} {v:.4f}" if isinstance(v, float) else f"{k:40s} {v}")
-    per_day = lambda ms: a.dt * 1e-6 / (ms * 1e-3) * 86400.0  # noqa: E731
+
+    def per_day(ms):
+        return a.dt * 1e-6 / (ms * 1e-3) * 86400.0
+
     print(
         f"# ns/day: plain MD {per_day(out['plain_ms_per_step']):.1f}, one alchemical window "
         f"{per_day(out['alchemy_1_window_ms_per_step']):.1f}"

@@ -308,7 +308,7 @@ elif a.mode == "bench":
             )
         sim._advance(500)
         ts = []
-        for rep in range(3):
+        for _rep in range(3):
             t0 = time.time()
             sim._advance(a.bench_steps)
             jax.block_until_ready(sim.state.epot)
@@ -317,7 +317,7 @@ elif a.mode == "bench":
         out[label] = {"ms_per_step": min(ts), "all": ts, "cg_mean": o["cg_mean"], "epot": o["epot"]}
         print(label, out[label], flush=True)
     base = out[a.labels[0]]["ms_per_step"]
-    for k, v in out.items():
+    for _k, v in out.items():
         v["overhead_pct"] = 100.0 * (v["ms_per_step"] / base - 1.0)
     out["device"] = str(jax.devices()[0])
     out["atoms"] = int(sim.sys.n)

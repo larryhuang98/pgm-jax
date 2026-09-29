@@ -13,8 +13,10 @@ from the minimised structure (pmemd: heated 10 ps at 0.5 fs from 0 K; the engine
 for the error bars.  The engine's charges and covalent dipoles are scaled by
 sqrt(KE_AMBER_PGM / KE) (pmemd-pgm's Coulomb constant), so both run the same Hamiltonian.
 
-    JAX_PLATFORMS=cpu python scripts/shake_vs_pmemd.py prep --system meoh125     # prmtop, mdin, minimisation, single point
-    python scripts/shake_vs_pmemd.py pmemd --system meoh125 --run 0 --kind cpu   # one pmemd run (runs 0..n-1 in parallel)
+    # prmtop, mdin, minimisation, single point
+    JAX_PLATFORMS=cpu python scripts/shake_vs_pmemd.py prep --system meoh125
+    # one pmemd run (runs 0..n-1 in parallel)
+    python scripts/shake_vs_pmemd.py pmemd --system meoh125 --run 0 --kind cpu
     python scripts/shake_vs_pmemd.py engine --system meoh125 --run 0             # one engine run
     python scripts/shake_vs_pmemd.py analyze --system meoh125 --runs 8           # runs/meoh/<system>/compare.json
 """

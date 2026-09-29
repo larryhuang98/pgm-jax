@@ -146,7 +146,7 @@ class LiquidFit:
         t1 = time.time()
         nframes = int(round(prod_ps / self.dt)) // every
         pending, results, stored = [], [], [] if keep_frames else None
-        dens, ta = [], 0.0
+        ta = 0.0
         th = jnp.asarray(theta, float)
         for i in range(nframes):
             sim._advance(every)
@@ -190,7 +190,7 @@ class LiquidFit:
         n = int(round(prod_ps / self.dt)) // every
         th = jnp.asarray(theta, float)
         out, stored, ta = [], [] if keep_frames else None, 0.0
-        for i in range(n):
+        for _i in range(n):
             rep.advance(every)
             P = rep._positions(rep.S.dyn.position)
             frames = [(P[k], rep.S.box[k], rep.S.induction.mu[k]) for k in range(R)]
@@ -241,7 +241,6 @@ class LiquidFit:
         # check of the previous prediction, trust region
         if self.pending is not None:
             pv = self.pending
-            s = np.sqrt(est.tol**2 + np.diag(est.cov_y) + np.asarray(pv["y_pred_err"]) ** 2)
             rec["check"] = {
                 "y_pred": pv["y_pred"],
                 "y_rw": pv.get("y_rw"),
@@ -317,7 +316,8 @@ class LiquidFit:
     def _report(self, rec, est):
         it = rec["iter"]
         self._print(
-            f"== iter {it}: {self.space.describe(rec['theta'])}; chi2 {rec['chi2']:.3f} + prior {rec['chi2_prior']:.3f}; "
+            f"== iter {it}: {self.space.describe(rec['theta'])}; chi2 {rec['chi2']:.3f} + prior "
+            f"{rec['chi2_prior']:.3f}; "
             f"{rec['info']['frames']} frames, MD {rec['info']['prod_s'] + rec['info']['equil_s']:.0f} s, "
             f"analysis {rec['info']['analysis_s']:.0f} s ({rec['info']['analysis_ms_per_frame']:.0f} ms/frame)"
         )

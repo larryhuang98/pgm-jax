@@ -48,7 +48,10 @@ for name in sys.argv[1:]:
         m1 = BondedModel(specs, BondedSettings(families=(f,), typing="amber", lj14_scale=0.5))
         P1 = {"ref": P["ref"], f: P[f]}
         fam[f] = np.array([float(m1.bonded_energy(0, jnp.asarray(x), P1)) for x in X]) / 4.184
-    c = lambda v: v - v.mean()
+
+    def c(v):
+        return v - v.mean()
+
     print(
         name,
         "bond",

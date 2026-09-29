@@ -185,7 +185,6 @@ def main():
         r = ref.compute(pos, H, idx, ref.init_induction())
         return r.induction.mu, r.energy["total"], r.iterations
 
-    oxy = np.nonzero(np.array(sys_.elements) == "O")[0]
     nmol = sys_.nmol
     k_every = max(1, int(round(a.every / a.dt * 1000)))
     k_rdf = max(1, int(round(a.rdf_every / a.dt * 1000)))
@@ -209,7 +208,7 @@ def main():
         errs = []
         prev = None
         t0 = time.time()
-        for k in range(0, n_prod, k_every):
+        for _k in range(0, n_prod, k_every):
             nve._advance(k_every)
             s = nve.state
             o = nve.observables()

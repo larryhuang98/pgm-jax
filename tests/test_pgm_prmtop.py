@@ -6,18 +6,15 @@ single-point energies and forces on the written file equal the engine's."""
 import importlib.util
 import os
 
-import jax
 import numpy as np
 import pytest
 
-jax.config.update("jax_enable_x64", True)
-
-from pgm_jax.md.constraints import repartition_masses  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.topology import MDTopology  # noqa: E402
-from pgm_jax.param import read_prmtop_pgm  # noqa: E402
-from pgm_jax.prmtop import Prmtop  # noqa: E402
-from pgm_jax.protein import (  # noqa: E402
+from pgm_jax.md.constraints import repartition_masses
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.topology import MDTopology
+from pgm_jax.param import read_prmtop_pgm
+from pgm_jax.prmtop import Prmtop
+from pgm_jax.protein import (
     ResidueLibrary,
     amber_template,
     load_amber,
@@ -154,7 +151,7 @@ def test_protein_sections_round_trip(tmp_path):
         "vdwmeth=0",
         "dipole_scf_tol=1e-06",
         "ipgm=1",
-        "nfft1=%d," % st.pme_grid[0],
+        f"nfft1={st.pme_grid[0]},",
     ):
         assert s in txt, s
     with pytest.raises(ValueError, match="multiples of 4"):

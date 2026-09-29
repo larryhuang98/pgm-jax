@@ -65,8 +65,8 @@ def main():
     per = PeriodicPGM(sys512, H, pos, b0=3.8, rc=1.0)
     e_fn = jax.jit(lambda x: per.energy(x)[0]["total"])
     f_fn = jax.jit(per.forces)
-    print("periodic 512 waters, energy:        first %.1fs, then %.3fs" % timed(lambda: e_fn(pos)))
-    print("periodic 512 waters, forces:        first %.1fs, then %.3fs" % timed(lambda: f_fn(pos)))
+    print("periodic 512 waters, energy:        first {:.1f}s, then {:.3f}s".format(*timed(lambda: e_fn(pos))))
+    print("periodic 512 waters, forces:        first {:.1f}s, then {:.3f}s".format(*timed(lambda: f_fn(pos))))
     pm = PeriodicModel(sys512, H, pos, rc=1.0, b0=3.8)
     P = sys512.params0
     fm = jax.jit(pm.forces)
@@ -74,21 +74,23 @@ def main():
     sd = jax.jit(pm.strain_derivative)
     wts = np.random.default_rng(0).normal(size=pos.shape)
     g2 = jax.jit(jax.grad(lambda p: jnp.sum(pm.forces(pos, p) * wts)))
-    print("  + LJ, forces:                      first %.1fs, then %.3fs" % timed(lambda: fm(pos, P)))
-    print("  dE/dparams:                        first %.1fs, then %.3fs" % timed(lambda: gp(P)))
-    print("  dE/dstrain (virial):               first %.1fs, then %.3fs" % timed(lambda: sd(pos, P)))
-    print("  d(forces.w)/dparams (2nd order):   first %.1fs, then %.3fs" % timed(lambda: g2(P)))
+    print("  + LJ, forces:                      first {:.1f}s, then {:.3f}s".format(*timed(lambda: fm(pos, P))))
+    print("  dE/dparams:                        first {:.1f}s, then {:.3f}s".format(*timed(lambda: gp(P))))
+    print("  dE/dstrain (virial):               first {:.1f}s, then {:.3f}s".format(*timed(lambda: sd(pos, P))))
+    print("  d(forces.w)/dparams (2nd order):   first {:.1f}s, then {:.3f}s".format(*timed(lambda: g2(P))))
     model = Model([lambda s: ElecChannel()])
     mono = pos[:3]
     c2, c3 = random_clusters(mono, 2, 4000), random_clusters(mono, 3, 45316, seed=1)
     s2, s3 = System([w] * 2), System([w] * 3)
     print(
-        "4000 water dimers, interaction E:    first %.1fs, then %.3fs"
-        % timed(lambda: model.nbody(s2, c2)["int"]["total"], 1)
+        "4000 water dimers, interaction E:    first {:.1f}s, then {:.3f}s".format(
+            *timed(lambda: model.nbody(s2, c2)["int"]["total"], 1)
+        )
     )
     print(
-        "45316 water trimers, 3-body E:       first %.1fs, then %.3fs"
-        % timed(lambda: model.nbody(s3, c3, order=3)["nb3"]["total"], 1)
+        "45316 water trimers, 3-body E:       first {:.1f}s, then {:.3f}s".format(
+            *timed(lambda: model.nbody(s3, c3, order=3)["nb3"]["total"], 1)
+        )
     )
 
 

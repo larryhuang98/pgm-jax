@@ -94,7 +94,10 @@ def main():
         model = BondedModel([spec], st)
         fit = Fitter(model, {0: {"train": data[i]["train"], "test": data[i]["test"]}})
         P = fit.fit(model.init_params(), maxiter=a.maxiter, l1=a.l1, verbose=False)
-        efun = lambda X: model.energy(0, X, P)[0]
+
+        def efun(X):
+            return model.energy(0, X, P)[0]
+
         X0 = jnp.asarray(spec.ref_xyz)
         nsteps = int(round(a.ps / a.dt)) // 100 * 100
         Xs, Es = langevin(
@@ -127,7 +130,10 @@ def main():
             # torsion distributions: circular mean |cos| difference of the populated wells
             # pooled torsion histogram (symmetry-equivalent wells of one rotor pooled), L1 distance in [0, 2]
             if phi.shape[1]:
-                h = lambda p: np.histogram(p.ravel(), bins=24, range=(-np.pi, np.pi))[0] / p.size
+
+                def h(p):
+                    return np.histogram(p.ravel(), bins=24, range=(-np.pi, np.pi))[0] / p.size
+
                 rec["torsion_hist_L1"] = float(np.abs(h(phi) - h(phi_ref)).sum())
             # equipartition: <E_pot> - E(minimum) in units of (3N - 6) kT / 2 (1 for a harmonic system)
             e_min = float(efun(X0))

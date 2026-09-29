@@ -6,14 +6,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-jax.config.update("jax_enable_x64", True)
-
-from pgm_jax.channels import ElecChannel, molecular_polarizability  # noqa: E402
-from pgm_jax.ewald import PeriodicPGM  # noqa: E402
-from pgm_jax.lj import LJChannel  # noqa: E402
-from pgm_jax.model import Model  # noqa: E402
-from pgm_jax.periodic import PeriodicModel  # noqa: E402
-from pgm_jax.system import QUANTITIES, Molecule, System  # noqa: E402
+from pgm_jax.channels import ElecChannel, molecular_polarizability
+from pgm_jax.ewald import PeriodicPGM
+from pgm_jax.lj import LJChannel
+from pgm_jax.model import Model
+from pgm_jax.periodic import PeriodicModel
+from pgm_jax.system import QUANTITIES, Molecule, System
 
 
 def water():
@@ -142,7 +140,10 @@ def test_tied_gradient_is_sum_of_atom_gradients():
         for m in sys.molecules
     ]
     sys_u = System(untied)
-    f = lambda s: lambda P: Model([ElecChannel(), LJChannel()]).energy_fn(s)(jnp.asarray(pos), P)["total"]
+
+    def f(s):
+        return lambda P: Model([ElecChannel(), LJChannel()]).energy_fn(s)(jnp.asarray(pos), P)["total"]
+
     g_t = jax.grad(f(sys))(sys.params0)
     g_u = jax.grad(f(sys_u))(sys_u.params0)
     for qn in QUANTITIES:
@@ -210,7 +211,10 @@ def test_periodic_forces(periodic):
     model, sys, pos, H, P = periodic
     F = np.asarray(jax.jit(model.forces)(pos, P))
     ej = jax.jit(lambda x: model.energy(x, P)["total"])
-    e = lambda x: float(ej(x))
+
+    def e(x):
+        return float(ej(x))
+
     h = 1e-6
     for a, k in [(0, 0), (4, 1), (7, 2), (10, 0)]:
         d = np.zeros_like(pos)
@@ -235,7 +239,10 @@ def test_periodic_box_gradient(periodic):
     model, sys, pos, H, P = periodic
     ej = jax.jit(lambda h: model.energy(pos, P, h)["total"])
     g = np.asarray(jax.grad(ej)(jnp.asarray(H)))
-    e = lambda h: float(ej(h))
+
+    def e(h):
+        return float(ej(h))
+
     step = 1e-6
     for a in range(3):
         for b in range(3):

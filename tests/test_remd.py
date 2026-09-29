@@ -12,17 +12,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_grad import water
+from test_md_macro import _water_box
 
-jax.config.update("jax_enable_x64", True)
-
-from test_grad import water  # noqa: E402
-from test_md_macro import _water_box  # noqa: E402
-
-from pgm_jax import System  # noqa: E402
-from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.integrate import BAR, KB  # noqa: E402
-from pgm_jax.md.remd import (  # noqa: E402
+from pgm_jax import System
+from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.integrate import BAR, KB
+from pgm_jax.md.remd import (
     ReplicaExchange,
     _broadcast,
     exchange_pairs,
@@ -31,8 +28,8 @@ from pgm_jax.md.remd import (  # noqa: E402
     read_exchange_log,
     temperature_reduced_energies,
 )
-from pgm_jax.md.simulation import Simulation  # noqa: E402
-from pgm_jax.md.thermostats import GLE, Bussi, Langevin  # noqa: E402
+from pgm_jax.md.simulation import Simulation
+from pgm_jax.md.thermostats import GLE, Bussi, Langevin
 
 
 # ----------------------------------------------------------------------------- toy replica engines
@@ -203,7 +200,10 @@ def test_thermostats_take_traced_temperature(th):
     key = jax.random.PRNGKey(0)
     v = jax.random.normal(key, (40, 3))
     aux = th.init_aux(jax.random.PRNGKey(1), v.shape, 2.5)
-    f = lambda kT: th.apply(v, aux, jax.random.PRNGKey(2), 0.002, kT, 120.0, lambda u: u, None)  # noqa: E731
+
+    def f(kT):
+        return th.apply(v, aux, jax.random.PRNGKey(2), 0.002, kT, 120.0, lambda u: u, None)
+
     a, b = f(2.5), jax.jit(f)(jnp.asarray(2.5))
     assert np.allclose(a[0], b[0], rtol=1e-12, atol=1e-12) and np.allclose(a[1], b[1], rtol=1e-12, atol=1e-12)
 
@@ -258,7 +258,10 @@ def test_md_swap_and_batched_equals_sequential():
     rb.replicas.permute([1, 0, 2])
     n0, n1, n2 = (rb.replicas.state(k) for k in range(3))
     f = np.sqrt(T[0] / T[1])
-    same = lambda x, y: np.array_equal(np.asarray(x), np.asarray(y))  # noqa: E731
+
+    def same(x, y):
+        return np.array_equal(np.asarray(x), np.asarray(y))
+
     for moved, src in ((n0, s1), (n1, s0)):
         for x, y in (
             (moved.dyn.position, src.dyn.position),
@@ -371,18 +374,21 @@ def test_md_replicas_split_rows_fit_every_part():
 
     sys, pos, H = small_box(4)
     s = settings(cutoff=0.6, elec_cutoff=0.45, dipole_tol=1e-9, max_iter=100)
-    make = lambda: Simulation(
-        sys,
-        pos,
-        H,
-        s,
-        dt=0.001,
-        ensemble="nvt",
-        temperature=300.0,  # noqa: E731
-        thermostat="bussi",
-        log=None,
-        seed=2,
-    )
+
+    def make():
+        return Simulation(
+            sys,
+            pos,
+            H,
+            s,
+            dt=0.001,
+            ensemble="nvt",
+            temperature=300.0,
+            thermostat="bussi",
+            log=None,
+            seed=2,
+        )
+
     sim = make()
     mc, mc_e = sim.ff.capacity
     tail = mc - mc_e

@@ -6,19 +6,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_grad import water
 
-jax.config.update("jax_enable_x64", True)
-
-from test_grad import water  # noqa: E402
-
-from pgm_jax import System  # noqa: E402
-from pgm_jax.bonded import terms as T  # noqa: E402
-from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec  # noqa: E402
-from pgm_jax.md.constraints import Constraints, repartition_masses  # noqa: E402
-from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, RigidTemplate  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.topology import MDTopology, MoleculeRule, heavy_atom_groups  # noqa: E402
-from pgm_jax.system import Molecule  # noqa: E402
+from pgm_jax import System
+from pgm_jax.bonded import terms as T
+from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
+from pgm_jax.md.constraints import Constraints, repartition_masses
+from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, RigidTemplate
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.topology import MDTopology, MoleculeRule, heavy_atom_groups
+from pgm_jax.system import Molecule
 
 PEPTIDE = "CC(=O)N[C@@H](C)C(=O)NCC(=O)NC"  # Ace-Ala-Gly-Nme, 29 atoms
 _RAD = {"H": 0.05, "C": 0.07, "N": 0.065, "O": 0.06}

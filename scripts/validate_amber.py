@@ -73,7 +73,10 @@ def read_nc_frames(path, var):
 def mdout_step0(path):
     txt = open(path).read()
     blk = txt[txt.index("NSTEP =        0") :]
-    get = lambda k: float(re.search(rf"{k}\s*=\s*(-?\d+\.\d+)", blk).group(1))
+
+    def get(k):
+        return float(re.search(rf"{k}\s*=\s*(-?\d+\.\d+)", blk).group(1))
+
     out = {"EELEC": get("EELEC"), "VDWAALS": get("VDWAALS"), "BOND": get("BOND"), "ANGLE": get("ANGLE")}
     for k in ("VIRIAL", "PRESS", "VOLUME"):
         if re.search(rf"{k}\s*=", blk):
@@ -83,10 +86,10 @@ def mdout_step0(path):
 
 def write_inpcrd(path, xyz, title="wrapped"):
     with open(path, "w") as fh:
-        fh.write(title + "\n%6d\n" % len(xyz))
+        fh.write(f"{title}\n{len(xyz):6d}\n")
         flat = xyz.ravel()
         for s in range(0, len(flat), 6):
-            fh.write("".join("%12.7f" % v for v in flat[s : s + 6]) + "\n")
+            fh.write("".join(f"{v:12.7f}" for v in flat[s : s + 6]) + "\n")
 
 
 def wrap_molecules(xyz, H):
@@ -153,7 +156,9 @@ def compare():
     w = read_prmtop_pgm(TOP)[0]
     sys = System([w] * 512)
     q = np.asarray(sys.expand()["q"])
-    to_kcal_A = lambda F: np.asarray(F) / 41.84
+
+    def to_kcal_A(F):
+        return np.asarray(F) / 41.84
 
     # ================= gas phase: dense wrapped cluster vs sander (no cutoff) ==========
     gas = os.path.join(REF, "sander_gas512w")

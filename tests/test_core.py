@@ -5,13 +5,11 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-jax.config.update("jax_enable_x64", True)
-
-from pgm_jax.channels import ElecChannel  # noqa: E402
-from pgm_jax.kernels import gauss_bij, gauss_coulomb, gauss_overlap, gd6_jax, tt6_jax  # noqa: E402
-from pgm_jax.param import molecule_from_dict, molecule_to_dict  # noqa: E402
-from pgm_jax.solver import minimize_newton, solve_linear_induction  # noqa: E402
-from pgm_jax.system import Molecule, System  # noqa: E402
+from pgm_jax.channels import ElecChannel
+from pgm_jax.kernels import gauss_bij, gauss_coulomb, gauss_overlap, gd6_jax, tt6_jax
+from pgm_jax.param import molecule_from_dict, molecule_to_dict
+from pgm_jax.solver import minimize_newton, solve_linear_induction
+from pgm_jax.system import Molecule, System
 
 
 def _methanol():
@@ -82,12 +80,20 @@ def test_newton_solver_matches_linear_induction_and_its_gradient():
     alpha = jnp.array([1.0, 0.8, 1.2, 0.9])
     F = jnp.asarray(rng.normal(size=(n, 3)))
     Tm = T.transpose(0, 2, 1, 3).reshape(3 * n, 3 * n)
-    G = lambda m, f: jnp.sum(m.reshape(n, 3) ** 2 / (2 * alpha[:, None])) - m @ f.reshape(-1) + 0.5 * m @ Tm @ m
+
+    def G(m, f):
+        return jnp.sum(m.reshape(n, 3) ** 2 / (2 * alpha[:, None])) - m @ f.reshape(-1) + 0.5 * m @ Tm @ m
+
     mu_lin = solve_linear_induction(T, alpha, F).reshape(-1)
     mu_new = minimize_newton(G, jnp.zeros(3 * n), F)
     assert np.allclose(mu_new, mu_lin, atol=1e-10)
-    e_lin = lambda f: G(solve_linear_induction(T, alpha, f).reshape(-1), f)
-    e_new = lambda f: G(minimize_newton(G, jnp.zeros(3 * n), f), f)
+
+    def e_lin(f):
+        return G(solve_linear_induction(T, alpha, f).reshape(-1), f)
+
+    def e_new(f):
+        return G(minimize_newton(G, jnp.zeros(3 * n), f), f)
+
     assert np.allclose(jax.grad(e_new)(F), jax.grad(e_lin)(F), atol=1e-9)
 
 

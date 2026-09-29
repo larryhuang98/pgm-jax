@@ -71,7 +71,9 @@ class Reweighting:
         self.u0 = jax.lax.stop_gradient(self.energies(theta0))
 
     def energies(self, theta):
-        one = lambda R: self.f(theta, R)
+        def one(R):
+            return self.f(theta, R)
+
         if self.chunk is None:
             return jax.vmap(one)(self.X)
         return jax.lax.map(one, self.X, batch_size=self.chunk)

@@ -219,7 +219,10 @@ class Objective:
         # trust-region subproblem is d(lambda) = -(A + lambda Sigma_prior^-1)^-1 g (More-Sorensen); a
         # Marquardt diag(A) damping would push the step into the directions of small curvature
         D = Pinv
-        size = lambda d: float(np.linalg.norm(d / self.prior_sigma))
+
+        def size(d):
+            return float(np.linalg.norm(d / self.prior_sigma))
+
         x = -np.linalg.solve(A, g)
         if size(x) <= radius:
             return x, 0.0

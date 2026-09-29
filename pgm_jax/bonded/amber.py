@@ -46,8 +46,13 @@ def read_bonded(path: str) -> dict:
     (i, j, K, r0), angles (i, j, k, K, th0), dihedrals (i, j, k, l, PK, n, phase, improper),
     cmap (i, j, k, l, m, type) and cmap_grids (per type, (res, res) kcal/mol, phi rows)."""
     top = Prmtop.read(path)
-    f = lambda k: top.get(k).astype(float) if k in top else np.zeros(0)
-    i = lambda k: top.get(k).astype(int) if k in top else np.zeros(0, int)
+
+    def f(k):
+        return top.get(k).astype(float) if k in top else np.zeros(0)
+
+    def i(k):
+        return top.get(k).astype(int) if k in top else np.zeros(0, int)
+
     bk, br = f("BOND_FORCE_CONSTANT"), f("BOND_EQUIL_VALUE")
     ak, at = f("ANGLE_FORCE_CONSTANT"), f("ANGLE_EQUIL_VALUE")
     dk, dn, dp = f("DIHEDRAL_FORCE_CONSTANT"), f("DIHEDRAL_PERIODICITY"), f("DIHEDRAL_PHASE")
@@ -91,8 +96,13 @@ def _local(amb: dict, offset: int, n: int) -> dict:
     larger system; terms of other molecules dropped)."""
     if offset == 0 and n is None:
         return amb
-    ok = lambda atoms: all(offset <= a < offset + n for a in atoms)
-    sh = lambda atoms: tuple(a - offset for a in atoms)
+
+    def ok(atoms):
+        return all(offset <= a < offset + n for a in atoms)
+
+    def sh(atoms):
+        return tuple(a - offset for a in atoms)
+
     return {
         "bonds": [sh(e[:2]) + tuple(e[2:]) for e in amb["bonds"] if ok(e[:2])],
         "angles": [sh(e[:3]) + tuple(e[3:]) for e in amb["angles"] if ok(e[:3])],
@@ -271,7 +281,10 @@ def export_bonded(
     if len(got) != n or got != [e if e in el.values() else "?" for e in mol.elements]:
         raise ValueError("the prmtop atoms at the offset are not the molecule's (elements differ)")
     isH = Z == 1
-    ours = lambda atoms: all(offset <= a < offset + n for a in atoms)
+
+    def ours(atoms):
+        return all(offset <= a < offset + n for a in atoms)
+
     old = read_bonded(prmtop_in)
     counts = {}
 

@@ -78,7 +78,8 @@ def main():
     rep = MDReplicas(sim, a.T + 1e-6 * np.arange(a.nrep), batched=True, seed=a.seed + 7)
     rep.advance(int(round(a.equil_rep / sim.dt)))
     print(
-        f"# {S['sys'].nmol} molecules, NVT, {a.nrep} replicas, theta {th.tolist()}, V {float(np.abs(np.linalg.det(np.asarray(sim.state.box)))):.4f} nm^3; "
+        f"# {S['sys'].nmol} molecules, NVT, {a.nrep} replicas, theta {th.tolist()}, V "
+        f"{float(np.abs(np.linalg.det(np.asarray(sim.state.box)))):.4f} nm^3; "
         f"equilibrated in {time.time() - t0:.0f} s",
         flush=True,
     )
@@ -86,7 +87,7 @@ def main():
     for seg in range(len(done), a.segments):
         t1 = time.time()
         out, ta = [], 0.0
-        for i in range(nper):
+        for _i in range(nper):
             rep.advance(every)
             P = rep._positions(rep.S.dyn.position)
             frames = [(P[k], rep.S.box[k], rep.S.induction.mu[k]) for k in range(a.nrep)]

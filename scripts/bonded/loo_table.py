@@ -25,5 +25,6 @@ for mol, v in rows.items():
         E[k].append(v[k][0])
         F[k].append(v[k][1])
 print(
-    f"{'mean':20s} {'':8s} {np.mean(E['pgm']):7.3f} {np.mean(E['cls']):7.3f} {np.mean(F['pgm']):7.2f} {np.mean(F['cls']):7.2f}"
+    f"{'mean':20s} {'':8s} {np.mean(E['pgm']):7.3f} {np.mean(E['cls']):7.3f} {np.mean(F['pgm']):7.2f} "
+    f"{np.mean(F['cls']):7.2f}"
 )

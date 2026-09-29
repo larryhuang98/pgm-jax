@@ -80,7 +80,12 @@ t0 = time.time()
 wk.run(n, report=n // 20, prefix=a.out)
 wall = time.time() - t0
 ax = np.linspace(0.36, 1.34, 50)
-wall_e = lambda x: 2000.0 * (np.maximum(0.3 - x, 0) ** 2 + np.maximum(x - 1.4, 0) ** 2)  # noqa: E731
+
+
+def wall_e(x):
+    return 2000.0 * (np.maximum(0.3 - x, 0) ** 2 + np.maximum(x - 1.4, 0) ** 2)
+
+
 Fex = np.array([U([x]) for x in ax]) + wall_e(ax) - 2 * kT * np.log(ax)
 Fex -= Fex.min()
 m = Fex < a.fmax

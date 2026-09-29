@@ -8,20 +8,17 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_grad import cluster, methanol
+from test_md import settings, small_box
 
-jax.config.update("jax_enable_x64", True)
-
-from test_grad import cluster, methanol  # noqa: E402
-from test_md import settings, small_box  # noqa: E402
-
-from pgm_jax import ElecChannel, Model, Molecule, System  # noqa: E402
-from pgm_jax.channels import molecular_polarizability  # noqa: E402
-from pgm_jax.md import efield as EF  # noqa: E402
-from pgm_jax.md.dipoles import CellDipole  # noqa: E402
-from pgm_jax.md.forcefield import PGMForceField  # noqa: E402
-from pgm_jax.md.integrate import KB  # noqa: E402
-from pgm_jax.md.simulation import Simulation  # noqa: E402
-from pgm_jax.units import KE  # noqa: E402
+from pgm_jax import ElecChannel, Model, Molecule, System
+from pgm_jax.channels import molecular_polarizability
+from pgm_jax.md import efield as EF
+from pgm_jax.md.dipoles import CellDipole
+from pgm_jax.md.forcefield import PGMForceField
+from pgm_jax.md.integrate import KB
+from pgm_jax.md.simulation import Simulation
+from pgm_jax.units import KE
 
 E1 = np.array([0.3, -0.5, 0.8])  # V/nm, deliberately strong and oblique
 
@@ -56,7 +53,10 @@ def test_gas_phase_response_is_the_molecular_polarizability(which):
     dmu = np.asarray(a1["mu"]).sum(0) - np.asarray(a0["mu"]).sum(0)
     assert np.allclose(dmu, alpha @ Ei, rtol=1e-9, atol=1e-14), (dmu, alpha @ Ei)
     M0 = (np.asarray(P["q"])[:, None] * np.asarray(x)).sum(0) + np.asarray(a0["p"]).sum(0) + np.asarray(a0["mu"]).sum(0)
-    tot = lambda e: float(sum(e.values()))  # noqa: E731
+
+    def tot(e):
+        return float(sum(e.values()))
+
     expect = tot(e0) - KE * (Ei @ M0 + 0.5 * Ei @ alpha @ Ei)
     assert abs(tot(e1) - expect) < 1e-9 * abs(expect), (tot(e1), expect)
     M1 = M0 + dmu
@@ -152,7 +152,10 @@ def test_field_derivatives_through_the_differentiable_solve():
     sys, pos, H = small_box(4)
     pos = jnp.asarray(pos)
     ff, idx = _ff(sys, pos, H, differentiable=True, adjoint_tol=1e-12)
-    f = lambda E: ff.compute(pos, H, idx, ff.init_induction(), efield=(E, None))  # noqa: E731
+
+    def f(E):
+        return ff.compute(pos, H, idx, ff.init_induction(), efield=(E, None))
+
     E = jnp.asarray(E1)
     res = f(E)
     g = jax.grad(lambda E: f(E).energy["total"])(E)
@@ -353,7 +356,10 @@ def test_constant_d_linear_response_derivative_and_virial():
     sys, pos, H = small_box(11)
     pos = jnp.asarray(pos)
     ff, idx = _ff(sys, pos, H, differentiable=True, adjoint_tol=1e-12)
-    f = lambda D: ff.compute(pos, H, idx, ff.init_induction(), efield=(D, None, "D"))  # noqa: E731
+
+    def f(D):
+        return ff.compute(pos, H, idx, ff.init_induction(), efield=(D, None, "D"))
+
     D1, D2 = jnp.asarray(DD), jnp.asarray(DD) + jnp.asarray([0.3, 0.2, -0.5])
     r1, r2 = f(D1), f(D2)
     V = abs(np.linalg.det(H))

@@ -2,11 +2,8 @@
 
 import os
 
-import jax
 import numpy as np
 import pytest
-
-jax.config.update("jax_enable_x64", True)
 
 from pgm_jax.channels import ElecChannel
 from pgm_jax.lj import LJChannel
@@ -77,7 +74,9 @@ def _monomer(shift, rot):
 
 
 def _trimer(rng):
-    R = lambda: np.linalg.qr(rng.normal(size=(3, 3)))[0]
+    def R():
+        return np.linalg.qr(rng.normal(size=(3, 3)))[0]
+
     return np.concatenate(
         [
             _monomer(np.zeros(3), np.eye(3)),

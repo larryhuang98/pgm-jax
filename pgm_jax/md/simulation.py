@@ -375,7 +375,7 @@ class Simulation:
         bias = self.integ.bias
         if bias is not None and start.bias is not None:  # room for the block's hills and COLVAR rows
             start = start.set(bias=bias.reserve(start.bias, n))
-        for attempt in range(6):
+        for _attempt in range(6):
             new = self.integ.run(start, n) if self._recorder is None else self._recorder.run(start, n)
             jax.block_until_ready(new.epot)
             self.integ.check_block(new)

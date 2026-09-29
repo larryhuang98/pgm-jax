@@ -424,7 +424,7 @@ class QMFit:
             out.append((pred["nb3"] - self.nb3[0]) / self.nb3[1])
         if w.force > 0 and self.prep.force_recs:
             s = w.sigma_F * KCAL / ANG / np.sqrt(w.force)
-            for n, (ks, F, T) in self.prep.forces(P).items():
+            for n, (_ks, F, T) in self.prep.forces(P).items():
                 _, _, Fq, Tq = self.prep.force_recs[n]
                 out.append(((F - Fq) / s).ravel())
                 out.append(((T - Tq) / (s * ANG)).ravel())
@@ -528,7 +528,8 @@ def format_table(rows: list[dict]) -> str:
     lines = [f"{'group':24s} {'quantity':10s} {'N':>5s} {'RMSE':>7s} {'MAE':>7s} {'MaxAE':>7s} {'MSE':>7s}"]
     for r in rows:
         lines.append(
-            f"{r['group']:24s} {r['quantity']:10s} {r['N']:5d} {r['RMSE']:7.3f} {r['MAE']:7.3f} {r['MaxAE']:7.3f} {r['MSE']:+7.3f}"
+            f"{r['group']:24s} {r['quantity']:10s} {r['N']:5d} {r['RMSE']:7.3f} {r['MAE']:7.3f} {r['MaxAE']:7.3f} "
+            f"{r['MSE']:+7.3f}"
         )
     return "\n".join(lines)
 

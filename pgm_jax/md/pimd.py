@@ -525,7 +525,10 @@ class PGMBeads:
         for tpl, rows in self.flex.groups:
             model = tpl.model
             P = jax.tree_util.tree_map(jnp.asarray, tpl.P)
-            fn = lambda R, model=model, P=P, idx=tpl.index: model.nonbonded(idx, R, P)[0]
+
+            def fn(R, model=model, P=P, idx=tpl.index):
+                return model.nonbonded(idx, R, P)[0]
+
             groups.append((fn, rows))
             covered += int(np.size(rows))
         if covered != self.flex.n:
@@ -649,7 +652,10 @@ class PGMBeads:
         if c is None or c >= nf or nf % c:
             return jax.vmap(fn, in_axes=(0, ax), out_axes=out_ax)(x, ind)
         count = ind.count
-        split = lambda a: a.reshape((nf // c, c) + a.shape[1:])  # noqa: E731
+
+        def split(a):
+            return a.reshape((nf // c, c) + a.shape[1:])
+
         xs = split(x)
         inds = jax.tree_util.tree_map(split, _nocount(ind))
         vf = jax.vmap(fn, in_axes=(0, ax), out_axes=out_ax)
@@ -660,7 +666,10 @@ class PGMBeads:
             return tuple(o.set(count=None) if i == k_ind else o for i, o in enumerate(out)), out[k_ind].count
 
         out, counts = jax.lax.map(body, (xs, inds))
-        merge = lambda a: a.reshape((nf,) + a.shape[2:])  # noqa: E731
+
+        def merge(a):
+            return a.reshape((nf,) + a.shape[2:])
+
         return tuple(
             jax.tree_util.tree_map(merge, o).set(count=counts[0]) if i == k_ind else merge(o) for i, o in enumerate(out)
         )
@@ -907,7 +916,7 @@ class PIMDSimulation:
     def _advance_block(self, n: int):
         e = self.engine
         start = self.state
-        for attempt in range(6):
+        for _attempt in range(6):
             new = self.integ.run(start, n)
             jax.block_until_ready(new.upot)
             nb_bad, row_bad = e.nb.failed(new.eng.nbr), bool(new.eng.overflow)
@@ -1203,7 +1212,10 @@ def flexible_water(
     r = p["r_eq"] + sigma_r * rng.standard_normal((n_samples, 2))
     th = p["theta_eq"] + sigma_theta * rng.standard_normal(n_samples)
     X = jnp.asarray(np.stack([water_geometry(a, b, t) for (a, b), t in zip(r, th)]))
-    enb = lambda R: model.nonbonded(0, R, None)[0]  # noqa: E731
+
+    def enb(R):
+        return model.nonbonded(0, R, None)[0]
+
     yE = np.asarray(jax.vmap(target)(X) - jax.vmap(enb)(X))
     yF = np.asarray(-jax.vmap(jax.grad(target))(X) + jax.vmap(jax.grad(enb))(X))
     L = sum(sizes)
@@ -1243,7 +1255,10 @@ def flexible_water(
     theta, loss = solve(opt.x)
     P = jax.tree_util.tree_map(jnp.asarray, build(jnp.asarray(theta), opt.x))
     tpl = FlexibleTemplate.from_fit(model, P)
-    model_E = lambda R: model.energy(0, R, P)[0]  # noqa: E731
+
+    def model_E(R):
+        return model.energy(0, R, P)[0]
+
     E = jax.vmap(model_E)(X)
     Et = jax.vmap(target)(X)
     dE = (E - Et) - jnp.mean(E - Et)

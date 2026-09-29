@@ -79,7 +79,10 @@ def fit(name, lam=1e-3, lam0=0.0, out="params2", verbose=True):
         )
 
     vg = jax.jit(jax.value_and_grad(loss))
-    f = lambda z: tuple(np.asarray(t, float) for t in vg(jnp.asarray(z)))
+
+    def f(z):
+        return tuple(np.asarray(t, float) for t in vg(jnp.asarray(z)))
+
     rr0 = float(np.sqrt(loss(z0) - 0.0))
     res = minimize(f, np.asarray(z0), jac=True, method="L-BFGS-B", options={"maxiter": 2000})
     th = dict(th0)
@@ -94,7 +97,8 @@ def fit(name, lam=1e-3, lam0=0.0, out="params2", verbose=True):
     Ls = float(sum(jnp.sum((potential(th, Xb, Pb) - v) ** 2) for Xb, Pb, v in confs) / ssv)
     if verbose:
         print(
-            f"{name:20s} lam0 {lam0:g}: RRMSE over {len(confs)} conformers {rr0:.3f} -> {np.sqrt(Ls):.3f}   q {' '.join(f'{x:+.2f}' for x in q)}",
+            f"{name:20s} lam0 {lam0:g}: RRMSE over {len(confs)} conformers {rr0:.3f} -> {np.sqrt(Ls):.3f}   q "
+            f"{' '.join(f'{x:+.2f}' for x in q)}",
             flush=True,
         )
 

@@ -166,7 +166,8 @@ class ExternalField:
         if self.time_dependent:
             s += (
                 f" x cos({self.omega:g} t + {self.phase:g}) (omega in rad/ps: "
-                f"{self.omega / (2 * math.pi * C_CM_PS):.6g} cm^-1, period {2 * math.pi / self.omega if self.omega else math.inf:.6g} ps)"
+                f"{self.omega / (2 * math.pi * C_CM_PS):.6g} cm^-1, period "
+                f"{2 * math.pi / self.omega if self.omega else math.inf:.6g} ps)"
             )
         return s
 

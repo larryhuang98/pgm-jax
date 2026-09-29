@@ -3,18 +3,14 @@ FlexibleSimulation(hmr=...)): which atoms change, total masses conserved, no sil
 
 import os
 
-import jax
 import numpy as np
 import pytest
+from test_grad import water
+from test_md_macro import _water_box
 
-jax.config.update("jax_enable_x64", True)
-
-from test_grad import water  # noqa: E402
-from test_md_macro import _water_box  # noqa: E402
-
-from pgm_jax import System  # noqa: E402
-from pgm_jax.md.constraints import hmr_masses, repartition_masses  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
+from pgm_jax import System
+from pgm_jax.md.constraints import hmr_masses, repartition_masses
+from pgm_jax.md.forcefield import MDSettings
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
 PRM, CRD = os.path.join(DATA, "pep_wat.prmtop"), os.path.join(DATA, "pep_wat.inpcrd")  # ACE-ALA-SER-NME, TIP3P, NaCl

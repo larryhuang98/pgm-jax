@@ -138,7 +138,10 @@ def amber_lambda(K, order, kcut=50):
             continue
         x = math.pi * m / K
         k = np.arange(1, kcut + 1) * math.pi
-        g = lambda p: 1.0 + np.sum((x / (x + k)) ** p) + np.sum((x / (x - k)) ** p)  # noqa: E731
+
+        def g(p):
+            return 1.0 + np.sum((x / (x + k)) ** p) + np.sum((x / (x - k)) ** p)
+
         out[i] = (g(order) / g(2 * order)) ** 2
     return out
 

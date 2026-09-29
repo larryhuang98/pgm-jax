@@ -56,7 +56,10 @@ def typed_keys(spec, top, basis, depth: int) -> dict:
     from ..model import _classes
 
     cl = _classes(spec.elements, [tuple(b) for b in top.bonds], depth)
-    kt = lambda atoms, kind: top.key(atoms, kind, cl) if kind != "atom" else cl[atoms[0]]
+
+    def kt(atoms, kind):
+        return top.key(atoms, kind, cl) if kind != "atom" else cl[atoms[0]]
+
     out = {f: list(T.REGISTRY[f].index(top, kt)[1]) for f in basis}
     out["b0"] = [kt(b, "bond") for b in top.bonds]
     out["th0"] = [kt(a, "angle") for a in top.angles]

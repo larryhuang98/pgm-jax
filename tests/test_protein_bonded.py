@@ -5,14 +5,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_bonded_sets import _fd_check
 
-jax.config.update("jax_enable_x64", True)
-
-from test_bonded_sets import _fd_check  # noqa: E402
-
-from pgm_jax.bonded import terms as T  # noqa: E402
-from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec  # noqa: E402
-from pgm_jax.bonded.topology import build_topology  # noqa: E402
+from pgm_jax.bonded import terms as T
+from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
+from pgm_jax.bonded.topology import build_topology
 
 ACE_ALA_NME = "CC(=O)N[C@@H](C)C(=O)NC"
 ACE_ALA_GLY_NME = "CC(=O)N[C@@H](C)C(=O)NCC(=O)NC"
@@ -104,7 +101,10 @@ def test_protein_set_energy_gradients_and_invariance():
     rng = np.random.default_rng(3)
     P["cmap"]["cm"] = jnp.asarray(rng.normal(size=P["cmap"]["cm"].shape))
     x = s.ref_xyz + 0.003 * rng.normal(size=s.ref_xyz.shape)
-    E = lambda R: model.bonded_energy(0, R, P)
+
+    def E(R):
+        return model.bonded_energy(0, R, P)
+
     _fd_check(E, x, rng)
     Q = np.linalg.qr(rng.normal(size=(3, 3)))[0]
     Q = Q * np.sign(np.linalg.det(Q))  # proper rotation (phi/psi change sign under reflection)

@@ -86,10 +86,16 @@ def prmtop_extra_points(s) -> dict:
             "prmtop has VIRTUAL_SITE_FRAMES (pmemd custom extra-point frames): not supported; "
             "define the sites with Molecule.vsites (md/vsites.py)"
         )
-    trip = lambda sec: np.array([int(x) for x in s.get(sec, [])], int).reshape(-1, 3)  # noqa: E731
+
+    def trip(sec):
+        return np.array([int(x) for x in s.get(sec, [])], int).reshape(-1, 3)
+
     bh, bx = trip("BONDS_INC_HYDROGEN"), trip("BONDS_WITHOUT_HYDROGEN")
     req = [float(x) for x in s.get("BOND_EQUIL_VALUE", [])]
-    as_list = lambda b: [(i // 3, j // 3, t - 1) for i, j, t in b]  # noqa: E731
+
+    def as_list(b):
+        return [(i // 3, j // 3, t - 1) for i, j, t in b]
+
     eps = amber_extra_points(s["AMBER_ATOM_TYPE"], as_list(bh), as_list(bx), req)
     mass = np.array([float(x) for x in s["MASS"]])
     for e in eps:

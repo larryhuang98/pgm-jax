@@ -5,7 +5,8 @@ the README (NVT, gamma 1/ps, 9 A cutoff, PME 48^3 per replica, order 6, dipole_s
     python scripts/bench_md.py --replicate 2 --steps 10000 --precision mixed
     python scripts/bench_md.py --replicate 2 --engine constraints --dt 0.002     # atoms + SHAKE/RATTLE
     python scripts/bench_md.py --replicate 2 --elec-cut 0.7 --grid 48           # electrostatics cut at 0.7 nm
-    python scripts/bench_md.py --replicate 2 --engine constraints --hmr 4.0 --thermostat bussi --dt 0.008 --mts 2   # r-RESPA
+    # r-RESPA
+    python scripts/bench_md.py --replicate 2 --engine constraints --hmr 4.0 --thermostat bussi --dt 0.008 --mts 2
 """
 
 from __future__ import annotations
@@ -163,7 +164,8 @@ def main():
     print(
         f"{a.engine}: {sys_.nmol} waters ({sys_.n} atoms), dt {a.dt * 1000:g} fs, {a.precision}, {a.ensemble}, "
         f"{st.describe_cutoffs()}, beta {beta:.4f}, PME {grid} order {a.order}, "
-        f"{st.describe_induction()}, skin {a.skin}, rows {sim.ff.mc} (electrostatic {sim.ff.mc_e or sim.ff.mc}): {el / done * 1e3:.3f} ms/step, "
+        f"{st.describe_induction()}, skin {a.skin}, rows {sim.ff.mc} (electrostatic {sim.ff.mc_e or sim.ff.mc}): "
+        f"{el / done * 1e3:.3f} ms/step, "
         f"{done * a.dt / 1000 / el * 86400:.1f} ns/day; T {o['temp_K']:.1f} K, density {o['density_g_cm3']:.4f}, "
         f"CG iters {(float(sim.state.cg_total) - cg0) / (int(sim.state.step) - s0):.2f} mean per step, max "
         f"{o['cg_iter_max']}{'; ' + str(mts_stats(sim)) if mts else ''}",

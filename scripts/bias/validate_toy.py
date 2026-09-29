@@ -168,7 +168,8 @@ for r, st in enumerate(bstates):
     F_bias.append(Fb)
     F_rw.append(Fh)
     print(
-        f"run {r}: FES from the bias RMSD {rb:.3f} (max {mb:.2f}) kJ/mol, reweighted RMSD {rh:.3f} (max {mh:.2f}); {info}"
+        f"run {r}: FES from the bias RMSD {rb:.3f} (max {mb:.2f}) kJ/mol, reweighted RMSD {rh:.3f} (max {mh:.2f}); "
+        f"{info}"
     )
 for name, Fs in (("bias", F_bias), ("reweight", F_rw)):
     R = np.array([rr[f"rmsd_{name}"] for rr in res["runs"]])

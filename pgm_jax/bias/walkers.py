@@ -278,7 +278,8 @@ class Walkers(MDReplicas):
                 el = max(time.time() - t0, 1e-9)
                 nsd = done * self.dt / 1000.0 / el * 86400.0 * self.n
                 line = (
-                    f"{step:12d} {step * self.dt:13.4f} {np.mean(T):13.3f} {float(np.mean(np.asarray(self.S.epot))):13.3f} "
+                    f"{step:12d} {step * self.dt:13.4f} {np.mean(T):13.3f} "
+                    f"{float(np.mean(np.asarray(self.S.epot))):13.3f} "
                     f"{float(eb.mean()):14.4f} {work:14.4f} {nsd:13.2f}"
                 )
                 lf.write(line + "\n")

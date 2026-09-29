@@ -56,7 +56,7 @@ def _clusters(pairs, n_atoms):
         if ri != rj:
             parent[ri] = rj
     comp = {}
-    for c, (i, j) in enumerate(pairs):
+    for c, (i, _j) in enumerate(pairs):
         comp.setdefault(find(int(i)), []).append(c)
     out = []
     for cs in comp.values():
@@ -152,7 +152,10 @@ class _DenseBlock:
     def _vectors(self, X):
         """Constraint vectors r_a - r_b (K, C, 3)."""
         i, j = self.ends[..., 0], self.ends[..., 1]
-        take = lambda idx: jnp.take_along_axis(X, idx[..., None], axis=1)  # noqa: E731
+
+        def take(idx):
+            return jnp.take_along_axis(X, idx[..., None], axis=1)
+
         return take(i) - take(j)
 
     def _move(self, w, V):
@@ -259,7 +262,10 @@ class _SparseBlock:
         """Solve (V K V^T) x = b (the Gram matrix of the mass-weighted constraint gradients), Jacobi
         preconditioned, until |r|_max <= tol |b|_max; `unroll` iterations between tests.
         Returns (x, iterations)."""
-        op = lambda x: jnp.sum(V * self._vec(self._move(x, V)), -1)  # noqa: E731
+
+        def op(x):
+            return jnp.sum(V * self._vec(self._move(x, V)), -1)
+
         dinv = 1.0 / (jnp.sum(V * V, -1) * self._w)
         stop = tol * jnp.max(jnp.abs(b))
         z = dinv * b

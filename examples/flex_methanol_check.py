@@ -52,8 +52,8 @@ e_gas, g_gas = jax.value_and_grad(lambda R: m.energy(0, R, jax.tree_util.tree_ma
     jnp.asarray(x)
 )
 print(
-    "single molecule: |F_md - F_gas| max %.3g, rms F %.3g kJ/mol/nm"
-    % (np.abs(F_md + np.asarray(g_gas)).max(), np.sqrt(np.mean(np.asarray(g_gas) ** 2)))
+    f"single molecule: |F_md - F_gas| max {np.abs(F_md + np.asarray(g_gas)).max():.3g}, rms F "
+    f"{np.sqrt(np.mean(np.asarray(g_gas) ** 2)):.3g} kJ/mol/nm"
 )
 
 # 2. NVE energy conservation, 216 molecules

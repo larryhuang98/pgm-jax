@@ -9,19 +9,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_grad import water
+from test_md import small_box
+from test_md_macro import _water_box
 
-jax.config.update("jax_enable_x64", True)
-
-from test_grad import water  # noqa: E402
-from test_md import small_box  # noqa: E402
-from test_md_macro import _water_box  # noqa: E402
-
-from pgm_jax import System  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
-from pgm_jax.md.iel import spectral_radius  # noqa: E402
-from pgm_jax.md.integrate import KB  # noqa: E402
-from pgm_jax.md.neighbors import Neighbors  # noqa: E402
-from pgm_jax.md.simulation import Simulation  # noqa: E402
+from pgm_jax import System
+from pgm_jax.md.forcefield import MDSettings, PGMForceField
+from pgm_jax.md.iel import spectral_radius
+from pgm_jax.md.integrate import KB
+from pgm_jax.md.neighbors import Neighbors
+from pgm_jax.md.simulation import Simulation
 
 
 def _settings(**kw):
@@ -80,7 +77,7 @@ def test_shadow_forces_are_exact_and_energy_error_second_order(omega, precond):
     _, F_hf = ff._energy_forces(pos, H, res.induction.mu, ff.geometry(pos, H, idx, P, forces=True), P)
     E = jax.jit(lambda y: ff.compute(y, H, idx, ind).energy["total"])
     h = 3e-6  # FD error ~ 1e-4 (h^2)
-    for k in range(3):
+    for _k in range(3):
         v = jnp.asarray(rng.normal(size=pos.shape))
         fd = (float(E(pos + h * v)) - float(E(pos - h * v))) / (2 * h)
         an = -float(jnp.sum(res.forces * v))

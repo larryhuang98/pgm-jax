@@ -6,14 +6,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_md import settings, small_box
 
-jax.config.update("jax_enable_x64", True)
-
-from test_md import settings, small_box  # noqa: E402
-
-from pgm_jax import PeriodicModel, PeriodicPGM, System, set_gvdw  # noqa: E402
-from pgm_jax.md.forcefield import PGMForceField  # noqa: E402
-from pgm_jax.md.neighbors import Neighbors  # noqa: E402
+from pgm_jax import PeriodicModel, PeriodicPGM, System, set_gvdw
+from pgm_jax.md.forcefield import PGMForceField
+from pgm_jax.md.neighbors import Neighbors
 
 GV = {"OW": (60.0, 0.05, 4.0), "c3": (40.0, 0.06, 3.5), "oh": (55.0, 0.05, 4.2), "h1": (8.0, 0.01, 3.0)}
 

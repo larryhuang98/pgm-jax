@@ -8,22 +8,19 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_grad import methanol
 
-jax.config.update("jax_enable_x64", True)
-
-from test_grad import methanol  # noqa: E402
-
-from pgm_jax.bonded import terms as T  # noqa: E402
-from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec  # noqa: E402
-from pgm_jax.channels import ElecChannel, perm_dipoles  # noqa: E402
-from pgm_jax.md.box import lower_triangular_frame  # noqa: E402
-from pgm_jax.md.dipoles import CellDipole  # noqa: E402
-from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box  # noqa: E402
-from pgm_jax.md.flux import ChargeFlux, molecule_at  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
-from pgm_jax.md.integrate import KB  # noqa: E402
-from pgm_jax.protein import write_pgm_prmtop  # noqa: E402
-from pgm_jax.system import System  # noqa: E402
+from pgm_jax.bonded import terms as T
+from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
+from pgm_jax.channels import ElecChannel, perm_dipoles
+from pgm_jax.md.box import lower_triangular_frame
+from pgm_jax.md.dipoles import CellDipole
+from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
+from pgm_jax.md.flux import ChargeFlux, molecule_at
+from pgm_jax.md.forcefield import MDSettings, PGMForceField
+from pgm_jax.md.integrate import KB
+from pgm_jax.protein import write_pgm_prmtop
+from pgm_jax.system import System
 
 BONDS = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)]
 
@@ -147,9 +144,12 @@ def test_flux_forces_and_strain_derivatives(box):
     Wa = ff.strain_derivative(pos, H, idx, mu, molecular=False)  # bonds stretch: flux active
     # the engine assumes a lower-triangular box: strained boxes are rotated back (box.lower_triangular_frame)
     ea = jax.jit(lambda x, h: ff.energy(x, h, idx, res.induction)[0])
-    eas = lambda s: float(
-        ea(*lower_triangular_frame(np.asarray(pos) @ (np.eye(3) + s).T, np.asarray(H) @ (np.eye(3) + s).T))
-    )  # noqa: E731
+
+    def eas(s):
+        return float(
+            ea(*lower_triangular_frame(np.asarray(pos) @ (np.eye(3) + s).T, np.asarray(H) @ (np.eye(3) + s).T))
+        )
+
     for a, b in ((0, 0), (2, 1), (1, 2)):
         E = np.zeros((3, 3))
         E[a, b] = 1e-6
@@ -249,7 +249,10 @@ def test_flux_map_tables():
         )
     )
     Q, th = sys_.expand(), fl.theta()
-    f = lambda y: fl.charges(y, H, Q["q"], Q["cov"], th)  # noqa: E731
+
+    def f(y):
+        return fl.charges(y, H, Q["q"], Q["cov"], th)
+
     q, c = f(pos)
     assert np.array_equal(q[6:12], Q["q"][6:12]) and float(jnp.abs(q[12:] - Q["q"][12:]).max()) > 1e-3
     assert np.array_equal(c[10:20], Q["cov"][10:20])
@@ -257,7 +260,10 @@ def test_flux_map_tables():
     assert np.allclose(f(y)[0], q, rtol=0, atol=1e-14)
     phi, gc = jnp.asarray(rng.normal(size=sys_.n)), jnp.asarray(rng.normal(size=len(sys_.cov_i)))
     g = jax.vjp(f, pos)[1]((phi, gc))[0]
-    L = lambda y: float(jnp.sum(phi * f(y)[0]) + jnp.sum(gc * f(y)[1]))  # noqa: E731
+
+    def L(y):
+        return float(jnp.sum(phi * f(y)[0]) + jnp.sum(gc * f(y)[1]))
+
     for a, k in [(0, 0), (1, 2), (5, 1), (13, 0), (17, 2)]:
         d = jnp.zeros_like(pos).at[a, k].set(1e-6)
         fd = (L(pos + d) - L(pos - d)) / 2e-6

@@ -6,7 +6,8 @@ repartitioning, Bussi thermostat, dt 2 fs, NVT.
     python scripts/protein/build_amber.py --sequence "ACE ALA ALA ALA NME" runs/remd/ala3 --buffer 8
     python scripts/protein/remd_peptide.py remd runs/remd/ala3.prmtop runs/remd/ala3.inpcrd --out runs/remd/ala3 \\
         --replicas 8 --tmin 300 --tmax 400 --ns 2
-    python scripts/protein/remd_peptide.py plain  runs/remd/ala3.prmtop runs/remd/ala3.inpcrd --out runs/remd/ala3 --ns 2
+    python scripts/protein/remd_peptide.py plain  runs/remd/ala3.prmtop runs/remd/ala3.inpcrd --out \\
+        runs/remd/ala3 --ns 2
     python scripts/protein/remd_peptide.py analyze runs/remd/ala3.prmtop runs/remd/ala3.inpcrd --out runs/remd/ala3
     python scripts/protein/remd_peptide.py bench runs/remd/ala3.prmtop runs/remd/ala3.inpcrd --out runs/remd/ala3 \
         --bench 1 2 4 8 16
@@ -118,7 +119,8 @@ def energies(label, log, nblocks=5):
         B = np.array([b.mean() for b in np.array_split(x, nblocks)])
         out[c] = (float(x.mean()), float(B.std(ddof=1) / np.sqrt(nblocks)))
     print(
-        f"{label}: T {out['temp_K'][0]:.2f} +- {out['temp_K'][1]:.2f} K, U {out['epot'][0]:.1f} +- {out['epot'][1]:.1f} "
+        f"{label}: T {out['temp_K'][0]:.2f} +- {out['temp_K'][1]:.2f} K, U {out['epot'][0]:.1f} +- "
+        f"{out['epot'][1]:.1f} "
         f"kJ/mol ({int(keep.sum())} log lines)"
     )
     return out
@@ -130,7 +132,8 @@ if a.mode == "analyze":
     if os.path.exists(js):
         d = json.load(open(js))
         print(
-            f"REMD: {len(d['temperatures_K'])} replicas, {d['time_ps']:.0f} ps per replica, {d['exchanges']} exchange attempts"
+            f"REMD: {len(d['temperatures_K'])} replicas, {d['time_ps']:.0f} ps per replica, {d['exchanges']} exchange "
+            "attempts"
         )
         print("   T (K):               " + " ".join(f"{t:7.2f}" for t in d["temperatures_K"]))
         print("   neighbour acceptance: " + " ".join(f"{x:.3f}" for x in d["neighbour_acceptance"]))

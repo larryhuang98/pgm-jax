@@ -330,11 +330,17 @@ class BondedModel(BondedTerms):
             sys = System([m.pgm])
             D = m.top.dist
             ii, jj = sys.pair_i, sys.pair_j
-            w_of = lambda d: (d > self.s.elec_exclude) * np.where(d == 3, self.s.elec14_scale, 1.0)
+
+            def w_of(d):
+                return (d > self.s.elec_exclude) * np.where(d == 3, self.s.elec14_scale, 1.0)
+
             w_pair = w_of(D[ii, jj]).astype(float)
             oi, oj = np.nonzero(~np.eye(sys.n, dtype=bool))
             ie = self.s.elec_exclude if self.s.ind_exclude < 0 else self.s.ind_exclude
-            w_ind = lambda d: (d > ie) * np.where(d == 3, self.s.elec14_scale, 1.0)
+
+            def w_ind(d):
+                return (d > ie) * np.where(d == 3, self.s.elec14_scale, 1.0)
+
             w_ord = w_ind(D[oi, oj]).astype(float)
             w_pind = w_ind(D[ii, jj]).astype(float)
             lj = (D[ii, jj] >= self.s.lj_min_sep).astype(float) + self.s.lj14_scale * (D[ii, jj] == 3)
@@ -492,11 +498,16 @@ class BondedModel(BondedTerms):
         _, _, st = self.nonbonded(m, R, P, eparams, state=True)
         b = self._bij(st["radius"], 0.0)
         phi = self._phi
-        f = lambda a, c, bb: phi(jnp.linalg.norm(a - c), bb)
+
+        def f(a, c, bb):
+            return phi(jnp.linalg.norm(a - c), bb)
+
         pt = st["p"] + st["mu"]
 
         def at(g):
-            one = lambda rj, qj, pj, bb: qj * f(g, rj, bb) + pj @ jax.grad(f, 1)(g, rj, bb)
+            def one(rj, qj, pj, bb):
+                return qj * f(g, rj, bb) + pj @ jax.grad(f, 1)(g, rj, bb)
+
             v = jnp.sum(jax.vmap(one)(R, st["q"], pt, b))
             if st["Theta"] is not None:  # (1/3)(x Th x) B2, x = g - r_j
                 x = g[None] - R
