@@ -1,8 +1,24 @@
-"""External electric fields (pgm_jax/md/efield.py): gas-phase response = molecular polarizability,
-MD forces vs autodiff and finite differences, exact linear response of the periodic cell, the
-derivative of the energy with respect to the field, zero-field identity, energy conservation with
-static and time-dependent fields, charged molecules across re-wrapping, and the units of the
-finite-field dielectric constant."""
+"""External electric fields (pgm_jax/md/efield.py): constant E, constant D and time-dependent fields.
+
+What is checked, and against what:
+
+- units: 1 V/nm on 1 e is 96.485 kJ/mol/nm (Faraday constant), the finite-field dielectric
+  constant eps - 1 = 4 pi M / (V E) and its SI factor e / (eps0 nm);
+- the gas-phase response: the induced dipole change is alpha_mol E exactly and the energy is
+  E(0) - E.M0 - E.alpha.E / 2; net force zero, torque M x E, forces = -grad E;
+- MD forces against autodiff at fixed dipoles and central differences with re-solved dipoles, for
+  every electrostatics level; q E exactly for point charges;
+- the periodic cell's linear response alpha_cell, dU/dE = -M and dM/dE = alpha_cell through the
+  differentiable solve; constant D: E = D / eps0 - M / (eps0 V) and its energy, derivative and
+  virial;
+- zero field = the field-free engine; NVE with static, time-dependent (work booked as heat) and
+  constant-D fields; charged molecules re-wrapped across the cell; set_field and checkpoints;
+  finite-field replicas; MTS(inner=1) with a field; charge flux in a field.
+
+Tolerances: identities 1e-9 to 1e-12 (float64, dipole tolerance 1e-12 of md_settings);
+finite differences 1e-6 to 2e-6 relative (h = 1e-5 nm); energy conservation relative to the
+kinetic energy scale 0.5 dof kB T of the small box.
+"""
 
 import jax
 import jax.numpy as jnp
@@ -23,6 +39,7 @@ E1 = np.array([0.3, -0.5, 0.8])  # V/nm, deliberately strong and oblique
 
 
 def test_field_unit_conversions():
+    """Field units: V/nm to model units, the finite-field eps formula, the period of 1000 cm^-1."""
     assert abs(EF.VNM_TO_INTERNAL * KE - 96.48533212) < 1e-6  # 1 V/nm on 1 e: 96.485 kJ/mol/nm
     # eps - 1 = 4 pi M / (V F) in model units (F in e/nm^2) = EPS_FACTOR M / (V E) with E in V/nm
     M, V, E = 2.7, 15.4, 0.1
@@ -36,8 +53,11 @@ def test_field_unit_conversions():
 
 @pytest.mark.parametrize("which", ["cluster", "methanol"])
 def test_gas_phase_response_is_the_molecular_polarizability(which):
-    """sum mu(E) - sum mu(0) = alpha_mol E exactly, E(E) = E(0) - E.M0 - E.alpha.E / 2, and forces
-    in the field = -grad E (the energy is variational in mu)."""
+    """In the gas phase the field induces alpha_mol E and the energy is quadratic in E.
+
+    sum mu(E) - sum mu(0) = alpha_mol E exactly, E(E) = E(0) - E.M0 - E.alpha.E / 2, and forces
+    in the field = -grad E (the energy is variational in mu).
+    """
     if which == "cluster":
         sys, x = cluster(np.random.default_rng(0))
     else:
@@ -54,6 +74,7 @@ def test_gas_phase_response_is_the_molecular_polarizability(which):
     M0 = (np.asarray(P["q"])[:, None] * np.asarray(x)).sum(0) + np.asarray(a0["p"]).sum(0) + np.asarray(a0["mu"]).sum(0)
 
     def tot(e):
+        """Return the total of an energy dict [kJ/mol]."""
         return float(sum(e.values()))
 
     expect = tot(e0) - KE * (Ei @ M0 + 0.5 * Ei @ alpha @ Ei)
@@ -78,12 +99,19 @@ def test_gas_phase_response_is_the_molecular_polarizability(which):
 
 
 def _ff(sys, pos, H, **kw):
+    """Return a PGMForceField (md_settings(**kw)) of the system and its neighbour rows at pos."""
     ff = PGMForceField(sys, H, md_settings(**kw))
     return ff, ff.rows_for(pos, H)
 
 
 @pytest.mark.parametrize("elec", ["qpi", "qp", "q"])
 def test_md_forces_equal_autodiff_and_finite_differences(elec):
+    """MD forces in a field equal autodiff at fixed mu and central differences with mu re-solved.
+
+    For elec = qpi, qp and q: forces vs autodiff 1e-9 of the largest force; the field energy is
+    -E.M with M the cell dipole of CellDipole; central differences 2e-6 relative (h = 1e-5 nm); for
+    point charges the field adds exactly q E to every force.
+    """
     sys, pos, H = small_box(1)
     pos = jnp.asarray(pos)
     ff, idx = _ff(sys, pos, H, elec=elec)
@@ -117,7 +145,7 @@ def test_md_forces_equal_autodiff_and_finite_differences(elec):
 
 
 def test_field_adds_no_molecular_virial():
-    """strain derivative with the field: zero extra virial for neutral molecules (molecular scaling)."""
+    """A uniform field adds no molecular strain derivative for neutral molecules (1e-8 relative)."""
     sys, pos, H = small_box(2)
     pos = jnp.asarray(pos)
     ff, idx = _ff(sys, pos, H)
@@ -129,8 +157,11 @@ def test_field_adds_no_molecular_virial():
 
 
 def test_periodic_linear_response_is_the_cell_polarizability():
-    """At fixed nuclei: M_ind(E) - M_ind(0) = alpha_cell E (Ewald dipole couplings), and the energy
-    is quadratic: U(E) = U(0) - E.M0 - E.alpha_cell.E / 2."""
+    """At fixed nuclei the cell's induced dipole responds as alpha_cell E and U is quadratic in E.
+
+    At fixed nuclei: M_ind(E) - M_ind(0) = alpha_cell E (Ewald dipole couplings), and the energy
+    is quadratic: U(E) = U(0) - E.M0 - E.alpha_cell.E / 2.
+    """
     sys, pos, H = small_box(3)
     pos = jnp.asarray(pos)
     ff, idx = _ff(sys, pos, H)
@@ -153,6 +184,7 @@ def test_field_derivatives_through_the_differentiable_solve():
     ff, idx = _ff(sys, pos, H, differentiable=True, adjoint_tol=1e-12)
 
     def f(E):
+        """Return the force-field result at field E [V/nm]."""
         return ff.compute(pos, H, idx, ff.init_induction(), efield=(E, None))
 
     E = jnp.asarray(E1)
@@ -165,6 +197,7 @@ def test_field_derivatives_through_the_differentiable_solve():
 
 
 def test_zero_field_is_the_field_free_engine():
+    """A zero field gives the field-free energy, forces and trajectory (1e-12)."""
     sys, pos, H = small_box(5)
     pos = jnp.asarray(pos)
     ff, idx = _ff(sys, pos, H)
@@ -185,6 +218,7 @@ def test_zero_field_is_the_field_free_engine():
 
 
 def _econs_drift(sim, blocks=8, n=50):
+    """Advance `blocks` blocks of n steps and return econs after each [kJ/mol]."""
     e = []
     for _ in range(blocks):
         sim.advance(n)
@@ -194,6 +228,12 @@ def _econs_drift(sim, blocks=8, n=50):
 
 @pytest.mark.parametrize("engine", ["rigid", "flexible"])
 def test_nve_conserves_energy_in_a_static_field(engine):
+    """NVE in a static 1 V/nm field conserves the energy while the molecules turn in the field.
+
+    Both engines, waters only, no van der Waals term (its truncation would dominate the drift in this
+    tiny box): std and drift of E_tot below 2e-4 / 4e-4 of 0.5 dof kB T while the field energy
+    changes by more than 0.1 kJ/mol; the field energy is -F E_z M_z.
+    """
     sys, pos, H = small_box(6, nm=0)  # waters only (RigidTemplate: up to three atoms)
     pos = jnp.asarray(pos)
     # no van der Waals term: its truncation at the cutoff (not the field) would dominate the drift of this tiny box
@@ -222,8 +262,11 @@ def test_nve_conserves_energy_in_a_static_field(engine):
 
 
 def test_time_dependent_field_work_is_booked():
-    """E(t) = E0 cos(w t): the field's explicit time dependence changes E_tot; econs (heat booked)
-    stays conserved."""
+    """E(t) = E0 cos(w t): E_tot changes by the field's work, econs is conserved.
+
+    E(t) = E0 cos(w t): the field's explicit time dependence changes E_tot; econs (heat booked)
+    stays conserved.
+    """
     sys, pos, H = small_box(7)
     pos = jnp.asarray(pos)
     fld = EF.ExternalField((0.0, 0.0, 1.5), omega=2 * np.pi / 0.2)  # 200 fs period
@@ -251,6 +294,7 @@ def test_time_dependent_field_work_is_booked():
 
 
 def test_set_field_and_checkpoint(tmp_path):
+    """set_field changes the field of a running simulation, and a checkpoint keeps it."""
     sys, pos, H = small_box(8)
     pos = jnp.asarray(pos)
     sim = Simulation(sys, pos, H, settings=md_settings(cutoff=0.6), dt=0.001, log=None, efield=(0.0, 0.0, 0.2))
@@ -264,7 +308,18 @@ def test_set_field_and_checkpoint(tmp_path):
 
 
 def _ions_box():
-    """Water box with one Na+ / Cl- pair (single-atom rigid bodies)."""
+    """Return a water / methanol box with one Na+ / Cl- pair on free lattice points.
+
+    Water box with one Na+ / Cl- pair (single-atom rigid bodies).
+
+    Returns
+    -------
+    system : System
+    positions : np.ndarray (N, 3)
+        Positions [nm].
+    box : np.ndarray (3, 3)
+        Box [nm].
+    """
     sys, pos, H = small_box(9, nw=28, nm=2)
     grid = np.array([[i, j, k] for i in range(4) for j in range(4) for k in range(3)], float)
     grid = (grid + 0.5) / np.array([4, 4, 3])
@@ -294,6 +349,12 @@ def _ions_box():
 
 
 def test_charged_molecules_energy_continuous_across_rewrapping():
+    """Charged molecules driven across the cell by a field: the re-wrapping keeps econs continuous.
+
+    Moving the Na+ by a lattice vector changes epot by -Q E.L (the unwrapped energy, 1e-6); during
+    the run the driver books whole lattice vectors Q L in fshift and econs varies by less than 2e-3 of
+    the kinetic scale; the barostat with a field is refused.
+    """
     sys, pos, H = _ions_box()
     kw = dict(settings=md_settings(cutoff=0.6, dipole_tol=1e-8), dt=0.001, log=None, seed=4)
     sim = Simulation(sys, pos, H, thermostat=None, efield=(0.0, 0.0, 2.0), **kw)
@@ -320,6 +381,11 @@ DD = np.array([1.0, -2.0, 3.0])  # D / eps0, V/nm
 
 @pytest.mark.parametrize("elec", ["qpi", "q"])
 def test_constant_d_forces_equal_autodiff_and_finite_differences(elec):
+    """Constant-D forces equal autodiff and central differences; the D energy term is V eps0 E^2 / 2.
+
+    E = D / eps0 - M / (eps0 V) (the Maxwell field); forces vs autodiff 1e-9, vs central differences
+    2e-6 relative; for point charges the field adds q E(M) exactly and the net force is zero.
+    """
     sys, pos, H = small_box(10)
     pos = jnp.asarray(pos)
     ff, idx = _ff(sys, pos, H, elec=elec)
@@ -349,14 +415,18 @@ def test_constant_d_forces_equal_autodiff_and_finite_differences(elec):
 
 
 def test_constant_d_linear_response_derivative_and_virial():
-    """At fixed nuclei dM_ind = (1 + kappa alpha_cell)^-1 alpha_cell dD (kappa = 4 pi / V); dU/dD =
+    """Constant D: the linear response, dU/dD and the strain derivative with the D term.
+
+    At fixed nuclei dM_ind = (1 + kappa alpha_cell)^-1 alpha_cell dD (kappa = 4 pi / V); dU/dD =
     V eps0 E(M) (through the differentiable solve); the strain derivative includes the volume dependence
-    of the D term (vs finite differences of the molecular scaling at fixed mu)."""
+    of the D term (vs finite differences of the molecular scaling at fixed mu).
+    """
     sys, pos, H = small_box(11)
     pos = jnp.asarray(pos)
     ff, idx = _ff(sys, pos, H, differentiable=True, adjoint_tol=1e-12)
 
     def f(D):
+        """Return the force-field result at displacement field D [V/nm]."""
         return ff.compute(pos, H, idx, ff.init_induction(), efield=(D, None, "D"))
 
     D1, D2 = jnp.asarray(DD), jnp.asarray(DD) + jnp.asarray([0.3, 0.2, -0.5])
@@ -383,6 +453,7 @@ def test_constant_d_linear_response_derivative_and_virial():
     com /= np.bincount(mol, weights=m)[:, None]
 
     def e(t):
+        """Return the fixed-mu energy with box and molecular centres strained by t."""
         return float(ffd.energy_fixed_mu(pos + jnp.asarray(t * com[mol]), H * (1 + t), mu, idx, P, fld)[0])
 
     h = 1e-6
@@ -392,6 +463,7 @@ def test_constant_d_linear_response_derivative_and_virial():
 
 
 def test_nve_conserves_energy_at_constant_displacement():
+    """NVE at constant D conserves the energy and reports E_z = D_z - F M_z / V."""
     sys, pos, H = small_box(12, nm=0)
     sim = Simulation(
         sys,
@@ -413,6 +485,7 @@ def test_nve_conserves_energy_at_constant_displacement():
 
 
 def test_field_replicas_batched_run_and_analysis(tmp_path):
+    """Batched finite-field replicas record each replica's cell dipole and field; the analysis pairs them."""
     from pgm_jax.analysis.finite_field import analyse
     from pgm_jax.md.finite_field import FieldReplicas, read_series
 
@@ -443,9 +516,11 @@ def test_field_replicas_batched_run_and_analysis(tmp_path):
 
 @pytest.mark.parametrize("engine", ["rigid", "constraints"])
 def test_mts_with_a_field_is_the_ordinary_integrator_at_one_fast_step(engine):
-    """MTS(inner=1) with a time-dependent field = the ordinary step with it (field at the outer
-    evaluations, the work booked the same way)."""
+    """MTS with one fast step and a time-dependent field is the ordinary integrator.
 
+    MTS(inner=1) with a time-dependent field = the ordinary step with it (field at the outer
+    evaluations, the work booked the same way).
+    """
     from pgm_jax.md.mts import MTS
 
     fld = EF.ExternalField((0.2, 0.0, 0.8), omega=30.0)
@@ -462,9 +537,11 @@ def test_mts_with_a_field_is_the_ordinary_integrator_at_one_fast_step(engine):
 
 @pytest.mark.parametrize("kind", ["E", "D"])
 def test_charge_flux_with_a_field(kind):
-    """Charge flux (q(R), c(R)): the field's potential -E . r enters the charge pull-back; forces vs
-    autodiff at fixed mu and vs differences of the energy with the dipoles re-solved."""
+    """Charge flux in an E or D field: forces match autodiff and central differences.
 
+    Charge flux (q(R), c(R)): the field's potential -E . r enters the charge pull-back; forces vs
+    autodiff at fixed mu and vs differences of the energy with the dipoles re-solved.
+    """
     from pgm_jax.md.flexible import FlexibleSimulation, liquid_box
 
     tpl, _ = flux_template()

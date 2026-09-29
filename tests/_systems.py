@@ -51,6 +51,11 @@ PGM3P25_RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
 
 
 def requires_pgm3p25(test):
+    """Mark a test that needs the pGM3P-25 water box (needs_data; skipped without the files).
+
+    The 512-water topology and restart come from the gvdw_data resource (pgm_jax.paths.resource,
+    environment variable PGM_GVDW_DATA); they are not part of the repository.
+    """
     return pytest.mark.needs_data(
         pytest.mark.skipif(
             not (os.path.exists(PGM3P25_TOP) and os.path.exists(PGM3P25_RST)), reason="pGM3P-25 box not available"
@@ -59,6 +64,19 @@ def requires_pgm3p25(test):
 
 
 def requires(module):
+    """Return a decorator marking a test that needs the optional package `module` (optional_deps).
+
+    Parameters
+    ----------
+    module : str
+        Importable name (e.g. "rdkit", "ase"); the test is skipped when its top-level package is not
+        installed.
+
+    Returns
+    -------
+    callable
+        Decorator adding the optional_deps marker and the skip condition.
+    """
     missing = importlib.util.find_spec(module.split(".")[0]) is None
 
     def mark(test):
@@ -69,11 +87,29 @@ def requires(module):
 
 # ----------------------------------------------------------------------------- small systems
 def _rot(rng):
+    """Return a random orthogonal 3 x 3 matrix (QR of a Gaussian matrix; det = +-1) drawn from `rng`."""
     return np.linalg.qr(rng.normal(size=(3, 3)))[0]
 
 
 def cluster(rng):
-    """Water + methanol + water, ~0.3 nm apart (nm)."""
+    """Build a gas-phase water + methanol + water cluster, molecules ~0.3 nm apart.
+
+    The same geometry as pgm_jax.models.toy.cluster(seed), but drawn from a generator that the caller
+    keeps using afterwards (the tests perturb parameters with the same `rng`, so the random stream
+    must continue exactly where the geometry left it).
+
+    Parameters
+    ----------
+    rng : numpy.random.Generator
+        Source of the two random orientations (advanced by two 3 x 3 normal draws).
+
+    Returns
+    -------
+    system : System
+        Water, methanol, water (toy parameters of pgm_jax.models.toy).
+    positions : np.ndarray (12, 3)
+        Positions [nm].
+    """
     w = water_geometry()
     m, xm = methanol()
     pos = np.concatenate([w, (xm - xm.mean(0)) @ _rot(rng).T + [0.33, 0.05, 0.0], w @ _rot(rng).T + [0.12, 0.30, 0.08]])
@@ -81,14 +117,40 @@ def cluster(rng):
 
 
 def random_atoms_box(seed=0, n=14):
-    """Random atoms in a skewed box (most pairs are minimum images across the boundary)."""
+    """Return random atoms in a skewed triclinic box (most pairs are minimum images across the boundary).
+
+    Parameters
+    ----------
+    seed : int
+        Seed of the uniform fractional coordinates.
+    n : int
+        Number of atoms.
+
+    Returns
+    -------
+    positions : np.ndarray (n, 3)
+        Positions [nm].
+    box : np.ndarray (3, 3)
+        Reduced lower-triangular box, lattice vectors as rows [nm] (about 1.6 x 1.5 x 1.45 nm).
+    """
     rng = np.random.default_rng(seed)
     H = reduce_box(np.array([[1.6, 0.0, 0.0], [0.5, 1.5, 0.0], [-0.4, 0.6, 1.45]]))
     return rng.uniform(size=(n, 3)) @ H, H
 
 
 def ethanal():
-    """Acetaldehyde, nm (planar carbonyl carbon -> improper)."""
+    """Return acetaldehyde (planar carbonyl carbon, so the topology has one improper).
+
+    Returns
+    -------
+    elements : list of str (7)
+    bonds : list of tuple (6)
+        Atom pairs, zero-based.
+    orders : list of int (6)
+        Bond orders (the C=O bond is double).
+    positions : np.ndarray (7, 3)
+        Geometry [nm].
+    """
     x = np.array(
         [
             [0.0000, 0.0000, 0.0],
@@ -107,6 +169,22 @@ def ethanal():
 
 # ----------------------------------------------------------------------------- settings
 def md_settings(**kw):
+    """Return tight MD settings for comparisons against exact references.
+
+    PME with a 48^3 grid of order 8 at ewald_beta 6 / nm and a 0.6 nm cutoff reproduces the exact Ewald
+    sum (PeriodicPGM) to ~1e-6 relative; induced dipoles to 1e-12, float64 throughout, no predictor
+    extrapolation and no van der Waals tail, so that energies and forces are deterministic functions of
+    the positions.
+
+    Parameters
+    ----------
+    **kw
+        Flat MDSettings names that override the defaults (MDSettings.replace).
+
+    Returns
+    -------
+    MDSettings
+    """
     base = dict(
         cutoff=0.6,
         skin=0.05,
@@ -125,6 +203,17 @@ def md_settings(**kw):
 
 
 def alch_settings(**kw):
+    """Return the MD settings of the alchemical water box (0.55 nm cutoff, 32^3 PME grid, float64).
+
+    Parameters
+    ----------
+    **kw
+        Flat MDSettings names that override the defaults (MDSettings.replace).
+
+    Returns
+    -------
+    MDSettings
+    """
     base = dict(
         precision="double",
         dipole_tol=1e-11,
@@ -140,6 +229,17 @@ def alch_settings(**kw):
 
 
 def flux_settings(**kw):
+    """Return tight MD settings of the charge-flux tests (0.5 nm cutoff, 32^3 grid of order 8, float64).
+
+    Parameters
+    ----------
+    **kw
+        Flat MDSettings names that override the defaults (MDSettings.replace).
+
+    Returns
+    -------
+    MDSettings
+    """
     base = dict(
         cutoff=0.5,
         skin=0.05,
@@ -158,6 +258,23 @@ def flux_settings(**kw):
 
 # ----------------------------------------------------------------------------- numerical checks
 def fd_check(E, x, rng, h=1e-6):
+    """Assert that jax.grad(E) matches central differences along three random directions.
+
+    The directional derivative (E(x + h d) - E(x - h d)) / (2 h) with h = 1e-6 has a truncation error
+    ~h^2 |E'''| and a round-off error ~1e-16 |E| / h, both far below the tolerance 1e-6 relative
+    (absolute below 1).
+
+    Parameters
+    ----------
+    E : callable
+        Scalar energy E(x) [kJ/mol] of a jax array of positions.
+    x : np.ndarray (N, 3)
+        Point of the check [nm].
+    rng : numpy.random.Generator
+        Source of the directions.
+    h : float
+        Step [nm].
+    """
     import jax
     import jax.numpy as jnp
 
@@ -170,8 +287,22 @@ def fd_check(E, x, rng, h=1e-6):
 
 # ----------------------------------------------------------------------------- flexible molecules
 def methanol_template(**kw):
-    """Methanol with class II bonded terms at their initial values (reference values from the
-    geometry) and scaled 1-4 LJ, so that every intramolecular channel is exercised."""
+    """Build a flexible methanol template (class II bonded terms, 1-4 LJ scaled by 0.5).
+
+    Methanol with class II bonded terms at their initial values (reference values from the
+    geometry) and scaled 1-4 LJ, so that every intramolecular channel is exercised.
+
+    Parameters
+    ----------
+    **kw
+        Further BondedSettings options (e.g. vdw="gvdw").
+
+    Returns
+    -------
+    template : FlexibleTemplate
+    positions : np.ndarray (6, 3)
+        Reference geometry [nm].
+    """
     from pgm_jax.bonded import terms as T
     from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
     from pgm_jax.md.flexible import FlexibleTemplate
@@ -184,6 +315,24 @@ def methanol_template(**kw):
 
 
 def methanol_liquid(n=32, density=0.55):
+    """Build a liquid of flexible methanols (methanol_template) at the given density.
+
+    Parameters
+    ----------
+    n : int
+        Number of molecules.
+    density : float
+        Density [g/cm^3] (liquid_box, seed 0, atoms at least 0.18 nm apart).
+
+    Returns
+    -------
+    template : FlexibleTemplate
+    system : System
+    positions : np.ndarray (6 n, 3)
+        Positions [nm].
+    box : np.ndarray (3, 3)
+        Cubic box [nm].
+    """
     from pgm_jax.md.flexible import liquid_box
 
     tpl, _ = methanol_template()
@@ -192,8 +341,24 @@ def methanol_liquid(n=32, density=0.55):
 
 
 def flux_template(order=2, seed=3):
-    """Methanol with class II bonded terms (initial values) and made-up flux parameters of the
-    size of a fit (jb up to 3 e/nm, jc up to 1 e, jc2 up to 8 e/nm)."""
+    """Build a flexible methanol template with charge flux.
+
+    Methanol with class II bonded terms (initial values) and made-up flux parameters of the
+    size of a fit (jb up to 3 e/nm, jc up to 1 e, jc2 up to 8 e/nm).
+
+    Parameters
+    ----------
+    order : {1, 2}
+        Flux order (2 adds the second-order jc2 terms).
+    seed : int
+        Seed of the flux parameters.
+
+    Returns
+    -------
+    template : FlexibleTemplate
+    positions : np.ndarray (6, 3)
+        Reference geometry [nm].
+    """
     import jax.numpy as jnp
 
     from pgm_jax.bonded import terms as T
@@ -213,6 +378,17 @@ def flux_template(order=2, seed=3):
 
 
 def flexible_water_template():
+    """Build a flexible water template for PIMD (quartic bonds, harmonic and cubic angle, cross terms).
+
+    The bonded model of pgm_jax.models.water.WATER_FAMILIES with a stiff quartic bond (K2 = 4.5e5
+    kJ/mol/nm^2) and a harmonic angle (Ka = 350 kJ/mol/rad^2); the pGM part is the toy water.
+
+    Returns
+    -------
+    template : FlexibleTemplate
+    positions : np.ndarray (3, 3)
+        Reference geometry (0.0957 nm, 104.5 deg) [nm].
+    """
     import math
 
     import jax.numpy as jnp
@@ -233,6 +409,26 @@ def flexible_water_template():
 
 
 def flexible_water_box(n_side=2, L=1.5, seed=0):
+    """Place randomly rotated flexible waters on a jittered cubic lattice (the PIMD test system).
+
+    Parameters
+    ----------
+    n_side : int
+        Molecules per box edge (n_side^3 waters).
+    L : float
+        Box edge [nm].
+    seed : int
+        Seed of the orientations and the 0.02 nm jitter.
+
+    Returns
+    -------
+    template : FlexibleTemplate
+    system : System
+    positions : np.ndarray (3 n_side^3, 3)
+        Positions [nm].
+    box : np.ndarray (3, 3)
+        Cubic box [nm].
+    """
     tpl, x = flexible_water_template()
     rng = np.random.default_rng(seed)
     pos = []
@@ -256,7 +452,22 @@ _SEP = {"H": 0.12, "C": 0.33, "N": 0.40, "O": 0.45}
 
 
 def peptide_spec(smiles, name="peptide", seed=7):
-    """MolSpec of a small peptide from SMILES (RDKit, ETKDG geometry, nm); no pGM parameters."""
+    """Build the MolSpec of a small peptide from SMILES, without pGM parameters (skip without RDKit).
+
+    Parameters
+    ----------
+    smiles : str
+        Heavy-atom SMILES (hydrogens are added).
+    name : str
+        Name of the MolSpec.
+    seed : int
+        Seed of RDKit's ETKDG embedding (then MMFF-optimised).
+
+    Returns
+    -------
+    MolSpec
+        Elements, bonds, bond orders, charge 0 and the geometry [nm].
+    """
     from pgm_jax.bonded.model import MolSpec
 
     Chem = pytest.importorskip("rdkit.Chem")
@@ -273,7 +484,25 @@ def peptide_spec(smiles, name="peptide", seed=7):
 
 
 def peptide(smiles=ACE_ALA_GLY_NME, seed=5):
-    """(MolSpec with a pGM molecule of plausible parameters, geometry nm)."""
+    """Build a peptide with made-up but plausible pGM parameters (skip without RDKit).
+
+    Gasteiger charges (shifted to a neutral molecule), element radii, polarizabilities and LJ
+    parameters, and random covalent dipoles (0.004 e nm scale) on every bond, on the MMFF geometry.
+
+    Parameters
+    ----------
+    smiles : str
+        Heavy-atom SMILES (default Ace-Ala-Gly-Nme, 29 atoms).
+    seed : int
+        Seed of the embedding and of the covalent dipoles.
+
+    Returns
+    -------
+    spec : MolSpec
+        With the pGM Molecule attached.
+    positions : np.ndarray (N, 3)
+        Geometry [nm].
+    """
     from pgm_jax.bonded.model import MolSpec
 
     Chem = pytest.importorskip("rdkit.Chem")
@@ -307,6 +536,18 @@ def peptide(smiles=ACE_ALA_GLY_NME, seed=5):
 
 
 def peptide_template():
+    """Build the flexible Ace-Ala-Gly-Nme template (protein term set, random CMAP and torsions).
+
+    Returns
+    -------
+    template : FlexibleTemplate
+    model : BondedModel
+        The gas-phase model the template is made from.
+    params : dict
+        Its parameters (random CMAP coefficients and Amber torsion barriers, seed 1).
+    positions : np.ndarray (29, 3)
+        Geometry [nm].
+    """
     import jax.numpy as jnp
 
     from pgm_jax.bonded import terms as T
@@ -324,8 +565,20 @@ def peptide_template():
 
 # ----------------------------------------------------------------------------- virtual sites
 def tip4pew_ideal():
-    """The small tleap TIP4P-Ew box with every water at the model geometry (Amber's SHAKE lengths
-    0.9572 / 1.5136 A) and the extra points placed."""
+    """Return the tleap TIP4P-Ew test box with ideal water geometry and placed extra points.
+
+    Every water of tests/data/tip4pew_small is superposed onto the model geometry (Amber's SHAKE
+    lengths 0.9572 / 1.5136 A) and the extra points are placed by VirtualSites.
+
+    Returns
+    -------
+    system : System
+        Point-charge TIP4P-Ew waters (Amber charges, zero polarizability) with one virtual site each.
+    positions : np.ndarray (4 n, 3)
+        Positions [nm].
+    box : np.ndarray (3, 3)
+        Box [nm].
+    """
     from pgm_jax.md.box import box_from_cell
     from pgm_jax.md.io import read_coordinates
     from pgm_jax.md.vsites import VirtualSites
@@ -354,7 +607,31 @@ S_WATER = MDSettings().replace(precision="double", dipole_tol=1e-12, max_iter=30
 
 
 def water_sim(engine, mts=None, dt=0.002, thermostat=None, seed=3, settings=S_WATER, **kw):
-    """64 pGM-like waters (rigid bodies or constraints), 0.55 nm cutoff, float64; NVE by default."""
+    """Build the MD simulation of 64 rigid pGM-like waters (the multiple-time-step test system).
+
+    64 pGM-like waters (rigid bodies or constraints), 0.55 nm cutoff, float64; NVE by default.
+
+    Parameters
+    ----------
+    engine : {"rigid", "constraints"}
+        Rigid bodies (Simulation) or rigid waters by constraints (FlexibleSimulation).
+    mts : MTS, optional
+        Multiple time stepping (None: the ordinary integrator).
+    dt : float
+        Time step [ps].
+    thermostat : object, optional
+        Thermostat (None: NVE).
+    seed : int
+        Random seed of the engine.
+    settings : MDSettings
+        Force-field settings.
+    **kw
+        Further keywords of the engine.
+
+    Returns
+    -------
+    Simulation or FlexibleSimulation
+    """
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
     from pgm_jax.md.simulation import Simulation
 
@@ -379,6 +656,27 @@ def water_sim(engine, mts=None, dt=0.002, thermostat=None, seed=3, settings=S_WA
 
 
 def rigid_water_sim(engine, pos, H, w, settings, **kw):
+    """Build a simulation of rigid toy waters in either engine.
+
+    Parameters
+    ----------
+    engine : {"rigid", "atoms"}
+        Rigid bodies (Simulation) or atoms with rigid-water constraints (FlexibleSimulation).
+    positions : np.ndarray (3 n, 3)
+        Water positions [nm].
+    H : np.ndarray (3, 3)
+        Box [nm].
+    w : np.ndarray (3, 3)
+        Water geometry of the rigid templates [nm].
+    settings : MDSettings
+        Force-field settings.
+    **kw
+        Further keywords of the engine (dt, thermostat, bias, restraints, ...).
+
+    Returns
+    -------
+    Simulation or FlexibleSimulation
+    """
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
     from pgm_jax.md.simulation import Simulation
 
@@ -391,11 +689,49 @@ def rigid_water_sim(engine, pos, H, w, settings, **kw):
 
 # ----------------------------------------------------------------------------- alchemical systems
 def alch_box(seed=0):
+    """Return the 64-water lattice box of the alchemical tests.
+
+    Parameters
+    ----------
+    seed : int
+        Seed of the water orientations.
+
+    Returns
+    -------
+    positions : np.ndarray (192, 3)
+        Positions [nm].
+    box : np.ndarray (3, 3)
+        Cubic box, 1.24 nm [nm].
+    system : System
+        64 toy waters.
+    """
     pos, H, _ = water_lattice(4, 0.31, seed)
     return pos, H, System([water()] * (len(pos) // 3))
 
 
 def alch_sim(s=None, lam=(1.0, 1.0), box_seed=0, **kw):
+    """Build a rigid-body simulation of the water box with the first water alchemical.
+
+    Parameters
+    ----------
+    s : MDSettings, optional
+        Settings (None: alch_settings()).
+    lam : tuple of float
+        Initial (lambda_elec, lambda_vdw).
+    box_seed : int
+        Seed of the box (alch_box).
+    **kw
+        Further Simulation keywords.
+
+    Returns
+    -------
+    sim : Simulation
+    alchemy : Alchemy
+    params : dict
+        Parameters of the alchemical system (the solute has its own table entries).
+    reference : tuple
+        (positions [nm], box [nm], the plain System without the alchemical copy).
+    """
     from pgm_jax.md.alchemy import Alchemy, alchemical_system
     from pgm_jax.md.simulation import Simulation
 
@@ -407,6 +743,21 @@ def alch_sim(s=None, lam=(1.0, 1.0), box_seed=0, **kw):
 
 
 def alch_frame(sim):
+    """Return the current frame of a rigid-body simulation as the alchemical energy functions take it.
+
+    Parameters
+    ----------
+    sim : Simulation
+
+    Returns
+    -------
+    positions : jax.Array (N, 3)
+        Atom positions [nm].
+    box : jax.Array (3, 3)
+        Box [nm].
+    candidates : jax.Array (N, K)
+        Neighbour candidate rows of the current list (padded with N).
+    """
     st = sim.state
     X = sim.rigid.positions(st.dyn.position)
     cand = sim.integ.nb.candidates(st.nbr, st.dyn.position.center, st.box, X)[0]
@@ -414,8 +765,24 @@ def alch_frame(sim):
 
 
 def flex_solute_box():
-    """Flexible methanol (the class II template of test_flexible, scaled 1-4 LJ) at the centre of a
-    box of rigid waters (constraints), the waters within 0.25 nm of it removed."""
+    """Build a flexible methanol solute in a box of rigid waters.
+
+    Flexible methanol (the class II template of test_flexible, scaled 1-4 LJ) at the centre of a
+    box of rigid waters (constraints), the waters within 0.25 nm of it removed.
+
+    Returns
+    -------
+    template : FlexibleTemplate
+        The methanol template.
+    system : System
+        Methanol first, then the waters.
+    templates : list
+        The template of every molecule (RigidTemplate for the waters).
+    positions : np.ndarray (N, 3)
+        Positions [nm].
+    box : np.ndarray (3, 3)
+        Cubic box, 1.24 nm [nm].
+    """
     from pgm_jax.md.flexible import RigidTemplate
 
     tpl, xm = methanol_template()

@@ -1,4 +1,10 @@
-"""Reweighted ensemble averages and their gradients (top-down refinement)."""
+"""Reweighted ensemble averages and their gradients (pgm_jax.fit.reweighting, top-down refinement).
+
+What is checked, and against what: the Karplus relation at its extremum and the helical region;
+the gradient of a reweighted average against the covariance formula -beta cov(O, dU/dtheta) and
+central differences; the chi^2 gradient of a CMAP refinement on peptide frames against central
+differences.
+"""
 
 import jax
 import jax.numpy as jnp
@@ -12,6 +18,7 @@ from pgm_jax.units import KB
 
 
 def test_karplus_and_regions():
+    """The Karplus curve has its maximum A + B + C at phi = -delta; in_region selects the alpha box."""
     A, B, C, d = KARPLUS["3J_HNHA_Vogeli2007"]
     assert abs(float(karplus(jnp.asarray(-d), A, B, C, d)) - (A + B + C)) < 1e-12
     phi = jnp.radians(jnp.asarray([-65.0, -120.0, 60.0]))
@@ -20,13 +27,20 @@ def test_karplus_and_regions():
 
 
 def test_reweighting_gradient_is_the_covariance_formula():
+    """The gradient of a reweighted average is -beta cov(O, dU/dtheta) at theta0.
+
+    At theta0 the weights are uniform (average = mean, n_eff = N), the autodiff gradient equals the
+    covariance formula (1e-10 relative) and, away from theta0, central differences (1e-6).
+    """
     rng = np.random.default_rng(0)
     X = jnp.asarray(rng.normal(size=(200, 4, 3)))
 
     def g(R):
+        """Return the two energy descriptors of a frame."""
         return jnp.stack([jnp.sum(jnp.cos(R)), jnp.sum(R[0] * R[1])])
 
     def f(th, R):
+        """Return the linear energy theta . g(R) [kJ/mol]."""
         return th @ g(R)
 
     th0 = jnp.asarray([0.3, -0.2])
@@ -51,6 +65,7 @@ def test_reweighting_gradient_is_the_covariance_formula():
 
 @requires("rdkit")
 def test_cmap_refinement_gradient_on_peptide_frames():
+    """The chi^2 gradient of a CMAP refinement matches a central difference; n_eff stays in [1, N]."""
     s = peptide_spec(ACE_ALA_GLY_NME)
     terms = BondedTerms([s], BondedSettings(families=T.PROTEIN, lj14_scale=0.5))
     P = terms.init_params()
@@ -58,6 +73,7 @@ def test_cmap_refinement_gradient_on_peptide_frames():
     X = s.ref_xyz[None] + 0.01 * rng.normal(size=(80,) + s.ref_xyz.shape)
 
     def energy(th, R):
+        """Return the bonded energy with CMAP coefficients th."""
         Q = dict(P)
         Q["cmap"] = {"cm": th}
         return terms.bonded_energy(0, R, Q)

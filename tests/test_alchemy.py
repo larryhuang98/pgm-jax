@@ -1,9 +1,23 @@
-"""Alchemical free energies (md/alchemy.py, md/free_energy.py): the lambda-dependent Hamiltonian
-(original at lambda = 1, decoupled end state = the box without the solute, dU/dlambda against
-finite differences with the dipoles re-solved, soft core finite at overlap, pressure), batched
-lambda windows (= sequential, samples, Hamiltonian exchange), the gas-phase leg, the estimators
-(MBAR, BAR, TI, statistical inefficiency) on harmonic oscillators with analytic free energies,
-and the driver's outputs and restarts."""
+"""Alchemical free energies (md/alchemy.py, md/free_energy.py, analysis/free_energy.py).
+
+What is checked, and against what:
+
+- the lambda-dependent Hamiltonian: the original system at lambda = (1, 1) and the box without
+  the solute at (0, 0) (separate MD runs of the plain system), dU/dlambda against central
+  differences of the energy with the dipoles re-solved (Hellmann-Feynman), a finite soft core at
+  overlap against its closed form, the molecular virial against a finite volume derivative;
+- batched lambda windows against sequential ones (same numbers), the sampled reduced energies,
+  Hamiltonian exchange, the FreeEnergyRun outputs and restarts;
+- the gas-phase leg against the MD engine's energy of a lone solute in a large box;
+- flexible solutes (constraints) with intramolecular="annihilate" or "keep";
+- the estimators (MBAR, BAR, TI, statistical inefficiency) on harmonic oscillators with analytic
+  free energies f_k = ln(K_k / K_0) / 2 (beta = 1).
+
+Tolerances: identities of the Hamiltonian (same energy through two code paths) are ~1e-9
+relative, set by the 1e-11 dipole tolerance; finite differences with h = 1e-4 in lambda are
+~1e-6 relative (h^2 truncation); the statistical tests use 3 standard errors and a 0.7-1.4 band
+for error bars against the spread over repeats.
+"""
 
 import os
 
@@ -32,8 +46,11 @@ from pgm_jax.md.simulation import Simulation
 
 # ----------------------------------------------------------------------------- Hamiltonian
 def test_full_coupling_is_the_original_hamiltonian():
-    """lambda = (1, 1): energy, forces, pressure and the Monte Carlo trial energy of the original
-    system (the solute's van der Waals moves from the ordinary rows to the soft-core rows)."""
+    """At lambda = (1, 1) the alchemical Hamiltonian equals the plain system's (1e-9 relative).
+
+    lambda = (1, 1): energy, forces, pressure and the Monte Carlo trial energy of the original
+    system (the solute's van der Waals moves from the ordinary rows to the soft-core rows).
+    """
     sim, alch, P, (pos, H, sys0) = alch_sim()
     plain = Simulation(sys0, pos, H, alch_settings(), dt=0.001, log=None)
     assert abs(float(sim.state.epot) - float(plain.state.epot)) < 1e-9 * abs(float(plain.state.epot))
@@ -50,9 +67,12 @@ def test_full_coupling_is_the_original_hamiltonian():
 
 
 def test_npt_with_an_alchemical_region_follows_the_plain_run():
-    """The barostat's trial energy goes through the alchemical Hamiltonian: at lambda = (1, 1) an
+    """An NPT run at lambda = (1, 1) follows the plain run step by step (box to 1e-10 relative).
+
+    The barostat's trial energy goes through the alchemical Hamiltonian: at lambda = (1, 1) an
     NPT run follows the plain run (same seed and start velocities; the solute copy has its own
-    rigid-body frame, so momenta drawn in body frames would differ) step by step."""
+    rigid-body frame, so momenta drawn in body frames would differ) step by step.
+    """
     vel = np.random.default_rng(4).normal(size=(192, 3)) * 0.5
     kw = dict(thermostat="bussi", barostat=MonteCarloBarostat(every=4), seed=3, velocities=vel)
     sim, _, _, (pos, H, sys0) = alch_sim(alch_settings(dipole_tol=1e-10), **kw)
@@ -66,8 +86,13 @@ def test_npt_with_an_alchemical_region_follows_the_plain_run():
 
 @pytest.mark.parametrize("lam", [(0.6, 1.0), (0.3, 0.7), (0.0, 0.4), (0.0, 0.05)])
 def test_dudl_matches_finite_differences_with_resolved_dipoles(lam):
-    """Hellmann-Feynman: dU/dlambda at the converged dipoles (autodiff at fixed mu) equals the
-    central difference of the energy with the dipoles re-solved at every lambda."""
+    """dU/dlambda at converged dipoles equals central differences with re-solved dipoles.
+
+    Hellmann-Feynman: dU/dlambda at the converged dipoles (autodiff at fixed mu) equals the
+    central difference of the energy with the dipoles re-solved at every lambda.
+
+    Tolerance 1e-6 relative: h = 1e-4 gives an h^2 truncation error of that order.
+    """
     sim, alch, P, _ = alch_sim()
     X, Hb, cand = alch_frame(sim)
     ff = sim.ff
@@ -83,8 +108,11 @@ def test_dudl_matches_finite_differences_with_resolved_dipoles(lam):
 
 
 def test_dudl_at_the_ends():
-    """The endpoints lambda_elec = 0 (polarizability at its floor) and 1: one-sided differences
-    (second order, from the three points lambda, lambda +- h, 2h) agree with the analytic value."""
+    """dU/dlambda at the ends of the lambda path agrees with second-order one-sided differences.
+
+    The endpoints lambda_elec = 0 (polarizability at its floor) and 1: one-sided differences
+    (second order, from the three points lambda, lambda +- h, 2h) agree with the analytic value.
+    """
     sim, alch, P, _ = alch_sim()
     X, Hb, cand = alch_frame(sim)
     ff = sim.ff
@@ -104,8 +132,11 @@ def test_dudl_at_the_ends():
 
 
 def test_decoupled_end_state_is_the_box_without_the_solute():
-    """lambda = (0, 0): the environment's energy and forces are those of the box without the
-    solute (up to the polarizability floor), and the solute feels no force."""
+    """At lambda = (0, 0) the environment feels the box without the solute and the solute no force.
+
+    lambda = (0, 0): the environment's energy and forces are those of the box without the
+    solute (up to the polarizability floor), and the solute feels no force.
+    """
     sim, alch, P, (pos, H, sys0) = alch_sim()
     X, Hb, cand = alch_frame(sim)
     ff = sim.ff
@@ -120,9 +151,12 @@ def test_decoupled_end_state_is_the_box_without_the_solute():
 
 
 def test_softcore_is_finite_at_overlap_and_lennard_jones_at_one():
-    """Soft core: finite energy and zero force at r = 0 for lambda_vdw < 1, U(0) = lambda eps (1/w^2 -
+    """The soft core is finite at overlap (closed form) and plain Lennard-Jones at lambda_vdw = 1.
+
+    Soft core: finite energy and zero force at r = 0 for lambda_vdw < 1, U(0) = lambda eps (1/w^2 -
     2/w) with w = sc_alpha (1 - lambda) / 2; Lennard-Jones at lambda_vdw = 1; the long-range
-    correction scales with lambda_vdw."""
+    correction scales with lambda_vdw.
+    """
     sim, alch, P, _ = alch_sim(alch_settings(lj_lrc=True))
     X, Hb, cand = alch_frame(sim)
     Pa = sim.sys.expand(P)
@@ -154,8 +188,11 @@ def test_softcore_is_finite_at_overlap_and_lennard_jones_at_one():
 
 
 def test_pressure_at_intermediate_lambda_matches_volume_derivative():
-    """Alchemy.strain_derivative (molecular virial of the lambda Hamiltonian, no tail) against a
-    finite difference of the fixed-mu energy under molecular scaling of centres and box."""
+    """The alchemical strain derivative equals a finite volume derivative at lambda = (0.4, 0.6).
+
+    Alchemy.strain_derivative (molecular virial of the lambda Hamiltonian, no tail) against a
+    finite difference of the fixed-mu energy under molecular scaling of centres and box.
+    """
     sim, alch, P, _ = alch_sim(alch_settings(lj_lrc=False))
     X, Hb, cand = alch_frame(sim)
     ff = sim.ff
@@ -169,6 +206,7 @@ def test_pressure_at_intermediate_lambda_matches_volume_derivative():
     )
 
     def e(s):
+        """Return the fixed-mu energy with box and molecular centres scaled by s."""
         return float(alch.energy_fixed_mu(ff, X + ((s - 1.0) * com)[ff.mol], Hb * s, cand, ind.mu, P, lam))
 
     h = 1e-6
@@ -178,6 +216,14 @@ def test_pressure_at_intermediate_lambda_matches_volume_derivative():
 
 # ----------------------------------------------------------------------------- windows
 def test_windows_batched_equal_sequential_and_exchange():
+    """Batched (vmap) lambda windows reproduce sequential ones, including Hamiltonian exchange.
+
+    After 10 steps the potentials agree to 1e-10 relative and the sampled reduced energies u_kl and
+    dU/dlambda to 1e-8 / 1e-7; the diagonal u_kk equals beta U at the window's own lambda; the sampled
+    dU/dlambda_vdw is the soft-core derivative alone; a swap of slots 1 and 2 re-evaluates each state
+    in its new Hamiltonian (energies u_12 / beta and u_21 / beta), books the change as heat, and leaves
+    the other slots untouched.
+    """
     sim, alch, P, _ = alch_sim(alch_settings(dipole_tol=1e-9), thermostat="bussi")
     L = standard_schedule(3, [0.5, 0.0])
     wb = LambdaWindows(sim, L, batched=True, seed=1)
@@ -211,6 +257,13 @@ def test_windows_batched_equal_sequential_and_exchange():
 
 
 def test_free_energy_run_outputs_and_restart(tmp_path):
+    """FreeEnergyRun writes samples, restarts, checkpoints and final files, and continues from a checkpoint.
+
+    The _fe.npz arrays have one row per sample (u: (samples, K, K), dudl: (samples, K, 2)), the
+    exchange count matches exchange_every, a new driver loaded from the 40-step checkpoint has the same
+    window potentials and appends to the samples, and fe.estimate returns finite TI, BAR and MBAR
+    free energies and hydration free energies.
+    """
     sim, alch, P, _ = alch_sim(alch_settings(dipole_tol=1e-8), thermostat="bussi")
     L = standard_schedule(3, [0.5, 0.0])
     prefix = str(tmp_path / "w")
@@ -233,8 +286,11 @@ def test_free_energy_run_outputs_and_restart(tmp_path):
 
 # ----------------------------------------------------------------------------- gas-phase leg
 def test_gas_phase_leg_matches_a_lone_molecule_in_a_large_box():
-    """E_gas(lambda) of the gas-phase model equals the MD engine's energy of the lone solute in a
-    large periodic box (image and PME errors < 1e-3 kJ/mol here); dE_gas/dlambda by autodiff."""
+    """The gas-phase leg equals the MD energy of the lone solute in a 4.2 nm box (1e-3 kJ/mol).
+
+    E_gas(lambda) of the gas-phase model equals the MD engine's energy of the lone solute in a
+    large periodic box (image and PME errors < 1e-3 kJ/mol here); dE_gas/dlambda by autodiff.
+    """
     w = water()
     sysA, P = alchemical_system(System([w]), 0)
     alch = Alchemy(sysA, 0)
@@ -270,6 +326,12 @@ def test_gas_phase_leg_matches_a_lone_molecule_in_a_large_box():
 
 # ----------------------------------------------------------------------------- setup errors
 def test_refused_setups():
+    """Unsupported alchemical setups raise clear errors.
+
+    A solute that shares its parameter keys with other molecules (use alchemical_system), a charged
+    solute (net charge), GVDW van der Waals, lambda outside [0, 1], and lambda windows without a
+    thermostat are refused.
+    """
     pos, H, sys0 = alch_box()
     with pytest.raises(ValueError, match="alchemical_system"):
         Alchemy(sys0, 0)  # shares its keys with every other water
@@ -290,7 +352,19 @@ def test_refused_setups():
 
 # ----------------------------------------------------------------------------- flexible solutes
 def intra_lj(tpl, Pa, Y):
-    """The template's intramolecular Lennard-Jones (weighted pairs) at positions Y (solute first)."""
+    """Return the template's intramolecular Lennard-Jones energy [kJ/mol] at positions Y [nm].
+
+    The template's intramolecular Lennard-Jones (weighted pairs) at positions Y (solute first).
+
+    Parameters
+    ----------
+    tpl : FlexibleTemplate
+        Solute template (its weighted lj_pairs).
+    Pa : dict
+        Per-atom parameters (System.expand) with lj_rmin_half [nm] and lj_sqrt_eps [sqrt(kJ/mol)].
+    Y : np.ndarray (N, 3)
+        Positions, the solute's atoms first [nm].
+    """
     i, j, w = tpl.lj_pairs()
     r = np.linalg.norm(Y[j] - Y[i], axis=1)
     rmin = np.asarray(Pa["lj_rmin_half"])[i] + np.asarray(Pa["lj_rmin_half"])[j]
@@ -299,10 +373,13 @@ def intra_lj(tpl, Pa, Y):
 
 
 def test_flexible_solute_hamiltonian():
-    """A flexible solute in the flexible engine: lambda = (1, 1) is the original Hamiltonian (its
+    """A flexible solute has the original Hamiltonian at (1, 1) and the decoupled one at (0, 0).
+
+    A flexible solute in the flexible engine: lambda = (1, 1) is the original Hamiltonian (its
     intramolecular 1-4 van der Waals moved out of the ordinary rows and back); at lambda = (0, 0)
     the energy is the waters' alone plus the solute's bonded and intramolecular van der Waals energy,
-    and the waters feel the forces of the box without the solute."""
+    and the waters feel the forces of the box without the solute.
+    """
     from pgm_jax.md.flexible import FlexibleSimulation
 
     tpl, sys0, tpls, X, H = flex_solute_box()
@@ -324,8 +401,11 @@ def test_flexible_solute_hamiltonian():
 
 
 def test_keep_intramolecular_rigid_equals_annihilation_plus_gas_leg():
-    """intramolecular="keep" on a rigid solute: U_keep(lambda) - U_annihilate(lambda) = E_gas(1) -
-    E_gas(lambda) (a constant of the configuration), and dU/dlambda_elec differs by dE_gas/dlambda."""
+    """intramolecular="keep" on a rigid solute differs from annihilation by the gas-phase leg.
+
+    intramolecular="keep" on a rigid solute: U_keep(lambda) - U_annihilate(lambda) = E_gas(1) -
+    E_gas(lambda) (a constant of the configuration), and dU/dlambda_elec differs by dE_gas/dlambda.
+    """
     sim, ann, P, _ = alch_sim()
     X, Hb, cand = alch_frame(sim)
     ff = sim.ff
@@ -343,10 +423,13 @@ def test_keep_intramolecular_rigid_equals_annihilation_plus_gas_leg():
 
 
 def test_keep_intramolecular_flexible_solute():
-    """A flexible solute with intramolecular="keep": the original Hamiltonian at (1, 1); at (0, 0) the
+    """intramolecular="keep" on a flexible solute: end states and dU/dlambda by finite differences.
+
+    A flexible solute with intramolecular="keep": the original Hamiltonian at (1, 1); at (0, 0) the
     waters' energy plus the solute's bonded, intramolecular van der Waals and whole gas-phase
     electrostatic energy (the decoupled state is the gas-phase molecule); dU/dlambda against
-    finite differences with the dipoles re-solved."""
+    finite differences with the dipoles re-solved.
+    """
     from pgm_jax.md.flexible import FlexibleSimulation
 
     tpl, sys0, tpls, X, H = flex_solute_box()
@@ -382,10 +465,15 @@ def test_keep_intramolecular_flexible_solute():
 
 
 def test_flexible_windows_and_lone_solute_gas_leg():
-    """Batched windows on the flexible engine (= sequential; u_k(x_k) = beta U), and the gas-phase leg
+    """Batched windows on the flexible engine, and the lone flexible solute's gas-phase leg.
+
+    Batched windows on the flexible engine (= sequential; u_k(x_k) = beta U), and the gas-phase leg
     of a flexible solute: the lone molecule in a 4.2 nm box (lone_solute) has the electrostatic
     energy of GasPhaseLeg at every lambda_elec (bonded and intramolecular terms cancel in
-    E(lambda) - E(0))."""
+    E(lambda) - E(0)).
+
+    Tolerance 2e-3 kJ/mol: image and PME error of the lone molecule in the 4.2 nm box.
+    """
     from pgm_jax.md.alchemy import lone_solute
     from pgm_jax.md.flexible import FlexibleSimulation
 
@@ -430,6 +518,7 @@ def test_flexible_windows_and_lone_solute_gas_leg():
     gsim = FlexibleSimulation(sub, [tpl], x, Hg, sg, log=None, params=P, alchemy=alch_g, thermostat=None)
 
     def E(le):
+        """Return the lone solute's energy [kJ/mol] at lambda_elec = le (lambda_vdw = 1)."""
         return float(gsim.integ.forces(gsim.state.set(lam=jnp.array([le, 1.0])), False).epot)
 
     gas = GasPhaseLeg(alch_g, np.asarray(gsim.state.dyn.position), "qpi")
@@ -440,15 +529,37 @@ def test_flexible_windows_and_lone_solute_gas_leg():
 
 # ----------------------------------------------------------------------------- estimators
 def _harmonic(rng, K, x0, n):
+    """Draw exact samples of 1D harmonic states and their reduced energies (beta = 1).
+
+    Parameters
+    ----------
+    rng : numpy.random.Generator
+    K : np.ndarray (S,)
+        Force constants of the states.
+    x0 : np.ndarray (S,)
+        Centres of the states.
+    n : int
+        Samples per state.
+
+    Returns
+    -------
+    samples : list of np.ndarray (n,)
+        Samples of each state, x ~ N(x0_k, 1 / K_k).
+    u : np.ndarray (S, S n)
+        u[k, j] = K_k (x_j - x0_k)^2 / 2 of every sample in every state.
+    """
     xs = [x0[k] + rng.normal(size=n) / np.sqrt(K[k]) for k in range(len(K))]
     X = np.concatenate(xs)
     return xs, 0.5 * K[:, None] * (X[None, :] - x0[:, None]) ** 2
 
 
 def test_mbar_bar_ti_on_harmonic_oscillators():
-    """States u_k = K_k (x - x0_k)^2 / 2 (beta = 1): f_k = ln(K_k / K_0) / 2.  MBAR and BAR within
+    """MBAR, BAR and TI reproduce the analytic free energies of harmonic oscillators.
+
+    States u_k = K_k (x - x0_k)^2 / 2 (beta = 1): f_k = ln(K_k / K_0) / 2.  MBAR and BAR within
     their error bars, the error bars match the spread over independent repeats, TI along
-    K(lambda) = K_0 + lambda (K_1 - K_0) converges to the same answer."""
+    K(lambda) = K_0 + lambda (K_1 - K_0) converges to the same answer.
+    """
     K = np.array([1.0, 1.6, 2.6, 4.2, 6.8])
     x0 = np.array([0.0, 0.1, -0.1, 0.2, 0.0])
     exact = 0.5 * np.log(K / K[0])
@@ -488,6 +599,12 @@ def test_mbar_bar_ti_on_harmonic_oscillators():
 
 
 def test_statistical_inefficiency_and_equilibration():
+    """The statistical inefficiency of AR(1) series and the detected equilibration time are right.
+
+    For x_i = phi x_(i-1) + e_i the exact inefficiency is g = (1 + phi) / (1 - phi); the estimate from
+    200,000 samples is within 10 % for phi = 0, 0.8, 0.95.  A linear 300-sample transient before
+    white noise is detected between 200 and 400, and subsample picks every ceil(g)-th index.
+    """
     rng = np.random.default_rng(5)
     for phi in (0.0, 0.8, 0.95):
         a = np.zeros(200000)

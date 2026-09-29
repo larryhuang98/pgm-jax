@@ -1,6 +1,9 @@
-"""Combinations of MD features that are not implemented together are refused with a clear error
-(no silent fallback): multiple time stepping with an alchemical region, with virtual sites in the
-flexible engine or with charge flux in a fast pair model; an alchemical region with charge flux."""
+"""Combinations of MD features that are not implemented together are refused with a clear error.
+
+No silent fallback: multiple time stepping with an alchemical region, with virtual sites in the
+flexible engine, or with charge flux in a fast pair model, and an alchemical region with charge
+flux, raise NotImplementedError naming the feature.
+"""
 
 import pytest
 from _systems import alch_sim, flux_template, tip4pew_ideal
@@ -17,17 +20,20 @@ FLUX_SETTINGS = MDSettings().replace(
 
 
 def _flux_box(n=16):
+    """Return 16 flexible methanols with charge flux (template, System, positions [nm], box [nm])."""
     tpl, _ = flux_template()
     pos, H = liquid_box(tpl, n, 0.55, seed=0, min_dist=0.18)
     return tpl, System([tpl.pgm] * n), pos, H
 
 
 def test_mts_refuses_an_alchemical_region():
+    """Multiple time stepping with an alchemical region is refused."""
     with pytest.raises(NotImplementedError, match="alchemical"):
         alch_sim(mts=MTS(inner=2, r_short=0.4, buffer=0.1))
 
 
 def test_mts_refuses_sites_in_the_flexible_engine():
+    """Multiple time stepping with virtual sites in the flexible engine is refused."""
     sys, pos, H = tip4pew_ideal()
     s = MDSettings().replace(
         elec="q", cutoff=0.65, skin=0.05, ewald_beta=ewald_beta_for(0.65), pme_spacing=0.06, precision="double"
@@ -38,6 +44,7 @@ def test_mts_refuses_sites_in_the_flexible_engine():
 
 
 def test_charge_flux_with_mts_pairs_and_alchemy_is_refused():
+    """Charge flux with a special-pair MTS split or with an alchemical region is refused."""
     tpl, sys_, pos, H = _flux_box()
     with pytest.raises(NotImplementedError, match="charge flux"):
         FlexibleSimulation(

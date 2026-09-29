@@ -1,8 +1,12 @@
-"""Separate real-space electrostatics cutoff (MDSettings.elec_cutoff): unchanged engine when it
-equals the cutoff, exact decomposition of split rows into electrostatics at elec_cutoff and van der
-Waals at cutoff, forces / virial / differentiable path against finite differences, exact special
-pairs in both parts of the rows, row-capacity overflows of each part, the Ewald coefficient rule
-and an accuracy bound for the recommended settings."""
+"""Separate real-space electrostatics cutoff (MDSettings.elec_cutoff).
+
+What is checked, and against what: elec_cutoff = cutoff is bitwise the single-cutoff engine;
+split rows (electrostatics at RC_E = 0.45 nm, van der Waals at RC_V = 0.6 nm) decompose exactly
+into single-cutoff runs; forces, virial and the differentiable path against autodiff and finite
+differences; special pairs exact in both parts of the rows (float32 offsets); row-capacity
+overflows of each part and the driver's resize; the Ewald coefficient rule against Amber's
+ew_coeff; an accuracy bound for the recommended settings against a tight reference.
+"""
 
 import logging
 
@@ -20,7 +24,21 @@ RC_E, RC_V = 0.45, 0.6
 
 
 def _setup(sys, pos, H, s, capacity=True, topology=None):
-    """Force field, candidate rows (pair cutoff + skin) and, with `capacity`, sized (compacted) rows."""
+    """Return a force field and candidate rows, optionally with sized (compacted) rows.
+
+    Parameters
+    ----------
+    sys : System
+    pos : np.ndarray (N, 3)
+        Positions [nm].
+    H : np.ndarray (3, 3)
+        Box [nm].
+    s : MDSettings
+    capacity : bool
+        Size the rows (ff.size_rows) instead of using the full candidate rows.
+    topology : MDTopology, optional
+        Pair topology (None: rigid molecules).
+    """
     ff = PGMForceField(sys, H, s, topology=topology)
     idx = AtomNeighbors(sys.n, H, s.pair_cutoff, s.neighbors.skin).allocate(pos, None, H).idx
     if capacity:
@@ -29,6 +47,7 @@ def _setup(sys, pos, H, s, capacity=True, topology=None):
 
 
 def _evaluate(ff, idx, pos, H):
+    """Return (result, strain derivative, Monte Carlo trial energy) and assert no row overflow."""
     res = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
     W = ff.strain_derivative(pos, H, idx, res.induction.mu)
     e_mc = ff.energy(pos, H, idx, ff.init_induction())[0]
@@ -37,6 +56,7 @@ def _evaluate(ff, idx, pos, H):
 
 
 def test_elec_cutoff_equal_to_cutoff_is_the_single_cutoff_engine():
+    """elec_cutoff equal to cutoff gives bitwise the single-cutoff engine."""
     sys, pos, H = small_box(1)
     for capacity in (False, True):
         ff0, idx = _setup(sys, pos, H, md_settings(), capacity)
@@ -49,8 +69,11 @@ def test_elec_cutoff_equal_to_cutoff_is_the_single_cutoff_engine():
 
 
 def test_split_rows_are_elec_at_elec_cutoff_plus_vdw_at_cutoff():
-    """E, forces, dipoles, virial and the Monte Carlo energy of split rows (electrostatics at RC_E,
-    LJ at RC_V) against single-cutoff runs: elec(RC_E, no vdW) + [full(RC_V) - elec(RC_V, no vdW)]."""
+    """Split rows decompose exactly into electrostatics at RC_E and van der Waals at RC_V (1e-10).
+
+    E, forces, dipoles, virial and the Monte Carlo energy of split rows (electrostatics at RC_E,
+    LJ at RC_V) against single-cutoff runs: elec(RC_E, no vdW) + [full(RC_V) - elec(RC_V, no vdW)].
+    """
     sys, pos, H = small_box(1)
     e_only, idx_e = _setup(sys, pos, H, md_settings(cutoff=RC_E, vdw="none"))
     full, idx_v = _setup(sys, pos, H, md_settings(cutoff=RC_V, lj_lrc=True))
@@ -95,6 +118,11 @@ def test_elec_cutoff_longer_than_cutoff():
 
 
 def test_split_rows_forces_and_virial_match_autodiff_and_finite_differences():
+    """Split-row forces and the molecular virial match autodiff and central differences.
+
+    Forces vs autodiff 1e-9 of the largest force, vs central differences 1e-5 relative (h = 1e-6 nm);
+    trace of the strain derivative vs isotropic scaling of box and centres, with the LJ tail.
+    """
     sys, pos, H = small_box(2)
     ff, idx = _setup(sys, pos, H, md_settings(cutoff=RC_V, elec_cutoff=RC_E, lj_lrc=True))
     res = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
@@ -120,14 +148,18 @@ def test_split_rows_forces_and_virial_match_autodiff_and_finite_differences():
 
 
 def test_split_rows_differentiable_forces_and_dipoles():
-    """settings.differentiable with split rows: gradients of forces and dipoles in the parameters
-    and positions against central differences with the dipoles re-solved."""
+    """The differentiable path with split rows matches central differences (1e-6).
+
+    settings.differentiable with split rows: gradients of forces and dipoles in the parameters
+    and positions against central differences with the dipoles re-solved.
+    """
     sys, pos, H = small_box(6)
     ff, idx = _setup(sys, pos, H, md_settings(cutoff=RC_V, elec_cutoff=RC_E, differentiable=True, adjoint_tol=1e-12))
     rng = np.random.default_rng(3)
     wF, wmu = rng.normal(size=pos.shape), rng.normal(size=pos.shape)
 
     def loss(theta, x):
+        """Return a weighted sum of forces and induced dipoles (the test functional)."""
         res = ff.compute(x, H, idx, ff.init_induction(), theta)
         return jnp.sum(wF * res.forces) + 1e3 * jnp.sum(wmu * res.induction.mu)
 
@@ -162,9 +194,12 @@ def _graph_topology(sys):
 
 
 def test_special_pairs_exact_in_both_parts_of_split_rows():
-    """Special pairs keep exact (offset-difference) float32 displacements in the electrostatic and in
+    """Special pairs keep exact float32 displacements in both parts of split rows.
+
+    Special pairs keep exact (offset-difference) float32 displacements in the electrostatic and in
     the van der Waals rows; with elec_cutoff 0.2 nm methanol's weighted 1-4 pairs fall in the latter.
-    Far from the origin, differences of float32 coordinates would be off by ~1e-6 nm."""
+    Far from the origin, differences of float32 coordinates would be off by ~1e-6 nm.
+    """
     sys, pos, H = small_box(3)
     pos = pos + 20.0  # molecules stay whole
     top = _graph_topology(sys)
@@ -200,6 +235,10 @@ def test_split_rows_with_special_pair_weights_decompose():
 
 
 def test_row_capacity_overflow_of_each_part(caplog):
+    """Too small a capacity of either part overflows; the driver re-sizes both and repeats the block.
+
+    After the resize the run equals a run that never overflowed (1e-9 nm).
+    """
     sys, pos, H = small_box(4)
     ff, idx = _setup(sys, pos, H, md_settings(cutoff=RC_V, elec_cutoff=RC_E))
     mc, mc_e = ff.capacity
@@ -226,6 +265,7 @@ def test_row_capacity_overflow_of_each_part(caplog):
 
 
 def test_ewald_beta_rule_and_recommended_settings():
+    """ewald_beta_for reproduces Amber's ew_coeff; elec_cutoff_settings follows its grid rule."""
     # Amber's dsum_tol convention (erfc(beta rc)/rc with rc in A): ew_coeff of Amber outputs at 1e-5
     for rc, b in ((0.8, 3.4864), (0.9, 3.0768), (1.0, 2.7511)):
         assert abs(ewald_beta_for(rc, 1e-5) - b) < 1e-3, (rc, ewald_beta_for(rc, 1e-5))
@@ -237,10 +277,13 @@ def test_ewald_beta_rule_and_recommended_settings():
 
 
 def test_short_elec_cutoff_accuracy_bound():
-    """elec_cutoff_settings at 0.45 and 0.55 nm with LJ at 0.7 nm against a tight reference (0.7 nm,
+    """Short elec_cutoff settings keep the force error below 2e-4 of RMS.
+
+    elec_cutoff_settings at 0.45 and 0.55 nm with LJ at 0.7 nm against a tight reference (0.7 nm,
     erfc(beta rc) ~ 1e-10, fine grid, order 8), float64; the LJ parts are identical, so the
     differences are electrostatic.  The grid rule keeps the force error nearly independent of the
-    cutoff (measured 1.0e-4 and 7e-5 here, 5e-5 at 0.7 nm; beta x spacing fixed: 5e-4 and 3e-4)."""
+    cutoff (measured 1.0e-4 and 7e-5 here, 5e-5 at 0.7 nm; beta x spacing fixed: 5e-4 and 3e-4).
+    """
     sys, pos, H = small_box(5)
     base = dict(cutoff=0.7, dipole_tol=1e-10, pme_order=6, pme_grid=None)
     tight = dict(ewald_beta=6.6, pme_spacing=0.02, pme_order=8)
