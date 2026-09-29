@@ -13,7 +13,7 @@ float64 on the CPU unless a test says otherwise; no test needs a GPU.
 |---|---|
 | `test_<feature>.py` | one module per library module or feature (`test_md.py`: MD engine core, `test_mts.py`: multiple time stepping, ...); the module docstring says what is checked against what |
 | `_systems.py` | shared test systems, settings and helpers (water, methanol, boxes, templates, alchemical and flux systems, peptides, `fd_check`, `md_settings`, marker helpers); the toy molecules and boxes are those of `pgm_jax.models.toy` |
-| `conftest.py` | enables `jax_enable_x64` before anything is imported |
+| `conftest.py` | enables `jax_enable_x64` before anything is imported; skips the `gpu` tests without a GPU backend |
 | `test_docstrings.py` | docstring completeness of `pgm_jax/` (expected failure until P8 is merged) and of `tests/` |
 | `data/` | small tleap inputs (peptide in TIP3P / TIP4P-Ew, TIP4P-Ew / TIP5P boxes) and the legacy checkpoints of `test_checkpoints.py` (with the script that wrote them) |
 | `regression/` | the golden-output harness (`regress.py`, `regression_cases.py`, `regression_systems.py`, `golden/`) |
@@ -38,6 +38,7 @@ Registered in `pyproject.toml` (`--strict-markers`):
 | Marker | Meaning |
 |---|---|
 | `slow` | takes more than about 20 s on 32 CPU cores (63 test functions, 76 of 376 tests, about 60 % of the run time) |
+| `gpu` | needs a JAX GPU backend; skipped without one (`conftest.py`).  No test carries it at present: everything is validated on the CPU in float64 |
 | `needs_data` | needs data outside the repository: the pGM3P-25 box (`PGM_GVDW_DATA`), the Amber `pgm_4wat` test (`AMBERHOME`), the QM set `data/qm/` |
 | `needs_external` | needs an external program: `pmemd.pgm` (`PGM_PMEMD_BIN`), i-PI (`IPI_ROOT`), OpenMM >= 8.4 |
 | `optional_deps` | needs an optional Python package: RDKit (peptides), ASE, networkx |
