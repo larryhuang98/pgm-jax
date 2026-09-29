@@ -1,8 +1,20 @@
-"""Cost of one force evaluation (neighbour list excluded) for the induced-dipole schemes on the pGM
-water box (512 waters x replicate^3): SCF with a fixed number of CG iterations (iEL/SCF-k, k = 0..6)
-and iEL/0-SCF, per call, on the current device.
+"""Cost of one force evaluation for the induced-dipole schemes on the pGM water box (docs/iel.md).
 
-    python scripts/iel_cost.py --replicate 2"""
+The 512-water pGM3P-25 box (replicated n x n x n): SCF with a fixed number of CG iterations
+(iEL/SCF-k, k = 1, 2, 3, 4, 6), iEL/0-SCF, and the default predictor + CG to 1e-5, per call on the
+current device, neighbour list excluded (0.9 nm cutoff, PME 48^3 per replica order 6, mixed
+precision).  Each case is timed after 8 warm-up calls (past the predictor start).
+
+Usage:
+
+    python scripts/benchmarks/iel_cost.py --replicate 2
+    python scripts/benchmarks/iel_cost.py --help
+
+Inputs: PGM_GVDW_DATA (pgm_jax.paths).
+Outputs: printed ms per call and CG iterations.
+Units: ms.
+Runtime: GPU or CPU, minutes.  Sets jax_enable_x64.
+"""
 
 from __future__ import annotations
 
@@ -18,19 +30,19 @@ from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.md.io import read_coordinates
 from pgm_jax.md.neighbors import AtomNeighbors
 from pgm_jax.param import read_prmtop_molecules
-from pgm_jax.paths import resource
+from pgm_jax.paths import pgm3p25_files
 from pgm_jax.system import System
 
 jax.config.update("jax_enable_x64", True)
-TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
-RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
+TOP, RST = pgm3p25_files()
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--replicate", type=int, default=1)
-    ap.add_argument("--reps", type=int, default=50)
-    a = ap.parse_args()
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line and time every scheme (see the module docstring)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--replicate", type=int, default=1, help="n: n x n x n copies of the 512-water box")
+    ap.add_argument("--reps", type=int, default=50, help="timed calls per case")
+    a = ap.parse_args(argv)
     mols = read_prmtop_molecules(TOP)
     xyz, vel, box = read_coordinates(RST)
     H = box_from_cell(*box) * 0.1

@@ -1,31 +1,52 @@
-"""Timing of the core evaluations on the current device (run on CPU or GPU nodes).
+"""Time the core evaluations (reference Ewald model, PeriodicModel, gas-phase n-body) on the current device.
 
-python scripts/bench.py            # prints device, compile time and steady-state time per call
+The 512-water pGM3P-25 box: energy and forces of PeriodicPGM, forces, parameter and strain
+derivatives and a second-order derivative of PeriodicModel (Ewald beta 3.8 / nm, 1.0 nm cutoff);
+the interaction energies of 4,000 random water dimers and the 3-body energies of 45,316 random
+trimers with the gas-phase Model.  Each line: time of the first call (compilation) and the best
+of the following calls.
+
+Usage:
+
+    python scripts/benchmarks/bench.py
+    python scripts/benchmarks/bench.py --help
+
+Inputs: PGM_GVDW_DATA (pgm_jax.paths).
+Outputs: printed timings [s].
+Units: s.
+Runtime: minutes (CPU or GPU).  Sets jax_enable_x64.
 """
 
 from __future__ import annotations
 
+import argparse
 import time
+from collections.abc import Callable
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from validate_amber import RST, TOP, read_restart
 
 from pgm_jax.channels import ElecChannel
 from pgm_jax.ewald import PeriodicPGM
 from pgm_jax.md.box import box_from_cell
+from pgm_jax.md.io import read_coordinates
 from pgm_jax.model import Model
 from pgm_jax.param import read_prmtop_pgm
+from pgm_jax.paths import pgm3p25_files
 from pgm_jax.periodic import PeriodicModel
 from pgm_jax.system import System
 
 jax.config.update("jax_enable_x64", True)
+TOP, RST = pgm3p25_files()
 
 
-def random_clusters(mono, nmol, nconf, seed=0):
-    """nconf rigid clusters of nmol copies of `mono` (3, 3) nm: random orientations, centres
-    0.28-0.40 nm from the previous molecule (same sizes as the dimer/trimer sets in evoff)."""
+def random_clusters(mono: np.ndarray, nmol: int, nconf: int, seed: int = 0) -> np.ndarray:
+    """Return nconf rigid clusters (nconf, 3 nmol, 3) [nm] of nmol copies of the water `mono` (3, 3) [nm].
+
+    Random orientations, centres 0.28-0.40 nm from the previous molecule (same sizes as the
+    dimer / trimer sets in evoff).
+    """
     rng = np.random.default_rng(seed)
     mono = mono - mono.mean(0)
     out = np.empty((nconf, 3 * nmol, 3))
@@ -39,7 +60,8 @@ def random_clusters(mono, nmol, nconf, seed=0):
     return out
 
 
-def timed(f, n=3):
+def timed(f: Callable, n: int = 3) -> tuple[float, float]:
+    """Return the time of the first call of f and the best of the next n calls [s] (results awaited)."""
     t0 = time.time()
     jax.block_until_ready(f())
     t_first = time.time() - t0
@@ -51,11 +73,12 @@ def timed(f, n=3):
     return t_first, min(ts)
 
 
-def main():
-    """Time the energy, force and MD step evaluations of the 512-water box and print them."""
+def main(argv: list[str] | None = None) -> None:
+    """Parse the (empty) command line, time the evaluations and print them (see the module docstring)."""
+    argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter).parse_args(argv)
     print("device:", jax.devices())
     w = read_prmtop_pgm(TOP)[0]
-    xyz, (L, ang) = read_restart(RST)
+    xyz, _, (L, ang) = read_coordinates(RST)
     H = box_from_cell(L, ang) * 0.1
     pos = xyz * 0.1
     sys512 = System([w] * 512)
