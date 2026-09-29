@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from pgm_jax.channels import ElecChannel
-from pgm_jax.kernels import gauss_bij, gauss_coulomb, gauss_overlap, gd6_jax, tt6_jax
+from pgm_jax.densities import gauss_bij, gauss_coulomb, gauss_overlap, gd6_jax, tt6_jax
 from pgm_jax.param import molecule_from_dict, molecule_to_dict
 from pgm_jax.solver import minimize_newton, solve_linear_induction
 from pgm_jax.system import Molecule, System

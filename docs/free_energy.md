@@ -1,7 +1,7 @@
 # Alchemical free energies with pGM
 
 `pgm_jax/md/alchemy.py` (lambda-dependent Hamiltonians, batched lambda windows, Hamiltonian replica
-exchange, the gas-phase leg) and `pgm_jax/md/free_energy.py` (TI, BAR, MBAR, statistical
+exchange, the gas-phase leg) and `pgm_jax/analysis/free_energy.py` (TI, BAR, MBAR, statistical
 inefficiency) compute solvation free energies of small molecules, rigid (`Simulation`) or flexible
 (`FlexibleSimulation`, e.g. a fitted methanol among rigid waters).
 `scripts/solvation_free_energy.py` runs the whole protocol (`run`), analyses it (`analyze`) and

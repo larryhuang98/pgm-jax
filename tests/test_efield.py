@@ -413,7 +413,8 @@ def test_nve_conserves_energy_at_constant_displacement():
 
 
 def test_field_replicas_batched_run_and_analysis(tmp_path):
-    from pgm_jax.md.finite_field import FieldReplicas, analyse, read_series
+    from pgm_jax.analysis.finite_field import analyse
+    from pgm_jax.md.finite_field import FieldReplicas, read_series
 
     sys, pos, H = small_box(13, nm=0)
     sim = Simulation(

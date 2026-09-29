@@ -40,13 +40,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .channels import ElecChannel, elec_decomposition, molecular_polarizability
-from .lj import LJChannel
-from .system import Molecule, ParamTable, System
-from .units import DEBYE_E_NM, KCAL
-from .vdw import GVDWChannel
-
-ANG = 0.1  # nm
+from ..channels import ElecChannel, elec_decomposition, molecular_polarizability
+from ..lj import LJChannel
+from ..system import Molecule, ParamTable, System
+from ..units import ANG_NM, DEBYE_E_NM, KCAL
+from ..vdw import GVDWChannel
 
 
 # =================================================================== dataset ==
@@ -196,7 +194,7 @@ class Prepared:
         m = cm.m
         recs = data.records
         self.N = len(recs)
-        X = [np.asarray(r[xyz_key], float) * ANG for r in recs]
+        X = [np.asarray(r[xyz_key], float) * ANG_NM for r in recs]
         self.n = np.array([len(x) // m for x in X])
         self.groups = {}
         for n in sorted(set(self.n)):
@@ -225,7 +223,7 @@ class Prepared:
         self.force_recs = {}
         for n in sorted({int(self.n[k]) for k in fk}):
             ks = np.array([k for k in fk if self.n[k] == n], int)
-            G = np.stack([np.asarray(recs[k]["grad_int"], float) for k in ks]) * (KCAL / ANG)  # kJ/mol/nm
+            G = np.stack([np.asarray(recs[k]["grad_int"], float) for k in ks]) * (KCAL / ANG_NM)  # kJ/mol/nm
             Xn = np.stack([X[k] for k in ks])
             F, T = rigid_body_forces(G, Xn, cm.mol.masses, m)
             self.force_recs[n] = (ks, jnp.asarray(Xn), jnp.asarray(F), jnp.asarray(T))
@@ -422,16 +420,16 @@ class QMFit:
         if self.nb3 is not None:
             out.append((pred["nb3"] - self.nb3[0]) / self.nb3[1])
         if w.force > 0 and self.prep.force_recs:
-            s = w.sigma_F * KCAL / ANG / np.sqrt(w.force)
+            s = w.sigma_F * KCAL / ANG_NM / np.sqrt(w.force)
             for n, (_ks, F, T) in self.prep.forces(P).items():
                 _, _, Fq, Tq = self.prep.force_recs[n]
                 out.append(((F - Fq) / s).ravel())
-                out.append(((T - Tq) / (s * ANG)).ravel())
+                out.append(((T - Tq) / (s * ANG_NM)).ravel())
         if w.dipole > 0 and "dipole_D" in self.mono:
             mu = jnp.linalg.norm(self.cm.monomer_dipole(P)) / DEBYE_E_NM
             out.append(jnp.atleast_1d((mu - self.mono["dipole_D"]) / w.sigma_dip * np.sqrt(w.dipole)))
         if w.polarizability > 0 and "polarizability_A3" in self.mono:
-            a = self.cm.monomer_polarizability(P) / ANG**3
+            a = self.cm.monomer_polarizability(P) / ANG_NM**3
             out.append(jnp.atleast_1d((a - self.mono["polarizability_A3"]) / w.sigma_pol * np.sqrt(w.polarizability)))
         if w.prior > 0:
             out.append(np.sqrt(w.prior) * (theta - self.pmap.theta0) / self.pmap.scale)
@@ -549,7 +547,7 @@ def rigid_minimize(cm: ClusterModel, X_A, P=None, gtol: float = 1e-6, maxiter: i
     from scipy.optimize import minimize
 
     m = cm.m
-    X0 = jnp.asarray(np.asarray(X_A, float) * ANG).reshape(-1, m, 3)
+    X0 = jnp.asarray(np.asarray(X_A, float) * ANG_NM).reshape(-1, m, 3)
     n = X0.shape[0]
     w = jnp.asarray(cm.mol.masses)[None, :, None]
     com = (w * X0).sum(1, keepdims=True) / w.sum(1, keepdims=True)
@@ -567,4 +565,4 @@ def rigid_minimize(cm: ClusterModel, X_A, P=None, gtol: float = 1e-6, maxiter: i
         method="L-BFGS-B",
         options={"gtol": gtol, "maxiter": maxiter},
     )
-    return float(res.fun) / KCAL, np.asarray(coords(jnp.asarray(res.x))) / ANG
+    return float(res.fun) / KCAL, np.asarray(coords(jnp.asarray(res.x))) / ANG_NM

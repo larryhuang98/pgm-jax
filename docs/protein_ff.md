@@ -23,7 +23,7 @@ Amber. Everything below is in the repository, and each item has at least one tes
 | Restraints | `md/restraints.py` | positional, distance, angle, dihedral, centre-of-mass distance (Amber NMR form); `AmberSystem.select` / `position_restraints` |
 | MD | `md/flexible.py` | `FlexibleTemplate` (`from_fit`, `from_network`), `RigidTemplate`, `FlexibleSimulation` (g-BAOAB, `minimize`) |
 | Enhanced sampling | `md/remd.py` | temperature replica exchange, replicas batched with `jax.vmap` in one program |
-| Top-down | `ensemble.py` | `Reweighting` (averages, n_eff, chi2 and gradients), Karplus J couplings, phi/psi regions |
+| Top-down | `fit/reweighting.py` | `Reweighting` (averages, n_eff, chi2 and gradients), Karplus J couplings, phi/psi regions |
 
 Design rules that keep it reusable:
 

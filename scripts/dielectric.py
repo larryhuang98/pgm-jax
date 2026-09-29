@@ -4,7 +4,7 @@ written by Simulation.run(dipoles=n) / run_md.py --dipoles n (prefix.dip; pgm_ja
     python scripts/dielectric.py runs/water.dip [more.dip ...] --skip 500 --blocks 10
     python scripts/dielectric.py runs/ir.dip --ir runs/ir_spectrum.dat          # M sampled every 1-2 steps
 
-Tin-foil Ewald boundary conditions, adiabatic induced dipoles (pgm_jax/md/dielectric.py):
+Tin-foil Ewald boundary conditions, adiabatic induced dipoles (pgm_jax/analysis/dielectric.py):
     eps = eps_inf + (<M.M> - <M>.<M>) / (3 eps0 <V> kB T),   eps_inf = 1 + 4 pi <alpha_cell / V>,
 M the total cell dipole (charges + permanent + induced dipoles), alpha_cell recorded in the series.
 Several files are read as consecutive segments of one run (continuations with --checkpoint).
@@ -22,7 +22,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pgm_jax.md import dielectric as D  # noqa: E402
+from pgm_jax.analysis import dielectric as D  # noqa: E402
 from pgm_jax.md.dipoles import read_dipoles  # noqa: E402
 from pgm_jax.units import DEBYE_E_NM  # noqa: E402
 

@@ -11,7 +11,7 @@ functions, speed.
 The water is the pGM water of ~/pgm-gvdw-data/topology/rayl_512_v2.prmtop (the 512-water box of the
 README: charges, covalent dipoles, radii, polarizabilities, Lennard-Jones on O), made flexible with
 bonded terms fitted so that its gas-phase monomer potential (bonded + all-pair intramolecular pGM)
-is the q-TIP4P/F intramolecular potential (pimd.flexible_water).  NVT at the density of the
+is the q-TIP4P/F intramolecular potential (models.water.flexible_water).  NVT at the density of the
 box's restart (from the rigid model's NPT)."""
 
 from __future__ import annotations
@@ -50,7 +50,8 @@ from pgm_jax.md.box import box_from_cell  # noqa: E402
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.md.io import read_coordinates  # noqa: E402
-from pgm_jax.md.pimd import PIMDSimulation, flexible_water  # noqa: E402
+from pgm_jax.md.pimd import PIMDSimulation
+from pgm_jax.models.water import flexible_water  # noqa: E402
 from pgm_jax.param import read_prmtop_pgm  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
 

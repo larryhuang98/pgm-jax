@@ -1,5 +1,5 @@
 """Collect the psi4 results (scripts/qmfit/psi4_clusters.py) into the compact dataset
-data/qm/water_qm.json (pgm_jax.qmfit.QMSet): coordinates in Angstrom, energies in kcal/mol.
+data/qm/water_qm.json (pgm_jax.fit.qm.QMSet): coordinates in Angstrom, energies in kcal/mol.
 
 Per dimer (counterpoise corrected in the dimer basis, frozen core, DF):
   E.mp2_atz, E.mp2_aqz      MP2/aug-cc-pVTZ, aug-cc-pVQZ

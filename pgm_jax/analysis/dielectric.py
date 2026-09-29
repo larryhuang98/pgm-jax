@@ -34,8 +34,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..analysis.stats import jackknife_error
 from ..units import C_LIGHT_M_S, E_NM_C_M, EPS0_SI, KB_SI
+from .stats import jackknife_error
 
 
 def _series(M, V):

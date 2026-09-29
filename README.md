@@ -33,7 +33,7 @@ any order. Validated against Amber (sander, pmemd-pgm) and PyRESP.
   fitting targets**: dDeltaG/dtheta for every parameter of solute and solvent from the lambda windows
   (`pgm_jax/md/fe_grad.py`, `docs/fe_gradients.md`); bonded terms for flexible pGM molecules
   (`pgm_jax.bonded`).
-- **Fitting to QM cluster data** (`pgm_jax.qmfit`, `docs/qmfit.md`): pGM parameters (charges,
+- **Fitting to QM cluster data** (`pgm_jax.fit.qm`, `docs/qmfit.md`): pGM parameters (charges,
   covalent dipoles, radii, polarizabilities, LJ or GVDW) fitted by least squares with exact Jacobians to
   interaction energies, SAPT components, 3-body energies and rigid-body forces of clusters; a psi4
   water set (757 dimers incl. Smith-type structures and scans, liquid trimers to pentamers, WATER27
@@ -223,7 +223,7 @@ How it works:
   `observables()["erestraint"]` (part of `epot`, so `econs` stays conserved),
   `restraint_energies()` by kind, `set_restraints()` to release them in stages.
   `AmberSystem.select` / `position_restraints` restrain protein heavy atoms or the backbone.
-- **Cell dipole, induced dipoles, dielectric constant** (`md/dipoles.py`, `md/dielectric.py`,
+- **Cell dipole, induced dipoles, dielectric constant** (`md/dipoles.py`, `analysis/dielectric.py`,
   `docs/dielectric.md`): `run(dipoles=n)` (`run_md.py --dipoles n`) samples the cell dipole
   M = M_q + M_perm + M_ind (e nm; molecules whole, charged molecules about their centre of mass)
   every n steps on the device, inside the blocks, into `prefix.dip`; `induced=n` writes per-atom
@@ -278,7 +278,7 @@ How it works:
   HILLS files, checkpoints of the bias; walkers (independent or one shared bias) batched with
   `jax.vmap`; FES from the bias, c(t) and OPES reweighting, WHAM. Validated on model potentials
   with exact FES and on alanine dipeptide against umbrella sampling / WHAM (numbers in the doc).
-- **Alchemical free energies** (`md/alchemy.py`, `md/free_energy.py`, `docs/free_energy.md`,
+- **Alchemical free energies** (`md/alchemy.py`, `analysis/free_energy.py`, `docs/free_energy.md`,
   `scripts/solvation_free_energy.py`): hydration / solvation free energies of a small molecule,
   rigid (`Simulation`) or flexible (`FlexibleSimulation`). lambda_elec switches off the solute's
   electrostatics (charges, covalent dipoles and polarizabilities scaled, as AMOEBA's ele-lambda in
@@ -328,7 +328,7 @@ How it works:
   Monte Carlo NPT, bead-averaged dipoles, and ring-polymer contraction of the intermolecular part
   (the fitted gas-phase monomer model on every bead). Checked against exact harmonic-oscillator
   results for P = 1-64, free-particle mode temperatures, RPMD energy conservation and OpenMM's
-  RPMDIntegrator (with contraction). A flexible pGM water (`pimd.flexible_water`: bonded terms that
+  RPMDIntegrator (with contraction). A flexible pGM water (`models.water.flexible_water`: bonded terms that
   give the gas-phase monomer the q-TIP4P/F intramolecular surface, new `bond_quartic` family;
   `validation/pimd/pgm_water_flex.flex`): 512 waters at 298 K, P = 32, KE_H = 148.5 +- 0.1 meV
   (about 152 extrapolated; q-TIP4P/F about 143, experiment 143-156), broadened O-H and H-H
@@ -598,7 +598,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 |---|---|
 | `pgm_jax/system.py` | `Molecule`, `ParamTable` (tying), `System` (topology + index arrays, `expand(params)`) |
 | `pgm_jax/units.py` | units (nm, e, kJ/mol) and constants, incl. Amber's pGM Coulomb constant |
-| `pgm_jax/kernels.py` | Gaussian pair kernels: Coulomb erf(b r)/r, overlap, C6 dampings (gd6, tt6) |
+| `pgm_jax/densities.py` | Gaussian pair kernels: Coulomb erf(b r)/r, overlap, C6 dampings (gd6, tt6) |
 | `pgm_jax/channels.py` | `ElecChannel`, `elec_decomposition` (SAPT-like elst/ind), `molecular_polarizability` |
 | `pgm_jax/lj.py` | `LJChannel` (gas phase), `PeriodicLJ` (cutoff, optional long-range correction) |
 | `pgm_jax/vdw.py` | GVDW: `gvdw_pair`, `GVDWChannel`, `PeriodicGVDW`, `set_gvdw`, pmemd conversions, pGM3P-GVDW water |
@@ -612,7 +612,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/md/` | MD engine: `forcefield.py` (PME + direct rows + induction solver), `pme.py`, `kernels.py`, `neighbors.py` (JAX-MD lists), `rigid.py` (JAX-MD rigid bodies), `integrate.py`, `simulation.py`, `io.py` (Amber NetCDF), `box.py` |
 | `pgm_jax/md/thermostats.py` | `Langevin`, `Bussi` (global rescaling, fastest with pGM), `GLE` (`GLE.band()`: smooth slow-band kernel), exact O steps, heat bookkeeping |
 | `pgm_jax/md/dipoles.py` | cell dipole M = M_q + M_perm + M_ind (`CellDipole`, `cell_dipole`), cell electronic polarizability, `DipoleRecorder` (M(t) sampled on the device into `prefix.dip`), `InducedDipoleFile` (per-atom induced dipoles, NetCDF), `read_dipoles` |
-| `pgm_jax/md/dielectric.py` | static dielectric constant (tin-foil fluctuation formula + eps_inf), jackknife block errors, running estimate, dipole correlation time, IR spectrum |
+| `pgm_jax/analysis/dielectric.py` | static dielectric constant (tin-foil fluctuation formula + eps_inf), jackknife block errors, running estimate, dipole correlation time, IR spectrum |
 | `pgm_jax/md/flexible.py` | flexible molecules in MD: `FlexibleTemplate` (bonded fit -> MD), `RigidTemplate` (water, ions by constraints), `FlexibleSimulation` (atoms, g-BAOAB with SHAKE / RATTLE, `constraints="h-bonds"`, `hmr`), `liquid_box` |
 | `pgm_jax/md/vsites.py` | virtual sites: `VirtualSite` (average2, average3, outofplane, local, amber), `VirtualSites` (placement, force spreading by the transposed Jacobian, checks), `amber_extra_points` (Amber's EP frames from the bond graph); `scripts/validate_vsites.py` (TIP4P-Ew vs sander, NVE, NPT, speed) |
 | `pgm_jax/md/flux.py` | charge flux in MD: `ChargeFlux` (per-bond charge and covalent-dipole flux of fitted templates, or built directly; `charges(pos)` -> q(R), c(R)), `molecule_at` (charges frozen at a geometry for rigid molecules); `scripts/validate_flux.py`, `scripts/flux_md.py` (liquid, NVE, speed, gas phase) |
@@ -623,20 +623,20 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/md/remd.py` | temperature replica exchange for both engines: `ReplicaExchange` (exchanges, statistics, round trips, outputs, checkpoints), `MDReplicas` (replicas batched with `jax.vmap`, or sequential), `geometric_ladder`, `read_exchange_log` |
 | `pgm_jax/md/alchemy.py` | alchemical free energies: `Alchemy` (lambda Hamiltonian of one solute: annihilated electrostatics with a polarizability floor, soft-core van der Waals rows), `alchemical_system`, `LambdaWindows` (windows batched with `jax.vmap`), `FreeEnergyRun` (samples of u_k(x_n) and dU/dlambda, Hamiltonian replica exchange, outputs, checkpoints), `GasPhaseLeg`, `standard_schedule` |
 | `pgm_jax/bias/` | enhanced sampling: `cv.py` (collective variables), `core.py` (`StaticBias`, `Harmonic`, walls, `MetaD` + `HillGrid`, `OPES`, `BiasSet`), `walkers.py` (`Walkers`: independent or shared-bias walkers in one vmapped program), `analysis.py` (FES, c(t), weights, histograms, WHAM), `io.py` (COLVAR / HILLS), `toy.py` (Langevin on model potentials); `scripts/bias/` (validations, benchmark) |
-| `pgm_jax/md/free_energy.py` | estimators: MBAR (covariance), BAR, TI along a lambda path, statistical inefficiency, equilibration detection, `estimate` (hydration free energy from `FreeEnergyRun` samples) |
+| `pgm_jax/analysis/free_energy.py` | estimators: MBAR (covariance), BAR, TI along a lambda path, statistical inefficiency, equilibration detection, `estimate` (hydration free energy from `FreeEnergyRun` samples) |
 | `pgm_jax/md/fe_grad.py` | parameter gradients of alchemical free energies: `ParamGradients` (dU/dP of the end states at every window's configuration, re-solved dipoles, batched), `gradient_estimate` (MBAR-weighted and end-state estimators, block jackknife), `gas_leg_gradient`, `FreeEnergyTarget` (value, gradient, errors, chain rule, chi^2, fit layout), `combine`, `ParamSpace`, `alchemical_map`; `scripts/fe_gradient_check.py` (finite differences over independent runs) |
 | `scripts/solvation_free_energy.py` | hydration free energy of a rigid molecule: `run` (NPT at full coupling, batched windows, exchange), `analyze` (TI / BAR / MBAR, halves, equilibration), `bench` (cost per window) |
 | `pgm_jax/protein/` | proteins: `residues` (bond orders, terminal keys), `library` (`ResidueLibrary`: pGM parameters by residue and atom name, JSON), `amber` (`load_amber`: tleap system -> pgm_jax molecules; `amber_template`: ff19SB-form bonded terms + CMAP; `AmberSystem.hmr` per-kind hydrogen masses, `select` / `position_restraints`), `pmemd` (`write_pgm_prmtop`: the engine's model as a pmemd-pgm prmtop; `pmemd_mdin`, `pmemd_grid`) |
 | `scripts/protein/` | `build_amber.py` (PDB or residue sequence -> solvated tleap topology), `bench_protein.py` (speed of a solvated protein; `--elec-cut`, `--hmr-water`, `--prod-ps`: stability and <U> with block errors), `write_pgm_prmtop.py` (pmemd-pgm prmtop + mdin), `check_pgm_prmtop.py` (single points and MD against pmemd-pgm), `elec_accuracy.py` (electrostatic error of real-space cutoffs), `remd_peptide.py` (replica exchange of a solvated peptide vs plain MD: acceptance, round trips, phi/psi populations, replica speed) |
 | `pgm_jax/interfaces/` | other MD codes drive pGM: `engine.py` (`PGMEngine`: one jitted call per configuration, dipole-history slots, overflow handling, general cells, atomic / molecular virial; `GasPhaseEngine`), `ase.py` (`PGMCalculator`, `FixRigidMolecules`), `ipi.py` (i-PI socket client, `python -m pgm_jax.interfaces.ipi`), `openmm.py` (`PGMOpenMM`: PythonForce, System, Topology) |
 | `scripts/interfaces/` | `validate_ase.py`, `validate_ipi.py`, `validate_openmm.py` (single points, NVE / NVT / NPT / PIMD against the native engine), `bench_interfaces.py` (cost per step), `ipi_tools.py` (i-PI inputs, server, output) |
-| `pgm_jax/ensemble.py` | `Reweighting`: ensemble averages, n_eff and parameter gradients from saved frames; Karplus J couplings, phi/psi regions |
+| `pgm_jax/fit/reweighting.py` | `Reweighting`: ensemble averages, n_eff and parameter gradients from saved frames; Karplus J couplings, phi/psi regions |
 | `pgm_jax/md/topology.py` | `MDTopology`: neighbour-list groups (heavy-atom groups for large molecules), special pairs with van der Waals weights, constraints |
 | `pgm_jax/md/constraints.py` | SHAKE / RATTLE: exact Newton per cluster in batched blocks (X-H groups and water in one block, larger clusters by size; closed-form or unrolled Gaussian solves), matrix-free quasi-Newton / CG for clusters above 12 constraints; constraint and RATTLE checks; hydrogen mass repartitioning (one mass or per molecule, `hmr_masses`) |
 | `scripts/validate_shake.py`, `scripts/shake_vs_pmemd.py`, `scripts/bench_shake.py` | constraint validation (`docs/shake.md`): NVE drift and equilibrium properties against the time step (liquid methanol, a solvated peptide), the same model against pmemd.pgm with SHAKE, cost per SHAKE / RATTLE call |
 | `pgm_jax/md/restraints.py` | restraints for both MD drivers: positional (NPT reference scaling), distance, angle, dihedral, centre-of-mass distance (Amber NMR flat-bottom form); `Restraints` container, strain derivative |
 | `scripts/fit_liquid.py` | LJ from liquid density + heat of vaporization (ensemble gradients, Gauss-Newton) |
-| `pgm_jax/qmfit.py` | fitting to QM cluster data: `QMSet` (dataset IO), `ClusterModel` (SAPT-like components, batched), `ParamMap` (free parameters, neutral charges), `QMFit` (weighted residuals: totals, SAPT, 3-body, forces, monomer; least squares), `evaluate` / `error_table`, `rigid_minimize` |
+| `pgm_jax/fit/qm.py` | fitting to QM cluster data: `QMSet` (dataset IO), `ClusterModel` (SAPT-like components, batched), `ParamMap` (free parameters, neutral charges), `QMFit` (weighted residuals: totals, SAPT, 3-body, forces, monomer; least squares), `evaluate` / `error_table`, `rigid_minimize` |
 | `scripts/qmfit/`, `data/qm/` | the water QM set: `smith_opt.py`, `build_water_clusters.py`, `psi4_clusters.py` (psi4 worker queue), `collect_water_qm.py`, `fit_water_qm.py` (baselines, fits, summary); `water_qm.json`, `water_geoms.json`, `fits/` |
 | `pgm_jax/fit/` | multi-target fitting: `ParameterSpace` (scale factors / per-key values), `FrameAnalyzer` (per-frame U, cell dipole, cell polarizability, molecular dipoles, g(r) and their parameter derivatives incl. the adjoint of the induction solve, batched), `LiquidSamples` (fluctuation-formula Jacobians, jackknife, bootstrap, reweighting), `GasPhase`, `Objective` (LM trust region, parameter covariance, propagation), `LiquidFit` (NPT or batched NVT replicas, resumable) |
 | `scripts/fit_multi.py`, `scripts/liquid_fit_tools.py`, `scripts/validate_eps_gradient.py` | multi-target fits of a pGM liquid (density, Hvap, eps, dipoles, polarizability, g(r)); combine / finite-difference / calibration analysis; independent-replica runs for the gradient checks |

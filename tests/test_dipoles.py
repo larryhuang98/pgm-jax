@@ -9,8 +9,8 @@ from test_grad import methanol, water
 from test_md import need_water_box, settings, small_box
 
 from pgm_jax import ElecChannel, Molecule, System
+from pgm_jax.analysis import dielectric as D
 from pgm_jax.channels import molecular_polarizability, perm_dipoles
-from pgm_jax.md import dielectric as D
 from pgm_jax.md.dipoles import DIP_COLUMNS, CellDipole, DipoleRecorder, cell_dipole, read_dipoles
 from pgm_jax.md.forcefield import PGMForceField
 from pgm_jax.md.simulation import Simulation

@@ -738,8 +738,8 @@ def alchemy_point():
 def fe_windows():
     """Batched lambda windows (5), 12 samples of reduced energies, dU/dlambda and dU/dtheta; TI / BAR /
     MBAR and the parameter-gradient estimators on the stored samples; FreeEnergyRun 40 steps."""
+    from pgm_jax.analysis import free_energy as fe
     from pgm_jax.md import fe_grad as fg
-    from pgm_jax.md import free_energy as fe
     from pgm_jax.md.alchemy import FreeEnergyRun
 
     w, P, sim, alch = _alch_windows()
@@ -926,7 +926,7 @@ def protein_peptide():
 def qmfit_synthetic():
     """QM cluster fitting: ClusterModel components of synthetic water clusters (dimers to a
     tetramer), the fit's residuals, loss and exact gradient at a displaced theta."""
-    import pgm_jax.qmfit as Q
+    import pgm_jax.fit.qm as Q
     from pgm_jax.system import Molecule
 
     w = Molecule(
@@ -997,12 +997,12 @@ def qmfit_synthetic():
 def analysis_estimators():
     """Pure analysis code on synthetic data: dielectric fluctuation formula and jackknife, BAR,
     MBAR, TI, statistical inefficiency, WHAM, liquid-fit jackknife covariance, finite-field fits."""
+    from pgm_jax.analysis import dielectric as D
+    from pgm_jax.analysis import finite_field as FF
+    from pgm_jax.analysis import free_energy as fe
     from pgm_jax.analysis import stats
     from pgm_jax.analysis.stats import jackknife_cov
     from pgm_jax.bias import analysis as A
-    from pgm_jax.md import dielectric as D
-    from pgm_jax.md import finite_field as FF
-    from pgm_jax.md import free_energy as fe
 
     rng = np.random.default_rng(11)
     out = {}

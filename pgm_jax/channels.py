@@ -22,7 +22,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .kernels import DENSITIES
+from .densities import DENSITIES
 from .solver import solve_linear_induction
 from .system import System
 from .units import KE

@@ -1,5 +1,5 @@
 """Hydration (solvation) free energy of one rigid molecule by alchemical lambda windows
-(pgm_jax/md/alchemy.py, estimators in pgm_jax/md/free_energy.py; docs/free_energy.md).
+(pgm_jax/md/alchemy.py, estimators in pgm_jax/analysis/free_energy.py; docs/free_energy.md).
 
     # water in water: the 512-water box of the README (pGM3P-25 electrostatics on TIP3P geometry and LJ)
     python scripts/solvation_free_energy.py run --model pgm -o runs/fe/pgm --ns 2
@@ -61,8 +61,8 @@ import numpy as np
 jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from pgm_jax.analysis import free_energy as fe  # noqa: E402
 from pgm_jax.md import fe_grad as fg  # noqa: E402
-from pgm_jax.md import free_energy as fe  # noqa: E402
 from pgm_jax.md.alchemy import (  # noqa: E402
     Alchemy,
     FreeEnergyRun,

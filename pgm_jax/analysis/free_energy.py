@@ -26,11 +26,10 @@ import numpy as np
 from scipy.optimize import brentq
 from scipy.special import expit, logsumexp
 
-from ..analysis.stats import detect_equilibration, statistical_inefficiency, subsample
 from ..units import KCAL
+from .stats import detect_equilibration, statistical_inefficiency, subsample
 
 
-# ----------------------------------------------------------------------------- time series
 # ----------------------------------------------------------------------------- BAR
 def bar(w_F, w_R, tol: float = 1e-12) -> tuple:
     """(Delta f, standard error) in kT between two states 0 -> 1.  w_F = u_1(x) - u_0(x) for samples

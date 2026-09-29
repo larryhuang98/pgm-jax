@@ -16,9 +16,9 @@ import jax  # noqa: E402
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 
-from pgm_jax.bonded.data import frames, mol_spec  # noqa: E402
 from pgm_jax.bonded.model import BondedModel, BondedSettings  # noqa: E402
-from pgm_jax.bonded.molecules import MOLECULES  # noqa: E402
+from pgm_jax.bonded.study.data import frames, mol_spec  # noqa: E402
+from pgm_jax.bonded.study.molecules import MOLECULES  # noqa: E402
 from pgm_jax.units import DEBYE_E_NM, KCAL
 
 out = {}

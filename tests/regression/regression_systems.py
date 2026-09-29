@@ -179,7 +179,7 @@ def flexible_water_template():
 
     from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
     from pgm_jax.md.flexible import FlexibleTemplate
-    from pgm_jax.md.pimd import WATER_FAMILIES
+    from pgm_jax.models.water import WATER_FAMILIES
 
     m = water()
     t = math.radians(104.5)

@@ -28,8 +28,7 @@ import jax  # noqa: E402
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 
-from pgm_jax.param import read_prmtop_pgm, save_molecule  # noqa: E402
-from pgm_jax.qmfit import (  # noqa: E402
+from pgm_jax.fit.qm import (  # noqa: E402
     ANG,
     DEBYE,
     KCAL,
@@ -47,6 +46,7 @@ from pgm_jax.qmfit import (  # noqa: E402
     rigid_water,
     superpose_monomers,
 )
+from pgm_jax.param import read_prmtop_pgm, save_molecule  # noqa: E402
 from pgm_jax.vdw import PGM3P_GVDW, set_gvdw  # noqa: E402
 
 MODELS = {

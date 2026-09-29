@@ -15,8 +15,8 @@ from test_grad import water
 from test_md_macro import _water_box
 
 from pgm_jax import System
+from pgm_jax.analysis import free_energy as fe
 from pgm_jax.analysis import stats
-from pgm_jax.md import free_energy as fe
 from pgm_jax.md.alchemy import (
     Alchemy,
     FreeEnergyRun,

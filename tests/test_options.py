@@ -110,7 +110,7 @@ def test_electrostatics_levels():
     qp = ElecChannel.level("qp").energy(pos, sys)[0]
     assert "ind" not in qp and float(qp["perm"]) == pytest.approx(float(full["perm"]), rel=1e-12)
     q_only = ElecChannel.level("q").energy(pos, sys)[0]["perm"]
-    from pgm_jax.kernels import gauss_bij, gauss_coulomb
+    from pgm_jax.densities import gauss_bij, gauss_coulomb
     from pgm_jax.units import KE
 
     ii, jj = sys.pair_i, sys.pair_j

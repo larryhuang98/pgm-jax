@@ -9,12 +9,12 @@ import os
 
 import numpy as np
 
-from ..param import load_molecule
-from ..units import BOHR_NM, HARTREE_KJMOL
-from .fit import FrameSet
-from .model import MolSpec
+from ...param import load_molecule
+from ...units import BOHR_NM, HARTREE_KJMOL
+from ..fit import FrameSet
+from ..model import MolSpec
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 DATA = os.path.join(ROOT, "data/bonded")
 
 

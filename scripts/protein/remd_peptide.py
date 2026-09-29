@@ -33,7 +33,7 @@ import numpy as np
 
 jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pgm_jax.ensemble import backbone_torsions  # noqa: E402
+from pgm_jax.fit.reweighting import backbone_torsions  # noqa: E402
 from pgm_jax.md.flexible import FlexibleSimulation  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.md.io import read_trajectory  # noqa: E402

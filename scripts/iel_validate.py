@@ -33,9 +33,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pgm_jax.analysis.stats import block_mean  # noqa: E402
+from pgm_jax.cli.args import add_iel_arguments, iel_settings  # noqa: E402
 from pgm_jax.md.box import box_from_cell  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
-from pgm_jax.md.iel import add_iel_arguments, iel_settings  # noqa: E402
 from pgm_jax.md.io import read_coordinates  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
 from pgm_jax.param import read_prmtop_molecules  # noqa: E402
@@ -310,7 +310,7 @@ def pooled_eps(files, skip, prefix):
     """Static dielectric constant of independent replicas pooled (tin-foil, eps_inf from alpha_cell):
     <M.M> - <M>.<M> over all samples, jackknife with one block per replica (or 10 contiguous blocks
     for a single run); <V>, density, <U>, <T> from the logs, <mu_mol> from the .dip files."""
-    from pgm_jax.md import dielectric as D
+    from pgm_jax.analysis import dielectric as D
     from pgm_jax.md.dipoles import read_dipoles
 
     Ms, Vs, As, mus, U, rho, T = [], [], [], [], [], [], []

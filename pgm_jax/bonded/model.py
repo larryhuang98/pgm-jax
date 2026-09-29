@@ -30,7 +30,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..channels import _dipole_tensor, _field_at_i, _pair_perm, perm_dipoles, quadrupole_field
-from ..kernels import DENSITIES
+from ..densities import DENSITIES
 from ..md.kernels import erf_kernels
 from ..multipole import quadrupole_pair_terms
 from ..multipole import quadrupoles as build_quadrupoles
@@ -178,7 +178,7 @@ class BondedTerms:
         for f in self.fams:
             fam = T.REGISTRY[f]
             if getattr(fam, "needs_radius", False):
-                from ..kernels import gauss_bij
+                from ..densities import gauss_bij
 
                 for m, Im in zip(self.mols, self.I):
                     rad = (

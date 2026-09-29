@@ -20,7 +20,7 @@ Observables (name: estimator, unit):
   density         <rho> = <m / V>                                        g/cm^3
   hvap            u_gas(theta) - <U>/N + R T                              kcal/mol
   eps             1 + 4 pi <alpha_cell/V> + 4 pi KE (<M.M> - <M>.<M>) / (3 kB T <V>)
-                  (tin-foil Ewald, adiabatic induced dipoles; md/dielectric.py)
+                  (tin-foil Ewald, adiabatic induced dipoles; analysis/dielectric.py)
   liquid_dipole   <mean |molecular dipole|>                               D
   rdf             <g(r)> per bin (frames.RDFSpec)
   volume, energy  <V> (nm^3), <U>/N (kJ/mol)

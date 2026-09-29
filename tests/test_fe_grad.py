@@ -14,8 +14,8 @@ from test_alchemy import alch_sim, frame, settings
 from test_grad import water
 
 from pgm_jax import System
+from pgm_jax.analysis import free_energy as fe
 from pgm_jax.md import fe_grad as fg
-from pgm_jax.md import free_energy as fe
 from pgm_jax.md.alchemy import (
     Alchemy,
     FreeEnergyRun,

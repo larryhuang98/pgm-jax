@@ -34,9 +34,9 @@ import numpy as np
 jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from pgm_jax.cli.args import add_iel_arguments, iel_settings  # noqa: E402
 from pgm_jax.md.box import box_from_cell  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.iel import add_iel_arguments, iel_settings  # noqa: E402
 from pgm_jax.md.io import read_coordinates  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
 from pgm_jax.param import read_prmtop_molecules  # noqa: E402

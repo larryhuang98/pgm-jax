@@ -9,7 +9,7 @@
   intermolecular remainder on P' beads), PIMDSimulation driver (blocks, overflow handling, log,
   centroid/bead trajectories, checkpoints, molecular centroid-virial pressure).
 - Flexible pGM water: rayl_512_v2 pGM water + bonded terms fitted so that the gas-phase monomer PES
-  = q-TIP4P/F intramolecular PES (pimd.flexible_water). New bonded family bond_quartic.
+  = q-TIP4P/F intramolecular PES (models.water.flexible_water). New bonded family bond_quartic.
 - Rigid bodies / constraints: not supported (documented).  NVT only.
 
 ## Decisions

@@ -512,7 +512,7 @@ def test_md_opes_nvt_pressure_and_mts():
 def test_flexible_peptide_dihedral_bias():
     """Solvated peptide (flexible, h-bond constraints): metadynamics on its backbone phi/psi (grid)
     inside the atom engine; the CV follows ensemble.backbone_torsions."""
-    from pgm_jax.ensemble import backbone_torsions
+    from pgm_jax.fit.reweighting import backbone_torsions
     from pgm_jax.md.flexible import FlexibleSimulation
     from pgm_jax.protein import amber_template, load_amber
 

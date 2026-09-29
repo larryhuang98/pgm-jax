@@ -26,11 +26,12 @@ import numpy as np
 
 jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from pgm_jax.cli.args import add_mts_arguments, mts_from_args
 from pgm_jax.md.box import box_from_cell  # noqa: E402
 from pgm_jax.md.flexible import FlexibleSimulation  # noqa: E402
 from pgm_jax.md.forcefield import DSUM_TOL, MDSettings, elec_cutoff_settings  # noqa: E402
 from pgm_jax.md.io import read_coordinates  # noqa: E402
-from pgm_jax.md.mts import add_mts_arguments, mts_from_args, mts_stats  # noqa: E402
+from pgm_jax.md.mts import mts_stats  # noqa: E402
 from pgm_jax.protein import ResidueLibrary, amber_template, load_amber  # noqa: E402
 from pgm_jax.units import KB
 

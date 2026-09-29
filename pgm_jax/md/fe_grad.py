@@ -52,10 +52,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ..analysis import free_energy as fe
 from ..analysis.stats import jackknife_error
 from ..system import QUANTITIES
 from ..units import KCAL
-from . import free_energy as fe
 from .alchemy import PREFIX
 
 # scale groups: parameter quantities scaled together and the exponent of the scale on each

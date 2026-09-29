@@ -17,7 +17,7 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
-from pgm_jax.bonded.molecules import MOLECULES  # noqa: E402
+from pgm_jax.bonded.study.molecules import MOLECULES  # noqa: E402
 from pgm_jax.param import PGM_POL_TABLE, molecule_from_pyresp, read_pol_table, save_molecule  # noqa: E402
 from pgm_jax.units import KCAL
 

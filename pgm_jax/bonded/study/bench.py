@@ -8,8 +8,8 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.optimize import minimize
 
-from ..units import KCAL
-from .terms import _dihedral
+from ...units import KCAL
+from ..terms import _dihedral
 
 
 def kabsch_rmsd(A, B):

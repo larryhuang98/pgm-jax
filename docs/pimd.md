@@ -98,7 +98,7 @@ P' = 1 puts the intermolecular forces on the centroid.
 
 ## Flexible pGM water
 
-`pimd.flexible_water(molecule)` makes a flexible water template from a pGM water molecule: bonded
+`models.water.flexible_water(molecule)` makes a flexible water template from a pGM water molecule: bonded
 terms (new family `bond_quartic`: K2 db^2/2 + K3 db^3 + K4 db^4, plus `angle_harm`, `angle_cubic`,
 `bond_bond`, `bond_angle` of `pgm_jax.bonded`) fitted so that the gas-phase monomer potential
 (bonded + all-pair intramolecular pGM electrostatics and induction) reproduces the q-TIP4P/F
@@ -374,7 +374,7 @@ step (the batched solve runs until its slowest bead converges). `scripts/pimd_wa
 - **Flexible molecules only.** Rigid bodies are not ring polymers of atoms (a rigid-rotor path
   integral needs rotational propagators and is not implemented), and constraints (SHAKE / RATTLE on
   beads) and virtual sites are refused. Quantum water therefore needs a flexible model, such as
-  `pimd.flexible_water`. Rigid-water results of the repository are classical.
+  `models.water.flexible_water`. Rigid-water results of the repository are classical.
 - NVT and isotropic Monte Carlo NPT (molecular centroid scaling). No multiple time stepping,
   restraints, alchemical regions or replica exchange with beads; biases on collective variables
   (`pgm_jax/bias`), external fields (`efield=`) and extended-Lagrangian dipoles (`MDSettings.iel`)

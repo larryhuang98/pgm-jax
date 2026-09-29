@@ -34,7 +34,7 @@ jax.config.update("jax_enable_x64", True)
 
 from scipy.io import netcdf_file  # noqa: E402
 
-from pgm_jax.md import dielectric as D  # noqa: E402
+from pgm_jax.analysis import dielectric as D  # noqa: E402
 from pgm_jax.md.box import (
     box_from_cell,  # noqa: E402
     reduce_box,  # noqa: E402

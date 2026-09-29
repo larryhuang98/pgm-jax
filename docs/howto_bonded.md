@@ -13,7 +13,7 @@ except the DFT and ESP jobs, which are Slurm arrays on the CPU partition.
 
 | Step | Command | Output |
 |---|---|---|
-| topology + conformers (RDKit) | add the SMILES to `pgm_jax/bonded/molecules.py` (`MOLECULES`), then `python scripts/bonded/build_molecules.py` | `data/bonded/molecules/<name>.json` |
+| topology + conformers (RDKit) | add the SMILES to `pgm_jax/bonded/study/molecules.py` (`MOLECULES`), then `python scripts/bonded/build_molecules.py` | `data/bonded/molecules/<name>.json` |
 | MACE-OFF minimum | `python scripts/bonded/mace_min.py <name>` | `data/bonded/frames/<name>_min.npz` |
 | sampling | `python scripts/bonded/mace_sample.py <name>` (Langevin MD at 500 K for training, 298 K for testing, relaxed torsion scans) | `data/bonded/frames/<name>_md.npz`, `_scan*.npz` |
 | DFT labels | `python scripts/bonded/make_dft_tasks.py`, then `sbatch runs/bonded/dft.sh` (wB97M-D3(BJ)/def2-TZVPPD, psi4) | `data/bonded/dft/<name>__<key>__<start>.npz` |

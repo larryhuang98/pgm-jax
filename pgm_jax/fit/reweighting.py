@@ -28,8 +28,8 @@ import jax.numpy as jnp
 import numpy as np
 from jax.scipy.special import logsumexp
 
-from .bonded import terms as T
-from .units import KB
+from ..bonded import terms as T
+from ..units import KB
 
 # Karplus relations J = A cos^2(theta) + B cos(theta) + C with theta = phi + delta (rad).
 # Only sets whose provenance is stated; add others as (A, B, C, delta) from the paper you use.

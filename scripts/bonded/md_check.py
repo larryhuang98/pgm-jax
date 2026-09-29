@@ -25,9 +25,9 @@ import jax.numpy as jnp  # noqa: E402
 from experiments import families_of, load, mol_list  # noqa: E402
 
 from pgm_jax.bonded import terms as T  # noqa: E402
-from pgm_jax.bonded.data import frames  # noqa: E402
 from pgm_jax.bonded.fit import Fitter  # noqa: E402
 from pgm_jax.bonded.model import BondedModel, BondedSettings  # noqa: E402
+from pgm_jax.bonded.study.data import frames  # noqa: E402
 from pgm_jax.units import KB, KCAL
 
 MASS = {"H": 1.008, "C": 12.011, "N": 14.007, "O": 15.999, "F": 18.998, "P": 30.974, "S": 32.06, "Cl": 35.45}

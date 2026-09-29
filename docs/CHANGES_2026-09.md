@@ -8,7 +8,7 @@ combinations of the new features work and which are refused.
 
 | Order | Branch | Merge commit | Main code |
 |---|---|---|---|
-| 1 | qmfit | `398150b` | `pgm_jax/qmfit.py`, `scripts/qmfit/`, `data/qm/` |
+| 1 | qmfit | `398150b` | `pgm_jax/fit/qm.py`, `scripts/qmfit/`, `data/qm/` |
 | 2 | bias | `2064c72` | `pgm_jax/bias/`, `bias=` in `Simulation` / `FlexibleSimulation` |
 | 3 | iface | `18e5a6b` | `pgm_jax/interfaces/` (ASE, i-PI, OpenMM) |
 | 4 | fegrad | `144e639` | `pgm_jax/md/fe_grad.py`, `alchemy.py`, `scripts/solvation_free_energy.py` |

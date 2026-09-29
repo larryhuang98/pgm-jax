@@ -28,9 +28,13 @@ import jax
 jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from pgm_jax.cli.args import (  # noqa: E402  # noqa: E402
+    add_iel_arguments,
+    add_mts_arguments,
+    iel_settings,
+    mts_from_args,
+)
 from pgm_jax.md.forcefield import DSUM_TOL, MDSettings, ewald_beta_for  # noqa: E402
-from pgm_jax.md.iel import add_iel_arguments, iel_settings  # noqa: E402
-from pgm_jax.md.mts import add_mts_arguments, mts_from_args  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
 
 

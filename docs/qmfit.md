@@ -1,6 +1,6 @@
 # Fitting pGM parameters to QM cluster data
 
-`pgm_jax/qmfit.py` fits pGM parameters (charges, covalent dipoles, Gaussian radii,
+`pgm_jax/fit/qm.py` fits pGM parameters (charges, covalent dipoles, Gaussian radii,
 polarizabilities, Lennard-Jones or GVDW) directly to quantum-chemical data of molecular clusters:
 interaction energies, SAPT components, many-body (2- and 3-body) energies, rigid-body forces and
 monomer properties. `data/qm/water_qm.json` is a water reference set built for it (psi4, 757
@@ -78,7 +78,7 @@ import jax
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from pgm_jax import read_prmtop_pgm
-from pgm_jax.qmfit import (
+from pgm_jax.fit.qm import (
     ClusterModel,
     FitWeights,
     ParamMap,

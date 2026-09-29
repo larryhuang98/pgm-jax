@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from pgm_jax import ElecChannel, LJChannel, Model, Molecule, System
-from pgm_jax.qmfit import (
+from pgm_jax.fit.qm import (
     KCAL,
     ClusterModel,
     FitWeights,

@@ -35,7 +35,7 @@ import numpy as np
 from jax.scipy.special import erf
 
 from .channels import perm_dipoles
-from .kernels import gauss_bij
+from .densities import gauss_bij
 from .solver import variational
 from .system import System
 from .units import KE

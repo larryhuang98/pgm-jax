@@ -1,7 +1,7 @@
 # Cell dipole, induced dipoles and the static dielectric constant
 
 `pgm_jax/md/dipoles.py` computes the dipole moment of the periodic cell and records it during MD;
-`pgm_jax/md/dielectric.py` and `scripts/dielectric.py` turn the recorded series into the static
+`pgm_jax/analysis/dielectric.py` and `scripts/dielectric.py` turn the recorded series into the static
 dielectric constant (with error bars and convergence) and, optionally, an infrared spectrum.
 
 ## Usage
