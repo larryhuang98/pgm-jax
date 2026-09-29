@@ -4,7 +4,7 @@ Waals at cutoff, forces / virial / differentiable path against finite difference
 pairs in both parts of the rows, row-capacity overflows of each part, the Ewald coefficient rule
 and an accuracy bound for the recommended settings."""
 
-import io
+import logging
 
 import jax
 import jax.numpy as jnp
@@ -199,7 +199,7 @@ def test_split_rows_with_special_pair_weights_decompose():
     assert abs(float(r.energy["vdw"] - rref.energy["vdw"])) < 1e-12 * abs(float(rref.energy["vdw"]))
 
 
-def test_row_capacity_overflow_of_each_part():
+def test_row_capacity_overflow_of_each_part(caplog):
     sys, pos, H = small_box(4)
     ff, idx = _setup(sys, pos, H, settings(cutoff=RC_V, elec_cutoff=RC_E))
     mc, mc_e = ff.capacity
@@ -211,16 +211,16 @@ def test_row_capacity_overflow_of_each_part():
         ff.mc, ff.mc_e = small
         assert bool(jax.jit(ff.compute)(pos, H, idx, ff.init_induction()).overflow), small
     # the driver finds the overflow, re-sizes both parts and repeats the block
-    log = io.StringIO()
     s = settings(cutoff=RC_V, elec_cutoff=RC_E, dipole_tol=1e-8, max_iter=100)
     ref = Simulation(sys, pos, H, s, dt=0.001, thermostat=None, log=None)
-    sim = Simulation(sys, pos, H, s, dt=0.001, thermostat=None, log=log)
+    sim = Simulation(sys, pos, H, s, dt=0.001, thermostat=None)
     tail = sim.ff.mc - sim.ff.mc_e
     sim.ff.mc, sim.ff.mc_e = ce - 1 + tail, ce - 1  # electrostatic part too small
     sim.integ.compile()
-    sim.advance(20)
+    with caplog.at_level(logging.INFO, logger="pgm_jax"):
+        sim.advance(20)
     ref.advance(20)
-    assert "row capacity overflow" in log.getvalue()
+    assert "row capacity overflow" in caplog.text
     assert sim.ff.mc_e >= ce + 7 and sim.ff.mc - sim.ff.mc_e >= tail
     assert np.allclose(sim.positions(), ref.positions(), rtol=0, atol=1e-9)
 

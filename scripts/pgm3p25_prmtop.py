@@ -37,9 +37,7 @@ import tempfile
 import numpy as np
 from water_dielectric import RST, TOP, paper_geometry
 
-from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.io import read_coordinates
-from pgm_jax.md.thermostats import Langevin
 from pgm_jax.paths import resource
 from pgm_jax.prmtop import Prmtop
 
@@ -148,7 +146,7 @@ def main(argv=None):
             lj_lrc=True,
             dipole_tol=1e-5,
         )
-        kw = dict(dt=0.002, thermostat=Langevin(1.0), barostat=MonteCarloBarostat())
+        kw = dict(dt=0.002, ensemble="npt", thermostat="langevin", gamma=1.0)  # pmemd's mdin (Amber names)
         open(a.out + ".eq.in", "w").write(pmemd_mdin(st, H, nstlim=50000, ntpr=5000, ntwr=50000, **kw))
         open(a.out + ".md.in", "w").write(
             pmemd_mdin(st, H, nstlim=int(round(a.ns * 5e5)), irest=1, ntpr=5000, ntwx=500, ntwr=50000, **kw)

@@ -162,7 +162,7 @@ def sp_mdin(st, H):
         H,
         nstlim=1,
         dt=0.00001,
-        thermostat=None,
+        ensemble="nve",
         constraints="none",
         ntpr=1,
         ntwf=1,
