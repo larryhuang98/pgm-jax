@@ -16,7 +16,8 @@ any order. Validated against Amber (sander, pmemd-pgm) and PyRESP.
   parameters of analytic terms once; MD cost = classical terms).
 - **Systems:** gas phase (`Model`), periodic (`PeriodicModel`, Ewald, triclinic boxes), and
   **molecular dynamics with JAX-MD** (`pgm_jax.md`: smooth PME, neighbour lists, pmemd-pgm's induction
-  solver, rigid or flexible molecules, NVE / NVT (Langevin, Bussi, smooth GLE) / Monte Carlo NPT,
+  solver, rigid or flexible molecules, bond constraints (SHAKE / RATTLE: X-H or all bonds, 2-4 fs),
+  NVE / NVT (Langevin, Bussi, smooth GLE) / Monte Carlo NPT,
   restraints, temperature replica exchange with batched replicas, cell dipole and dielectric
   constant, path-integral MD (PIMD / TRPMD / RPMD) for nuclear quantum effects, Amber inputs and
   outputs).
@@ -159,6 +160,17 @@ How it works:
   (the energy is variational in mu).
 - **Rigid molecules** (every molecule; the model has no bonded terms) as JAX-MD rigid bodies:
   NO_SQUISH quaternion integration from JAX-MD `simulate`. Equivalent to SHAKE-rigid water.
+- **Bond constraints** (`constraints="h-bonds" | "all-bonds"` in `FlexibleSimulation`,
+  `md/constraints.py`, `docs/shake.md`): SHAKE / RATTLE in g-BAOAB order, solved exactly per
+  cluster (Newton on each cluster's small system; the X-H groups and waters of a system, or all copies of a
+  molecule type, form one batched block) or, for clusters of more than 12 constraints (every
+  bond of a protein), by a matrix-free quasi-Newton / conjugate-gradient solver; rigid water is
+  the 3-constraint case (the SETTLE solution to round-off). Degrees of freedom 3N - N_c (- 3 when
+  the total momentum is conserved: NVE, Bussi); `temp_half` reports the leapfrog (half-step) kinetic
+  temperature, which removes the full-step bias of large steps (3 % at 2 fs). Liquid methanol with
+  X-H constraints at 2 fs reproduces the energy and distributions of 1 fs (density within 0.004
+  g/cm^3), constraints and RATTLE hold to 1e-14 at every step; against pmemd.pgm with SHAKE on the
+  same model the potential energy agrees with pmemd's dt -> 0 value within 0.03 kJ/mol per molecule.
 - **Thermostats** (`thermostat=` in `Simulation` / `FlexibleSimulation`, `pgm_jax/md/thermostats.py`): BAOAB with an
   exact O step on the mass-scaled momenta (for rigid bodies, centre-of-mass and body-frame angular momenta).
   - `"langevin"` (friction `gamma`, the default): white noise per degree of freedom.
@@ -360,6 +372,10 @@ runs as fitted (`docs/charge_flux.md`).
 216 methanols (1,296 atoms), mixed precision, dt 0.5 fs: 52 ns/day on one GPU (NPT), density
 0.789 +- 0.002 g/cm^3 with GAFF LJ and pGM electrostatics (experiment 0.7866); NVE drift below
 0.005 kT/ns per degree of freedom (`paper/scripts/flex_methanol.py`).
+Bond constraints (`constraints="h-bonds"`, or `"all-bonds"`) make the step longer: the same liquid
+at 2 fs with X-H bonds constrained runs at 180 ns/day (2.7x the unconstrained 0.5 fs step), at 4 fs with every bond constrained and `hmr=3.024`
+at 292 ns/day (4.3x), with the equilibrium properties of 1 fs (`docs/shake.md`). With X-H constraints only,
+methanol's HMR stops at 3 fs (its methyl carbon keeps 6 amu).
 
 NPT from a loose start changes the box a lot: the driver rebuilds the neighbour lists when the
 volume has drifted by more than 10 % or when a block keeps overflowing (then the block is split).
@@ -564,7 +580,8 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `scripts/interfaces/` | `validate_ase.py`, `validate_ipi.py`, `validate_openmm.py` (single points, NVE / NVT / NPT / PIMD against the native engine), `bench_interfaces.py` (cost per step), `ipi_tools.py` (i-PI inputs, server, output) |
 | `pgm_jax/ensemble.py` | `Reweighting`: ensemble averages, n_eff and parameter gradients from saved frames; Karplus J couplings, phi/psi regions |
 | `pgm_jax/md/topology.py` | `MDTopology`: neighbour-list groups (heavy-atom groups for large molecules), special pairs with van der Waals weights, constraints |
-| `pgm_jax/md/constraints.py` | SHAKE / RATTLE solved exactly per cluster (water, CH3, ...), vectorised; hydrogen mass repartitioning (one mass or per molecule, `hmr_masses`) |
+| `pgm_jax/md/constraints.py` | SHAKE / RATTLE: exact Newton per cluster in batched blocks (X-H groups and water in one block, larger clusters by size; closed-form or unrolled Gaussian solves), matrix-free quasi-Newton / CG for clusters above 12 constraints; constraint and RATTLE checks; hydrogen mass repartitioning (one mass or per molecule, `hmr_masses`) |
+| `scripts/validate_shake.py`, `scripts/shake_vs_pmemd.py`, `scripts/bench_shake.py` | constraint validation (`docs/shake.md`): NVE drift and equilibrium properties against the time step (liquid methanol, a solvated peptide), the same model against pmemd.pgm with SHAKE, cost per SHAKE / RATTLE call |
 | `pgm_jax/md/restraints.py` | restraints for both MD drivers: positional (NPT reference scaling), distance, angle, dihedral, centre-of-mass distance (Amber NMR flat-bottom form); `Restraints` container, strain derivative |
 | `scripts/fit_liquid.py` | LJ from liquid density + heat of vaporization (ensemble gradients, Gauss-Newton) |
 | `pgm_jax/qmfit.py` | fitting to QM cluster data: `QMSet` (dataset IO), `ClusterModel` (SAPT-like components, batched), `ParamMap` (free parameters, neutral charges), `QMFit` (weighted residuals: totals, SAPT, 3-body, forces, monomer; least squares), `evaluate` / `error_table`, `rigid_minimize` |
@@ -638,8 +655,14 @@ Conventions worth knowing:
 
 - LJ is intermolecular only in `Model`, `PeriodicModel` and the rigid-molecule MD engine (every
   intramolecular pair excluded, as for rigid molecules in Amber). Flexible molecules
-  (`pgm_jax.md.flexible`) add bonded terms and intramolecular LJ from 1-5 on; they have no bond
-  constraints yet (dt 0.5 fs).
+  (`pgm_jax.md.flexible`) add bonded terms and intramolecular LJ from 1-5 on; every bond is
+  flexible by default (dt 0.5 fs); with `constraints="h-bonds"` they run at 2 fs, with
+  `"all-bonds"` and hydrogen mass repartitioning at 4 fs (`docs/shake.md`).
+- Constraints are distances only (no angle constraints; a rigid molecule of more than three atoms
+  needs a flexible template with `"all-bonds"` plus bonded terms for its angles). The iterative
+  solver for large clusters (every bond of a protein) costs several times a dense block
+  (ubiquitin with every bond: 0.88 ms per SHAKE, 0.39 ms per RATTLE, against 0.035 / 0.024 ms
+  with X-H constraints); X-H constraints are the efficient choice for proteins.
 - `fit_liquid.py` does not yet differentiate <U_gas> for molecules with intramolecular LJ pairs.
 - Quadrupoles are in the gas phase and in bonded fitting, not yet in Ewald/PME or MD (templates
   with quadrupoles are refused there); no fitted quadrupole values yet.

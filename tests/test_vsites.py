@@ -442,7 +442,7 @@ def test_load_amber_protein_in_tip4pew():
                              constraints="h-bonds", hmr=asys.hmr({"water": 4.0, "protein": 3.024}),
                              thermostat="bussi", log=None)
     n_wat = kinds.count("water")
-    assert sim.vsites.n_sites == n_wat and sim.integ.dof == 3 * (asys.system().n - n_wat) - sim.constraints.nc
+    assert sim.vsites.n_sites == n_wat and sim.integ.dof == 3 * (asys.system().n - n_wat) - sim.constraints.nc - 3  # Bussi
     out = sim.minimize(10)                                  # steepest descent keeps the sites placed
     assert out["accepted"] > 0
     sim._advance(20)
