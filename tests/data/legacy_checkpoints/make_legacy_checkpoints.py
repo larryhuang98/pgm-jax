@@ -1,6 +1,7 @@
-"""Write checkpoints in the legacy (pickle) format of pgm_jax commit e72c57c, for
-tests/test_checkpoints.py: every driver's checkpoint of a small system, plus the state reached by
-continuing 10 steps from each checkpoint with that code (expected.npz).
+"""Write the legacy (pickle) checkpoints of pgm_jax commit e72c57c for tests/test_checkpoints.py.
+
+Every driver's checkpoint of a small system, plus the state reached by continuing 10 steps from
+each checkpoint with that code (expected.npz).
 
 Run once with the code of e72c57c on the path (not the current package):
 
@@ -35,7 +36,7 @@ OUT = os.path.dirname(os.path.abspath(__file__))
 
 
 def water():
-    """The toy pGM water of pgm_jax.models.toy."""
+    """Return the toy pGM water of pgm_jax.models.toy (built with the old constructor)."""
     return Molecule(
         "WAT",
         ["O", "H", "H"],
@@ -51,7 +52,7 @@ def water():
 
 
 def water_lattice(n_side=4, spacing=0.31, seed=0):
-    """pgm_jax.models.toy.water_lattice."""
+    """Return the water lattice of pgm_jax.models.toy.water_lattice (positions, box, geometry) [nm]."""
     rng = np.random.default_rng(seed)
     t = np.radians(104.52 / 2)
     w = np.array(
@@ -71,6 +72,7 @@ expected = {}
 
 
 def rigid():
+    """Build 64 rigid waters, NVT Bussi (old API), the system of rigid.chk."""
     pos, H, _ = water_lattice()
     return Simulation(
         System([water()] * 64), pos, H, S, dt=0.001, ensemble="nvt", thermostat="bussi", tau_t=0.1, seed=3, log=None
@@ -78,6 +80,7 @@ def rigid():
 
 
 def rigid_metad():
+    """Build 8 rigid waters with a two-CV metadynamics bias, Langevin NVT (rigid_metad.chk)."""
     pos, _, _ = water_lattice(2)
     s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     m = MetaD(
@@ -105,6 +108,7 @@ def rigid_metad():
 
 
 def flexible():
+    """Build 64 waters in the flexible engine (rigid templates), GLE NPT (flexible.chk)."""
     pos, H, w = water_lattice()
     return FlexibleSimulation(
         System([water()] * 64),
@@ -122,6 +126,7 @@ def flexible():
 
 
 def alchemy_sim():
+    """Build 64 waters with the first one alchemical, Bussi NVT (fe.fe.chk)."""
     pos, H, _ = water_lattice()
     sysA, P = alchemical_system(System([water()] * 64), 0)
     s = MDSettings(
@@ -140,6 +145,7 @@ def alchemy_sim():
 
 
 def field_sim():
+    """Build 64 rigid waters in an external field, Bussi NVT (ff.ffchk)."""
     pos, H, _ = water_lattice()
     return Simulation(
         System([water()] * 64),
@@ -155,6 +161,7 @@ def field_sim():
 
 
 def main():
+    """Write every driver's checkpoint and expected.npz (the states 10 steps after loading each)."""
     # single engines: checkpoint after 20 steps, then 10 more steps in a fresh object from the checkpoint
     for name, make in (("rigid", rigid), ("rigid_metad", rigid_metad), ("flexible", flexible)):
         sim = make()
@@ -263,6 +270,7 @@ def pimd_sim():
 
 
 def flexible_nvt():
+    """Build the flexible water system in NVT (the replicas of remd.remd.chk)."""
     pos, H, w = water_lattice()
     return FlexibleSimulation(
         System([water()] * 64),

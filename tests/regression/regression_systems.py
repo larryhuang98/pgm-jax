@@ -2,7 +2,8 @@
 
 The example molecules and boxes come from pgm_jax.models.toy (a change there shows up as a
 failure of the harness); the pGM3P-25 water and the bonded templates are built here.  Everything
-engine-specific is in regression_cases.py."""
+engine-specific is in regression_cases.py.
+"""
 
 from __future__ import annotations
 
@@ -31,12 +32,16 @@ PGM3P25_RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
 
 
 def pgm3p25_available() -> bool:
+    """Return whether the pGM3P-25 topology and restart are present (PGM_GVDW_DATA)."""
     return os.path.exists(PGM3P25_TOP) and os.path.exists(PGM3P25_RST)
 
 
 def pgm3p25_water():
-    """(Molecule, geometry nm) of pGM3P-25 water: parameters from rayl_512_v2.prmtop, geometry of
-    the first water of the equilibrated 512-water restart."""
+    """Return the pGM3P-25 water molecule and its geometry [nm].
+
+    (Molecule, geometry nm) of pGM3P-25 water: parameters from rayl_512_v2.prmtop, geometry of
+    the first water of the equilibrated 512-water restart.
+    """
     from pgm_jax.md.io import read_coordinates
     from pgm_jax.param import read_prmtop_pgm
 
@@ -47,8 +52,11 @@ def pgm3p25_water():
 
 # ----------------------------------------------------------------------------- bonded templates
 def methanol_template(flux: int = 0, seed: int = 3):
-    """Flexible methanol: class II bonded terms at their initial values, 1-4 LJ scaled by 0.5;
-    flux > 0 adds made-up charge-flux parameters of the size of a fit (order 1 or 2)."""
+    """Return a flexible methanol template (class II terms, optional charge flux) and its geometry.
+
+    Flexible methanol: class II bonded terms at their initial values, 1-4 LJ scaled by 0.5;
+    flux > 0 adds made-up charge-flux parameters of the size of a fit (order 1 or 2).
+    """
     import jax.numpy as jnp
 
     from pgm_jax.bonded import terms as T
@@ -70,7 +78,10 @@ def methanol_template(flux: int = 0, seed: int = 3):
 
 
 def flexible_water_template():
-    """Flexible water (quartic bonds, harmonic + cubic angle, cross terms) for PIMD."""
+    """Return a flexible water template for PIMD and its geometry [nm].
+
+    Flexible water (quartic bonds, harmonic + cubic angle, cross terms) for PIMD.
+    """
     import jax.numpy as jnp
 
     from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
@@ -89,6 +100,17 @@ def flexible_water_template():
 
 
 def flexible_water_box(n_side=2, L=1.5, seed=0):
+    """Return (template, positions [nm], box [nm]) of randomly rotated flexible waters on a lattice.
+
+    Parameters
+    ----------
+    n_side : int
+        Waters per box edge.
+    L : float
+        Box edge [nm].
+    seed : int
+        Seed of the orientations and the 0.02 nm jitter.
+    """
     tpl, x = flexible_water_template()
     rng = np.random.default_rng(seed)
     pos = []

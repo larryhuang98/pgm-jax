@@ -1,9 +1,12 @@
-"""pytest entry of the regression harness (tests/regression/regress.py): opt-in, because the cases
-take ~10-20 min on the CPU.  Run with
+"""pytest entry of the regression harness (tests/regression/regress.py), opt-in.
+
+Opt-in because the cases take ~10-20 min on the CPU; without PGM_REGRESSION the module is
+skipped.  Run with
 
     PGM_REGRESSION=1 JAX_PLATFORMS=cpu OMP_NUM_THREADS=16 python -m pytest tests/regression -q
 
-Bitwise by default; PGM_REGRESSION_RTOL / PGM_REGRESSION_ATOL set a tolerance."""
+Bitwise by default; PGM_REGRESSION_RTOL / PGM_REGRESSION_ATOL set a tolerance.
+"""
 
 import os
 
@@ -21,6 +24,7 @@ pytestmark = pytest.mark.regression
 
 @pytest.mark.parametrize("name", list(C.CASES))
 def test_case_reproduces_golden(name):
+    """The case's outputs reproduce its golden file (bitwise unless PGM_REGRESSION_RTOL / _ATOL)."""
     if not C.available(name):
         pytest.skip(f"needs {C.CASES[name]['needs']}")
     path = os.path.join(regress.GOLDEN, f"{name}.npz")
