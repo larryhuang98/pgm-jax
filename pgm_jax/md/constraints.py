@@ -1,5 +1,10 @@
 """Holonomic distance constraints for MD: SHAKE positions and RATTLE momenta.
 
+Contents: `Constraints` (the constraints of a system, split into clusters and solved by blocks:
+`_DenseBlock` for small clusters, `_SparseBlock` for large ones), the helpers `_clusters`,
+`_solve_small`, `_solve_gauss`, and hydrogen mass repartitioning (`repartition_masses`,
+`hmr_masses`).
+
 The constraints (i, j, d0) split into clusters, the connected components of the constraint graph
 (a water triangle, a CH3 group, an O-H bond, a whole molecule with every bond constrained):
 
@@ -30,22 +35,54 @@ The integrator (flexible.py) applies them in g-BAOAB order: SHAKE after every dr
 every kick, drift and thermostat step.  With X-H bonds constrained (`constraints="h-bonds"`) flexible
 molecules run at 2 fs, with hydrogen mass repartitioning (`repartition_masses`; `hmr_masses`: one
 hydrogen mass, or one per molecule) at 4 fs (docs/shake.md, docs/protein_ff.md).
-Units nm, ps, amu."""
+
+Every solver works on arrays padded with one dummy atom (row N, inverse mass 0).  The solvers are
+traceable JAX functions (called inside the compiled step); the clusters and blocks are built once
+on the host.  The position and momentum steps are SHAKE [1]_ and RATTLE [2]_.
+
+Units: nm, ps, amu.
+
+References
+----------
+.. [1] J.-P. Ryckaert, G. Ciccotti, H. J. C. Berendsen, J. Comput. Phys. 23, 327 (1977).
+.. [2] H. C. Andersen, J. Comput. Phys. 52, 24 (1983).
+"""
 
 from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.typing import ArrayLike
+
+if TYPE_CHECKING:
+    from ..system import System
 
 DENSE_MAX = 12  # clusters with more constraints go to the matrix-free (sparse) solver
 
 
-def _clusters(pairs, n_atoms):
-    """Connected components of the constraint graph: list of (atoms, constraint indices)."""
+def _clusters(pairs: np.ndarray, n_atoms: int) -> list[tuple[list[int], list[int]]]:
+    """Return the connected components of the constraint graph (union-find; host).
+
+    Parameters
+    ----------
+    pairs : np.ndarray (nc, 2) int
+        Constrained atom pairs.
+    n_atoms : int
+        Number of atoms.
+
+    Returns
+    -------
+    list of (atoms, constraints)
+        Per cluster: its sorted atoms and its constraint indices.
+    """
     parent = list(range(n_atoms))
 
-    def find(a):
+    def find(a: int) -> int:
+        """Return the root of a (with path halving)."""
         while parent[a] != a:
             parent[a] = parent[parent[a]]
             a = parent[a]
@@ -65,9 +102,12 @@ def _clusters(pairs, n_atoms):
     return out
 
 
-def _solve_gauss(A, b):
-    """Batched solve of (..., C, C) symmetric positive definite (or nearly so) systems by unrolled
-    Gaussian elimination without pivoting: elementwise operations on the batch, which XLA fuses."""
+def _solve_gauss(A: jax.Array, b: jax.Array) -> jax.Array:
+    """Return x solving the batched systems A x = b by unrolled Gaussian elimination.
+
+    For symmetric positive definite (or nearly so) (..., C, C) systems, without pivoting:
+    elementwise operations on the batch, which XLA fuses.  b and x are (..., C).
+    """
     C = A.shape[-1]
     a = [[A[..., i, j] for j in range(C)] for i in range(C)]
     r = [b[..., i] for i in range(C)]
@@ -87,9 +127,12 @@ def _solve_gauss(A, b):
     return jnp.stack(x, -1)
 
 
-def _solve_small(A, b):
-    """Batched solve of (..., C, C) systems: closed form for C <= 3 (jnp.linalg.solve launches an LU
-    factorisation per call, slow for many tiny systems on GPUs), unrolled elimination above."""
+def _solve_small(A: jax.Array, b: jax.Array) -> jax.Array:
+    """Return x solving the batched (..., C, C) systems A x = b, closed form for C <= 3.
+
+    jnp.linalg.solve launches an LU factorisation per call, slow for many tiny systems on GPUs;
+    above C = 3 unrolled elimination (`_solve_gauss`).  b and x are (..., C).
+    """
     C = A.shape[-1]
     if C == 1:
         return b / A[..., 0, 0:1]
@@ -106,12 +149,47 @@ def _solve_small(A, b):
 
 
 class _DenseBlock:
-    """Clusters of at most C constraints padded to (K clusters, A atoms, C constraints): exact
-    Newton.  Works on padded arrays (row n: a dummy atom of zero inverse mass)."""
+    """Clusters of at most C constraints padded to (K clusters, A atoms, C constraints): exact Newton.
+
+    Works on padded arrays (row n: a dummy atom of zero inverse mass).  Padding constraints are
+    masked (`cmask`) and get identity rows in the Newton and RATTLE matrices.
+
+    Attributes
+    ----------
+    atoms : jax.Array (K, A) int32
+        Atoms of every cluster (padding n).
+    inc : jax.Array (K, A, C)
+        Incidence: +1 at a_c, -1 at b_c.
+    d2 : jax.Array (K, C)
+        Squared constraint lengths [nm^2] (1 for padding).
+    cmask : jax.Array (K, C)
+        1 for real constraints.
+    ends : jax.Array (K, C, 2) int32
+        Local atom indices (a_c, b_c).
+    kmat : jax.Array (K, C, C)
+        K_cd = sum_a inc_ac inc_ad / m_a [1/amu] (after `set_masses`).
+    """
 
     kind = "dense"
 
-    def __init__(self, clusters, pairs, d0, n, n_iter):
+    def __init__(
+        self, clusters: list[tuple[list[int], list[int]]], pairs: np.ndarray, d0: np.ndarray, n: int, n_iter: int
+    ) -> None:
+        """Build the padded cluster arrays.
+
+        Parameters
+        ----------
+        clusters : list of (atoms, constraints)
+            Clusters of this block (`_clusters`).
+        pairs : np.ndarray (nc, 2) int
+            All constrained pairs.
+        d0 : np.ndarray (nc,)
+            All constraint lengths [nm].
+        n : int
+            Number of atoms (index of the padding atom).
+        n_iter : int
+            Newton iterations (unrolled).
+        """
         A = max(len(a) for a, _ in clusters)
         C = max(len(c) for _, c in clusters)
         K = len(clusters)
@@ -140,38 +218,61 @@ class _DenseBlock:
         self._off = jnp.asarray(cmask[:, :, None] * cmask[:, None, :])
         self._pad = jnp.asarray(1.0 - cmask)[..., None] * self._eye
 
-    def describe(self):
+    def describe(self) -> str:
+        """Return e.g. "512 x (3 atoms, 3 constraints)"."""
         K, A, C = self.shape
         return f"{K} x ({A} atoms, {C} constraints)"
 
-    def set_masses(self, invm_padded):
+    def set_masses(self, invm_padded: ArrayLike) -> None:
+        """Set the inverse masses (N + 1,) [1/amu] (padding 0) and the coupling matrices K."""
         self.invm = jnp.asarray(invm_padded)[self.atoms]  # (K, A)
         # K_cd = sum_a inc_ac inc_ad / m_a: how constraint forces c move the length of d
         self.kmat = jnp.einsum("kac,ka,kad->kcd", self.inc, self.invm, self.inc)
 
-    def _vectors(self, X):
-        """Constraint vectors r_a - r_b (K, C, 3)."""
+    def _vectors(self, X: jax.Array) -> jax.Array:
+        """Return the constraint vectors r_a - r_b (K, C, 3) of cluster positions X (K, A, 3)."""
         i, j = self.ends[..., 0], self.ends[..., 1]
 
-        def take(idx):
+        def take(idx: jax.Array) -> jax.Array:  # X[k, idx[k, c]] (K, C, 3)
             return jnp.take_along_axis(X, idx[..., None], axis=1)
 
         return take(i) - take(j)
 
-    def _move(self, w, V):
-        """(K, A, 3): sum_c inc_ac w_c V_c / m_a (broadcast products: XLA fuses them; an einsum
-        becomes batched tiny matrix products, 4x slower on the GPU)."""
+    def _move(self, w: jax.Array, V: jax.Array) -> jax.Array:
+        """Return the displacements sum_c inc_ac w_c V_c / m_a (K, A, 3) of weights w (K, C).
+
+        Written as broadcast products, which XLA fuses; an einsum becomes batched tiny matrix
+        products, 4x slower on the GPU.
+        """
         return self.invm[..., None] * jnp.sum(self.inc[..., None] * (w[:, None, :, None] * V[:, None]), axis=2)
 
     @staticmethod
-    def _gram(R, S):
-        """(K, C, C): R_c . S_d."""
+    def _gram(R: jax.Array, S: jax.Array) -> jax.Array:
+        """Return the Gram matrices R_c . S_d (K, C, C) of vectors R, S (K, C, 3)."""
         return jnp.sum(R[:, :, None, :] * S[:, None, :, :], -1)
 
-    def positions(self, xp, rp):
+    def positions(self, xp: jax.Array, rp: jax.Array) -> jax.Array:
+        """Return the padded positions with this block's clusters moved onto the constraints (SHAKE).
+
+        Newton on sigma_c(lambda) = |R_c(lambda)|^2 - d_c^2 with R = r_a - r_b of
+        X + move(lambda, S), S the constraint vectors of the reference positions; the Jacobian is
+        J_cd = 2 (R_c . S_d) K_cd.  `n_iter` iterations, unrolled.
+
+        Parameters
+        ----------
+        xp : jax.Array (N + 1, 3)
+            Unconstrained positions, padded [nm].
+        rp : jax.Array (N + 1, 3)
+            Reference positions (before the move), padded [nm].
+
+        Returns
+        -------
+        jax.Array (N + 1, 3)
+            Positions [nm].
+        """
         X, S = xp[self.atoms], self._vectors(rp[self.atoms])
 
-        def resid(lam):
+        def resid(lam: jax.Array) -> tuple[jax.Array, jax.Array]:  # constraint vectors, sigma (masked)
             R = self._vectors(X + self._move(lam, S))
             return R, (jnp.sum(R * R, -1) - self.d2) * self.cmask
 
@@ -183,7 +284,12 @@ class _DenseBlock:
             R, sig = resid(lam)
         return xp.at[self.atoms].set(X + self._move(lam, S))
 
-    def momenta(self, xp, pp, mp):
+    def momenta(self, xp: jax.Array, pp: jax.Array, mp: jax.Array) -> jax.Array:
+        """Return the padded momenta with the constraint-violating components removed (RATTLE).
+
+        Solves (R_c . R_d) K_cd mu_d = -R_c . (v_a - v_b) per cluster and adds the constraint
+        impulses.  xp (N + 1, 3) [nm], pp (N + 1, 3) [amu nm/ps], mp (N + 1,) [amu] (padding 1).
+        """
         m = mp[self.atoms][..., None]
         R = self._vectors(xp[self.atoms])
         V = pp[self.atoms] / m
@@ -192,8 +298,11 @@ class _DenseBlock:
         mu = -_solve_small(M, rv)
         return pp.at[self.atoms].set((V + self._move(mu, R)) * m)
 
-    def errors(self, xp, pp, mp):
-        """(largest relative length error, largest |r^ . (v_a - v_b)|, sum |v_a - v_b|^2) over the block."""
+    def errors(self, xp: jax.Array, pp: jax.Array | None, mp: jax.Array | None) -> tuple:
+        """Return the block's errors: max relative length error, max |r^ . (v_a - v_b)|, sum |v_a - v_b|^2.
+
+        Velocities [nm/ps]; without momenta (pp None) the last two are 0.
+        """
         X = xp[self.atoms]
         R = self._vectors(X)
         r = jnp.sqrt(jnp.sum(R * R, -1))
@@ -206,14 +315,48 @@ class _DenseBlock:
 
 
 class _SparseBlock:
-    """Large clusters as one flat list of constraints, matrix-free: SHAKE by quasi-Newton iterations
-    with J0 = 2 S K S^T solved by preconditioned CG, RATTLE by CG on R K R^T (while loops to `tol`)."""
+    """Large clusters as one flat list of constraints, matrix-free.
+
+    SHAKE by quasi-Newton iterations with J0 = 2 S K S^T solved by preconditioned CG, RATTLE by CG
+    on R K R^T (while loops to `tol`).  K is the constraint coupling through the inverse masses
+    (applied as `_vec(_move(.))`, never formed).
+
+    Attributes
+    ----------
+    atoms : jax.Array (na,) int32
+        Atoms of the block (global).
+    al, bl : jax.Array (nc,) int32
+        Local indices of the constraint ends.
+    inc_c, inc_s : jax.Array (na, D)
+        Constraints of every atom (padding nc) and their signs.
+    d2 : jax.Array (nc,)
+        Squared lengths [nm^2].
+    tol, rattle_tol : float
+        Relative tolerances of SHAKE (max |sigma_c| / d_c^2) and RATTLE (CG residual).
+    max_iter, cg_max : int
+        Largest numbers of quasi-Newton and CG iterations.
+    inner_tol : float
+        Relative tolerance of the CG inside each quasi-Newton iteration.
+    unroll : int
+        CG iterations per convergence test (class attribute).
+    """
 
     kind = "sparse"
 
     unroll = 8  # CG iterations per convergence test (each test is a device-to-host sync)
 
-    def __init__(self, pairs, d0, n, tol=1e-10, max_iter=100, inner_tol=1e-3, cg_max=400, rattle_tol=1e-11):
+    def __init__(
+        self,
+        pairs: ArrayLike,
+        d0: ArrayLike,
+        n: int,
+        tol: float = 1e-10,
+        max_iter: int = 100,
+        inner_tol: float = 1e-3,
+        cg_max: int = 400,
+        rattle_tol: float = 1e-11,
+    ) -> None:
+        """Build the flat constraint list; arguments as in the class Attributes (pairs global)."""
         pairs = np.asarray(pairs, int).reshape(-1, 2)
         atoms = np.unique(pairs)
         loc = {int(a): k for k, a in enumerate(atoms)}
@@ -239,31 +382,44 @@ class _SparseBlock:
         self.rattle_tol = float(rattle_tol)
         self.shape = (na, D, nc)
 
-    def describe(self):
+    def describe(self) -> str:
+        """Return e.g. "iterative: 1200 constraints on 1150 atoms (tol 1e-10)"."""
         na, D, nc = self.shape
         return f"iterative: {nc} constraints on {na} atoms (tol {self.tol:g})"
 
-    def set_masses(self, invm_padded):
+    def set_masses(self, invm_padded: ArrayLike) -> None:
+        """Set the inverse masses (N + 1,) [1/amu] and the Jacobi weights 1/m_a + 1/m_b."""
         self.invm = jnp.asarray(invm_padded)[self.atoms]  # (na,)
         self._w = self.invm[self.al] + self.invm[self.bl]
 
-    def _acc(self, W):
-        """(na, 3): sum over the atom's constraints of +-W_c."""
+    def _acc(self, W: jax.Array) -> jax.Array:
+        """Return sum over each atom's constraints of +-W_c (na, 3) (W (nc, 3))."""
         Wp = jnp.concatenate([W, jnp.zeros((1, 3), W.dtype)], 0)
         return jnp.sum(self.inc_s[..., None] * Wp[self.inc_c], axis=1)
 
-    def _move(self, w, V):
+    def _move(self, w: jax.Array, V: jax.Array) -> jax.Array:
+        """Return the displacements sum_c +-w_c V_c / m_a (na, 3) of weights w (nc,)."""
         return self.invm[:, None] * self._acc(w[:, None] * V)
 
-    def _vec(self, Y):
+    def _vec(self, Y: jax.Array) -> jax.Array:
+        """Return the constraint vectors Y_a - Y_b (nc, 3)."""
         return Y[self.al] - Y[self.bl]
 
-    def _cg(self, V, b, tol, max_iter):
-        """Solve (V K V^T) x = b (the Gram matrix of the mass-weighted constraint gradients), Jacobi
-        preconditioned, until |r|_max <= tol |b|_max; `unroll` iterations between tests.
-        Returns (x, iterations)."""
+    def _cg(self, V: jax.Array, b: jax.Array, tol: float, max_iter: int) -> tuple[jax.Array, jax.Array]:
+        """Solve (V K V^T) x = b by Jacobi-preconditioned CG (a lax.while_loop).
 
-        def op(x):
+        V K V^T is the Gram matrix of the mass-weighted constraint gradients; iterations stop when
+        |r|_max <= tol |b|_max or after max_iter, with `unroll` iterations between tests.
+
+        Returns
+        -------
+        x : jax.Array (nc,)
+            Solution.
+        iterations : jax.Array () int
+            Iterations done (a multiple of `unroll`).
+        """
+
+        def op(x: jax.Array) -> jax.Array:  # (V K V^T) x
             return jnp.sum(V * self._vec(self._move(x, V)), -1)
 
         dinv = 1.0 / (jnp.sum(V * V, -1) * self._w)
@@ -271,10 +427,11 @@ class _SparseBlock:
         z = dinv * b
         c0 = (jnp.zeros_like(b), b, z, jnp.sum(b * z), 0)
 
-        def cond(c):
+        def cond(c: tuple) -> jax.Array:  # carry (x, r, d, r.z, it): residual above tol and iterations left
             return (jnp.max(jnp.abs(c[1])) > stop) & (c[4] < max_iter)
 
-        def body(c):
+        def body(c: tuple) -> tuple:
+            """Run `unroll` preconditioned CG iterations (guarded against r.z = 0 after convergence)."""
             x, r, d, rz, it = c
             for _ in range(self.unroll):
                 Ad = op(d)
@@ -289,19 +446,25 @@ class _SparseBlock:
         out = jax.lax.while_loop(cond, body, c0)
         return out[0], out[4]
 
-    def positions(self, xp, rp):
+    def positions(self, xp: jax.Array, rp: jax.Array) -> jax.Array:
+        """Return the padded positions with the block moved onto the constraints (quasi-Newton SHAKE).
+
+        lambda -= J0^-1 sigma with J0 = 2 S K S^T at the reference vectors S, each solve by CG to
+        `inner_tol`, until max |sigma_c| / d_c^2 <= tol or `max_iter` iterations.  xp, rp
+        (N + 1, 3) [nm] as in _DenseBlock.positions.
+        """
         X = xp[self.atoms]
         S = self._vec(rp[self.atoms])
 
-        def resid(lam):
+        def resid(lam: jax.Array) -> tuple[jax.Array, jax.Array]:  # moved positions, sigma
             Y = X + self._move(lam, S)
             R = self._vec(Y)
             return Y, jnp.sum(R * R, -1) - self.d2
 
-        def cond(c):
+        def cond(c: tuple) -> jax.Array:  # carry (lambda, Y, sigma, it)
             return (jnp.max(jnp.abs(c[2]) / self.d2) > self.tol) & (c[3] < self.max_iter)
 
-        def body(c):
+        def body(c: tuple) -> tuple:  # one quasi-Newton iteration
             lam, _, sig, it = c
             lam = lam - self._cg(S, 0.5 * sig, self.inner_tol, self.cg_max)[0]  # J0 = 2 S K S^T
             Y, sig = resid(lam)
@@ -312,7 +475,11 @@ class _SparseBlock:
         Y = jax.lax.while_loop(cond, body, (lam, Y, sig, 0))[1]
         return xp.at[self.atoms].set(Y)
 
-    def momenta(self, xp, pp, mp):
+    def momenta(self, xp: jax.Array, pp: jax.Array, mp: jax.Array) -> jax.Array:
+        """Return the padded momenta projected onto the constraint tangent space (RATTLE by CG).
+
+        Solves (R K R^T) mu = -R . (v_a - v_b) to `rattle_tol`; arguments as _DenseBlock.momenta.
+        """
         m = mp[self.atoms][:, None]
         R = self._vec(xp[self.atoms])
         V = pp[self.atoms] / m
@@ -320,7 +487,8 @@ class _SparseBlock:
         mu = self._cg(R, -rv, self.rattle_tol, self.cg_max)[0]
         return pp.at[self.atoms].set((V + self._move(mu, R)) * m)
 
-    def errors(self, xp, pp, mp):
+    def errors(self, xp: jax.Array, pp: jax.Array | None, mp: jax.Array | None) -> tuple:
+        """Return the block's errors as _DenseBlock.errors."""
         R = self._vec(xp[self.atoms])
         r = jnp.sqrt(jnp.sum(R * R, -1))
         dl = jnp.max(jnp.abs(r / jnp.sqrt(self.d2) - 1.0))
@@ -332,26 +500,65 @@ class _SparseBlock:
 
 
 class Constraints:
-    """Distance constraints (pairs (nc, 2), lengths d0 (nc,) nm) of a system with `masses` (amu;
-    massless virtual sites never constrained).  n_iter: Newton iterations of the dense solver;
-    dense_max: largest cluster (number of constraints) for the dense solver; tol: relative
-    tolerance of the iterative SHAKE (large clusters: max |sigma_c| / d_c^2), rattle_tol: of its
-    RATTLE (max residual of B v relative to its initial value); bucket: clusters of up to 3 constraints form
-    one block and larger ones one block per size (False: every small cluster padded to the largest,
-    one block).  Each block costs a few kernel launches per call, so on a GPU one padded block of
-    X-H groups and waters is faster than one block per size (docs/shake.md)."""
+    """Distance constraints of a system, solved by SHAKE (positions) and RATTLE (momenta).
+
+    The constraints are split into clusters (module docstring) and the clusters into blocks: dense
+    blocks of small clusters and one sparse block of the large ones.  Built on the host; the
+    methods are traceable (called inside the compiled step).  Not a pytree.
+
+        cons = Constraints(pairs, d0, masses)
+        x = cons.positions(x_new, x_old)          # SHAKE
+        p = cons.momenta(x, p, masses)            # RATTLE
+
+    Attributes
+    ----------
+    n : int
+        Number of atoms N.
+    nc : int
+        Number of constraints.
+    n_iter : int
+        Newton iterations of the dense solver.
+    n_clusters : int
+        Number of clusters.
+    blocks : list of _DenseBlock and _SparseBlock
+        The solver blocks.
+    """
 
     def __init__(
         self,
-        pairs,
-        d0,
-        masses,
+        pairs: ArrayLike,
+        d0: ArrayLike,
+        masses: ArrayLike,
         n_iter: int = 4,
         dense_max: int = DENSE_MAX,
         tol: float = 1e-10,
         rattle_tol: float = 1e-11,
         bucket: bool = True,
-    ):
+    ) -> None:
+        """Split the constraints into clusters and blocks.
+
+        Parameters
+        ----------
+        pairs : ArrayLike (nc, 2) int
+            Constrained atom pairs.
+        d0 : ArrayLike (nc,)
+            Constraint lengths [nm].
+        masses : ArrayLike (N,)
+            Masses [amu] (massless virtual sites are never constrained).
+        n_iter : int
+            Newton iterations of the dense solver.
+        dense_max : int
+            Largest cluster (number of constraints) for the dense solver.
+        tol : float
+            Relative tolerance of the iterative SHAKE (large clusters: max |sigma_c| / d_c^2).
+        rattle_tol : float
+            Tolerance of its RATTLE (max residual of B v relative to its initial value).
+        bucket : bool
+            Clusters of up to 3 constraints form one block and larger ones one block per size
+            (False: every small cluster padded to the largest, one block).  Each block costs a few
+            kernel launches per call, so on a GPU one padded block of X-H groups and waters is
+            faster than one block per size (docs/shake.md).
+        """
         pairs = np.asarray(pairs, int).reshape(-1, 2)
         d0 = np.asarray(d0, float).reshape(-1)
         self.n = len(masses)
@@ -374,30 +581,38 @@ class Constraints:
         )  # massless sites: never in a cluster
         self.set_masses(invm)
 
-    def set_masses(self, invm_padded):
+    def set_masses(self, invm_padded: ArrayLike) -> None:
+        """Set the inverse masses (N + 1,) [1/amu] (last entry: the padding atom, 0) of every block."""
         for b in self.blocks:
             b.set_masses(invm_padded)
 
     # compatibility: the constrained atoms and their inverse masses as the solvers see them (flat)
     @property
-    def atoms(self):
+    def atoms(self) -> jax.Array:
+        """Constrained atoms of every block, flattened (padding N included)."""
         return jnp.concatenate([b.atoms.reshape(-1) for b in self.blocks]) if self.blocks else jnp.zeros(0, jnp.int32)
 
     @property
-    def invm(self):
+    def invm(self) -> jax.Array:
+        """Inverse masses [1/amu] of `atoms`, as the solvers see them."""
         return jnp.concatenate([b.invm.reshape(-1) for b in self.blocks]) if self.blocks else jnp.zeros(0)
 
     def describe(self) -> str:
+        """Return one line for the log header (constraints, clusters, blocks)."""
         if not self.nc:
             return "no constraints"
         return f"{self.nc} constraints in {self.n_clusters} clusters: " + "; ".join(b.describe() for b in self.blocks)
 
     @staticmethod
-    def _pad(x):
+    def _pad(x: jax.Array) -> jax.Array:
+        """Return x with one zero row appended (the padding atom)."""
         return jnp.concatenate([x, jnp.zeros((1,) + x.shape[1:], x.dtype)], 0)
 
-    def positions(self, x_new, x_ref):
-        """SHAKE: x_new moved along the constraint vectors of x_ref onto the constraint surface."""
+    def positions(self, x_new: jax.Array, x_ref: jax.Array) -> jax.Array:
+        """Return x_new moved along the constraint vectors of x_ref onto the constraint surface (SHAKE).
+
+        x_new, x_ref and the result are (N, 3) [nm].
+        """
         if self.nc == 0:
             return x_new
         xp, rp = self._pad(x_new), self._pad(x_ref)
@@ -405,9 +620,12 @@ class Constraints:
             xp = b.positions(xp, rp)
         return xp[:-1]
 
-    def momenta(self, x, p, masses):
-        """RATTLE: momenta with the constraint-violating components removed (the mass-weighted
-        orthogonal projection onto the tangent space of the constraint surface at x)."""
+    def momenta(self, x: jax.Array, p: jax.Array, masses: ArrayLike) -> jax.Array:
+        """Return the momenta with the constraint-violating components removed (RATTLE).
+
+        The mass-weighted orthogonal projection onto the tangent space of the constraint surface
+        at x.  x (N, 3) [nm], p (N, 3) [amu nm/ps], masses (N,) [amu]; result (N, 3).
+        """
         if self.nc == 0:
             return p
         xp, pp = self._pad(x), self._pad(p)
@@ -416,17 +634,19 @@ class Constraints:
             pp = b.momenta(xp, pp, mp)
         return pp[:-1]
 
-    def violation(self, x):
-        """Largest relative deviation |r| / d0 - 1 over the constraints."""
+    def violation(self, x: jax.Array) -> jax.Array | float:
+        """Return the largest relative deviation ||r| / d0 - 1| over the constraints (x (N, 3) [nm])."""
         if self.nc == 0:
             return 0.0
         xp = self._pad(x)
         return jnp.max(jnp.stack([jnp.asarray(b.errors(xp, None, None)[0]) for b in self.blocks]))
 
-    def velocity_violation(self, x, p, masses):
-        """RATTLE condition: largest |r^_c . (v_a - v_b)| over the constraints, relative to the RMS
-        relative speed |v_a - v_b| of the constrained pairs (0 when every constraint is rigid in
-        time)."""
+    def velocity_violation(self, x: jax.Array, p: jax.Array, masses: ArrayLike) -> jax.Array | float:
+        """Return the RATTLE violation: max |r^_c . (v_a - v_b)| relative to the RMS |v_a - v_b|.
+
+        The RMS relative speed of the constrained pairs; 0 when every constraint is rigid in time.
+        x (N, 3) [nm], p (N, 3) [amu nm/ps], masses (N,) [amu].
+        """
         if self.nc == 0:
             return 0.0
         xp, pp = self._pad(x), self._pad(p)
@@ -437,11 +657,36 @@ class Constraints:
         return worst / jnp.maximum(rms, 1e-300)
 
 
-def repartition_masses(masses, elements, bonds, h_mass=3.024) -> np.ndarray:
-    """Hydrogen mass repartitioning: every hydrogen gets h_mass (amu), taken from the heavy atom it
-    is bonded to (total mass unchanged).  h_mass: one mass for every hydrogen, or one value per atom
-    (read at the hydrogens; NaN keeps that hydrogen's mass).  Massless atoms (virtual sites) neither
-    give nor take mass."""
+def repartition_masses(
+    masses: ArrayLike, elements: Sequence[str], bonds: ArrayLike, h_mass: ArrayLike = 3.024
+) -> np.ndarray:
+    """Return masses after hydrogen mass repartitioning (host).
+
+    Every hydrogen gets h_mass, taken from the heavy atom it is bonded to (total mass unchanged).
+    Massless atoms (virtual sites) neither give nor take mass.
+
+    Parameters
+    ----------
+    masses : ArrayLike (N,)
+        Masses [amu].
+    elements : Sequence[str] (N,)
+        Element symbols ("H" for hydrogen).
+    bonds : ArrayLike (nb, 2) int
+        Bonds (global indices).
+    h_mass : ArrayLike
+        Hydrogen mass [amu]: one mass for every hydrogen, or one value per atom (read at the
+        hydrogens; NaN keeps that hydrogen's mass).
+
+    Returns
+    -------
+    np.ndarray (N,)
+        New masses [amu].
+
+    Raises
+    ------
+    ValueError
+        A per-atom h_mass of the wrong shape, or a non-positive mass left on a real atom.
+    """
     m = np.asarray(masses, float).copy()
     real = m > 0
     target = np.asarray(h_mass, float)
@@ -459,14 +704,34 @@ def repartition_masses(masses, elements, bonds, h_mass=3.024) -> np.ndarray:
     return m
 
 
-def hmr_masses(sys, hmr) -> np.ndarray:
-    """Per-atom masses (amu) of a System after hydrogen mass repartitioning along its molecules'
-    bonds.  hmr: None (the system's masses); one hydrogen mass for every molecule; or a sequence
-    with one value (or None: unchanged) per molecule, e.g. water 4.0 and protein 3.024 from
-    AmberSystem.hmr({"water": 4.0, "protein": 3.024, "ion": None}).  Heavier hydrogens slow the
-    fastest motions (librations of water, X-H bends) and so allow larger time steps; a CH3 carbon
-    (12.01 amu) cannot give three hydrogens 4 amu each and keep a sensible mass, so the protein
-    keeps 3.024 while water takes 4.0."""
+def hmr_masses(sys: System, hmr: float | Sequence[float | None] | None) -> np.ndarray:
+    """Return the per-atom masses of a System after hydrogen mass repartitioning along its bonds.
+
+    Heavier hydrogens slow the fastest motions (librations of water, X-H bends) and so allow
+    larger time steps; a CH3 carbon (12.01 amu) cannot give three hydrogens 4 amu each and keep a
+    sensible mass, so the protein keeps 3.024 while water takes 4.0.
+
+    Parameters
+    ----------
+    sys : System
+        The system.
+    hmr : float, Sequence of (float or None), or None
+        None (the system's masses); one hydrogen mass [amu] for every molecule; or one value (or
+        None: unchanged) per molecule, e.g. water 4.0 and protein 3.024 from
+        AmberSystem.hmr({"water": 4.0, "protein": 3.024, "ion": None}).
+
+    Returns
+    -------
+    np.ndarray (N,)
+        Masses [amu].
+
+    Raises
+    ------
+    TypeError
+        A dict (use AmberSystem.hmr).
+    ValueError
+        A sequence of the wrong length, or from `repartition_masses`.
+    """
     masses = np.asarray(sys.masses, float)
     if hmr is None:
         return masses

@@ -1,5 +1,9 @@
 """Dipole moment of the periodic cell, its electronic polarizability, and their output during MD.
 
+Contents: `CellDipole` (cell and molecular dipoles, cell polarizability of a PGMForceField's
+system), `cell_dipole` (of a simulation's current state), `DipoleRecorder` and `read_dipoles`
+(the .dip time series), and `InducedDipoleFile` (per-atom induced dipoles, NetCDF).
+
 Cell dipole (e nm; 1 D = units.DEBYE_E_NM = 0.020819434 e nm):
 
     M = M_q + M_perm + M_ind
@@ -56,13 +60,18 @@ files are unchanged):
   * InducedDipoleFile, prefix.mu.nc: per-atom induced dipoles (e nm, float32) every `induced`
     steps, NetCDF-3 (dimensions frame, atom, spatial; variables time, step, induced_dipoles).
 
-Units: nm, ps, e, e nm, nm^3 (polarizability volume), K."""
+Units: nm, ps, e, e nm, nm^3 (polarizability volume), K.
+
+See also docs/dielectric.md.
+"""
 
 from __future__ import annotations
 
 import functools
 import os
 import struct
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import jax
 import jax.numpy as jnp
@@ -70,6 +79,12 @@ import numpy as np
 
 from ..units import DEBYE_E_NM
 from .box import volume
+
+if TYPE_CHECKING:
+    from jax.typing import ArrayLike
+
+    from .forcefield import PGMForceField
+    from .integrate import MDState
 
 DIP_COLUMNS = (
     "step",
@@ -92,10 +107,25 @@ DIP_COLUMNS = (
 
 class CellDipole:
     """Cell dipole, molecular dipoles and cell polarizability for the system of a PGMForceField.
-    Positions must hold whole molecules (as the MD engines keep them); params as for
-    PGMForceField.compute (None: the system's initial values)."""
 
-    def __init__(self, ff):
+    Positions must hold whole molecules (as the MD engines keep them); params as for
+    PGMForceField.compute (None: the system's initial values).  The methods are JAX functions
+    (traceable; `components` and `molecular` differentiable).
+
+    Attributes
+    ----------
+    ff : PGMForceField
+        The force field.
+    nmol : int
+        Number of molecules.
+    mol : jax.Array (N,) int
+        Molecule of every atom.
+    w : jax.Array (N,)
+        Centre-of-mass weight m_i / M_k of every atom within its molecule (physical masses).
+    """
+
+    def __init__(self, ff: PGMForceField) -> None:
+        """Set up the molecule index and centre-of-mass weights of ff's system."""
         self.ff = ff
         sys = ff.sys
         self.nmol = sys.nmol
@@ -104,12 +134,19 @@ class CellDipole:
         mmol = np.bincount(np.asarray(sys.mol), weights=m, minlength=sys.nmol)
         self.w = jnp.asarray(m / mmol[np.asarray(sys.mol)])  # centre-of-mass weights within a molecule
 
-    def molecular_charges(self, params=None) -> np.ndarray:
-        """Net charge of every molecule (e; charge flux keeps it)."""
+    def molecular_charges(self, params: dict | None = None) -> np.ndarray:
+        """Return the net charge of every molecule (nmol,) [e] (charge flux keeps it)."""
         q = np.asarray(self.ff._atoms(params)["q"])
         return np.bincount(np.asarray(self.ff.sys.mol), weights=q, minlength=self.nmol)
 
-    def _parts(self, pos, H, mu, params):
+    def _parts(
+        self, pos: ArrayLike, H: ArrayLike, mu: ArrayLike, params: dict | None
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+        """Return the per-atom contributions (N, 3) [e nm]: q_i (r_i - R_k), p_i and mu_i.
+
+        Charges and covalent dipoles at this geometry (charge flux); R_k the centre of mass of the
+        atom's molecule (molecules whole, no minimum image).
+        """
         pos, H = jnp.asarray(pos, jnp.float64), jnp.asarray(H, jnp.float64)
         P = self.ff.charges_at(pos, H, self.ff._atoms(params))  # charge flux: q, c of this geometry
         com = jax.ops.segment_sum(self.w[:, None] * pos, self.mol, self.nmol)
@@ -117,20 +154,47 @@ class CellDipole:
         p = self.ff.perm_dipoles(pos, H, P["cov"])
         return qr, p, jnp.asarray(mu, jnp.float64)
 
-    def components(self, pos, H, mu, params=None):
-        """(3, 3) float64, e nm: rows M_q, M_perm, M_ind (their sum is M)."""
+    def components(self, pos: ArrayLike, H: ArrayLike, mu: ArrayLike, params: dict | None = None) -> jax.Array:
+        """Return the cell dipole components (3, 3) float64 [e nm]: rows M_q, M_perm, M_ind.
+
+        Their sum is M.  pos (N, 3) [nm] (molecules whole), H (3, 3) [nm], mu (N, 3) the induced
+        dipoles [e nm] converged at pos.
+        """
         return jnp.stack([jnp.sum(x, axis=0) for x in self._parts(pos, H, mu, params)])
 
-    def molecular(self, pos, H, mu, params=None):
-        """(nmol, 3) e nm: the total dipole of every molecule (about its centre of mass)."""
+    def molecular(self, pos: ArrayLike, H: ArrayLike, mu: ArrayLike, params: dict | None = None) -> jax.Array:
+        """Return the total dipole of every molecule about its centre of mass (nmol, 3) [e nm]."""
         qr, p, mu = self._parts(pos, H, mu, params)
         return jax.ops.segment_sum(qr + p + mu, self.mol, self.nmol)
 
-    def polarizability(self, pos, H, idx, params=None, tol=None):
-        """(3, 3) float64, nm^3: alpha_ab = dM_a/dF_b at fixed nuclei, the response of the induced
-        dipoles to a uniform field F (e/nm^2) with Ewald (tin-foil) dipole couplings.  idx: candidate
-        rows as for PGMForceField.compute; tol: CG tolerance (default settings.induction.tol).  Zero
-        without induced dipoles; nan if a solve does not converge within settings.max_iter."""
+    def polarizability(
+        self, pos: ArrayLike, H: ArrayLike, idx: jax.Array, params: dict | None = None, tol: float | None = None
+    ) -> jax.Array:
+        """Return the cell polarizability alpha_ab = dM_a/dF_b at fixed nuclei (3, 3) [nm^3].
+
+        The response of the induced dipoles to a uniform field F [e/nm^2] with Ewald (tin-foil)
+        dipole couplings: three CG solves A m_a = e_a (A = alpha^-1 - T) from zero, and
+        alpha_ab = sum_i (m_b)_{i,a}.
+
+        Parameters
+        ----------
+        pos : ArrayLike (N, 3)
+            Positions [nm].
+        H : ArrayLike (3, 3)
+            Box, lattice vectors as rows [nm].
+        idx : jax.Array (N, C) int
+            Candidate rows as for PGMForceField.compute.
+        params : dict, optional
+            Parameter pytree (None: the system's initial values).
+        tol : float, optional
+            CG tolerance (None: settings.induction.tol).
+
+        Returns
+        -------
+        jax.Array (3, 3)
+            alpha [nm^3]; zero without induced dipoles; a column is nan if its solve does not
+            converge within settings.max_iter.
+        """
         ff = self.ff
         if not ff.ind:
             return jnp.zeros((3, 3))
@@ -140,7 +204,7 @@ class CellDipole:
         S, Gk = ff.pme.setup(pos, H), ff.pme.influence(H)
         alpha = P["alpha"]
         A = ff._operator(g, S, Gk, alpha)
-        norm = jnp.mean(alpha) / 3.0  # mean|alpha b| for a unit field
+        norm = jnp.mean(alpha) / 3.0  # CG convergence normaliser (the scale of |alpha b| for a unit field)
         tol = ff.s.induction.tol if tol is None else tol
         cols = []
         for a in range(3):
@@ -150,9 +214,22 @@ class CellDipole:
         return jnp.stack(cols, axis=1)
 
 
-def cell_dipole(sim, params=None) -> dict:
-    """M of the current state of a Simulation or FlexibleSimulation: {"charge", "perm", "ind",
-    "total"} (e nm, (3,) numpy), "debye" (the same four in D), "molecular" (nmol, 3) e nm."""
+def cell_dipole(sim: Any, params: dict | None = None) -> dict:
+    """Return the cell dipole M of the current state of a Simulation or FlexibleSimulation.
+
+    Parameters
+    ----------
+    sim : Simulation or FlexibleSimulation
+        The simulation.
+    params : dict, optional
+        Parameter pytree (None: the integrator's).
+
+    Returns
+    -------
+    dict
+        "charge", "perm", "ind", "total": np.ndarray (3,) [e nm]; "debye": the same four [D];
+        "molecular": np.ndarray (nmol, 3) [e nm].
+    """
     cd = CellDipole(sim.ff)
     params = sim.integ.params if params is None else params
     pos, H, mu = sim.positions(), np.asarray(sim.state.box), sim.state.induction.mu
@@ -165,13 +242,47 @@ def cell_dipole(sim, params=None) -> dict:
 
 # ----------------------------------------------------------------------------- recording
 class DipoleRecorder:
-    """Cell-dipole time series of a running Simulation / FlexibleSimulation (driver argument
-    run(dipoles=n)), written to a .dip text file.  The driver calls run(state, n) instead of
-    Integrator.run for each block, keep() once the block is accepted, flush() after each block."""
+    """Cell-dipole time series of a running Simulation / FlexibleSimulation, written to a .dip file.
+
+    Created by the driver for run(dipoles=n).  The driver calls run(state, n) instead of
+    Integrator.run for each block, keep() once the block is accepted, flush() after each block.
+    Samples are taken on the device inside a lax.scan over sub-blocks of the integrator.
+
+    Attributes
+    ----------
+    sim : Simulation or FlexibleSimulation
+        The simulation.
+    path : str
+        The .dip file.
+    interval : int
+        Steps between samples.
+    cell : CellDipole
+        The dipole calculator.
+    alpha_every : int
+        Samples between evaluations of the cell polarizability (class attribute).
+    """
 
     alpha_every = 100  # samples between evaluations of the cell polarizability (3 CG solves)
 
-    def __init__(self, sim, path: str, interval: int, append: bool = False):
+    def __init__(self, sim: Any, path: str, interval: int, append: bool = False) -> None:
+        """Set up the recorder and write the file header (unless appending to an existing file).
+
+        Parameters
+        ----------
+        sim : Simulation or FlexibleSimulation
+            The simulation.
+        path : str
+            The .dip file.
+        interval : int
+            Steps between samples (> 0).
+        append : bool
+            Continue an existing file.
+
+        Raises
+        ------
+        ValueError
+            A non-positive interval.
+        """
         if int(interval) <= 0:
             raise ValueError("the dipole sampling interval must be a positive number of steps")
         self.sim, self.path, self.interval = sim, path, int(interval)
@@ -183,6 +294,7 @@ class DipoleRecorder:
                 fh.write(self.header())
 
     def header(self) -> str:
+        """Return the "# key = value" header of the .dip file (settings, net charge, columns)."""
         sim = self.sim
         Qk = self.cell.molecular_charges(sim.integ.params)
         th = sim.integ.thermostat
@@ -215,7 +327,8 @@ class DipoleRecorder:
         return "".join(f"# {s}\n" for s in lines)
 
     # -- device side
-    def _alpha(self, st):
+    def _alpha(self, st: MDState) -> jax.Array:
+        """Return (1/3) tr alpha_cell [nm^3] at a state (traced; the candidate rows as in the engine)."""
         sim, integ = self.sim, self.sim.integ
         pos = sim.rigid.positions(st.dyn.position)
         flex = getattr(sim, "flex", None)  # neighbour-list centres as in each engine's _forces
@@ -223,11 +336,26 @@ class DipoleRecorder:
         idx = integ.nb.candidates(st.nbr, centers, st.box, pos)[0]
         return jnp.trace(self.cell.polarizability(pos, st.box, idx, integ.params)) / 3.0
 
-    def _scan(self, st, nchunk: int, chunk: int):
+    def _scan(self, st: MDState, nchunk: int, chunk: int) -> tuple[MDState, tuple]:
+        """Advance nchunk sub-blocks of `chunk` steps with a sample after each (lax.scan).
+
+        The per-block maxima (overflow, CG iterations, residual) that Integrator.run resets are
+        carried through the scan.  The polarizability is evaluated (lax.cond) when the step is a
+        multiple of interval * alpha_every, nan otherwise.
+
+        Returns
+        -------
+        state : MDState
+            State after nchunk * chunk steps, with the block's overflow and maxima.
+        samples : tuple of jax.Array (nchunk, ...)
+            step, M components (3, 3) [e nm], volume [nm^3], temperature [K], mean molecular
+            dipole [e nm], alpha [nm^3].
+        """
         sim, integ = self.sim, self.sim.integ
         every = self.interval * self.alpha_every
 
-        def body(c, _):
+        def body(c: tuple, _: None) -> tuple[tuple, tuple]:
+            """Advance one sub-block and sample; carry (state, overflow, max CG, max residual)."""
             st, ovf, mi, rs = c
             st = integ._run(st, chunk)  # resets the per-block maxima: carried here
             c = (st, ovf | st.overflow, jnp.maximum(mi, st.max_iters), jnp.maximum(rs, st.resid))
@@ -243,8 +371,13 @@ class DipoleRecorder:
         return st.set(overflow=ovf, max_iters=mi, resid=rs), out
 
     # -- host side
-    def run(self, st, n: int):
-        """Advance n steps like Integrator.run, sampling on the way; the samples wait for keep()."""
+    def run(self, st: MDState, n: int) -> MDState:
+        """Advance n steps like Integrator.run, sampling on the way; the samples wait for keep().
+
+        The sub-block length is gcd(n, interval, step % interval), so samples fall on multiples
+        of the interval; one jitted scan per (sub-blocks, length), re-traced after
+        Integrator.compile.
+        """
         integ = self.sim.integ
         if self._key is not integ.run:  # integ.compile() changed static sizes: re-trace
             self._key, self._fns = integ.run, {}
@@ -257,13 +390,13 @@ class DipoleRecorder:
         self._last = (self.sim.time_ps, s0, samples)
         return new
 
-    def keep(self):
+    def keep(self) -> None:
         """Accept the samples of the last run() (the driver accepted that block)."""
         if self._last is not None:
             self._kept.append(self._last)
             self._last = None
 
-    def flush(self):
+    def flush(self) -> None:
         """Append the accepted samples to the file."""
         lines = []
         for t0, s0, out in self._kept:
@@ -282,7 +415,8 @@ class DipoleRecorder:
                 fh.writelines(lines)
 
 
-def _value(s: str):
+def _value(s: str) -> int | float | str:
+    """Return s as an int, else a float, else the string itself."""
     for f in (int, float):
         try:
             return f(s)
@@ -291,11 +425,30 @@ def _value(s: str):
     return s
 
 
-def read_dipoles(paths) -> tuple[dict, dict]:
-    """Read one or more .dip files (continuation segments, in order).  Returns (header of the first
-    file, data): step, time_ps, temp_K, volume_nm3, mol_dipole, alpha_nm3 (F,) and M_charge, M_perm,
-    M_ind, M (F, 3) in e nm.  Records superseded by a continuation from an earlier checkpoint (the
-    step goes back) are dropped, keeping the later ones."""
+def read_dipoles(paths: str | os.PathLike | Sequence[str | os.PathLike]) -> tuple[dict, dict]:
+    """Read one or more .dip files (continuation segments, in order).
+
+    Records superseded by a continuation from an earlier checkpoint (the step goes back) are
+    dropped, keeping the later ones.
+
+    Parameters
+    ----------
+    paths : str, os.PathLike or Sequence of them
+        The .dip files of DipoleRecorder.
+
+    Returns
+    -------
+    meta : dict
+        Header entries of the first file.
+    data : dict
+        "step" (F,) int64, "time_ps" [ps], "temp_K" [K], "volume_nm3" [nm^3], "mol_dipole"
+        [e nm], "alpha_nm3" [nm^3] (F,), and "M_charge", "M_perm", "M_ind", "M" (F, 3) [e nm].
+
+    Raises
+    ------
+    ValueError
+        A file that is not a dipole series, or continuations of another system or settings.
+    """
     if isinstance(paths, (str, os.PathLike)):
         paths = [paths]
     meta, rows = None, []
@@ -336,16 +489,41 @@ def read_dipoles(paths) -> tuple[dict, dict]:
 
 # ----------------------------------------------------------------------------- per-atom induced dipoles
 class InducedDipoleFile:
-    """Per-atom induced dipoles in an appendable NetCDF-3 file (64-bit offsets): dimensions frame
-    (unlimited), atom, spatial; variables time (ps, float64), step (int32) and induced_dipoles
-    (frame, atom, spatial; e nm, float32).  The header is written once; each frame appends one
-    record and bumps the record count, so the file is valid after every frame (scipy.io.netcdf_file,
-    netCDF4, xarray read it)."""
+    """Per-atom induced dipoles in an appendable NetCDF-3 file (64-bit offsets).
+
+    Dimensions frame (unlimited), atom, spatial; variables time (ps, float64), step (int32) and
+    induced_dipoles (frame, atom, spatial; e nm, float32).  The header is written once; each frame
+    appends one record and bumps the record count, so the file is valid after every frame
+    (scipy.io.netcdf_file, netCDF4, xarray read it).  The writer is the same byte-level scheme as
+    io.NetCDFTrajectory.
+
+    Attributes
+    ----------
+    path : str
+        File name.
+    n : int
+        Number of atoms.
+    recsize : int
+        Bytes per record (8 + 4 + 12 n).
+    nframes : int
+        Frames in the file.
+    """
 
     NC_DIM, NC_VAR, NC_ATT = 10, 11, 12
     CHAR, INT, FLOAT, DOUBLE = 2, 4, 5, 6
 
-    def __init__(self, path: str, n_atoms: int, append: bool = False):
+    def __init__(self, path: str, n_atoms: int, append: bool = False) -> None:
+        """Create the file and write its header, or open an existing file for appending.
+
+        Parameters
+        ----------
+        path : str
+            File name.
+        n_atoms : int
+            Number of atoms.
+        append : bool
+            If the file exists, append to it (the frame count is read from its header).
+        """
         self.path, self.n = path, int(n_atoms)
         self.recsize = 8 + 4 + 12 * self.n
         if append and os.path.exists(path):
@@ -358,10 +536,12 @@ class InducedDipoleFile:
 
     @staticmethod
     def _name(s: str) -> bytes:
+        """Return a NetCDF name: big-endian length, the bytes, zero padding to a multiple of 4."""
         b = s.encode()
         return struct.pack(">i", len(b)) + b + b"\0" * (-len(b) % 4)
 
     def _atts(self, atts: dict) -> bytes:
+        """Return a NetCDF attribute list of string attributes (eight zero bytes if empty)."""
         if not atts:
             return b"\0" * 8
         out = struct.pack(">ii", self.NC_ATT, len(atts))
@@ -370,7 +550,8 @@ class InducedDipoleFile:
             out += self._name(k) + struct.pack(">ii", self.CHAR, len(b)) + b + b"\0" * (-len(b) % 4)
         return out
 
-    def _write_header(self):
+    def _write_header(self) -> None:
+        """Write the header (the record variables start right after it)."""
         dims = [("frame", 0), ("atom", self.n), ("spatial", 3)]
         vars_ = [
             ("time", [0], self.DOUBLE, {"units": "picosecond"}, 8),
@@ -379,7 +560,8 @@ class InducedDipoleFile:
         ]
         gatts = {"title": "pgm_jax induced dipoles", "program": "pgm_jax", "Conventions": "pgm_jax induced dipoles 1.0"}
 
-        def header(begins):
+        def header(begins: Sequence[int]) -> bytes:
+            """Return the header bytes for the given begin offsets of the variables."""
             h = b"CDF\x02" + struct.pack(">i", self.nframes)
             h += struct.pack(">ii", self.NC_DIM, len(dims)) + b"".join(
                 self._name(k) + struct.pack(">i", v) for k, v in dims
@@ -391,11 +573,18 @@ class InducedDipoleFile:
             return h
 
         off = len(header([0] * len(vars_)))
-        begins = [off, off + 8, off + 12]
+        begins = [off, off + 8, off + 12]  # record layout: time (8 bytes), step (4), dipoles
         with open(self.path, "wb") as fh:
             fh.write(header(begins))
 
-    def write(self, step: int, time_ps: float, mu):
+    def write(self, step: int, time_ps: float, mu: ArrayLike) -> None:
+        """Append one frame of induced dipoles mu (N, 3) [e nm] at `step` and `time_ps` [ps].
+
+        Raises
+        ------
+        ValueError
+            If mu does not hold N dipoles.
+        """
         mu = np.asarray(mu, ">f4").reshape(-1)
         if mu.size != 3 * self.n:
             raise ValueError(f"expected {self.n} induced dipoles, got {mu.size // 3}")
