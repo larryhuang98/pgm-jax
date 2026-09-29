@@ -1,4 +1,6 @@
-"""Amber prmtop files as ordered raw sections: every %FLAG with its %FORMAT and %COMMENT lines is
+"""Read, edit and write Amber prmtop files as ordered raw sections.
+
+Every %FLAG with its %FORMAT and %COMMENT lines is
 read, can be read typed, changed, added or removed, and is written back in Amber's fixed-width
 format.  Sections this module does not interpret (pGM's POL_GAUSS_*, CMAP grids, ...) are kept as
 they are, so a prmtop can be edited without knowing all of it (bonded/amber.py export).  A section
@@ -8,12 +10,19 @@ whose %FORMAT is not a single repeated field (FORCE_FIELD_TYPE's (i2,a78)) is ke
     k = top.get("BOND_FORCE_CONSTANT")               # numpy array
     top.set("BOND_FORCE_CONSTANT", k * 1.1)
     top.write("scaled.prmtop")
+
+Contents: Prmtop (the file), Section (one %FLAG block), parse_format (Fortran edit descriptors)
+and POINTER_NAMES (the names of the POINTERS entries, in order).
+
+Units: those of the file (Amber: Angstrom, kcal/mol, charge in e x 18.2223); nothing is
+converted here.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
@@ -53,8 +62,25 @@ POINTER_NAMES = (
 )
 
 
-def parse_format(fmt: str):
-    """'10I8' -> (10, 'I', 8, None); '5E16.8' -> (5, 'E', 16, 8); '20a4' -> (20, 'a', 4, None)."""
+def parse_format(fmt: str) -> tuple[int, str, int, int | None]:
+    """Parse a Fortran edit descriptor of a prmtop %FORMAT line.
+
+    Parameters
+    ----------
+    fmt : str
+        The text inside %FORMAT(...), a single repeated field such as "10I8", "5E16.8", "20a4".
+
+    Returns
+    -------
+    tuple of (int, str, int, int or None)
+        (fields per line, kind "a" | "I" | "E" | "F", field width, decimals or None):
+        "10I8" -> (10, "I", 8, None), "5E16.8" -> (5, "E", 16, 8), "20a4" -> (20, "a", 4, None).
+
+    Raises
+    ------
+    ValueError
+        If `fmt` is not a single repeated field (e.g. "(i2,a78)").
+    """
     m = re.fullmatch(r"\s*(\d*)\s*([aAiIeEfF])(\d+)(?:\.(\d+))?\s*", fmt)
     if not m:
         raise ValueError(f"unsupported prmtop format {fmt!r}")
@@ -64,6 +90,22 @@ def parse_format(fmt: str):
 
 @dataclass
 class Section:
+    """One %FLAG block of a prmtop (a mutable dataclass).
+
+    Parameters
+    ----------
+    name : str
+        Flag name (e.g. "CHARGE").
+    fmt : str
+        Edit descriptor inside %FORMAT(...), e.g. "10I8".
+    values : list
+        Parsed values (int, float or fixed-width strings), or the verbatim lines if `raw`.
+    comments : list of str
+        %COMMENT lines, the text after "%COMMENT" kept verbatim.
+    raw : bool
+        `values` are the section's lines, written verbatim (a format parse_format does not handle).
+    """
+
     name: str
     fmt: str  # e.g. "10I8"
     values: list
@@ -72,6 +114,7 @@ class Section:
 
 
 def _parsable(fmt: str) -> bool:
+    """Return whether parse_format accepts `fmt`."""
     try:
         parse_format(fmt)
         return True
@@ -80,16 +123,48 @@ def _parsable(fmt: str) -> bool:
 
 
 class Prmtop:
-    def __init__(self, version: str, sections: list[Section]):
+    """An Amber prmtop as an ordered dict of sections (see the module docstring).
+
+    Attributes
+    ----------
+    version : str
+        The %VERSION line ("" if the file had none).
+    sections : dict of str to Section
+        Sections by flag name, in file order (insertion order is the write order).
+    """
+
+    def __init__(self, version: str, sections: list[Section]) -> None:
+        """Build a prmtop from its version line and sections.
+
+        Parameters
+        ----------
+        version : str
+            The %VERSION line.
+        sections : list of Section
+            Sections in file order (a later section of the same name replaces an earlier one).
+        """
         self.version = version
         self.sections = {s.name: s for s in sections}
 
     # ------------------------------------------------------------------ reading
     @classmethod
     def read(cls, path: str) -> Prmtop:
+        """Read a prmtop file.
+
+        Parameters
+        ----------
+        path : str
+            prmtop file.
+
+        Returns
+        -------
+        Prmtop
+            Every section; values parsed if their format is a single repeated field, raw lines otherwise.
+        """
         version, secs, cur, raw = "", [], None, []
 
-        def finish():
+        def finish() -> None:
+            """Parse the lines collected for the current section and append it to the section list."""
             if cur is not None:
                 if _parsable(cur.fmt):
                     cur.values = cls._parse(cur.fmt, raw)
@@ -117,6 +192,11 @@ class Prmtop:
 
     @staticmethod
     def _parse(fmt: str, lines: list[str]) -> list:
+        """Return the values of a section's lines in the fixed-width format `fmt`.
+
+        Numeric fields are stripped and converted (blank fields skipped); character fields are cut
+        at `width` characters without stripping (the last one of a line may be shorter).
+        """
         count, kind, width, _ = parse_format(fmt)
         out = []
         for ln in lines:
@@ -132,16 +212,40 @@ class Prmtop:
 
     # ------------------------------------------------------------------ access
     def __contains__(self, name: str) -> bool:
+        """Return whether the prmtop has section `name`."""
         return name in self.sections
 
-    def __getitem__(self, name: str):
-        """Typed values of a section (as get); KeyError if it is missing."""
+    def __getitem__(self, name: str) -> np.ndarray | list:
+        """Return the typed values of a section, as `get`.
+
+        Raises
+        ------
+        KeyError
+            If the section is missing.
+        """
         return self.get(name)
 
-    def get(self, name: str, default=KeyError):
-        """Typed values of section `name`: int or float numpy array, list of stripped strings for
-        character sections, the raw lines for unparsed formats; `default` if the section is missing
-        (KeyError is raised when no default is given)."""
+    def get(self, name: str, default: Any = KeyError) -> Any:
+        """Return the typed values of section `name`.
+
+        Parameters
+        ----------
+        name : str
+            Flag name.
+        default : object
+            Returned if the section is missing; the default sentinel (the KeyError class) means raise.
+
+        Returns
+        -------
+        np.ndarray or list
+            An int or float numpy array for numeric sections, a list of stripped strings for character
+            sections, the raw lines for unparsed formats, or `default`.
+
+        Raises
+        ------
+        KeyError
+            If the section is missing and no default is given.
+        """
         if name not in self.sections and default is not KeyError:
             return default
         s = self.sections[name]
@@ -152,10 +256,36 @@ class Prmtop:
             return [v.strip() for v in s.values]
         return np.asarray(s.values, int if kind == "I" else float)
 
-    def set(self, name: str, values, fmt: str | None = None, comments=None, after: str | None = None):
-        """Replace a section's values (keeping its format), or add a new one (fmt required) after
-        the section `after` (default: at the end).  With a format this module does not parse, the
-        values are the section's lines."""
+    def set(
+        self,
+        name: str,
+        values: Any,
+        fmt: str | None = None,
+        comments: list[str] | None = None,
+        after: str | None = None,
+    ) -> None:
+        """Replace a section's values, or add a new section.
+
+        Parameters
+        ----------
+        name : str
+            Flag name.
+        values : sequence or np.ndarray
+            New values (numbers or strings); for a format this module does not parse, the section's
+            lines.
+        fmt : str, optional
+            Edit descriptor; required for a new section; for an existing one it replaces the format
+            (None keeps it).
+        comments : list of str, optional
+            %COMMENT texts (written with two leading spaces); None keeps the existing comments.
+        after : str, optional
+            Insert a new section after this one; None or an unknown name appends at the end.
+
+        Raises
+        ------
+        ValueError
+            If a new section has no format.
+        """
         vals = list(values.tolist() if isinstance(values, np.ndarray) else values)
         if name in self.sections:
             s = self.sections[name]
@@ -174,15 +304,24 @@ class Prmtop:
         items.insert(pos, (name, new))
         self.sections = dict(items)
 
-    def remove(self, name: str):
+    def remove(self, name: str) -> None:
+        """Remove section `name` (no error if it is missing)."""
         self.sections.pop(name, None)
 
     @property
-    def pointers(self) -> dict:
+    def pointers(self) -> dict[str, int]:
+        """POINTERS entries by name (POINTER_NAMES), e.g. {"NATOM": 1536, ...}."""
         v = self.get("POINTERS")
         return {k: int(x) for k, x in zip(POINTER_NAMES, v)}
 
-    def set_pointers(self, **kw):
+    def set_pointers(self, **kw: int) -> None:
+        """Set POINTERS entries by name, e.g. set_pointers(NBONH=12, NUMBND=3).
+
+        Raises
+        ------
+        ValueError
+            If a name is not in POINTER_NAMES.
+        """
         v = self.get("POINTERS").copy()
         for k, x in kw.items():
             v[POINTER_NAMES.index(k)] = int(x)
@@ -191,6 +330,11 @@ class Prmtop:
     # ------------------------------------------------------------------ writing
     @staticmethod
     def _format(fmt: str, values: list) -> list[str]:
+        """Return the fixed-width lines of `values` in format `fmt` (at least one, possibly empty, line).
+
+        Character fields are left-aligned and cut to the width, numbers right-aligned ("E" and "F"
+        with the format's decimals).
+        """
         count, kind, width, prec = parse_format(fmt)
         cells = []
         for v in values:
@@ -205,7 +349,12 @@ class Prmtop:
         lines = ["".join(cells[i : i + count]) for i in range(0, len(cells), count)]
         return lines or [""]
 
-    def write(self, path: str):
+    def write(self, path: str) -> None:
+        """Write the prmtop in Amber's fixed-width format.
+
+        The %VERSION line is written as read (or a placeholder stamp), then every section: %FLAG,
+        %COMMENT lines, %FORMAT and the values (raw sections verbatim).
+        """
         with open(path, "w") as fh:
             fh.write((self.version or "%VERSION  VERSION_STAMP = V0001.000") + "\n")
             for s in self.sections.values():

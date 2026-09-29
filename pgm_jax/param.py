@@ -1,15 +1,23 @@
-"""Where pGM parameters come from.
+"""Build pGM Molecules from parameter files: Amber prmtops, JSON caches and py_resp fits.
 
-  * `read_prmtop_pgm`  – molecules straight from an Amber pGM prmtop (POL_GAUSS_* sections,
-                         LJ tables, bonds, masses), e.g. pGM3P-25 water from rayl_512_v2.prmtop;
-  * `save_molecule` / `load_molecule` – JSON cache under data/params/;
-  * `molecule_from_pyresp` – a py_resp (ipol=5, pGM-perm) fit: charges and covalent dipoles
-                         from the .chg file, polarizabilities and radii from the pGM-pol table
-                         (evoff's scripts/param_s66.py runs the whole chain: Psi4 -> antechamber -> py_resp);
-  * `bond_graph` / `map_atoms` – atom correspondence between two geometries of one molecule
-                         (graph isomorphism, networkx), so one parameter file serves every geometry;
-                         `reorder` applies the mapping (needs networkx).
-Units in Molecule are nm / e / e nm / nm^3; prmtop units are Angstrom / e / e Angstrom / Angstrom^3.
+Contents:
+
+  * `read_prmtop_pgm` / `read_prmtop_molecules` - molecules straight from an Amber pGM prmtop
+    (POL_GAUSS_* sections, LJ tables, bonds, masses, extra points), e.g. pGM3P-25 water from
+    rayl_512_v2.prmtop; `share_identical` merges identical residues into one template;
+  * `save_molecule` / `load_molecule` (`molecule_to_dict` / `molecule_from_dict`) - JSON cache
+    under data/params/;
+  * `molecule_from_pyresp` - a py_resp (ipol=5, pGM-perm) fit: charges and covalent dipoles
+    from the .chg file (`read_pyresp_chg`), polarizabilities and radii from the pGM-pol table
+    (`read_pol_table`; evoff's scripts/param_s66.py runs the whole chain: Psi4 -> antechamber
+    -> py_resp);
+  * `bonds_from_geometry`, `bond_graph` / `map_atoms` - atom correspondence between two
+    geometries of one molecule (graph isomorphism, networkx), so one parameter file serves every
+    geometry; `reorder` applies the mapping.
+
+Units: Molecule values are in nm / e / e nm / nm^3 / sqrt(kJ/mol); prmtop units are Angstrom / e
+(pGM sections; CHARGE is e x 18.2223) / e Angstrom / Angstrom^3 / kcal/mol; py_resp files are
+in atomic units (bohr).  Functions and arguments in Angstrom end in `_A`.
 """
 
 from __future__ import annotations
@@ -17,6 +25,8 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -24,6 +34,11 @@ from .paths import resource
 from .prmtop import Prmtop
 from .system import Molecule
 from .units import ANG_NM, BOHR_NM, KCAL
+
+if TYPE_CHECKING:
+    import networkx
+
+    from .md.vsites import VirtualSite
 
 Z2EL = {
     1: "H",
@@ -47,10 +62,29 @@ Z2EL = {
 AMBER_CHARGE = 18.2223  # prmtop CHARGE unit: e -> sqrt(kcal A / mol)
 
 
-def prmtop_extra_points(s) -> dict:
-    """Amber extra points of a parsed prmtop (prmtop.Prmtop): {atom: VirtualSite}
-    (global indices) from the bond graph by Amber's rules (md/vsites.py amber_extra_points).
-    Custom frames (pmemd's VIRTUAL_SITE_FRAMES) are not read: they raise."""
+def prmtop_extra_points(s: Prmtop) -> dict[int, VirtualSite]:
+    """Return the Amber extra points of a parsed prmtop as {atom: VirtualSite} (global 0-based indices).
+
+    The frames follow Amber's rules from the bond graph and bond lengths (md/vsites.py
+    amber_extra_points).
+
+    Parameters
+    ----------
+    s : Prmtop
+        Parsed prmtop.
+
+    Returns
+    -------
+    dict of int to VirtualSite
+        Extra points (empty if there are none).
+
+    Raises
+    ------
+    NotImplementedError
+        If the prmtop has VIRTUAL_SITE_FRAMES (pmemd custom frames are not read).
+    ValueError
+        If an extra point has a nonzero mass.
+    """
     from .md.vsites import amber_extra_points
 
     if "VIRTUAL_SITE_FRAMES" in s:
@@ -59,13 +93,13 @@ def prmtop_extra_points(s) -> dict:
             "define the sites with Molecule.vsites (md/vsites.py)"
         )
 
-    def trip(sec):
+    def trip(sec: str) -> np.ndarray:
         return np.array([int(x) for x in s.get(sec, [])], int).reshape(-1, 3)
 
     bh, bx = trip("BONDS_INC_HYDROGEN"), trip("BONDS_WITHOUT_HYDROGEN")
     req = [float(x) for x in s.get("BOND_EQUIL_VALUE", [])]
 
-    def as_list(b):
+    def as_list(b: np.ndarray) -> list[tuple[int, int, int]]:
         return [(i // 3, j // 3, t - 1) for i, j, t in b]
 
     eps = amber_extra_points(s["AMBER_ATOM_TYPE"], as_list(bh), as_list(bx), req)
@@ -79,16 +113,46 @@ def prmtop_extra_points(s) -> dict:
 def read_prmtop_pgm(
     path: str, first_residue_only: bool = True, charges: str = "pgm", point_radius: float | None = None
 ) -> list[Molecule]:
-    """Molecules (one per residue) from an Amber pGM prmtop: pGM multipoles, radii and
-    polarizabilities, covalent dipoles, LJ from the type-pair tables (converted to per-type
-    R* and sqrt(eps); NBFIX-style pairs that break Lorentz-Berthelot raise), bonds, masses.
-    Molecules of several residues (proteins; covalent dipoles across residues raise):
-    protein.load_amber(prmtop, coords, electrostatics="prmtop").
-    charges="amber" reads a classical prmtop instead: point charges CHARGE / 18.2223 (Gaussian
-    radius `point_radius`, default md.vsites.POINT_RADIUS = 1e-4 nm), no polarizability, no
-    covalent dipoles (run with MDSettings().replace(elec="q")).
+    """Return the molecules (one per residue) of an Amber pGM prmtop.
+
+    Reads pGM multipoles, radii and polarizabilities, covalent dipoles, LJ from the type-pair
+    tables (converted to per-type R* and sqrt(eps); NBFIX-style pairs that break Lorentz-Berthelot
+    raise), bonds and masses.  Molecules of several residues (proteins; covalent dipoles across
+    residues raise) are read by protein.load_amber(prmtop, coords, electrostatics="prmtop").
     Extra points (atom type EP, mass 0) become virtual sites (Molecule.vsites) with Amber's frames
-    (md/vsites.py); their element is "EP"."""
+    (md/vsites.py); their element is "EP".
+
+    Parameters
+    ----------
+    path : str
+        Amber prmtop.
+    first_residue_only : bool
+        Return only the first residue (e.g. one water of a water box).
+    charges : {"pgm", "amber"}
+        "pgm": the POL_GAUSS_* sections.  "amber": a classical prmtop, point charges CHARGE /
+        18.2223 with Gaussian radius `point_radius`, no polarizability, no covalent dipoles (run with
+        MDSettings().replace(elec="q")).
+    point_radius : float, optional
+        Gaussian radius of the point charges for charges="amber" [nm]; None:
+        md.vsites.POINT_RADIUS (1e-4 nm).
+
+    Returns
+    -------
+    list of Molecule
+        One per residue in prmtop order (a new object each; see share_identical), named by the
+        residue label.
+
+    Raises
+    ------
+    ValueError
+        If the prmtop has no pGM sections (charges="pgm"), `charges` is unknown, a covalent dipole
+        or an extra-point frame crosses residues, or the LJ tables are not Lorentz-Berthelot.
+
+    Notes
+    -----
+    Elements come from ATOMIC_NUMBER, or else from the first letter of the atom name (digits
+    removed), which fails for two-letter elements.
+    """
     s = Prmtop.read(path)
     names = s["ATOM_NAME"]
     types = s["AMBER_ATOM_TYPE"]
@@ -112,7 +176,7 @@ def read_prmtop_pgm(
         nptr, catm, cdip = [0] * len(names), [], []
     else:
         raise ValueError("charges: 'pgm' (POL_GAUSS sections) or 'amber' (point charges from CHARGE)")
-    start = np.concatenate([[0], np.cumsum(nptr)])
+    start = np.concatenate([[0], np.cumsum(nptr)])  # first covalent dipole of every atom
     mass = np.array([float(x) for x in s["MASS"]])
     rh, se = _prmtop_lj(s)
     bonds = [
@@ -169,8 +233,12 @@ def read_prmtop_pgm(
 
 
 def share_identical(mols: list[Molecule]) -> list[Molecule]:
-    """The molecules with identical ones (topology, parameters, virtual sites) replaced by the first
-    of them, so that the MD engines build one template per kind of molecule."""
+    """Return the molecules with identical ones replaced by the first of them.
+
+    Identical means same name, elements, types, charges, radii, polarizabilities, covalent dipoles,
+    LJ parameters, bonds and virtual sites (masses, GVDW, quadrupoles, keys and extra arrays are
+    not compared), so that the MD engines build one template per kind of molecule.
+    """
     seen, out = {}, []
     for m in mols:
         key = (
@@ -209,8 +277,17 @@ def read_prmtop_molecules(path: str, charges: str = "pgm", point_radius: float |
 
 
 def _prmtop_lj(s) -> tuple[np.ndarray, np.ndarray]:
-    """Per-atom LJ R* (nm) and sqrt(eps) (sqrt(kJ/mol)) from ACOEF/BCOEF (kcal/mol A^12, A^6).
-    Amber: A = eps r_min^12, B = 2 eps r_min^6 per type pair."""
+    """Return per-atom LJ R* [nm] and sqrt(eps) [sqrt(kJ/mol)] from the prmtop's ACOEF/BCOEF tables.
+
+    Amber stores A = eps r_min^12 [kcal/mol A^12] and B = 2 eps r_min^6 [kcal/mol A^6] per type
+    pair; the per-type values come from the diagonal (r_min = (2A/B)^(1/6), eps = B^2/(4A); types
+    with A or B = 0 get zeros).
+
+    Raises
+    ------
+    ValueError
+        If an off-diagonal pair is not the Lorentz-Berthelot combination of the diagonals (NBFIX).
+    """
     ntypes = int(s["POINTERS"][1])
     ti = np.array([int(x) - 1 for x in s["ATOM_TYPE_INDEX"]])
     nbi = np.array([int(x) - 1 for x in s["NONBONDED_PARM_INDEX"]]).reshape(ntypes, ntypes)
@@ -228,7 +305,13 @@ def _prmtop_lj(s) -> tuple[np.ndarray, np.ndarray]:
     return (rmin / 2 * ANG_NM)[ti], np.sqrt(eps * KCAL)[ti]
 
 
-def molecule_to_dict(m: Molecule) -> dict:
+def molecule_to_dict(m: Molecule) -> dict[str, Any]:
+    """Return a JSON-serialisable dict of a Molecule (the format of save_molecule).
+
+    Keys carry their unit where it is not e: "radius_nm", "alpha_nm3", "lj_rmin_half_nm"; "cov"
+    [e nm], "lj_sqrt_eps" [sqrt(kJ/mol)], "masses" [amu], GVDW and "quad" in library units;
+    virtual sites via VirtualSite.to_list.
+    """
     return {
         "name": m.name,
         "elements": m.elements,
@@ -251,8 +334,12 @@ def molecule_to_dict(m: Molecule) -> dict:
     }
 
 
-def molecule_from_dict(d: dict) -> Molecule:
-    """Also reads the older format (no LJ, bonds, masses, keys: defaults are used)."""
+def molecule_from_dict(d: dict[str, Any]) -> Molecule:
+    """Return the Molecule of a molecule_to_dict dict.
+
+    Also reads the older format (no LJ, bonds, masses, keys, GVDW, quadrupoles, extra arrays or
+    virtual sites: Molecule defaults are used).
+    """
     from .md.vsites import VirtualSite
 
     return Molecule(
@@ -278,20 +365,31 @@ def molecule_from_dict(d: dict) -> Molecule:
 
 
 def save_molecule(m: Molecule, path: str) -> None:
+    """Write a Molecule as JSON (molecule_to_dict), creating the directory.
+
+    `path` must have a directory part (os.makedirs of "" fails).
+    """
     os.makedirs(os.path.dirname(path), exist_ok=True)
     json.dump(molecule_to_dict(m), open(path, "w"), indent=1)
 
 
 def load_molecule(path: str) -> Molecule:
+    """Read a Molecule written by save_molecule."""
     return molecule_from_dict(json.load(open(path)))
 
 
 # ------------------------------------------------------------------ py_resp / pGM-pol --
+# the pGM-pol table shipped with AmberTools' PyRESP examples
 PGM_POL_TABLE = resource("amberhome", "AmberTools/examples/PyRESP/polarizability/pGM-pol-2016-09-01")
 
 
 def read_pol_table(path: str = PGM_POL_TABLE) -> dict[str, tuple[float, float]]:
-    """{gaff type: (alpha bohr^3, radius bohr)}, EQ lines expanded, exactly as py_resp.read_pol_dict."""
+    """Return the pGM-pol table {gaff type: (alpha [bohr^3], radius [bohr])}.
+
+    Parsed exactly as py_resp.read_pol_dict: the header line is skipped, type lines are read until
+    a line starting with "a", then the "EQ" lines give further types the values of their first
+    type.  Types are lower-cased.
+    """
     tab, lines = {}, open(path).read().splitlines()[1:]
     k = 0
     while lines[k].split()[0] != "a":
@@ -307,8 +405,16 @@ def read_pol_table(path: str = PGM_POL_TABLE) -> dict[str, tuple[float, float]]:
     return tab
 
 
-def read_pyresp_chg(path: str) -> dict:
-    """Parse a py_resp .chg file (atomic units)."""
+def read_pyresp_chg(path: str) -> dict[str, Any]:
+    """Parse a py_resp .chg file (atomic units).
+
+    Returns
+    -------
+    dict
+        "crd" (n, 3) coordinates [bohr]; "q" (n,) charges [e]; "Z" atomic numbers; "cov" list of
+        (i, j, c) covalent dipoles, 0-based, c [e bohr]; and, if present, "p_global" and
+        "mu_global" (n, 3) permanent and induced dipoles [e bohr].
+    """
     sec, cur = {}, None
     for ln in open(path):
         if ln.startswith("%FLAG"):
@@ -333,12 +439,36 @@ def molecule_from_pyresp(
     elements: list[str],
     types: list[str],
     chg_path: str,
-    table: dict | None = None,
+    table: dict[str, tuple[float, float]] | None = None,
     n_atoms: int | None = None,
 ) -> Molecule:
-    """pGM molecule from a py_resp fit.  The covalent dipole convention is the same as ours:
-    p_i = sum_k c_k unit(r_ref(k) - r_i).  Bonds from the fit geometry; no LJ (zeros).
-    Multi-conformer fits list every conformer; `n_atoms` keeps the first (they are equivalenced)."""
+    """Return a pGM Molecule from a py_resp fit.
+
+    The covalent dipole convention is the same as ours: p_i = sum_k c_k unit(r_ref(k) - r_i).
+    Bonds come from the fit geometry; no LJ (zeros).
+
+    Parameters
+    ----------
+    name : str
+        Molecule name.
+    elements : list of str
+        Element symbols in the order of the .chg file.
+    types : list of str
+        GAFF atom types (keys of the pGM-pol table).
+    chg_path : str
+        py_resp .chg file.
+    table : dict, optional
+        pGM-pol table (read_pol_table); None reads PGM_POL_TABLE.
+    n_atoms : int, optional
+        Multi-conformer fits list every conformer; keep the first `n_atoms` atoms (the conformers
+        are equivalenced).  None keeps all.
+
+    Returns
+    -------
+    Molecule
+        Charges [e], covalent dipoles [e nm], radii [nm] and polarizabilities [nm^3] (BOHR_NM,
+        CODATA 2014), bonds.
+    """
     table = table or read_pol_table()
     c = read_pyresp_chg(chg_path)
     if n_atoms is not None and len(c["q"]) > n_atoms:
@@ -358,6 +488,7 @@ def molecule_from_pyresp(
 
 
 # ------------------------------------------------------------------- atom mapping --
+# covalent radii [Angstrom] for bond detection
 COV_RADII_A = {
     "H": 0.31,
     "C": 0.76,
@@ -372,8 +503,22 @@ COV_RADII_A = {
 }
 
 
-def bonds_from_geometry(elements, xyz_A, scale: float = 1.2) -> list[tuple[int, int]]:
-    """Bonds where the distance is below `scale` x the sum of covalent radii."""
+def bonds_from_geometry(elements: Sequence[str], xyz_A: np.ndarray, scale: float = 1.2) -> list[tuple[int, int]]:
+    """Return the bonds (i < j) whose length is below `scale` x the sum of covalent radii.
+
+    Parameters
+    ----------
+    elements : sequence of str
+        Element symbols (keys of COV_RADII_A).
+    xyz_A : np.ndarray (n, 3)
+        Coordinates [Angstrom].
+    scale : float
+        Tolerance factor on the sum of covalent radii (dimensionless).
+
+    Returns
+    -------
+    list of (int, int)
+    """
     x = np.asarray(xyz_A)
     r = np.array([COV_RADII_A[e] for e in elements])
     d = np.linalg.norm(x[:, None] - x[None], axis=-1)
@@ -381,7 +526,11 @@ def bonds_from_geometry(elements, xyz_A, scale: float = 1.2) -> list[tuple[int, 
     return [(int(a), int(b)) for a, b in zip(i, j)]
 
 
-def bond_graph(elements, xyz_A, scale: float = 1.2):
+def bond_graph(elements: Sequence[str], xyz_A: np.ndarray, scale: float = 1.2) -> networkx.Graph:
+    """Return the networkx bond graph of a geometry (nodes carry the element as "el").
+
+    Arguments as in bonds_from_geometry (coordinates in Angstrom).  Needs networkx.
+    """
     import networkx as nx
 
     g = nx.Graph()
@@ -391,10 +540,19 @@ def bond_graph(elements, xyz_A, scale: float = 1.2):
     return g
 
 
-def map_atoms(ref_el, ref_xyz_A, el, xyz_A) -> np.ndarray:
-    """perm with perm[k] = index in the second geometry of reference atom k (bond-graph isomorphism).
-    Among isomorphisms, the first one found; parameters are symmetric under automorphisms
-    (checked in evoff's scripts/param_s66.py check), so the choice does not matter."""
+def map_atoms(ref_el: Sequence[str], ref_xyz_A: np.ndarray, el: Sequence[str], xyz_A: np.ndarray) -> np.ndarray:
+    """Return perm with perm[k] = index in the second geometry of reference atom k.
+
+    The mapping is a bond-graph isomorphism that preserves elements; among isomorphisms, the first
+    one found.  Parameters are symmetric under automorphisms (checked in evoff's
+    scripts/param_s66.py check), so the choice does not matter.  Coordinates in Angstrom; needs
+    networkx.
+
+    Raises
+    ------
+    ValueError
+        If the bond graphs are not isomorphic.
+    """
     from networkx.algorithms import isomorphism as iso
 
     g0, g1 = bond_graph(ref_el, ref_xyz_A), bond_graph(el, xyz_A)
@@ -406,7 +564,27 @@ def map_atoms(ref_el, ref_xyz_A, el, xyz_A) -> np.ndarray:
 
 
 def reorder(m: Molecule, perm: np.ndarray) -> Molecule:
-    """Molecule with atoms in the order of another geometry: new atom perm[k] = old atom k."""
+    """Return the Molecule with atoms in the order of another geometry: new atom perm[k] = old atom k.
+
+    Parameters
+    ----------
+    m : Molecule
+        Molecule in the reference order.
+    perm : np.ndarray (n,) int
+        Mapping from map_atoms.
+
+    Returns
+    -------
+    Molecule
+        Charges, radii, polarizabilities, LJ, masses, keys and extra arrays permuted, covalent
+        dipoles and bonds renumbered.  GVDW parameters and quadrupole terms are not carried over
+        (Molecule defaults).
+
+    Raises
+    ------
+    NotImplementedError
+        If the molecule has virtual sites.
+    """
     n = m.n
     inv = np.empty(n, dtype=int)
     inv[perm] = np.arange(n)

@@ -1,15 +1,25 @@
-"""pgm_jax: the polarizable Gaussian multipole (pGM) model with Lennard-Jones, in JAX.
+"""Polarizable Gaussian multipole (pGM) force field with Lennard-Jones or GVDW, in JAX.
 
 Fixed functional form, differentiable everything: energies, forces, induced dipoles,
 polarizabilities and virials are JAX functions of the coordinates, of the parameters (tied
 tables, see system.py) and, for periodic systems, of the box.
 
 Gaussian charges + covalent permanent dipoles + induced Gaussian dipoles, all pairs, no masking;
-LJ between molecules; gas phase (Model) and periodic (PeriodicModel, Ewald).  Validated against
-Amber sander / pmemd-pgm (scripts/validate_amber.py).
+LJ (or GVDW) between molecules; gas phase (Model) and periodic (PeriodicModel, Ewald).  Validated
+against Amber sander / pmemd-pgm (scripts/validate_amber.py).
+
+Contents (re-exported here): the topology and parameter tables (Molecule, ParamTable, System in
+system.py), the energy channels (ElecChannel, LJChannel, GVDWChannel, and their periodic
+counterparts PeriodicPGM, PeriodicLJ, PeriodicGVDW), the models that sum them (Model,
+PeriodicModel), analysis helpers (elec_decomposition, molecular_polarizability, perm_dipoles,
+pressure_bar, strain_derivative, box_from_cell, neighbor_list) and molecule I/O (load_molecule,
+save_molecule, read_prmtop_pgm, set_gvdw).  Molecular dynamics lives in pgm_jax.md, parameter
+fitting in pgm_jax.fit.
 
 Units: nm, e, e nm, nm^3, kJ/mol (see units.py).  Call
+
     jax.config.update("jax_enable_x64", True)
+
 before use; everything is validated in float64.
 """
 
