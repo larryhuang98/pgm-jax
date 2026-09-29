@@ -1,22 +1,38 @@
-"""Analysis of finite-field runs (md/finite_field.FieldReplicas, docs/efield.md): the dielectric
-constant from the polarization of +-E replica pairs, the fluctuation formula of zero-field replicas,
-the saturation fit eps(E) = eps0 - c E^2, and the statistical error expected for a planned run."""
+"""Analyse finite-field runs: dielectric constants from +-E replica pairs and zero-field fluctuations.
+
+The runs are those of md/finite_field.FieldReplicas (docs/efield.md).  Contents: fluctuation_eps
+(the fluctuation formula of one zero-field replica), analyse (all replicas of a run: single-sided,
++-E pairs, zero field), saturation_fit (eps(E) = eps0 - c E^2) and predicted_errors (the error
+expected for a planned run).
+
+With a uniform field E along e in tin-foil Ewald, eps = 1 + EPS_FACTOR <M.e> / (V |E|)
+(md/efield.py); at constant displacement D, eps = D / (D - <M.e>/(eps0 V)) (finite_d_eps).  The
+antisymmetric combination (<M.e>_{+E} - <M.e>_{-E}) / 2 of a +-E pair cancels the even-order
+response and the spontaneous polarization of the box.
+
+Units: M [e nm], V [nm^3], T [K], fields [V/nm], times [ps].
+"""
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
+from numpy.typing import ArrayLike
 
 from ..md.efield import EPS_FACTOR, finite_d_eps
 from ..units import E_CHARGE_C, EPS0_SI, KB_SI
 from .stats import block_mean, integrated_correlation_time, jackknife_error
 
 
-def fluctuation_eps(M, V, temperature, eps_inf: float = 1.0, nblocks: int = 10):
-    """Static dielectric constant of one replica from its dipole fluctuations (tin-foil Ewald).
+def fluctuation_eps(
+    M: ArrayLike, V: float, temperature: float, eps_inf: float = 1.0, nblocks: int = 10
+) -> tuple[float, float]:
+    """Return the static dielectric constant of one replica from its dipole fluctuations (tin-foil Ewald).
 
     Parameters
     ----------
-    M : array (F, 3)
+    M : ArrayLike (F, 3)
         Cell dipole series [e nm].
     V : float
         Volume [nm^3].
@@ -25,7 +41,8 @@ def fluctuation_eps(M, V, temperature, eps_inf: float = 1.0, nblocks: int = 10):
     eps_inf : float
         High-frequency dielectric constant.
     nblocks : int
-        Contiguous blocks of the jackknife.
+        Contiguous blocks of the jackknife (the first F mod nblocks samples are left out of the
+        blocks).
 
     Returns
     -------
@@ -35,7 +52,7 @@ def fluctuation_eps(M, V, temperature, eps_inf: float = 1.0, nblocks: int = 10):
     M = np.asarray(M, float)
     c = (E_CHARGE_C * 1e-9) ** 2 / (3 * EPS0_SI * V * 1e-27 * KB_SI * temperature)
 
-    def est(m):
+    def est(m: np.ndarray) -> float:
         return eps_inf + c * (np.mean(np.sum(m * m, 1)) - np.sum(np.mean(m, 0) ** 2))
 
     n = len(M) // nblocks * nblocks
@@ -44,14 +61,38 @@ def fluctuation_eps(M, V, temperature, eps_inf: float = 1.0, nblocks: int = 10):
     return float(est(M)), float(jackknife_error(jk))
 
 
-def analyse(meta: dict, data: dict, skip_ps: float = 50.0, nblocks: int = 10, eps_inf: float | None = None) -> dict:
-    """Finite-field eps of every replica with a nonzero field (single-sided, with the block error),
-    of every +-E pair (antisymmetric combination) and, for zero-field replicas, the fluctuation
-    estimate (with eps_inf, default meta['eps_inf'] or 1) and the correlation time of M.  Series at
-    constant displacement (meta field_kind = D; fields are D/eps0) give eps = D / (D - <M.e>/(eps0 V))."""
+def analyse(
+    meta: dict, data: dict, skip_ps: float = 50.0, nblocks: int = 10, eps_inf: float | None = None
+) -> dict[str, Any]:
+    """Return the dielectric constants of all replicas of a finite-field run.
+
+    Parameters
+    ----------
+    meta : dict
+        Run metadata: "volume_nm3", "temperature_K", "fields" (R, 3) [V/nm], optionally
+        "field_kind" ("E" or "D": constant displacement, fields are D/eps0) and "eps_inf".
+    data : dict
+        "time_ps" (F,) and "M" (F, R, 3) cell dipoles [e nm] of the R replicas.
+    skip_ps : float
+        Equilibration time left out [ps].
+    nblocks : int
+        Blocks of the block-mean errors.
+    eps_inf : float, optional
+        eps_inf of the fluctuation estimate; None: meta["eps_inf"] or 1.
+
+    Returns
+    -------
+    dict
+        "volume_nm3", "temperature_K", "run_ps"; "single": per nonzero-field replica, eps from
+        <M.e> with its block error, correlation time and the rms perpendicular dipole; "pairs": per
+        +-E pair, eps from the antisymmetric combination; "zero": per zero-field replica (constant-E
+        runs only), the fluctuation estimate and the correlation time of M_z; "fits":
+        saturation_fit over the pairs up to each field strength.
+    """
     disp = meta.get("field_kind", "E") == "D"
 
-    def eps_of(m, err, mag):
+    def eps_of(m: float, err: float, mag: float) -> tuple[float, float]:
+        """Return eps and its error from the mean <M.e> [e nm], its error and |E| (constant E or constant D)."""
         if not disp:
             return 1 + EPS_FACTOR * m / (V * mag), EPS_FACTOR * err / (V * mag)
         e = float(finite_d_eps(m, V, mag))
@@ -135,9 +176,19 @@ def analyse(meta: dict, data: dict, skip_ps: float = 50.0, nblocks: int = 10, ep
     return out
 
 
-def saturation_fit(pairs):
-    """Weighted least squares eps(E) = eps0 - c E^2 over +-E pairs (the leading non-linear term of
-    the response, dielectric saturation); returns eps0, c and their errors, or None for < 2 fields."""
+def saturation_fit(pairs: list[dict]) -> dict[str, float] | None:
+    """Fit eps(E) = eps0 - c E^2 over +-E pairs by weighted least squares (dielectric saturation).
+
+    Parameters
+    ----------
+    pairs : list of dict
+        Entries of analyse(...)["pairs"] ("E_mag" [V/nm], "eps", "err").
+
+    Returns
+    -------
+    dict or None
+        eps0, eps0_err, c [nm^2/V^2], c_err, chi2, n; None for fewer than two distinct fields.
+    """
     E = np.array([p["E_mag"] for p in pairs])
     if len(np.unique(E)) < 2:
         return None
@@ -160,7 +211,7 @@ def saturation_fit(pairs):
 def predicted_errors(
     eps: float, eps_inf: float, V: float, temperature: float, field: float, tau_ps: float, run_ps: float
 ) -> dict:
-    """Expected statistical errors of eps from a +-E pair and from zero-field fluctuations.
+    """Return the expected statistical errors of eps from a +-E pair and from zero-field fluctuations.
 
     Parameters
     ----------
@@ -185,8 +236,9 @@ def predicted_errors(
 
     Notes
     -----
-    For a Gaussian M (module docstring): var(M_e) = (eps - eps_inf) eps0 V kB T, the error of a
-    mean over a run of length T with correlation time tau is sqrt(var 2 tau / T).
+    For a Gaussian M (analysis/dielectric.py): var(M_e) = (eps - eps_inf) eps0 V kB T, the error of
+    a mean over a run of length T with correlation time tau is sqrt(var 2 tau / T), and the relative
+    error of the fluctuation term is sqrt(2 tau / (3 T)).
     """
     var_Me = (
         (eps - eps_inf) * EPS0_SI * V * 1e-27 * KB_SI * temperature / (E_CHARGE_C * 1e-9) ** 2
