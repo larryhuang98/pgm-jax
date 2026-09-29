@@ -271,7 +271,12 @@ the field code): 42 ns/day per copy (420 aggregate) for the pGM waters, 73 (729 
   only), and a uniform field exerts neither force nor torque on a quadrupole.
 - **Refused combinations** (explicit errors): an alchemical region with a field (the field would act
   on the unscaled solute charges); NPT with a field and charged molecules; `FieldReplicas` with NPT,
-  MTS or charged molecules.
+  MTS or charged molecules; path integrals (`md/pimd.py`) and `PGMEngine.from_simulation` (the
+  external-code interfaces) with a field.
+- **Other features** (docs/CHANGES_2026-09.md, `tests/test_integration.py`): extended-Lagrangian
+  dipoles (docs/iel.md) take the field in the auxiliary-dipole step and the shadow energy (constant E
+  and D); biases on collective variables add to the field forces; walkers book the work of E(t) as a
+  single simulation does. `PGMForceField.strain_derivative` with a field returns the full tensor.
 - **Charged molecules**: the itinerant dipole of re-wrapped ions is booked by the `Simulation` /
   `FlexibleSimulation` drivers only; the batched replica engines (replica exchange, field replicas)
   re-wrap without booking it (for an electrolyte the "dielectric constant" also contains the

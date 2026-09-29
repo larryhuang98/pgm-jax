@@ -692,7 +692,10 @@ Conventions worth knowing:
   needs a flexible template with `"all-bonds"` plus bonded terms for its angles). The iterative
   solver for large clusters (every bond of a protein) costs several times a dense block
   (ubiquitin with every bond: 0.88 ms per SHAKE, 0.39 ms per RATTLE, against 0.035 / 0.024 ms
-  with X-H constraints); X-H constraints are the efficient choice for proteins.
+  with X-H constraints); X-H constraints are the efficient choice for proteins. With NVE and
+  Bussi the degrees of freedom are 3N - N_c - 3 (conserved total momentum): exact for neutral
+  systems, also in a uniform external field; restraints or biases on absolute positions make the
+  total momentum drift and the reported temperature slightly off.
 - `fit_liquid.py` does not yet differentiate <U_gas> for molecules with intramolecular LJ pairs.
 - Quadrupoles are in the gas phase and in bonded fitting, not yet in Ewald/PME or MD (templates
   with quadrupoles are refused there); no fitted quadrupole values yet.
@@ -700,8 +703,43 @@ Conventions worth knowing:
   set for LJ-bearing pairs; identical for pGM3P water.
 - The gas-phase induction solve is dense (3n × 3n): fine up to a few thousand atoms.
 - Path integrals (`md/pimd.py`): flexible molecules without constraints or virtual sites; no
-  multiple time stepping, restraints or alchemical regions with beads; the KE_H of flexible pGM water
-  needs P >= 32 and contraction to >= 8-16 beads (`docs/pimd.md`).
+  multiple time stepping, restraints, alchemical regions, biases, external fields or
+  extended-Lagrangian dipoles with beads (all refused); the KE_H of flexible pGM water needs P >= 32
+  and contraction to >= 8-16 beads (`docs/pimd.md`).
+- Enhanced sampling (`docs/enhanced_sampling.md`): grids for 1-2 CVs (more CVs sum the hills every
+  step); OPES evaluates every kernel each step and recomputes Z from all kernel pairs (no adaptive
+  sigma, no OPES_EXPLORE / EXPANDED); walkers run in one process on one device, NVT only, without
+  multiple time stepping; replica exchange takes static biases only; no PLUMED interface. Biases
+  combine with external fields and extended-Lagrangian dipoles (`tests/test_integration.py`), not
+  with path integrals or the external-code interfaces.
+- External fields (`docs/efield.md`): uniform fields only (no field gradients); refused with an
+  alchemical region, with NPT and charged molecules, and in `FieldReplicas` with NPT, multiple time
+  stepping or charged molecules; the batched replica engines re-wrap ions without booking their
+  itinerant dipole; linear response must be checked (TIP3P and the base pGM water saturate at
+  0.1 V/nm); NPT at constant D is implemented but was not run.
+- Extended-Lagrangian dipoles (`docs/iel.md`): at 2 fs the default drifts +0.013-0.020 kT/ns/dof in
+  NVE and the dipoles are ~1.6e-3 (relative RMS) from converged ones (use SCF for dipole-matching
+  fits); the block preconditioner covers molecules of 2-8 atoms; the reported virial is taken at
+  fixed mu without the shadow term. Refused with multiple time stepping, alchemical regions,
+  `differentiable=True`, path integrals and the external-code interfaces. In an external field
+  (constant E or D) the field enters the auxiliary-dipole step and the shadow energy (exact forces,
+  NVE checked in small boxes); not validated in production runs.
+- Interfaces to other codes (`docs/interfaces.md`): rigid molecules are held by the external code
+  (ASE: up to three atoms; OpenMM constraints; i-PI needs flexible templates); OpenMM's CUDA platform
+  cannot share a GPU with JAX on rayl8 (use its CPU platform) and gives no virial to a PythonForce;
+  virtual sites, alchemical regions, multiple time stepping, external fields, biases and
+  extended-Lagrangian dipoles of the native engine are not exposed (refused where a simulation or
+  settings carry them).
+- QM cluster fitting (`docs/qmfit.md`): one rigid molecule kind per data set; the QM set is water at
+  the rigid pGM3P-25 geometry (3-body and higher terms at MP2/aTZ, SAPT0 for dimers only); the fits
+  are gas-phase fits, not yet tested in the liquid.
+- Free-energy gradients (`docs/fe_gradients.md`): one neutral LJ solute; solvent-parameter
+  gradients are unbiased but noisy (whole-box dU/dtheta); Helmholtz free energy at the reference
+  volume; bonded parameters of a flexible solute are not differentiated.
+- Multi-target liquid fits (`docs/liquid_fit.md`): rigid molecules (`Simulation`) without charge
+  flux or virtual sites; reweighting predictions collapse for the steps a fit takes (the next
+  iteration is predicted linearly and verified by the next simulation); `alpha_p` and `kappa_t` have
+  gradients but were not used in fits; batched replicas are NVT only.
 - Replica exchange: temperature ladders, and Hamiltonian exchange between the lambda windows of
   an alchemical region (`alchemy.py`; other per-replica Hamiltonians are not implemented); batched replicas are NVT only (NPT runs the
   replicas sequentially); under vmap JAX-MD's neighbour-list update runs its rebuild branch every

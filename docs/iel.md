@@ -296,6 +296,14 @@ acceptance).
 - The block preconditioner covers molecules of 2-8 atoms (water, small solutes); the atoms of larger
   molecules (proteins) get the Jacobi step. The flexible engine is supported but validated only on
   rigid water by constraints (`tests/test_iel.py`), not on flexible or large molecules.
+- External electric fields (`efield=`, docs/efield.md) are supported since the integration of the
+  feature branches (docs/CHANGES_2026-09.md): the field is on the right-hand side of the
+  auxiliary-dipole step (r(x) includes E, or F(M) at constant D, whose kappa term is also in the
+  iEL/SCF operator), and at constant D the shadow energy subtracts kappa |sum delta|^2 / 2, which the
+  preconditioner does not contain. Checked by finite differences of the shadow energy (constant E and
+  D, Jacobi and block, omega 1 and 0.9), the field-polarized SCF solution as a fixed point, and NVE
+  in a small box (`tests/test_integration.py`); not run in production. Path integrals and the
+  external-code interfaces refuse iEL.
 - Not combined with multiple time stepping, alchemical regions, or `differentiable=True` (refused),
   or with replica exchange (not tested). The CG of the SCF path is not block-preconditioned.
 - The virial (reported pressure) is taken at fixed mu = x + delta, without the shadow term; the
