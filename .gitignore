@@ -15,3 +15,6 @@ paper/*.blg
 paper/*.fls
 paper/*.fdb_latexmk
 paper/*.out
+
+# local tools (ruff binary for the clean-up, docs/api_design.md)
+.tools/
