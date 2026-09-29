@@ -1,30 +1,44 @@
 """Validate the JAX pGM implementation against Amber (sander / pmemd-pgm) on the 512-water box.
 
-The Amber reference runs (inputs and outputs) are kept in validation/amber_ref/, so `compare`
-works without re-running Amber.  All numbers go to validation/validate_amber.json.
+The Amber reference runs (inputs and outputs) are kept in data/validation/amber_ref/, so `compare`
+works without re-running Amber.  All numbers go to data/validation/validate_amber.json.
 
 Steps:
   prep      wrap molecules into the cell -> dense 512-water cluster inpcrd for gas-phase runs
   amber     re-run sander (gas-phase cluster, no cutoff); pmemd-pgm (periodic, tight PME) is
-            run by hand from validation/amber_ref/pmemd_pbc/mdin (command printed)
+            run by hand from data/validation/amber_ref/pmemd_pbc/mdin (command printed)
   compare   our energies, forces, induced dipoles, molecular dipoles vs Amber
   pyresp    induced dipoles of a pGM water monomer vs PyRESP (independent Python code)
   amber_virial  sander single points with ntp=1 (vdwmeth=0 and 1): VIRIAL, PRESS, VDWAALS
   virial    our molecular virial (strain derivative) and LJ long-range correction vs those runs
 
-    python scripts/validate_amber.py prep
-    python scripts/validate_amber.py amber      # ~2 min
-    python scripts/validate_amber.py compare    # ~5-10 min on CPU
+Amber pGM uses Tinker's Coulomb constant (KE_AMBER_PGM); the "sameconst" numbers rescale our
+electrostatics to it.  The helpers read_restart, read_nc_frames and mdout_step0 are also used by
+scripts/validation/validate_gvdw.py.
+
+Usage:
+
+    python scripts/validation/validate_amber.py prep
+    python scripts/validation/validate_amber.py amber      # ~2 min
+    python scripts/validation/validate_amber.py compare    # ~5-10 min on CPU
+    python scripts/validation/validate_amber.py --help
+
+Inputs: PGM_GVDW_DATA (the 512-water prmtop and restart), sander of the pGM Amber build
+(PGM_SANDER), pmemd-pgm (PGM_PMEMD_CPU), AMBERHOME (PyRESP example), all through pgm_jax.paths.
+Outputs: data/validation/validate_amber.json (one key per step), data/validation/amber_ref/*
+(Amber runs), runs/validate/ours_mu_*.npy; printed results.
+Units: kcal/mol, kcal/mol/A, A, e A (Amber's units, also for our values); PyRESP in atomic units.
+Runtime: CPU, minutes (compare: 5-10 min).  Sets jax_enable_x64.
 """
 
 from __future__ import annotations
 
+import argparse
 import glob
 import json
 import os
 import re
 import subprocess
-import sys
 import time
 
 import jax
@@ -37,24 +51,23 @@ from pgm_jax.lj import LJChannel, PeriodicLJ
 from pgm_jax.md.box import box_from_cell
 from pgm_jax.model import Model
 from pgm_jax.param import read_prmtop_pgm
-from pgm_jax.paths import resource
+from pgm_jax.paths import pgm3p25_files, repo_path, resource
 from pgm_jax.periodic import strain_derivative
-from pgm_jax.system import System
+from pgm_jax.system import Molecule, System
 from pgm_jax.units import BOHR_NM, KCAL, KE, KE_AMBER_PGM
 
 jax.config.update("jax_enable_x64", True)
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REF = os.path.join(ROOT, "validation", "amber_ref")  # Amber runs: inputs + outputs (in git)
-OUT = os.path.join(ROOT, "runs", "validate")  # our own outputs (not in git)
-RESULT = os.path.join(ROOT, "validation", "validate_amber.json")
-TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
-RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
+REF = repo_path("data", "validation", "amber_ref")  # Amber runs: inputs + outputs (in git)
+OUT = repo_path("runs", "validate")  # our own outputs (not in git)
+RESULT = repo_path("data", "validation", "validate_amber.json")
+TOP, RST = pgm3p25_files()
 SANDER = resource("sander_pgm")
 PMEMD = resource("pmemd_pgm_cpu")
 SCALE = KE_AMBER_PGM / KE  # Amber pGM uses Tinker's Coulomb constant
 
 
-def read_restart(path):
+def read_restart(path: str) -> tuple[np.ndarray, tuple[np.ndarray, np.ndarray]]:
+    """Return the coordinates (N, 3) [A] and (cell lengths [A], cell angles [deg]) of a NetCDF restart."""
     f = netcdf_file(path, "r", mmap=False)
     xyz = np.array(f.variables["coordinates"][:], float)
     cell = np.array(f.variables["cell_lengths"][:], float), np.array(f.variables["cell_angles"][:], float)
@@ -62,18 +75,21 @@ def read_restart(path):
     return xyz, cell
 
 
-def read_nc_frames(path, var):
+def read_nc_frames(path: str, var: str) -> np.ndarray:
+    """Return a variable of a NetCDF file (e.g. "forces" of an mdfrc: (F, N, 3) [kcal/mol/A])."""
     f = netcdf_file(path, "r", mmap=False)
     v = np.array(f.variables[var][:], float)
     f.close()
     return v
 
 
-def mdout_step0(path):
+def mdout_step0(path: str) -> dict[str, float]:
+    """Return EELEC, VDWAALS, BOND, ANGLE (and VIRIAL, PRESS, VOLUME when printed) of step 0 of an mdout [kcal/mol]."""
     txt = open(path).read()
     blk = txt[txt.index("NSTEP =        0") :]
 
     def get(k):
+        """Return the value printed after "k =" in the step-0 block."""
         return float(re.search(rf"{k}\s*=\s*(-?\d+\.\d+)", blk).group(1))
 
     out = {"EELEC": get("EELEC"), "VDWAALS": get("VDWAALS"), "BOND": get("BOND"), "ANGLE": get("ANGLE")}
@@ -83,7 +99,8 @@ def mdout_step0(path):
     return out
 
 
-def write_inpcrd(path, xyz, title="wrapped"):
+def write_inpcrd(path: str, xyz: np.ndarray, title: str = "wrapped") -> None:
+    """Write an ASCII inpcrd (coordinates [A], no box)."""
     with open(path, "w") as fh:
         fh.write(f"{title}\n{len(xyz):6d}\n")
         flat = xyz.ravel()
@@ -91,8 +108,8 @@ def write_inpcrd(path, xyz, title="wrapped"):
             fh.write("".join(f"{v:12.7f}" for v in flat[s : s + 6]) + "\n")
 
 
-def wrap_molecules(xyz, H):
-    """Shift each water (O,H,H) by lattice vectors so that its O lies in the unit cell."""
+def wrap_molecules(xyz: np.ndarray, H: np.ndarray) -> np.ndarray:
+    """Return the coordinates [A] with each water (O,H,H) shifted by lattice vectors so that its O lies in the cell."""
     Hinv = np.linalg.inv(H)
     out = xyz.copy()
     for m in range(len(xyz) // 3):
@@ -105,7 +122,8 @@ def wrap_molecules(xyz, H):
 # ------------------------------------------------------------------------ steps --
 
 
-def prep():
+def prep() -> None:
+    """Write the wrapped 512-water cluster (sander_gas512w/inpcrd) for the gas-phase runs."""
     xyz, (L, ang) = read_restart(RST)
     H = box_from_cell(L, ang)
     w = wrap_molecules(xyz, H)
@@ -115,7 +133,8 @@ def prep():
     print(f"box {L} {ang}; wrapped cluster extent {np.round(ext, 1)} A")
 
 
-def amber():
+def amber() -> None:
+    """Run sander on the gas-phase cluster (no cutoff, tight induction); print the pmemd-pgm command."""
     gas = os.path.join(REF, "sander_gas512w")
     open(
         os.path.join(gas, "mdin"), "w"
@@ -158,6 +177,7 @@ def compare():
     q = np.asarray(sys.expand()["q"])
 
     def to_kcal_A(F):
+        """Convert forces from kJ/mol/nm to kcal/mol/A."""
         return np.asarray(F) / 41.84
 
     # ================= gas phase: dense wrapped cluster vs sander (no cutoff) ==========
@@ -262,17 +282,19 @@ def compare():
     json.dump(d, open(RESULT, "w"), indent=1)
 
 
-def pyresp():
-    """Independent implementation check: PyRESP (AmberTools, Python) water example, resp-perm with pGM
-    polarizabilities (ipol=5, igdm=1, 1-2/1-3 included).  Rebuild the molecule from its output and
-    compare our induced dipoles with its 'IND DIP GLOBAL' block (atomic units)."""
-    from pgm_jax.system import Molecule
+def pyresp() -> None:
+    """Compare the induced dipoles of a pGM water monomer with PyRESP's (independent code).
 
+    PyRESP (AmberTools, Python) water example, resp-perm with pGM polarizabilities (ipol=5,
+    igdm=1, 1-2/1-3 included).  The molecule is rebuilt from its output and our induced dipoles are
+    compared with its 'IND DIP GLOBAL' block (atomic units).
+    """
     B = BOHR_NM
     ex = resource("amberhome", "AmberTools/examples/PyRESP")
     txt = open(os.path.join(ex, "test/water/resp-perm/wat.chg")).read()
 
     def block(flag, ncol):
+        """Return the last ncol columns of the rows of a %FLAG section of the PyRESP output."""
         seg = txt.split(f"%FLAG {flag}")[1].split("%FLAG")[0].strip().split("\n")[2:]
         return np.array([[float(x) for x in l.split()[-ncol:]] for l in seg if l.strip()])
 
@@ -327,7 +349,8 @@ NPT_MDIN = """single point pGM3P-25 512 water, virial (ntp=1), vdwmeth={vdw}
 """
 
 
-def amber_virial():
+def amber_virial() -> None:
+    """Run the sander single points with ntp=1 for vdwmeth 0 and 1 (VIRIAL, PRESS, VDWAALS)."""
     for vdw in (0, 1):
         wd = os.path.join(REF, f"sander_npt_vdw{vdw}")
         os.makedirs(wd, exist_ok=True)
@@ -341,9 +364,12 @@ def amber_virial():
         print(f"vdwmeth={vdw}: {time.time() - t0:.0f}s {mdout_step0(os.path.join(wd, 'mdout'))}")
 
 
-def virial():
-    """Molecular virial tr(dE/d eps)/2 (Amber's VIRIAL) from JAX strain derivatives, electrostatics
-    rescaled to Amber's Coulomb constant; LJ long-range correction energy and virial."""
+def virial() -> None:
+    """Compare the molecular virial and LJ long-range correction with sander's ntp=1 runs.
+
+    tr(dE/d eps)/2 (Amber's VIRIAL) from JAX strain derivatives, electrostatics rescaled to Amber's
+    Coulomb constant; LJ long-range correction energy and virial.
+    """
     xyz, (L, ang) = read_restart(RST)
     H = box_from_cell(L, ang) * 0.1
     pos = xyz * 0.1
@@ -382,12 +408,22 @@ def virial():
     json.dump(d, open(RESULT, "w"), indent=1)
 
 
+STEPS = {
+    "prep": prep,
+    "amber": amber,
+    "compare": compare,
+    "pyresp": pyresp,
+    "amber_virial": amber_virial,
+    "virial": virial,
+}
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line and run one step (see the module docstring)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("step", choices=list(STEPS), help="validation step")
+    STEPS[ap.parse_args(argv).step]()
+
+
 if __name__ == "__main__":
-    {
-        "prep": prep,
-        "amber": amber,
-        "compare": compare,
-        "pyresp": pyresp,
-        "amber_virial": amber_virial,
-        "virial": virial,
-    }[sys.argv[1]]()
+    main()

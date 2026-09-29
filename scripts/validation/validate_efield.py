@@ -1,14 +1,34 @@
 """Validation of the external electric field (pgm_jax/md/efield.py; docs/efield.md).
 
-    python scripts/validate_efield.py gas       # gas phase: induced-dipole response = molecular polarizability,
-                                                # energy = E0 - E.M0 - E.alpha.E/2, forces vs finite differences
-    python scripts/validate_efield.py box1      # one molecule in growing periodic boxes -> the gas-phase response
-    python scripts/validate_efield.py nve       # 512 pGM3P-25 waters, NVE 1 fs, 20 ps: drift at 0, 0.1, 0.5 V/nm,
-                                                # E(t) = 0.2 cos(w t) V/nm (econs with the work booked), constant D
-    python scripts/validate_efield.py fluct a.dip [b.dip ...] --seg-ns 1   # zero-field references: fluctuation eps
-                                                # of each file and the spread of the estimate over segments
+Parts:
+  gas     gas phase: induced-dipole response = molecular polarizability, energy
+          E0 - E.M0 - E.alpha.E/2, forces vs central finite differences (water, methanol, a cluster)
+  box1    one water in growing periodic boxes: the engine's response -> the gas-phase polarizability
+  nve     512 pGM3P-25 waters, NVE 1 fs, --time-ps: drift at 0, 0.1, 0.5 V/nm, E(t) = 0.2 cos(w t) V/nm
+          (econs with the work booked), constant D
+  fluct   zero-field references: fluctuation eps of each .dip file and the spread of the estimate
+          over segments of --seg-ns
+  speed   ms/step without and with fields, and of batched FieldReplicas
 
-Results: validation/validate_efield_<part>.json and the printed tables."""
+The water boxes are PGM_EPSP/p25_512 scaled to 1.010 g/cm^3 (scripts/dielectric/finite_field.py
+scale_to).
+
+Usage:
+
+    python scripts/validation/validate_efield.py gas
+    python scripts/validation/validate_efield.py box1
+    python scripts/validation/validate_efield.py nve [--only 0 1]
+    python scripts/validation/validate_efield.py fluct a.dip [b.dip ...] --seg-ns 1
+    python scripts/validation/validate_efield.py speed
+    python scripts/validation/validate_efield.py --help
+
+Inputs: PGM_EPSP (the pGM3P-25 water box; pgm_jax.paths); .dip files for fluct.
+Outputs: data/validation/validate_efield_<part>.json (nve with --only: _nve_<cases>; fluct:
+_fluct_<first file>), runs/ff/nve_equil.* (nve); printed tables.
+Units: fields V/nm, energies kJ/mol, forces kJ/mol/nm, polarizabilities nm^3 (printed in A^3),
+dipoles D; --time-ps ps, --seg-ns ns, --skip-ps ps.
+Runtime: gas, box1 minutes on a CPU; nve, speed on a GPU.  Sets jax_enable_x64.
+"""
 
 from __future__ import annotations
 
@@ -22,32 +42,39 @@ import jax.numpy as jnp
 import numpy as np
 
 from pgm_jax import ElecChannel, Model, System
+from pgm_jax.analysis.finite_field import fluctuation_eps
+from pgm_jax.analysis.stats import integrated_correlation_time
 from pgm_jax.channels import molecular_polarizability
 from pgm_jax.cli.args import setup_logging
+from pgm_jax.cli.main import load_script, scripts_dir
 from pgm_jax.md import efield as EF
+from pgm_jax.md.box import box_from_cell
+from pgm_jax.md.dipoles import CellDipole, read_dipoles
+from pgm_jax.md.finite_field import FieldReplicas
+from pgm_jax.md.forcefield import MDSettings, PGMForceField
+from pgm_jax.md.io import read_coordinates
+from pgm_jax.md.simulation import Simulation
+from pgm_jax.models.toy import cluster, methanol
 from pgm_jax.param import read_prmtop_molecules, read_prmtop_pgm
-from pgm_jax.paths import resource
+from pgm_jax.paths import repo_path, resource
 from pgm_jax.units import AMU_NM3_TO_G_CM3, DEBYE_E_NM, KB, KE
 
 jax.config.update("jax_enable_x64", True)
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 P25 = resource("epsp", "p25_512.prmtop")
 P25_RST = resource("epsp", "p25_512.rst7")
 
 
-def _save(part, d):
-    os.makedirs(os.path.join(ROOT, "validation"), exist_ok=True)
-    with open(os.path.join(ROOT, "validation", f"validate_efield_{part}.json"), "w") as fh:
+def _save(part: str, d: object) -> None:
+    """Write the results of a part to data/validation/validate_efield_<part>.json."""
+    os.makedirs(repo_path("data", "validation"), exist_ok=True)
+    with open(repo_path("data", "validation", f"validate_efield_{part}.json"), "w") as fh:
         json.dump(d, fh, indent=1)
 
 
-def _water_and_methanol():
-    from pgm_jax.md.io import read_coordinates
-
+def _water_and_methanol() -> dict:
+    """Return the gas-phase test systems by name: (System, positions (N, 3) [nm])."""
     w = read_prmtop_pgm(P25)[0]
     xyz = read_coordinates(P25_RST)[0][:3] * 0.1
-    from pgm_jax.models.toy import cluster, methanol
-
     m, xm = methanol()
     sc, xc = cluster(0)
     return {
@@ -57,7 +84,28 @@ def _water_and_methanol():
     }
 
 
-def part_gas():
+def _water_box() -> tuple[System, np.ndarray, np.ndarray, MDSettings]:
+    """Return the 512-water box at 1.010 g/cm^3 (system, positions [nm], box [nm]) and its MD settings."""
+    scale_to = load_script(os.path.join(scripts_dir(), "dielectric", "finite_field.py")).scale_to
+    mols = read_prmtop_molecules(P25)
+    sys_ = System(mols)
+    xyz, vel, box = read_coordinates(P25_RST)
+    pos, H = scale_to(sys_, xyz * 0.1, box_from_cell(*box) * 0.1, float(np.sum(sys_.masses)) / 1.010 * AMU_NM3_TO_G_CM3)
+    s = MDSettings().replace(
+        cutoff=0.9,
+        skin=0.1,
+        ewald_beta=4.0,
+        pme_grid=(48, 48, 48),
+        pme_order=6,
+        lj_lrc=True,
+        dipole_tol=1e-5,
+        precision="mixed",
+    )
+    return sys_, pos, H, s
+
+
+def part_gas() -> None:
+    """Check the gas-phase response, energy and forces in a uniform field (the `gas` part)."""
     E = np.array([0.02, -0.05, 0.1])  # V/nm
     out = {}
     print("# gas phase, E = (0.02, -0.05, 0.1) V/nm")
@@ -81,6 +129,7 @@ def part_gas():
         )
 
         def tot(e):
+            """Return the total of an energy dict [kJ/mol]."""
             return float(sum(e.values()))
 
         expect = tot(e0) - KE * (Ei @ M0 + 0.5 * Ei @ A @ Ei)
@@ -107,13 +156,12 @@ def part_gas():
     _save("gas", out)
 
 
-def part_box1():
-    """One pGM3P-25 water in cubic boxes of growing edge, rigid engine force field (float64, tight
-    tolerance): d(sum mu)/dE vs the gas-phase polarizability; the difference is the Ewald field of the
-    images, ~ 1/V."""
-    from pgm_jax.md.dipoles import CellDipole
-    from pgm_jax.md.forcefield import MDSettings, PGMForceField
+def part_box1() -> None:
+    """Compare the engine's response of one water in growing cubic boxes with the gas phase (the `box1` part).
 
+    Rigid engine force field (float64, tight tolerance): d(sum mu)/dE vs the gas-phase
+    polarizability; the difference is the Ewald field of the images, ~ 1/V.
+    """
     sys_, x = _water_and_methanol()["pGM3P-25 water"]
     x = np.asarray(x) - np.asarray(x).mean(0)
     A_gas = np.asarray(molecular_polarizability(jnp.asarray(x), sys_))
@@ -150,31 +198,20 @@ def part_box1():
     _save("box1", rows)
 
 
-def part_nve(ps: float = 20.0, only=None):
-    from finite_field import scale_to
+def part_nve(ps: float = 20.0, only: list[int] | None = None) -> None:
+    """Measure the NVE energy drift with static, oscillating and constant-D fields (the `nve` part).
 
-    from pgm_jax.md.box import box_from_cell
-    from pgm_jax.md.forcefield import MDSettings
-    from pgm_jax.md.io import read_coordinates
-    from pgm_jax.md.simulation import Simulation
-
-    mols = read_prmtop_molecules(P25)
-    sys_ = System(mols)
-    xyz, vel, box = read_coordinates(P25_RST)
-    pos, H = scale_to(sys_, xyz * 0.1, box_from_cell(*box) * 0.1, float(np.sum(sys_.masses)) / 1.010 * AMU_NM3_TO_G_CM3)
-    s = MDSettings().replace(
-        cutoff=0.9,
-        skin=0.1,
-        ewald_beta=4.0,
-        pme_grid=(48, 48, 48),
-        pme_order=6,
-        lj_lrc=True,
-        dipole_tol=1e-5,
-        precision="mixed",
-    )
+    Parameters
+    ----------
+    ps : float
+        Length of each NVE run [ps] (1 fs steps, 40 samples).
+    only : list of int, optional
+        Case indices (0 none, 1 0.1 V/nm, 2 0.5 V/nm, 3 E(t), 4 D); None: all.
+    """
+    sys_, pos, H, s = _water_box()
     # equilibrate at 298 K without a field (NVT, 10 ps), then NVE from the same state for each field
     sim = Simulation(sys_, pos, H, settings=s, thermostat="bussi", dt=0.001, log=None, seed=1)
-    sim.run(10000, report_every=10000, prefix=os.path.join(ROOT, "runs", "ff", "nve_equil"))
+    sim.run(10000, report_every=10000, prefix=repo_path("runs", "ff", "nve_equil"))
     pos, vel = sim.positions(), sim.velocities()
     cases = [
         ("no field", None),
@@ -225,31 +262,12 @@ def part_nve(ps: float = 20.0, only=None):
     _save("nve" if not only else "nve_" + "_".join(map(str, only)), out)
 
 
-def part_speed(nsteps: int = 5000):
-    """ms/step of 512 pGM3P-25 waters (rigid, 2 fs, NVT Bussi, mixed) without and with fields, and of
-    batched field replicas."""
-    from finite_field import scale_to
+def part_speed(nsteps: int = 5000) -> None:
+    """Time 512 pGM3P-25 waters (rigid, 2 fs, NVT Bussi, mixed) without and with fields, and field replicas.
 
-    from pgm_jax.md.box import box_from_cell
-    from pgm_jax.md.finite_field import FieldReplicas
-    from pgm_jax.md.forcefield import MDSettings
-    from pgm_jax.md.io import read_coordinates
-    from pgm_jax.md.simulation import Simulation
-
-    mols = read_prmtop_molecules(P25)
-    sys_ = System(mols)
-    xyz, vel, box = read_coordinates(P25_RST)
-    pos, H = scale_to(sys_, xyz * 0.1, box_from_cell(*box) * 0.1, float(np.sum(sys_.masses)) / 1.010 * AMU_NM3_TO_G_CM3)
-    s = MDSettings().replace(
-        cutoff=0.9,
-        skin=0.1,
-        ewald_beta=4.0,
-        pme_grid=(48, 48, 48),
-        pme_order=6,
-        lj_lrc=True,
-        dipole_tol=1e-5,
-        precision="mixed",
-    )
+    The `speed` part: ms/step per field kind and of FieldReplicas with 1, 2, 4, 10 replicas.
+    """
+    sys_, pos, H, s = _water_box()
     out = {}
     for name, fld in [
         ("no field", None),
@@ -291,13 +309,12 @@ def part_speed(nsteps: int = 5000):
     _save("speed", out)
 
 
-def part_fluct(files, seg_ns: float, skip_ps: float):
-    """Fluctuation eps of zero-field .dip series (each file an independent run), and the scatter of
-    the estimate over segments of seg_ns: the measured statistical error of a run of that length."""
-    from pgm_jax.analysis.finite_field import fluctuation_eps
-    from pgm_jax.analysis.stats import integrated_correlation_time
-    from pgm_jax.md.dipoles import read_dipoles
+def part_fluct(files: list[str], seg_ns: float, skip_ps: float) -> None:
+    """Print the fluctuation eps of zero-field .dip series and its scatter over segments (the `fluct` part).
 
+    Each file is an independent run; the scatter of the estimate over segments of seg_ns [ns] is
+    the measured statistical error of a run of that length; skip_ps [ps] is discarded at the start.
+    """
     out, segs = {}, []
     for f in files:
         meta, d = read_dipoles(f)
@@ -336,21 +353,22 @@ def part_fluct(files, seg_ns: float, skip_ps: float):
     _save("fluct_" + os.path.basename(files[0]).split(".")[0], out)
 
 
-def main():
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line and run one part (see the module docstring)."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("part", choices=["gas", "box1", "nve", "fluct", "speed"])
-    ap.add_argument("files", nargs="*")
-    ap.add_argument("--seg-ns", type=float, default=1.0)
-    ap.add_argument("--skip-ps", type=float, default=200.0)
-    ap.add_argument("--ps", type=float, default=20.0)
+    ap.add_argument("part", choices=["gas", "box1", "nve", "fluct", "speed"], help="validation part")
+    ap.add_argument("files", nargs="*", help="fluct: .dip files")
+    ap.add_argument("--seg-ns", type=float, default=1.0, help="fluct: segment length [ns]")
+    ap.add_argument("--skip-ps", type=float, default=200.0, help="fluct: time discarded at the start [ps]")
+    ap.add_argument("--time-ps", type=float, default=20.0, help="nve: length of each run [ps]")
     ap.add_argument("--only", type=int, nargs="+", help="nve: case indices (0 none, 1 0.1, 2 0.5, 3 E(t), 4 D)")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     setup_logging()
-    os.makedirs(os.path.join(ROOT, "runs", "ff"), exist_ok=True)
+    os.makedirs(repo_path("runs", "ff"), exist_ok=True)
     {
         "gas": part_gas,
         "box1": part_box1,
-        "nve": lambda: part_nve(a.ps, a.only),
+        "nve": lambda: part_nve(a.time_ps, a.only),
         "fluct": lambda: part_fluct(a.files, a.seg_ns, a.skip_ps),
         "speed": part_speed,
     }[a.part]()
