@@ -22,6 +22,8 @@ Units: --dt-fs fs; ms per step.
 Runtime: GPU, minutes per case.  Sets jax_enable_x64.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os

@@ -18,6 +18,8 @@ Units: --dt-fs fs, durations in ps, --temperature-K K; energies kJ/mol, forces k
 Runtime: GPU or CPU, minutes (ASE's Python loop dominates the cost per step).  Sets jax_enable_x64.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
