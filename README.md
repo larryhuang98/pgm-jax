@@ -24,10 +24,13 @@ any order. Validated against Amber (sander, pmemd-pgm) and PyRESP.
   (classical and path-integral MD driven by i-PI, batched beads) and an OpenMM `PythonForce` (OpenMM's
   integrators, constraints and barostat with pGM forces), all on one device-resident engine.
 - **Parameterization:** gradients of QM losses (energies, forces, dipoles, ESP) by autodiff;
-  gradients of liquid properties (density, heat of vaporization) by fluctuation formulas over MD
-  frames; **hydration (alchemical) free energies as fitting targets**: dDeltaG/dtheta for every
-  parameter of solute and solvent from the lambda windows (`pgm_jax/md/fe_grad.py`,
-  `docs/fe_gradients.md`); bonded terms for flexible pGM molecules (`pgm_jax.bonded`).
+  gradients of liquid properties (density, heat of vaporization, static dielectric constant with the
+  induced dipoles' response by an adjoint solve, liquid dipole, g(r)) by fluctuation formulas over MD
+  frames; multi-target liquid + gas-phase fits with trust-region Levenberg-Marquardt and parameter
+  uncertainties (`pgm_jax.fit`, `docs/liquid_fit.md`); **hydration (alchemical) free energies as
+  fitting targets**: dDeltaG/dtheta for every parameter of solute and solvent from the lambda windows
+  (`pgm_jax/md/fe_grad.py`, `docs/fe_gradients.md`); bonded terms for flexible pGM molecules
+  (`pgm_jax.bonded`).
 - **Fitting to QM cluster data** (`pgm_jax.qmfit`, `docs/qmfit.md`): pGM parameters (charges,
   covalent dipoles, radii, polarizabilities, LJ or GVDW) fitted by least squares with exact Jacobians to
   interaction energies, SAPT components, 3-body energies and rigid-body forces of clusters; a psi4
@@ -434,6 +437,17 @@ kcal/mol, 2 kcal/mol too low) to experiment (0.7866 g/cm^3, 8.946 kcal/mol) in f
 at s_R = 1.047, s_eps = 1.510. `--params type` fits one R* and one eps scale per atom type. See
 `docs/howto_vdw.md` for per-type parameters and other targets.
 
+`pgm_jax/fit` + `scripts/fit_multi.py` generalise this to every pGM parameter and several targets at
+once (`docs/liquid_fit.md`): density, heat of vaporization, static dielectric constant, liquid and
+gas-phase dipole, gas-phase polarizability, O-O g(r); parameters as scale factors on the table
+(charges, covalent dipoles, polarizabilities, radii, LJ) or per tying key. Per frame, the cell dipole's
+derivative includes the induced dipoles' response (one adjoint CG per field direction, which also gives
+the cell polarizability and eps_inf), batched over frames on the GPU (7 ms per frame of 512 waters);
+the ensemble Jacobians are fluctuation formulas, the errors block jackknife; trust-region
+Levenberg-Marquardt with priors, predictions of the next iteration (linear, reweighted with n_eff),
+and the sampling covariance of the fitted parameters propagated to predicted properties
+(`scripts/liquid_fit_tools.py`: finite-difference checks, calibration).
+
 ## Bonded terms for flexible molecules (`pgm_jax.bonded`)
 
 pGM has no 1-2/1-3/1-4 exclusions, so the valence (bonded) terms of a flexible pGM molecule only
@@ -537,6 +551,8 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `scripts/fit_liquid.py` | LJ from liquid density + heat of vaporization (ensemble gradients, Gauss-Newton) |
 | `pgm_jax/qmfit.py` | fitting to QM cluster data: `QMSet` (dataset IO), `ClusterModel` (SAPT-like components, batched), `ParamMap` (free parameters, neutral charges), `QMFit` (weighted residuals: totals, SAPT, 3-body, forces, monomer; least squares), `evaluate` / `error_table`, `rigid_minimize` |
 | `scripts/qmfit/`, `data/qm/` | the water QM set: `smith_opt.py`, `build_water_clusters.py`, `psi4_clusters.py` (psi4 worker queue), `collect_water_qm.py`, `fit_water_qm.py` (baselines, fits, summary); `water_qm.json`, `water_geoms.json`, `fits/` |
+| `pgm_jax/fit/` | multi-target fitting: `ParameterSpace` (scale factors / per-key values), `FrameAnalyzer` (per-frame U, cell dipole, cell polarizability, molecular dipoles, g(r) and their parameter derivatives incl. the adjoint of the induction solve, batched), `LiquidSamples` (fluctuation-formula Jacobians, jackknife, bootstrap, reweighting), `GasPhase`, `Objective` (LM trust region, parameter covariance, propagation), `LiquidFit` (NPT or batched NVT replicas, resumable) |
+| `scripts/fit_multi.py`, `scripts/liquid_fit_tools.py`, `scripts/validate_eps_gradient.py` | multi-target fits of a pGM liquid (density, Hvap, eps, dipoles, polarizability, g(r)); combine / finite-difference / calibration analysis; independent-replica runs for the gradient checks |
 | `examples/`, `docs/` | fit-and-run examples; how-tos for bonded and van der Waals parameterization; `protein_ff.md` |
 | `paper/` | the pGM-JAX paper (LaTeX, PDF, figure data and scripts) |
 | `pgm_jax/bonded/` | bonded terms for flexible pGM molecules: `topology.py` (incl. peptide backbone and residues from the graph), `terms/` (registry and `SETS`: `core`, `classical`, `class2`, `explore`, `cmap`), `model.py` (`BondedTerms`, `BondedModel`), `fit.py`, `bench.py`, `data.py`, `molecules.py`, `amber.py` (GAFF / ff19SB import, prmtop export), `nn/` (neural bonded terms: `features`, `layers`, `instances`, `model`) |
