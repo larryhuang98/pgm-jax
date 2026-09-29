@@ -10,24 +10,15 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import water
-from test_hmr import _cluster
+from _systems import random_atoms_box, rigid_water_sim, water_cluster_box
 
-from pgm_jax import System
 from pgm_jax.bias import OPES, BiasSet, Harmonic, LowerWall, MetaD, StaticBias, UpperWall, cv
 from pgm_jax.bias import analysis as A
 from pgm_jax.bias.toy import ToyLangevin, double_well, ring
-from pgm_jax.md.box import reduce_box
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.units import BAR_PER_KJMOL_NM3, KB
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
-
-
-def _system(seed=0, n=14):
-    rng = np.random.default_rng(seed)
-    H = reduce_box(np.array([[1.6, 0.0, 0.0], [0.5, 1.5, 0.0], [-0.4, 0.6, 1.45]]))
-    return rng.uniform(size=(n, 3)) @ H, H
 
 
 def _fd_grad(f, x, h=1e-6):
@@ -56,7 +47,7 @@ def _cvs(pos, H):
 
 
 def test_cv_gradients_match_finite_differences():
-    pos, H = _system()
+    pos, H = random_atoms_box()
     for c in _cvs(pos, H):
         g = np.asarray(c.grad(pos, H))
         fd = _fd_grad(lambda x: c(x, H), pos)
@@ -67,7 +58,7 @@ def test_cv_gradients_match_finite_differences():
 def test_cv_values():
     from pgm_jax.md.restraints import dihedral
 
-    pos, H = _system()
+    pos, H = random_atoms_box()
     x = np.asarray(pos)
     assert abs(float(cv.Dihedral(4, 5, 6, 7)(pos, None)) - float(dihedral(*x[[4, 5, 6, 7]]))) < 1e-14
     # rational switching: the limit at r = r0 and the value away from it
@@ -92,7 +83,7 @@ def test_cv_values():
 
 
 def test_static_biases_and_walls():
-    pos, H = _system()
+    pos, H = random_atoms_box()
     d, phi = cv.Distance(0, 9), cv.Dihedral(4, 5, 6, 7)
     s = np.array([float(d(pos, H)), float(phi(pos, H))])
     h = Harmonic([d, phi], at=[0.3, s[1] + 2 * np.pi - 0.1], kappa=[100.0, 20.0], temperature=300.0)
@@ -351,17 +342,6 @@ def test_bias_set_state_io(tmp_path):
 
 
 # ----------------------------------------------------------------------------- MD engines
-def _water_sim(engine, pos, H, w, settings, **kw):
-    from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
-    from pgm_jax.md.simulation import Simulation
-
-    wat = water()
-    sys = System([wat] * (len(pos) // 3))
-    if engine == "rigid":
-        return Simulation(sys, pos, H, settings, log=None, **kw)
-    return FlexibleSimulation(sys, [RigidTemplate(wat, w)] * sys.nmol, pos, H, settings, log=None, **kw)
-
-
 def _cluster_bias(pace=0, height=2.0):
     d, phi = cv.Distance(0, 9), cv.Dihedral(1, 0, 9, 10)
     m = MetaD([d, phi], sigma=[0.03, 0.4], height=height, pace=max(pace, 1), biasfactor=5.0, temperature=300.0)
@@ -375,7 +355,7 @@ def test_md_bias_forces_and_static_nve(engine):
     """A metadynamics bias with pre-deposited hills, held static: the state's forces minus the
     unbiased ones equal -dV/dx (mapped to the bodies for rigid molecules) and the bias forces match
     finite differences of V(s(x)); NVE conserves E_tot while ~20 kJ/mol move in and out of the bias."""
-    pos, H, w = _cluster()
+    pos, H, w = water_cluster_box()
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, d, phi = _cluster_bias(pace=0)
     s0 = np.array([float(d(pos, H)), float(phi(pos, H))])
@@ -384,9 +364,9 @@ def test_md_bias_forces_and_static_nve(engine):
     for k in range(30):
         st = m.update(st, jnp.asarray(s0 + [0.03 * rng.normal(), 0.5 * rng.normal()]), k)
     bs = BiasSet([m, UpperWall(d, 0.6, 1000.0)], colvar=10)
-    sim = _water_sim(engine, pos, H, w, s, dt=0.0005, thermostat=None, bias=bs)
+    sim = rigid_water_sim(engine, pos, H, w, s, dt=0.0005, thermostat=None, bias=bs)
     sim.set_bias_state(bs.init()._replace(parts=(st, bs.biases[1].init())))
-    ref = _water_sim(engine, pos, H, w, s, dt=0.0005, thermostat=None)
+    ref = rigid_water_sim(engine, pos, H, w, s, dt=0.0005, thermostat=None)
     x = sim.rigid.positions(sim.state.dyn.position)
     g = jax.grad(lambda p: bs.energy(sim.state.bias, p, H))(x)
     fd = _fd_grad(lambda p: bs.energy(sim.state.bias, jnp.asarray(p), H), np.asarray(x), h=1e-6)
@@ -421,11 +401,11 @@ def test_md_deposition_in_loop(engine, tmp_path):
     checkpoint and continuation."""
     from pgm_jax.bias.io import read_table
 
-    pos, H, w = _cluster()
+    pos, H, w = water_cluster_box()
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, d, phi = _cluster_bias(pace=10, height=1.0)
     bs = BiasSet([m, Harmonic(d, 0.30, 2000.0)], colvar=5)
-    sim = _water_sim(engine, pos, H, w, s, dt=0.0005, thermostat=None, bias=bs)
+    sim = rigid_water_sim(engine, pos, H, w, s, dt=0.0005, thermostat=None, bias=bs)
     o0 = sim.observables()
     prefix = str(tmp_path / "md")
     sim.run(200, report_every=100, checkpoint_every=100, prefix=prefix)
@@ -447,7 +427,7 @@ def test_md_deposition_in_loop(engine, tmp_path):
     assert cvs["bias0_metad"][1] == 0.0 and cvs["bias0_metad"][2] > 0.0  # step 10: before the first hill
     # continuation from the checkpoint reproduces the next block
     a = sim.integ.run(sim.state, 20)
-    sim2 = _water_sim(
+    sim2 = rigid_water_sim(
         engine,
         pos,
         H,
@@ -471,11 +451,11 @@ def test_md_opes_nvt_pressure_and_mts():
     from pgm_jax.md.mts import MTS
     from pgm_jax.md.restraints import molecular_strain
 
-    pos, H, w = _cluster()
+    pos, H, w = water_cluster_box()
     s = MDSettings().replace(precision="double", dipole_tol=1e-8, cutoff=1.2, skin=0.1, lj_lrc=False)
     d = cv.Distance(0, 9)
     op = OPES(d, sigma=0.02, pace=20, barrier=15.0)
-    sim = _water_sim(
+    sim = rigid_water_sim(
         "rigid", pos, H, w, s, dt=0.001, thermostat="bussi", temperature=300.0, bias=[op, UpperWall(d, 0.7, 500.0)]
     )
     sim.advance(200)
@@ -487,13 +467,13 @@ def test_md_opes_nvt_pressure_and_mts():
         lambda p, h: sim.integ.bias.energy(st.bias, p, h), x, st.box, sim.ff.mol, sim.ff.masses, sim.sys.nmol
     )
     p_with = sim.pressure()
-    ref = _water_sim("rigid", pos, H, w, s, dt=0.001, temperature=300.0)
+    ref = rigid_water_sim("rigid", pos, H, w, s, dt=0.001, temperature=300.0)
     ref.state = st.set(bias=None)
     dP = -float(jnp.trace(W)) / (3.0 * float(jnp.linalg.det(st.box))) * BAR_PER_KJMOL_NM3
     assert abs(p_with - ref.pressure() - dP) < 1e-6 * max(1.0, abs(dP))
     # multiple time stepping: the bias is part of the slow force
     m, _, _ = _cluster_bias(pace=5, height=1.0)
-    sim = _water_sim("atoms", pos, H, w, s, dt=0.002, thermostat=None, bias=m, mts=MTS(inner=2, split="bonded"))
+    sim = rigid_water_sim("atoms", pos, H, w, s, dt=0.002, thermostat=None, bias=m, mts=MTS(inner=2, split="bonded"))
     E0 = sim.observables()["econs"]
     sim.advance(40)
     o = sim.observables()
@@ -544,10 +524,10 @@ def test_flexible_peptide_dihedral_bias():
 def test_remd_refuses_dynamic_bias():
     from pgm_jax.md.remd import ReplicaExchange
 
-    pos, H, w = _cluster()
+    pos, H, w = water_cluster_box()
     s = MDSettings().replace(precision="double", dipole_tol=1e-8, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, _, _ = _cluster_bias(pace=10)
-    sim = _water_sim("rigid", pos, H, w, s, dt=0.001, temperature=300.0, bias=m)
+    sim = rigid_water_sim("rigid", pos, H, w, s, dt=0.001, temperature=300.0, bias=m)
     with pytest.raises(NotImplementedError):
         ReplicaExchange(sim, [300.0, 320.0], exchange_every=10)
 
@@ -650,10 +630,10 @@ def test_walkers(shared, tmp_path):
     from pgm_jax.bias.io import read_table
     from pgm_jax.bias.walkers import Walkers
 
-    pos, H, w = _cluster()
+    pos, H, w = water_cluster_box()
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, d, phi = _cluster_bias(pace=10, height=1.0)
-    sim = _water_sim(
+    sim = rigid_water_sim(
         "rigid", pos, H, w, s, dt=0.001, thermostat="bussi", temperature=300.0, bias=BiasSet([m], colvar=5)
     )
     W = 3
@@ -672,7 +652,7 @@ def test_walkers(shared, tmp_path):
     else:
         assert np.all(np.asarray(wk.S.bias.parts[0].n) == 10)
         # walker 0 vs the same state advanced alone
-        one = _water_sim(
+        one = rigid_water_sim(
             "rigid",
             pos,
             H,

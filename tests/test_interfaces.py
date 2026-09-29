@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_md import small_box
+from _systems import cluster, methanol_liquid, requires, small_box
 
 from pgm_jax.interfaces import GasPhaseEngine, PGMEngine
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
@@ -100,11 +100,10 @@ def test_molecular_virial_trace_matches_native(box):
 
 
 def test_flexible_templates_match_flexible_simulation():
-    from test_flexible import _box
 
     from pgm_jax.md.flexible import FlexibleSimulation
 
-    tpl, sysm, pos, H = _box()
+    tpl, sysm, pos, H = methanol_liquid()
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=0.6, skin=0.05, lj_lrc=False)
     sim = FlexibleSimulation(sysm, [tpl] * sysm.nmol, pos, H, s, thermostat=None, log=None)
     eng = PGMEngine(sysm, sim.positions(), H, s, templates=[tpl] * sysm.nmol)
@@ -182,7 +181,6 @@ def test_compute_batch_matches_single_structures():
 
 
 def test_gas_phase_engine():
-    from test_grad import cluster
 
     from pgm_jax import ElecChannel, LJChannel, Model
 
@@ -198,9 +196,7 @@ def test_gas_phase_engine():
 
 
 # ----------------------------------------------------------------------------- ASE
-ase = pytest.importorskip("ase")
-
-
+@requires("ase")
 def test_ase_calculator_units_stress_and_dipoles(box):
     from ase import units
 
@@ -235,6 +231,7 @@ def test_ase_calculator_units_stress_and_dipoles(box):
     assert np.allclose(atoms.calc.get_induced_dipoles(atoms), r.induced_dipoles * 10, atol=1e-10)
 
 
+@requires("ase")
 def test_ase_rigid_water_nve():
     """NVE with ASE's VelocityVerlet and FixRigidMolecules conserves the energy; waters stay rigid."""
     from ase import units
@@ -262,6 +259,7 @@ def test_ase_rigid_water_nve():
     assert np.abs(d - d[0]).max() < 1e-9
 
 
+@requires("ase")
 def test_fix_rigid_molecules_equals_fix_bond_lengths():
     from ase.constraints import FixBondLengths
 
@@ -406,15 +404,15 @@ def _ipi_available():
 
 
 @pytest.mark.skipif(not _ipi_available(), reason="i-PI not available (set IPI_ROOT)")
+@pytest.mark.needs_external
 def test_ipi_real_server_short_nvt(tmp_path):
     """A real i-PI server (classical NVT, then 2 beads batched) driven by the pgm_jax client: the
     step-0 potential is the engine's energy; the conserved quantity is conserved."""
-    from test_flexible import _box
 
     from pgm_jax.interfaces import ipi_tools as T
     from pgm_jax.interfaces.ipi import IPIClient
 
-    tpl, sysm, pos, H = _box()
+    tpl, sysm, pos, H = methanol_liquid()
     s = MDSettings().replace(precision="double", dipole_tol=1e-8, cutoff=0.6, skin=0.05, lj_lrc=False)
     tpls = [tpl] * sysm.nmol
     E0 = PGMEngine(sysm, pos, H, s, templates=tpls).compute(pos, H).energy
@@ -448,6 +446,7 @@ def _openmm():
 
 
 @pytest.mark.skipif(_openmm() is None, reason="OpenMM >= 8.4 (PythonForce) not available")
+@pytest.mark.needs_external
 def test_openmm_pythonforce_energy_forces_and_nve():
     import openmm
     from openmm import unit

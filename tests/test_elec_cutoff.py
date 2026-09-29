@@ -9,7 +9,7 @@ import logging
 import jax
 import jax.numpy as jnp
 import numpy as np
-from test_md import settings, small_box
+from _systems import md_settings, small_box
 
 from pgm_jax.md.forcefield import DSUM_TOL, PGMForceField, elec_cutoff_settings, ewald_beta_for
 from pgm_jax.md.neighbors import AtomNeighbors
@@ -39,8 +39,8 @@ def _evaluate(ff, idx, pos, H):
 def test_elec_cutoff_equal_to_cutoff_is_the_single_cutoff_engine():
     sys, pos, H = small_box(1)
     for capacity in (False, True):
-        ff0, idx = _setup(sys, pos, H, settings(), capacity)
-        ff1, _ = _setup(sys, pos, H, settings(elec_cutoff=0.6), capacity)
+        ff0, idx = _setup(sys, pos, H, md_settings(), capacity)
+        ff1, _ = _setup(sys, pos, H, md_settings(elec_cutoff=0.6), capacity)
         assert not ff1.split and ff1.capacity == ff0.capacity
         (r0, W0, e0), (r1, W1, e1) = _evaluate(ff0, idx, pos, H), _evaluate(ff1, idx, pos, H)
         assert np.array_equal(r0.forces, r1.forces) and np.array_equal(r0.induction.mu, r1.induction.mu)
@@ -52,9 +52,9 @@ def test_split_rows_are_elec_at_elec_cutoff_plus_vdw_at_cutoff():
     """E, forces, dipoles, virial and the Monte Carlo energy of split rows (electrostatics at RC_E,
     LJ at RC_V) against single-cutoff runs: elec(RC_E, no vdW) + [full(RC_V) - elec(RC_V, no vdW)]."""
     sys, pos, H = small_box(1)
-    e_only, idx_e = _setup(sys, pos, H, settings(cutoff=RC_E, vdw="none"))
-    full, idx_v = _setup(sys, pos, H, settings(cutoff=RC_V, lj_lrc=True))
-    full0, _ = _setup(sys, pos, H, settings(cutoff=RC_V, vdw="none"))
+    e_only, idx_e = _setup(sys, pos, H, md_settings(cutoff=RC_E, vdw="none"))
+    full, idx_v = _setup(sys, pos, H, md_settings(cutoff=RC_V, lj_lrc=True))
+    full0, _ = _setup(sys, pos, H, md_settings(cutoff=RC_V, vdw="none"))
     (re_, We, ee), (rv, Wv, ev), (rv0, Wv0, ev0) = (
         _evaluate(e_only, idx_e, pos, H),
         _evaluate(full, idx_v, pos, H),
@@ -63,7 +63,7 @@ def test_split_rows_are_elec_at_elec_cutoff_plus_vdw_at_cutoff():
     F_ref = re_.forces + rv.forces - rv0.forces
     W_ref = We + Wv - Wv0
     for capacity in (False, True):
-        ff, idx = _setup(sys, pos, H, settings(cutoff=RC_V, elec_cutoff=RC_E, lj_lrc=True), capacity)
+        ff, idx = _setup(sys, pos, H, md_settings(cutoff=RC_V, elec_cutoff=RC_E, lj_lrc=True), capacity)
         assert ff.split and (ff.mc_e is not None) == capacity
         r, W, e = _evaluate(ff, idx, pos, H)
         assert abs(float(r.energy["elec"] - re_.energy["elec"])) < 1e-10 * abs(float(re_.energy["elec"]))
@@ -79,10 +79,10 @@ def test_split_rows_are_elec_at_elec_cutoff_plus_vdw_at_cutoff():
 def test_elec_cutoff_longer_than_cutoff():
     """elec_cutoff > cutoff: rows to elec_cutoff, van der Waals weights masked beyond the cutoff."""
     sys, pos, H = small_box(2)
-    e_only, idx_e = _setup(sys, pos, H, settings(cutoff=RC_V, vdw="none"))
-    full, idx_v = _setup(sys, pos, H, settings(cutoff=RC_E))
-    full0, _ = _setup(sys, pos, H, settings(cutoff=RC_E, vdw="none"))
-    ff, idx = _setup(sys, pos, H, settings(cutoff=RC_E, elec_cutoff=RC_V))
+    e_only, idx_e = _setup(sys, pos, H, md_settings(cutoff=RC_V, vdw="none"))
+    full, idx_v = _setup(sys, pos, H, md_settings(cutoff=RC_E))
+    full0, _ = _setup(sys, pos, H, md_settings(cutoff=RC_E, vdw="none"))
+    ff, idx = _setup(sys, pos, H, md_settings(cutoff=RC_E, elec_cutoff=RC_V))
     assert not ff.split and ff.rc_pair == RC_V
     r, re_, rv, rv0 = (
         jax.jit(f.compute)(pos, H, i, f.init_induction())
@@ -96,7 +96,7 @@ def test_elec_cutoff_longer_than_cutoff():
 
 def test_split_rows_forces_and_virial_match_autodiff_and_finite_differences():
     sys, pos, H = small_box(2)
-    ff, idx = _setup(sys, pos, H, settings(cutoff=RC_V, elec_cutoff=RC_E, lj_lrc=True))
+    ff, idx = _setup(sys, pos, H, md_settings(cutoff=RC_V, elec_cutoff=RC_E, lj_lrc=True))
     res = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
     P = ff._atoms(None)
     F_ad = -jax.grad(lambda x: ff.energy_fixed_mu(x, H, res.induction.mu, idx, P)[0])(jnp.asarray(pos))
@@ -123,7 +123,7 @@ def test_split_rows_differentiable_forces_and_dipoles():
     """settings.differentiable with split rows: gradients of forces and dipoles in the parameters
     and positions against central differences with the dipoles re-solved."""
     sys, pos, H = small_box(6)
-    ff, idx = _setup(sys, pos, H, settings(cutoff=RC_V, elec_cutoff=RC_E, differentiable=True, adjoint_tol=1e-12))
+    ff, idx = _setup(sys, pos, H, md_settings(cutoff=RC_V, elec_cutoff=RC_E, differentiable=True, adjoint_tol=1e-12))
     rng = np.random.default_rng(3)
     wF, wmu = rng.normal(size=pos.shape), rng.normal(size=pos.shape)
 
@@ -168,7 +168,7 @@ def test_special_pairs_exact_in_both_parts_of_split_rows():
     sys, pos, H = small_box(3)
     pos = pos + 20.0  # molecules stay whole
     top = _graph_topology(sys)
-    ff, idx = _setup(sys, pos, H, settings(cutoff=RC_V, elec_cutoff=0.2, precision="mixed"), topology=top)
+    ff, idx = _setup(sys, pos, H, md_settings(cutoff=RC_V, elec_cutoff=0.2, precision="mixed"), topology=top)
     k, x, within, wv, over, vrows = jax.jit(ff._rows)(jnp.asarray(pos), jnp.asarray(H), idx)
     assert not bool(over)
     special = {(a, int(b)) for a in range(sys.n) for b in top.special[a] if b < sys.n}
@@ -190,8 +190,8 @@ def test_split_rows_with_special_pair_weights_decompose():
     """Graph van der Waals weights of special pairs survive the split (float64)."""
     sys, pos, H = small_box(3)
     top = _graph_topology(sys)
-    ff, idx = _setup(sys, pos, H, settings(cutoff=RC_V, elec_cutoff=0.2), topology=top)
-    ref, idx_v = _setup(sys, pos, H, settings(cutoff=RC_V), topology=top)
+    ff, idx = _setup(sys, pos, H, md_settings(cutoff=RC_V, elec_cutoff=0.2), topology=top)
+    ref, idx_v = _setup(sys, pos, H, md_settings(cutoff=RC_V), topology=top)
     r, rref = (
         jax.jit(ff.compute)(pos, H, idx, ff.init_induction()),
         jax.jit(ref.compute)(pos, H, idx_v, ref.init_induction()),
@@ -201,7 +201,7 @@ def test_split_rows_with_special_pair_weights_decompose():
 
 def test_row_capacity_overflow_of_each_part(caplog):
     sys, pos, H = small_box(4)
-    ff, idx = _setup(sys, pos, H, settings(cutoff=RC_V, elec_cutoff=RC_E))
+    ff, idx = _setup(sys, pos, H, md_settings(cutoff=RC_V, elec_cutoff=RC_E))
     mc, mc_e = ff.capacity
     ce, cv = (int(c) for c in ff.pair_counts(jnp.asarray(pos), jnp.asarray(H), idx))
     assert ce <= mc_e and cv <= mc - mc_e and int(ff.row_counts(jnp.asarray(pos), jnp.asarray(H), idx)) <= mc
@@ -211,7 +211,7 @@ def test_row_capacity_overflow_of_each_part(caplog):
         ff.mc, ff.mc_e = small
         assert bool(jax.jit(ff.compute)(pos, H, idx, ff.init_induction()).overflow), small
     # the driver finds the overflow, re-sizes both parts and repeats the block
-    s = settings(cutoff=RC_V, elec_cutoff=RC_E, dipole_tol=1e-8, max_iter=100)
+    s = md_settings(cutoff=RC_V, elec_cutoff=RC_E, dipole_tol=1e-8, max_iter=100)
     ref = Simulation(sys, pos, H, s, dt=0.001, thermostat=None, log=None)
     sim = Simulation(sys, pos, H, s, dt=0.001, thermostat=None)
     tail = sim.ff.mc - sim.ff.mc_e
@@ -244,12 +244,12 @@ def test_short_elec_cutoff_accuracy_bound():
     sys, pos, H = small_box(5)
     base = dict(cutoff=0.7, dipole_tol=1e-10, pme_order=6, pme_grid=None)
     tight = dict(ewald_beta=6.6, pme_spacing=0.02, pme_order=8)
-    ff, idx = _setup(sys, pos, H, settings(**{**base, **tight}), capacity=False)
+    ff, idx = _setup(sys, pos, H, md_settings(**{**base, **tight}), capacity=False)
     ref = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
-    ff0, _ = _setup(sys, pos, H, settings(**{**base, **tight, "vdw": "none"}), capacity=False)
+    ff0, _ = _setup(sys, pos, H, md_settings(**{**base, **tight, "vdw": "none"}), capacity=False)
     rms = float(jnp.sqrt(jnp.mean(jax.jit(ff0.compute)(pos, H, idx, ff0.init_induction()).forces ** 2)))
     for rc in (0.45, 0.55):
-        ff, idx = _setup(sys, pos, H, settings(**{**base, **elec_cutoff_settings(rc)}), capacity=False)
+        ff, idx = _setup(sys, pos, H, md_settings(**{**base, **elec_cutoff_settings(rc)}), capacity=False)
         assert ff.split
         r = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
         ferr = float(jnp.sqrt(jnp.mean((r.forces - ref.forces) ** 2))) / rms

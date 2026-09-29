@@ -159,6 +159,7 @@ def test_dataset_io_roundtrip(tmp_path, setup):
     assert len(tr) == 9 and len(te) == 1
 
 
+@pytest.mark.needs_data
 def test_committed_dataset_loads():
     path = os.path.join(ROOT, "data/qm/water_qm.json")
     if not os.path.exists(path):
@@ -281,6 +282,7 @@ def test_fit_recovers_synthetic_target_exactly(setup):
     assert all(r["RMSE"] < 1e-5 for r in rows)
 
 
+@pytest.mark.needs_data
 def test_committed_fit_reproduces_its_report():
     """data/qm/fits/all_total.json (LJ water fitted to the set) gives the dimer energy of its report."""
     fitp, datap = os.path.join(ROOT, "data/qm/fits/all_total.json"), os.path.join(ROOT, "data/qm/water_qm.json")

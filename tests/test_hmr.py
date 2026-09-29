@@ -5,8 +5,7 @@ import os
 
 import numpy as np
 import pytest
-from test_grad import water
-from test_md_macro import _water_box
+from _systems import water, water_cluster_box
 
 from pgm_jax import System
 from pgm_jax.md.constraints import hmr_masses, repartition_masses
@@ -14,14 +13,6 @@ from pgm_jax.md.forcefield import MDSettings
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
 PRM, CRD = os.path.join(DATA, "pep_wat.prmtop"), os.path.join(DATA, "pep_wat.inpcrd")  # ACE-ALA-SER-NME, TIP3P, NaCl
-
-
-def _cluster():
-    """Eight waters (2 x 2 x 2 lattice) in a 3 nm box with a 1.2 nm cutoff: no pair crosses the
-    cutoff, so NVE conserves the energy to the integration error (a hard cutoff in a small box
-    makes the energy jump by several kJ/mol)."""
-    pos, _, w = _water_box(n_side=2, spacing=0.31)
-    return pos + 1.2, np.eye(3) * 3.0, w
 
 
 def test_per_molecule_hydrogen_masses():
@@ -86,7 +77,7 @@ def test_flexible_simulation_per_molecule_hmr():
     the energy at 2 fs (NVE, no pair crosses the cutoff)."""
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
 
-    pos, H, w = _cluster()
+    pos, H, w = water_cluster_box()
     wat = water()
     nmol = len(pos) // 3
     sys = System([wat] * nmol)

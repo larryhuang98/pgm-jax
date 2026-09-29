@@ -10,8 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_alchemy import alch_sim, frame, settings
-from test_grad import water
+from _systems import alch_frame, alch_settings, alch_sim, flex_solute_box, water, water_geometry
 
 from pgm_jax import System
 from pgm_jax.analysis import free_energy as fe
@@ -53,7 +52,7 @@ def test_dudp_matches_finite_differences_with_resolved_dipoles(mode, lam):
     central difference of the energy with the dipoles re-solved, along a random direction of the
     whole table (charges, covalent dipoles, radii, polarizabilities, LJ of solute and solvent)."""
     sim, alch, P, _ = alch_sim()
-    X, Hb, cand = frame(sim)
+    X, Hb, cand = alch_frame(sim)
     ff = sim.ff
     if mode == "keep":
         alch = Alchemy(sim.sys, 0, intramolecular="keep")
@@ -81,7 +80,7 @@ def test_dudp_matches_finite_differences_with_resolved_dipoles(mode, lam):
 
 # ----------------------------------------------------------------------------- sampler
 def windows(batched=True, seed=1, mode="annihilate"):
-    sim, alch, P, _ = alch_sim(settings(dipole_tol=1e-9), thermostat="bussi")
+    sim, alch, P, _ = alch_sim(alch_settings(dipole_tol=1e-9), thermostat="bussi")
     if mode == "keep":
         pos = sim.positions()
         alch = Alchemy(sim.sys, 0, intramolecular="keep")
@@ -89,7 +88,7 @@ def windows(batched=True, seed=1, mode="annihilate"):
             sim.sys,
             pos,
             np.asarray(sim.state.box),
-            settings(dipole_tol=1e-9),
+            alch_settings(dipole_tol=1e-9),
             dt=0.001,
             log=None,
             params=P,
@@ -215,13 +214,7 @@ def test_gas_leg_gradient_and_exact_sampled_case():
     w = water()
     sysA, P = alchemical_system(System([w]), 0)
     alch = Alchemy(sysA, 0)
-    t = np.radians(104.52 / 2)
-    xyz = (
-        np.array(
-            [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
-        )
-        + 2.1
-    )
+    xyz = water_geometry() + 2.1
     gas = GasPhaseLeg(alch, xyz, "qpi")
     space = ParameterSpace.values(sysA.table)
     dg, gg = fg.gas_leg_gradient(gas, P, space)
@@ -418,11 +411,10 @@ def test_flexible_solute_keep_sampler():
     electrostatic parameters at every lambda): batched = sequential = direct; the decoupled end
     state still depends on the solute's charges (its gas-phase electrostatics) and its LJ (its
     intramolecular pairs), not on the solute-water coupling."""
-    from test_alchemy import flex_box
 
     from pgm_jax.md.flexible import FlexibleSimulation
 
-    tpl, sys0, tpls, X, H = flex_box()
+    tpl, sys0, tpls, X, H = flex_solute_box()
     sysA, P = alchemical_system(sys0, 0)
 
     def mk():
@@ -431,7 +423,7 @@ def test_flexible_solute_keep_sampler():
             tpls,
             X,
             H,
-            settings(dipole_tol=1e-9),
+            alch_settings(dipole_tol=1e-9),
             dt=0.001,
             log=None,
             params=P,

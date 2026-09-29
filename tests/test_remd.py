@@ -12,8 +12,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import water
-from test_md_macro import _water_box
+from _systems import md_settings, small_box, water, water_lattice
 
 from pgm_jax import System
 from pgm_jax.md.barostats import MonteCarloBarostat
@@ -219,7 +218,7 @@ def test_md_swap_and_batched_equals_sequential():
     replica engines give the same exchanges and trajectories; a swap moves the configuration (with
     dipoles, predictor history, forces and neighbour list) and the rescaled momenta and auxiliaries,
     keeps temperature, random stream and step with the slot and books the energy as heat."""
-    pos, H, w = _water_box()
+    pos, H, w = water_lattice()
     wat = water()
     sys = System([wat] * (len(pos) // 3))
     s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
@@ -316,7 +315,7 @@ def test_md_swap_and_batched_equals_sequential():
 def test_md_npt_sequential_restart(tmp_path):
     """Rigid-body water, NPT (P V in the criterion), sequential engine: files, and a restart from the
     checkpoint reproduces the continued run."""
-    pos, H, _ = _water_box()
+    pos, H, _ = water_lattice()
     sys = System([water()] * (len(pos) // 3))
     s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
     sim = Simulation(
@@ -348,7 +347,7 @@ def test_md_npt_sequential_restart(tmp_path):
 def test_md_rigid_batched_checkpoint_continues_sequentially(tmp_path):
     """Rigid-body water, NVT, batched engine: a checkpoint loads into the sequential engine, which
     continues exactly as the batched run does."""
-    pos, H, _ = _water_box()
+    pos, H, _ = water_lattice()
     sys = System([water()] * (len(pos) // 3))
     s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
     sim = Simulation(sys, pos, H, s, dt=0.001, thermostat=Langevin(5.0), log=None, seed=4)
@@ -371,10 +370,9 @@ def test_md_replicas_split_rows_fit_every_part():
     """Split rows (elec_cutoff < cutoff): shared capacities fit each part of the rows for every
     replica, and an overflow of the electrostatic part in the batched engine re-sizes both parts
     and repeats the block (same run as replicas that never overflowed)."""
-    from test_md import settings, small_box
 
     sys, pos, H = small_box(4)
-    s = settings(cutoff=0.6, elec_cutoff=0.45, dipole_tol=1e-9, max_iter=100)
+    s = md_settings(cutoff=0.6, elec_cutoff=0.45, dipole_tol=1e-9, max_iter=100)
 
     def make():
         return Simulation(sys, pos, H, s, dt=0.001, thermostat="bussi", temperature=300.0, log=None, seed=2)

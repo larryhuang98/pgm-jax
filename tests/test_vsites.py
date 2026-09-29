@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import methanol, water
+from _systems import methanol, tip4pew_ideal, water
 
 from pgm_jax.md.box import box_from_cell, lower_triangular_frame, reduce_box
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, RigidTemplate, liquid_box
@@ -20,7 +20,7 @@ from pgm_jax.md.simulation import Simulation
 from pgm_jax.md.thermostats import Bussi, Langevin
 from pgm_jax.md.topology import MDTopology, MoleculeRule
 from pgm_jax.md.vsites import VirtualSite, VirtualSites, amber_extra_points
-from pgm_jax.param import molecule_from_dict, molecule_to_dict, read_prmtop_molecules, read_prmtop_pgm, share_identical
+from pgm_jax.param import molecule_from_dict, molecule_to_dict, read_prmtop_pgm, share_identical
 from pgm_jax.system import Molecule, System
 from pgm_jax.units import KB
 
@@ -417,33 +417,12 @@ def test_zero_polarizability_atoms():
 
 
 # ----------------------------------------------------------------------------- MD engines
-def _tip4pew_ideal():
-    """The small tleap TIP4P-Ew box with every water at the model geometry (Amber's SHAKE lengths
-    0.9572 / 1.5136 A) and the extra points placed."""
-    prm = os.path.join(DATA, "tip4pew_small.prmtop")
-    mols = read_prmtop_molecules(prm, charges="amber")
-    xyz, _, box = read_coordinates(os.path.join(DATA, "tip4pew_small.inpcrd"))
-    H = box_from_cell(*box) * 0.1
-    X = (xyz * 0.1).reshape(-1, 4, 3)
-    r, hh = 0.09572, 0.15136
-    t = np.arcsin(hh / 2 / r)
-    ideal = np.array([[0, 0, 0], [r * np.sin(t), r * np.cos(t), 0], [-r * np.sin(t), r * np.cos(t), 0]])
-    for k in range(len(X)):
-        y = X[k, :3] - X[k, :3].mean(0)
-        c = ideal - ideal.mean(0)
-        U, _, Vt = np.linalg.svd(c.T @ y)
-        R = (U @ np.diag([1, 1, np.sign(np.linalg.det(U @ Vt))]) @ Vt).T
-        X[k, :3] = c @ R.T + X[k, :3].mean(0)
-    sys = System(mols)
-    return sys, np.asarray(VirtualSites.of(sys).place(X.reshape(-1, 3), H)), H
-
-
 def test_engines_with_sites_agree_and_conserve_energy():
     """TIP4P-Ew (point charges, Amber's EP frame) in the rigid engine and as constrained water with a
     placed site in the flexible engine: same energies and body forces at the same state; NVE."""
     from pgm_jax.md.forcefield import ewald_beta_for
 
-    sys, pos, H = _tip4pew_ideal()
+    sys, pos, H = tip4pew_ideal()
     s = MDSettings().replace(
         elec="q", cutoff=0.65, skin=0.05, ewald_beta=ewald_beta_for(0.65), pme_spacing=0.06, precision="double"
     )
@@ -587,7 +566,7 @@ def test_replica_exchange_with_sites():
     from pgm_jax.md.forcefield import ewald_beta_for
     from pgm_jax.md.remd import ReplicaExchange
 
-    sys, pos, H = _tip4pew_ideal()
+    sys, pos, H = tip4pew_ideal()
     s = MDSettings().replace(
         elec="q", cutoff=0.65, skin=0.05, ewald_beta=ewald_beta_for(0.65), pme_spacing=0.06, precision="double"
     )

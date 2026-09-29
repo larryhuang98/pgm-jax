@@ -161,6 +161,7 @@ def test_protein_sections_round_trip(tmp_path):
 
 
 @pytest.mark.skipif(not os.path.exists(WATER_TOP), reason="pGM3P-25 water prmtop not available")
+@pytest.mark.needs_data
 def test_pgm_water_round_trip(tmp_path):
     asys = load_amber(WATER_TOP, WATER_RST, electrostatics="prmtop")
     out = str(tmp_path / "w.prmtop")
@@ -178,6 +179,7 @@ def test_pgm_water_round_trip(tmp_path):
 
 
 @pytest.mark.skipif(not os.path.exists(PMEMD), reason="pmemd.pgm not installed")
+@pytest.mark.needs_external
 def test_pmemd_single_point_matches_engine(tmp_path, monkeypatch):
     """pmemd.pgm (CPU, float64) on the written solvated peptide against the engine: bonded, 1-4,
     van der Waals and pGM electrostatic energies and the forces (the engine's PME with pmemd's

@@ -10,6 +10,7 @@ import os
 import jax
 import numpy as np
 import pytest
+from _systems import water, water_lattice
 
 from pgm_jax.bias import BiasSet, MetaD, cv
 from pgm_jax.bias.walkers import Walkers
@@ -24,7 +25,7 @@ from pgm_jax.md.pimd import PILE, PIMDSimulation
 from pgm_jax.md.remd import ReplicaExchange
 from pgm_jax.md.simulation import Simulation
 from pgm_jax.md.thermostats import Bussi, Langevin
-from pgm_jax.system import Molecule, System
+from pgm_jax.system import System
 
 LEGACY = os.path.join(os.path.dirname(__file__), "data", "legacy_checkpoints")
 S = MDSettings().replace(precision="double", dipole_tol=1e-10, max_iter=300, cutoff=0.55, skin=0.05)
@@ -51,38 +52,6 @@ def same(a, b):
 
 
 # ----------------------------------------------------------------------------- systems
-def water():
-    """The toy pGM water of pgm_jax.models.toy."""
-    return Molecule(
-        "WAT",
-        ["O", "H", "H"],
-        ["OW", "HW", "HW"],
-        np.array([-0.8, 0.4, 0.4]),
-        np.array([0.06, 0.05, 0.05]),
-        np.array([1.0e-3, 0.3e-3, 0.3e-3]),
-        cov=[(0, 1, -0.02), (0, 2, -0.02), (1, 0, 0.008), (2, 0, 0.008)],
-        lj_rmin_half=[0.178, 0.0, 0.0],
-        lj_sqrt_eps=[0.80, 0.0, 0.0],
-        bonds=[(0, 1), (0, 2)],
-    )
-
-
-def water_lattice(n_side=4, spacing=0.31, seed=0):
-    """Randomly oriented rigid waters on a cubic lattice: positions, box, molecule geometry [nm]."""
-    rng = np.random.default_rng(seed)
-    t = np.radians(104.52 / 2)
-    w = np.array(
-        [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
-    )
-    pos = []
-    for i in range(n_side):
-        for j in range(n_side):
-            for k in range(n_side):
-                Q = np.linalg.qr(rng.normal(size=(3, 3)))[0]
-                pos.append(w @ Q.T + (np.array([i, j, k]) + 0.5) * spacing)
-    return np.concatenate(pos), np.eye(3) * n_side * spacing, w
-
-
 def rigid():
     """64 rigid waters, NVT (Bussi)."""
     pos, H, _ = water_lattice()

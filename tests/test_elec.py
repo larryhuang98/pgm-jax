@@ -4,6 +4,7 @@ import os
 
 import numpy as np
 import pytest
+from _systems import water_geometry
 
 from pgm_jax.channels import ElecChannel
 from pgm_jax.lj import LJChannel
@@ -29,6 +30,7 @@ def _restart_coords(path):
 
 
 @pytest.mark.skipif(not os.path.exists(AMBER_TEST), reason="Amber pgm_4wat test not available")
+@pytest.mark.needs_data
 def test_sander_parity_4wat():
     """sander pGM (ipgm=1, gas phase, dipole_scf_tol=1e-7): EELEC = -2164.4829, VDWAALS = 6.7727 kcal/mol."""
     w = _water_4wat()
@@ -42,6 +44,7 @@ def test_sander_parity_4wat():
 
 
 @pytest.mark.skipif(not os.path.exists(PGM3P25_TOP), reason="pGM3P-25 topology not available")
+@pytest.mark.needs_data
 def test_prmtop_reader_pgm3p25():
     w = read_prmtop_pgm(PGM3P25_TOP)[0]
     assert w.elements == ["O", "H", "H"]
@@ -68,11 +71,7 @@ def _water_generic():
 
 
 def _monomer(shift, rot):
-    t = np.radians(104.52 / 2)
-    m = np.array(
-        [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
-    )
-    return m @ rot.T + shift
+    return water_geometry() @ rot.T + shift
 
 
 def _trimer(rng):

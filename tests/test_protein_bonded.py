@@ -5,29 +5,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_bonded_sets import _fd_check
+from _systems import ACE_ALA_GLY_NME, ACE_ALA_NME, fd_check, peptide_spec
 
 from pgm_jax.bonded import terms as T
 from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
 from pgm_jax.bonded.topology import build_topology
 
-ACE_ALA_NME = "CC(=O)N[C@@H](C)C(=O)NC"
-ACE_ALA_GLY_NME = "CC(=O)N[C@@H](C)C(=O)NCC(=O)NC"
-
-
-def peptide_spec(smiles, name="peptide", seed=7):
-    """MolSpec of a small peptide from SMILES (RDKit, ETKDG geometry, nm); no pGM parameters."""
-    Chem = pytest.importorskip("rdkit.Chem")
-    from rdkit.Chem import AllChem
-
-    m = Chem.AddHs(Chem.MolFromSmiles(smiles))
-    AllChem.EmbedMolecule(m, randomSeed=seed)
-    AllChem.MMFFOptimizeMolecule(m)
-    x = m.GetConformer().GetPositions() * 0.1
-    el = [a.GetSymbol() for a in m.GetAtoms()]
-    bonds = [(b.GetBeginAtomIdx(), b.GetEndAtomIdx()) for b in m.GetBonds()]
-    orders = [b.GetBondTypeAsDouble() for b in m.GetBonds()]
-    return MolSpec(name, el, bonds, orders, 0, x)
+pytestmark = pytest.mark.optional_deps  # every test builds its peptides with RDKit
 
 
 def _top(spec):
@@ -105,7 +89,7 @@ def test_protein_set_energy_gradients_and_invariance():
     def E(R):
         return model.bonded_energy(0, R, P)
 
-    _fd_check(E, x, rng)
+    fd_check(E, x, rng)
     Q = np.linalg.qr(rng.normal(size=(3, 3)))[0]
     Q = Q * np.sign(np.linalg.det(Q))  # proper rotation (phi/psi change sign under reflection)
     assert abs(float(E(jnp.asarray(x @ Q.T))) - float(E(jnp.asarray(x)))) < 1e-9
@@ -151,7 +135,7 @@ def test_nnb_protein_basis_context_reuse_and_persistence(tmp_path):
     # stage 2 gradients
     tab = net.prepare(new)
     x = new.ref_xyz + 0.003 * rng.normal(size=new.ref_xyz.shape)
-    _fd_check(lambda R: net.energy_from(C, tab, R), x, rng)
+    fd_check(lambda R: net.energy_from(C, tab, R), x, rng)
     # save / load: same coefficients, frozen vocabulary
     net.save(str(tmp_path / "nnb.pkl"), P)
     net2, P3 = NNBonded.load(str(tmp_path / "nnb.pkl"))

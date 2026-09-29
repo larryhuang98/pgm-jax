@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_flexible import template
+from _systems import methanol_template, peptide_template, requires
 
 from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.constraints import Constraints
@@ -37,7 +37,7 @@ def _clusters():
         1.0,
     )
     add([[0, 0, 0], [0.096, 0, 0]], [(0, 1)], [16.0, 1.0], 2.0)
-    tpl, xm = template()
+    tpl, xm = methanol_template()
     add(xm, [(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)], np.asarray(tpl.pgm.masses), 3.0)
     ang = np.arange(6) * np.pi / 3
     ring = np.stack([0.14 * np.cos(ang), 0.14 * np.sin(ang), np.zeros(6)], 1)
@@ -110,7 +110,7 @@ def test_rattle_velocity_is_tangent_finite_difference():
 
 
 def _methanol_box(n=32, seed=0):
-    tpl, _ = template()
+    tpl, _ = methanol_template()
     pos, H = liquid_box(tpl, n, 0.55, seed=seed, min_dist=0.18)
     return tpl, System([tpl.pgm] * n), pos, H
 
@@ -118,7 +118,7 @@ def _methanol_box(n=32, seed=0):
 def _cluster():
     """Eight methanols (a 2 x 2 x 2 lattice at liquid density) in a 3.6 nm box with a 1.7 nm
     cutoff: no pair crosses the cutoff, so NVE conserves the energy to the integration error."""
-    tpl, _ = template()
+    tpl, _ = methanol_template()
     pos, H = liquid_box(tpl, 8, 0.75, seed=2, min_dist=0.2)
     return tpl, System([tpl.pgm] * 8), pos + 1.4, np.eye(3) * 3.6
 
@@ -261,12 +261,12 @@ def test_npt_bussi_and_mts_keep_constraints():
     assert abs(o["etot"] - e0) < 2e-2 * 0.5 * m.integ.dof * KB * 298.0
 
 
+@requires("rdkit")
 def test_iterative_solver_in_md():
     """A 29-atom peptide with every bond constrained (above dense_max: one iterative block), NVE at
     2 fs in vacuum-like conditions: constraints every step, energy conserved."""
-    from test_md_macro import _peptide_template
 
-    tpl, model, P, x = _peptide_template()
+    tpl, model, P, x = peptide_template()
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.05, lj_lrc=False)
     sim = FlexibleSimulation(
         System([tpl.pgm]),

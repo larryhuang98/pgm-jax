@@ -8,8 +8,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import water
-from test_md import settings, small_box
+from _systems import md_settings, small_box, water, water_geometry
 
 from pgm_jax import ElecChannel, System
 from pgm_jax.fit import (
@@ -38,7 +37,7 @@ def _analyzer(tol=1e-12, **kw):
     tol : float
         Dipole tolerance of the analyzer.
     **kw
-        Further settings() options.
+        Further md_settings() options.
 
     Returns
     -------
@@ -47,7 +46,7 @@ def _analyzer(tol=1e-12, **kw):
     """
     sys, pos, H = small_box(3)
     space = ParameterSpace.scales(sys.table, QTY)
-    st = settings(pme_grid=(32, 32, 32), pme_order=6, **kw)
+    st = md_settings(pme_grid=(32, 32, 32), pme_order=6, **kw)
     an = FrameAnalyzer(sys, H, st, space, rdf=RDFSpec.by_type(sys, "OW", rmax=0.8, nbins=40), dipole_tol=tol, chunk=2)
     return sys, pos, H, space, an
 
@@ -76,7 +75,7 @@ def test_frame_values_match_the_md_force_field():
     sys, pos, H, space, an = _analyzer()
     th = np.zeros(space.n)
     out = an.frame(th, pos, H)
-    ff = PGMForceField(sys, H, settings(pme_grid=(32, 32, 32), pme_order=6))
+    ff = PGMForceField(sys, H, md_settings(pme_grid=(32, 32, 32), pme_order=6))
     idx = ff.rows_for(pos, H)
     res = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
     assert abs(out["U"] - float(res.energy["total"])) < 1e-8 * abs(float(res.energy["total"]))
@@ -223,10 +222,7 @@ def test_gas_phase_properties_and_the_md_monomer_energy():
     neutral molecule add ~1e-4 kJ/mol); gradients of energy, dipole and polarizability vs finite
     differences; values against the gas-phase ElecChannel."""
     m = water()
-    t = np.radians(104.52 / 2)
-    x = np.array(
-        [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
-    )
+    x = water_geometry()
     sys = System([m])
     space = ParameterSpace.scales(sys.table, ["q", "cov", "alpha", "radius"])
     gp = GasPhase(m, x, sys.table, space)
@@ -235,7 +231,7 @@ def test_gas_phase_properties_and_the_md_monomer_energy():
     e, aux = ElecChannel().energy(jnp.asarray(x - x.mean(0)), sys, space(th))
     assert np.isclose(v["gas_energy"], float(sum(e.values())))
     Hb = np.eye(3) * 6.0
-    ff = PGMForceField(sys, Hb, settings(cutoff=2.5, skin=0.0, ewald_beta=1.6, pme_grid=(48, 48, 48)))
+    ff = PGMForceField(sys, Hb, md_settings(cutoff=2.5, skin=0.0, ewald_beta=1.6, pme_grid=(48, 48, 48)))
     y = x - x.mean(0) + 3.0
     res = jax.jit(ff.compute)(y, Hb, ff.rows_for(y, Hb), ff.init_induction(), space(th))
     assert abs(float(res.energy["total"]) - v["gas_energy"]) < 2e-3
@@ -321,7 +317,7 @@ def test_one_iteration_of_liquid_fit(tmp_path):
         gas=gas,
         rdf_r=rdf.r,
     )
-    st = settings(
+    st = md_settings(
         cutoff=0.6,
         skin=0.1,
         pme_grid=(16, 16, 16),
@@ -370,7 +366,7 @@ def test_nvt_replicas_are_ordered_by_replica(tmp_path):
     sys, pos, H = small_box(2)
     space = ParameterSpace.scales(sys.table, ["q"])
     obj = Objective([Target("energy", None, fit=False), Target("eps", None, fit=False)], space)
-    st = settings(
+    st = md_settings(
         cutoff=0.6,
         skin=0.1,
         pme_grid=(16, 16, 16),

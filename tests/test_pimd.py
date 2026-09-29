@@ -9,11 +9,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import water
+from _systems import flexible_water_box, water
 
-from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
 from pgm_jax.md.barostats import MonteCarloBarostat
-from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate
+from pgm_jax.md.flexible import FlexibleSimulation
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.pimd import (
     PILE,
@@ -24,8 +23,7 @@ from pgm_jax.md.pimd import (
     contraction_matrix,
     normal_modes,
 )
-from pgm_jax.models.water import WATER_FAMILIES, flexible_water, harmonic_frequencies, qtip4pf_intra, water_geometry
-from pgm_jax.system import System
+from pgm_jax.models.water import flexible_water, harmonic_frequencies, qtip4pf_intra, water_geometry
 from pgm_jax.units import HBAR_KJMOL_PS, KB
 
 T = 300.0
@@ -190,34 +188,8 @@ def test_rpmd_energy_conservation():
 
 
 # ----------------------------------------------------------------------------- pGM engine
-def _water_template():
-    m = water()
-    t = math.radians(104.5)
-    x = np.array([[0, 0, 0], [0.0957, 0, 0], [0.0957 * math.cos(t), 0.0957 * math.sin(t), 0]])
-    spec = MolSpec("WAT", ["O", "H", "H"], [(0, 1), (0, 2)], [1, 1], 0, x, m)
-    model = BondedModel([spec], BondedSettings(families=WATER_FAMILIES))
-    P = model.init_params()
-    P["bond_quartic"]["K2"] = jnp.full_like(P["bond_quartic"]["K2"], 4.5e5)
-    P["angle_harm"]["Ka"] = jnp.full_like(P["angle_harm"]["Ka"], 350.0)
-    return FlexibleTemplate.from_fit(model, P), x
-
-
-def _water_box(n_side=2, L=1.5, seed=0):
-    tpl, x = _water_template()
-    rng = np.random.default_rng(seed)
-    pos = []
-    for i in range(n_side):
-        for j in range(n_side):
-            for k in range(n_side):
-                R = np.linalg.qr(rng.normal(size=(3, 3)))[0]
-                c = (np.array([i, j, k]) + 0.5) * L / n_side + rng.normal(scale=0.02, size=3)
-                pos.append((x - x.mean(0)) @ R.T + c)
-    n = n_side**3
-    return tpl, System([tpl.pgm] * n), np.concatenate(pos), np.eye(3) * L
-
-
 def _sim(**kw):
-    tpl, sys, pos, H = _water_box()
+    tpl, sys, pos, H = flexible_water_box()
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=0.5, skin=0.05, lj_lrc=False, max_iter=200)
     return FlexibleSimulation(
         sys, [tpl] * sys.nmol, pos, H, s, dt=0.0002, thermostat="bussi", temperature=T, log=None, **kw

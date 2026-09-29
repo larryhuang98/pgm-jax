@@ -7,47 +7,19 @@ three levels), NPT + restraints + checkpoints, and the settings that must be ref
 import jax
 import numpy as np
 import pytest
-from test_flexible import _box
-from test_grad import water
-from test_md_macro import _water_box
+from _systems import methanol_liquid, water_lattice, water_sim
 
-from pgm_jax import System
 from pgm_jax.md.barostats import MonteCarloBarostat
-from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
+from pgm_jax.md.flexible import FlexibleSimulation
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.mts import MTS
-from pgm_jax.md.simulation import Simulation
 from pgm_jax.md.thermostats import Bussi, Langevin
 from pgm_jax.units import KB
-
-S_WATER = MDSettings().replace(precision="double", dipole_tol=1e-12, max_iter=300, cutoff=0.55, skin=0.05)
-
-
-def water_sim(engine, mts=None, dt=0.002, thermostat=None, seed=3, settings=S_WATER, **kw):
-    """64 pGM-like waters (rigid bodies or constraints), 0.55 nm cutoff, float64; NVE by default."""
-    pos, H, w = _water_box(n_side=4, spacing=0.31)
-    wat = water()
-    sys = System([wat] * (len(pos) // 3))
-    if engine == "rigid":
-        return Simulation(sys, pos, H, settings, dt=dt, thermostat=thermostat, log=None, seed=seed, mts=mts, **kw)
-    return FlexibleSimulation(
-        sys,
-        [RigidTemplate(wat, w)] * sys.nmol,
-        pos,
-        H,
-        settings,
-        dt=dt,
-        thermostat=thermostat,
-        log=None,
-        seed=seed,
-        mts=mts,
-        **kw,
-    )
 
 
 def methanol_sim(mts=None, dt=0.001, thermostat=None, **kw):
     """32 flexible methanols (class II bonded terms, 1-4 scaled LJ), 0.6 nm cutoff, float64; NVE by default."""
-    tpl, sys, pos, H = _box(n=32, density=0.55)
+    tpl, sys, pos, H = methanol_liquid(n=32, density=0.55)
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, max_iter=300, cutoff=0.6, skin=0.05, lj_lrc=False)
     return FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=dt, thermostat=thermostat, log=None, mts=mts, **kw)
 
@@ -146,7 +118,7 @@ def test_energy_conservation():
     x, H, v = base.positions(), np.asarray(base.state.box), base.velocities()
     res = {}
     for name, dt, m in (("h", 0.001, None), ("2h", 0.002, None), ("mts", 0.002, MTS(inner=2, r_short=0.4, buffer=0.1))):
-        tpl, sys, _, _ = _box(n=32, density=0.55)
+        tpl, sys, _, _ = methanol_liquid(n=32, density=0.55)
         s = base.settings
         sim = FlexibleSimulation(sys, [tpl] * sys.nmol, x, H, s, dt=dt, thermostat=None, velocities=v, log=None, mts=m)
         E = []
@@ -212,7 +184,7 @@ def test_npt_restraints_and_checkpoint(tmp_path):
     continues the run exactly."""
     from pgm_jax.md.restraints import PositionRestraint
 
-    pos, H, w = _water_box(n_side=4, spacing=0.31)
+    pos, H, w = water_lattice(n_side=4, spacing=0.31)
     rest = PositionRestraint([0, 3], pos[[0, 3]], k=500.0)
     s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
 

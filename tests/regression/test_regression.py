@@ -16,6 +16,8 @@ if not os.environ.get("PGM_REGRESSION"):
 import regress  # (sets jax_enable_x64 and the import path)
 import regression_cases as C
 
+pytestmark = pytest.mark.regression
+
 
 @pytest.mark.parametrize("name", list(C.CASES))
 def test_case_reproduces_golden(name):

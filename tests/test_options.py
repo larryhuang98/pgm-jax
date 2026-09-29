@@ -7,8 +7,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from _systems import cluster, methanol, water
 from jax.scipy.special import erf
-from test_grad import cluster, methanol, water
 
 from pgm_jax import System
 from pgm_jax.channels import ElecChannel

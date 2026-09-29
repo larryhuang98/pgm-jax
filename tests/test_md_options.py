@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_md import settings, small_box
+from _systems import md_settings, methanol_template, small_box
 
 from pgm_jax import PeriodicModel, PeriodicPGM, System, set_gvdw
 from pgm_jax.md.forcefield import PGMForceField
@@ -29,7 +29,7 @@ def _list(sys, pos, H, s):
 def test_elec_levels_match_ewald(elec):
     """Every electrostatics level of the MD force field matches the exact Ewald reference."""
     sys, pos, H = small_box(2)
-    s = settings(elec=elec)
+    s = md_settings(elec=elec)
     ff = PGMForceField(sys, H, s)
     res = jax.jit(ff.compute)(pos, H, _list(sys, pos, H, s), ff.init_induction())
     ew = PeriodicPGM(sys, H, pos, ewald_beta=6.0, cutoff=0.6, elec=elec).energy(pos)[0]["total"]
@@ -40,7 +40,7 @@ def test_elec_levels_match_ewald(elec):
     )
     if elec in ("q", "qp"):
         assert float(jnp.abs(res.induction.mu).max()) == 0.0
-    full = jax.jit(PGMForceField(sys, H, settings()).compute)(pos, H, _list(sys, pos, H, s), ff.init_induction())
+    full = jax.jit(PGMForceField(sys, H, md_settings()).compute)(pos, H, _list(sys, pos, H, s), ff.init_induction())
     assert abs(float(full.energy["elec"]) - float(res.energy["elec"])) > 1.0  # the levels differ
 
 
@@ -48,7 +48,7 @@ def test_elec_levels_match_ewald(elec):
 def test_gvdw_md_matches_periodic_and_forces(rep):
     """The Gaussian vdW energy of the MD force field matches PeriodicModel, and its forces are the gradient."""
     sys, pos, H = _gvdw_box(1)
-    s = settings(vdw="gvdw", gvdw_rep=rep)
+    s = md_settings(vdw="gvdw", gvdw_rep=rep)
     ff = PGMForceField(sys, H, s)
     idx = _list(sys, pos, H, s)
     res = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
@@ -73,7 +73,7 @@ def test_gvdw_md_matches_periodic_and_forces(rep):
 def test_gvdw_tail_and_virial():
     """Gaussian vdW with the long-range tail: energy and strain derivative match PeriodicModel."""
     sys, pos, H = _gvdw_box(3)
-    s = settings(vdw="gvdw", lj_lrc=True)
+    s = md_settings(vdw="gvdw", lj_lrc=True)
     ff = PGMForceField(sys, H, s)
     idx = _list(sys, pos, H, s)
     res = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
@@ -89,12 +89,11 @@ def test_gvdw_tail_and_virial():
 
 
 def test_flexible_gvdw_single_molecule_and_settings_check():
-    from test_flexible import template
 
     from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate
     from pgm_jax.md.forcefield import MDSettings
 
-    tpl0, x = template(vdw="gvdw")
+    tpl0, x = methanol_template(vdw="gvdw")
     spec = tpl0.specs[0]
     from dataclasses import replace
 

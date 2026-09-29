@@ -11,8 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import water
-from test_md_macro import _water_box
+from _systems import alch_box, alch_frame, alch_settings, alch_sim, flex_solute_box, water, water_geometry
 
 from pgm_jax import System
 from pgm_jax.analysis import free_energy as fe
@@ -31,47 +30,12 @@ from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.md.simulation import Simulation
 
 
-def settings(**kw):
-    base = dict(
-        precision="double",
-        dipole_tol=1e-11,
-        max_iter=400,
-        cutoff=0.55,
-        skin=0.05,
-        ewald_beta=5.0,
-        pme_grid=(32, 32, 32),
-        peek=0.0,
-    )
-    base.update(kw)
-    return MDSettings().replace(**base)
-
-
-def box(seed=0):
-    pos, H, _ = _water_box(4, 0.31, seed)
-    return pos, H, System([water()] * (len(pos) // 3))
-
-
-def alch_sim(s=None, lam=(1.0, 1.0), box_seed=0, **kw):
-    pos, H, sys0 = box(box_seed)
-    sysA, P = alchemical_system(sys0, 0)
-    alch = Alchemy(sysA, 0, lam=lam)
-    sim = Simulation(sysA, pos, H, s or settings(), dt=0.001, log=None, params=P, alchemy=alch, **kw)
-    return sim, alch, P, (pos, H, sys0)
-
-
-def frame(sim):
-    st = sim.state
-    X = sim.rigid.positions(st.dyn.position)
-    cand = sim.integ.nb.candidates(st.nbr, st.dyn.position.center, st.box, X)[0]
-    return X, st.box, cand
-
-
 # ----------------------------------------------------------------------------- Hamiltonian
 def test_full_coupling_is_the_original_hamiltonian():
     """lambda = (1, 1): energy, forces, pressure and the Monte Carlo trial energy of the original
     system (the solute's van der Waals moves from the ordinary rows to the soft-core rows)."""
     sim, alch, P, (pos, H, sys0) = alch_sim()
-    plain = Simulation(sys0, pos, H, settings(), dt=0.001, log=None)
+    plain = Simulation(sys0, pos, H, alch_settings(), dt=0.001, log=None)
     assert abs(float(sim.state.epot) - float(plain.state.epot)) < 1e-9 * abs(float(plain.state.epot))
     assert abs(float(sim.state.vdw) - float(plain.state.vdw)) < 1e-9
     F0, F1 = plain.state.dyn.force, sim.state.dyn.force
@@ -79,7 +43,7 @@ def test_full_coupling_is_the_original_hamiltonian():
         F0.orientation.vec, F1.orientation.vec, atol=1e-8
     )
     assert abs(sim.pressure() - plain.pressure()) < 1e-6 * max(1.0, abs(plain.pressure()))
-    X, Hb, cand = frame(sim)
+    X, Hb, cand = alch_frame(sim)
     e1 = alch.energy(sim.ff, X, Hb, cand, sim.ff.init_induction(), P, None)[0]
     e0 = plain.ff.energy(X, Hb, cand, plain.ff.init_induction())[0]
     assert abs(float(e1) - float(e0)) < 1e-9 * abs(float(e0))
@@ -91,8 +55,8 @@ def test_npt_with_an_alchemical_region_follows_the_plain_run():
     rigid-body frame, so momenta drawn in body frames would differ) step by step."""
     vel = np.random.default_rng(4).normal(size=(192, 3)) * 0.5
     kw = dict(thermostat="bussi", barostat=MonteCarloBarostat(every=4), seed=3, velocities=vel)
-    sim, _, _, (pos, H, sys0) = alch_sim(settings(dipole_tol=1e-10), **kw)
-    plain = Simulation(sys0, pos, H, settings(dipole_tol=1e-10), dt=0.001, log=None, **kw)
+    sim, _, _, (pos, H, sys0) = alch_sim(alch_settings(dipole_tol=1e-10), **kw)
+    plain = Simulation(sys0, pos, H, alch_settings(dipole_tol=1e-10), dt=0.001, log=None, **kw)
     sim.advance(40)
     plain.advance(40)
     assert int(sim.state.mc[0]) == 10 and int(sim.state.mc[1]) == int(plain.state.mc[1]) > 0
@@ -105,7 +69,7 @@ def test_dudl_matches_finite_differences_with_resolved_dipoles(lam):
     """Hellmann-Feynman: dU/dlambda at the converged dipoles (autodiff at fixed mu) equals the
     central difference of the energy with the dipoles re-solved at every lambda."""
     sim, alch, P, _ = alch_sim()
-    X, Hb, cand = frame(sim)
+    X, Hb, cand = alch_frame(sim)
     ff = sim.ff
     U = jax.jit(lambda l: alch.energy(ff, X, Hb, cand, ff.init_induction(), P, l))
     lam = jnp.asarray(lam)
@@ -122,7 +86,7 @@ def test_dudl_at_the_ends():
     """The endpoints lambda_elec = 0 (polarizability at its floor) and 1: one-sided differences
     (second order, from the three points lambda, lambda +- h, 2h) agree with the analytic value."""
     sim, alch, P, _ = alch_sim()
-    X, Hb, cand = frame(sim)
+    X, Hb, cand = alch_frame(sim)
     ff = sim.ff
     U = jax.jit(lambda l: alch.energy(ff, X, Hb, cand, ff.init_induction(), P, l)[:2])
     h = 1e-4
@@ -143,11 +107,11 @@ def test_decoupled_end_state_is_the_box_without_the_solute():
     """lambda = (0, 0): the environment's energy and forces are those of the box without the
     solute (up to the polarizability floor), and the solute feels no force."""
     sim, alch, P, (pos, H, sys0) = alch_sim()
-    X, Hb, cand = frame(sim)
+    X, Hb, cand = alch_frame(sim)
     ff = sim.ff
     lam = jnp.zeros(2)
     res = jax.jit(lambda: alch.compute(ff, X, Hb, cand, ff.init_induction(), P, lam))()
-    env = Simulation(System([water()] * (sys0.nmol - 1)), pos[3:], H, settings(), dt=0.001, log=None)
+    env = Simulation(System([water()] * (sys0.nmol - 1)), pos[3:], H, alch_settings(), dt=0.001, log=None)
     ref = jax.jit(env.ff.compute)(X[3:], Hb, env.ff.rows_for(X[3:], Hb), env.ff.init_induction())
     assert abs(float(res.energy["total"]) - float(ref.energy["total"])) < 1e-8 * abs(float(ref.energy["total"]))
     assert abs(float(res.energy["vdw"]) - float(ref.energy["vdw"])) < 1e-9
@@ -159,8 +123,8 @@ def test_softcore_is_finite_at_overlap_and_lennard_jones_at_one():
     """Soft core: finite energy and zero force at r = 0 for lambda_vdw < 1, U(0) = lambda eps (1/w^2 -
     2/w) with w = sc_alpha (1 - lambda) / 2; Lennard-Jones at lambda_vdw = 1; the long-range
     correction scales with lambda_vdw."""
-    sim, alch, P, _ = alch_sim(settings(lj_lrc=True))
-    X, Hb, cand = frame(sim)
+    sim, alch, P, _ = alch_sim(alch_settings(lj_lrc=True))
+    X, Hb, cand = alch_frame(sim)
     Pa = sim.sys.expand(P)
     N = sim.sys.n
     tail = float(alch._tail(Pa, Hb))
@@ -192,8 +156,8 @@ def test_softcore_is_finite_at_overlap_and_lennard_jones_at_one():
 def test_pressure_at_intermediate_lambda_matches_volume_derivative():
     """Alchemy.strain_derivative (molecular virial of the lambda Hamiltonian, no tail) against a
     finite difference of the fixed-mu energy under molecular scaling of centres and box."""
-    sim, alch, P, _ = alch_sim(settings(lj_lrc=False))
-    X, Hb, cand = frame(sim)
+    sim, alch, P, _ = alch_sim(alch_settings(lj_lrc=False))
+    X, Hb, cand = alch_frame(sim)
     ff = sim.ff
     lam = jnp.asarray([0.4, 0.6])
     _, ind, _, _ = alch.energy(ff, X, Hb, cand, ff.init_induction(), P, lam)
@@ -214,7 +178,7 @@ def test_pressure_at_intermediate_lambda_matches_volume_derivative():
 
 # ----------------------------------------------------------------------------- windows
 def test_windows_batched_equal_sequential_and_exchange():
-    sim, alch, P, _ = alch_sim(settings(dipole_tol=1e-9), thermostat="bussi")
+    sim, alch, P, _ = alch_sim(alch_settings(dipole_tol=1e-9), thermostat="bussi")
     L = standard_schedule(3, [0.5, 0.0])
     wb = LambdaWindows(sim, L, batched=True, seed=1)
     ws = LambdaWindows(sim, L, batched=False, seed=1)
@@ -229,7 +193,7 @@ def test_windows_batched_equal_sequential_and_exchange():
     beta = 1.0 / float(wb.integ.kT)
     assert np.allclose(np.diag(ub), beta * wb.potentials(), atol=1e-7)  # u_k(x_k) = beta U at the window's own lambda
     # dU/dlambda_vdw from the samples: the soft-core term alone
-    X, Hb, cand = frame(wb._on(3))
+    X, Hb, cand = alch_frame(wb._on(3))
     gv = jax.grad(lambda lv: alch.softcore_energy(X, Hb, cand, P, lv))(L[3, 1])
     assert abs(float(gv) - gb[3, 1]) < 1e-7 * max(1.0, abs(float(gv)))
     # Hamiltonian exchange: slots 1 and 2 swap; each re-evaluated in its own Hamiltonian, energy booked as heat
@@ -247,7 +211,7 @@ def test_windows_batched_equal_sequential_and_exchange():
 
 
 def test_free_energy_run_outputs_and_restart(tmp_path):
-    sim, alch, P, _ = alch_sim(settings(dipole_tol=1e-8), thermostat="bussi")
+    sim, alch, P, _ = alch_sim(alch_settings(dipole_tol=1e-8), thermostat="bussi")
     L = standard_schedule(3, [0.5, 0.0])
     prefix = str(tmp_path / "w")
     run = FreeEnergyRun(LambdaWindows(sim, L, seed=2), sample_every=5, exchange_every=10, log=None, meta={"x": 1})
@@ -275,10 +239,7 @@ def test_gas_phase_leg_matches_a_lone_molecule_in_a_large_box():
     sysA, P = alchemical_system(System([w]), 0)
     alch = Alchemy(sysA, 0)
     rng = np.random.default_rng(3)
-    t = np.radians(104.52 / 2)
-    xyz = np.array(
-        [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
-    )
+    xyz = water_geometry()
     xyz = xyz @ np.linalg.qr(rng.normal(size=(3, 3)))[0].T + 2.1
     H = np.eye(3) * 4.2
     s = MDSettings().replace(
@@ -309,7 +270,7 @@ def test_gas_phase_leg_matches_a_lone_molecule_in_a_large_box():
 
 # ----------------------------------------------------------------------------- setup errors
 def test_refused_setups():
-    pos, H, sys0 = box()
+    pos, H, sys0 = alch_box()
     with pytest.raises(ValueError, match="alchemical_system"):
         Alchemy(sys0, 0)  # shares its keys with every other water
     w = water()
@@ -319,38 +280,15 @@ def test_refused_setups():
         Alchemy(sysI, 0)
     sysA, P = alchemical_system(sys0, 0)
     with pytest.raises(NotImplementedError, match="vdw"):
-        Simulation(sysA, pos, H, settings(vdw="gvdw"), log=None, alchemy=Alchemy(sysA, 0))
+        Simulation(sysA, pos, H, alch_settings(vdw="gvdw"), log=None, alchemy=Alchemy(sysA, 0))
     with pytest.raises(ValueError):
         Alchemy(sysA, 0, lam=(1.2, 0.0))
-    sim = Simulation(sysA, pos, H, settings(), log=None, params=P, alchemy=Alchemy(sysA, 0), thermostat=None)
+    sim = Simulation(sysA, pos, H, alch_settings(), log=None, params=P, alchemy=Alchemy(sysA, 0), thermostat=None)
     with pytest.raises(ValueError, match="thermostat"):
         LambdaWindows(sim, standard_schedule(2, [0.0]))
 
 
 # ----------------------------------------------------------------------------- flexible solutes
-def flex_box():
-    """Flexible methanol (the class II template of test_flexible, scaled 1-4 LJ) at the centre of a
-    box of rigid waters (constraints), the waters within 0.25 nm of it removed."""
-    from test_flexible import template
-
-    from pgm_jax.md.flexible import RigidTemplate
-
-    tpl, xm = template()
-    pos, H, w = _water_box(4, 0.31)
-    L = H[0, 0]
-    xm = xm - xm.mean(0) + 0.5 * L
-    wat = water()
-    keep = []
-    for k in range(len(pos) // 3):
-        d = pos[3 * k : 3 * k + 3, None, :] - xm[None]
-        d -= L * np.round(d / L)
-        if np.linalg.norm(d, axis=-1).min() > 0.25:
-            keep.append(k)
-    X = np.concatenate([xm] + [pos[3 * k : 3 * k + 3] for k in keep])
-    rt = RigidTemplate(wat, w)
-    return tpl, System([tpl.pgm] + [wat] * len(keep)), [tpl] + [rt] * len(keep), X, H
-
-
 def intra_lj(tpl, Pa, Y):
     """The template's intramolecular Lennard-Jones (weighted pairs) at positions Y (solute first)."""
     i, j, w = tpl.lj_pairs()
@@ -367,8 +305,8 @@ def test_flexible_solute_hamiltonian():
     and the waters feel the forces of the box without the solute."""
     from pgm_jax.md.flexible import FlexibleSimulation
 
-    tpl, sys0, tpls, X, H = flex_box()
-    s = settings()
+    tpl, sys0, tpls, X, H = flex_solute_box()
+    s = alch_settings()
     sysA, P = alchemical_system(sys0, 0)
     alch = Alchemy(sysA, 0)
     plain = FlexibleSimulation(sys0, tpls, X, H, s, log=None, constraints="h-bonds")
@@ -389,7 +327,7 @@ def test_keep_intramolecular_rigid_equals_annihilation_plus_gas_leg():
     """intramolecular="keep" on a rigid solute: U_keep(lambda) - U_annihilate(lambda) = E_gas(1) -
     E_gas(lambda) (a constant of the configuration), and dU/dlambda_elec differs by dE_gas/dlambda."""
     sim, ann, P, _ = alch_sim()
-    X, Hb, cand = frame(sim)
+    X, Hb, cand = alch_frame(sim)
     ff = sim.ff
     keep = Alchemy(sim.sys, 0, intramolecular="keep")
     keep.check(ff)
@@ -411,8 +349,8 @@ def test_keep_intramolecular_flexible_solute():
     finite differences with the dipoles re-solved."""
     from pgm_jax.md.flexible import FlexibleSimulation
 
-    tpl, sys0, tpls, X, H = flex_box()
-    s = settings()
+    tpl, sys0, tpls, X, H = flex_solute_box()
+    s = alch_settings()
     sysA, P = alchemical_system(sys0, 0)
     alch = Alchemy(sysA, 0, intramolecular="keep")
     plain = FlexibleSimulation(sys0, tpls, X, H, s, log=None, constraints="h-bonds")
@@ -451,14 +389,14 @@ def test_flexible_windows_and_lone_solute_gas_leg():
     from pgm_jax.md.alchemy import lone_solute
     from pgm_jax.md.flexible import FlexibleSimulation
 
-    tpl, sys0, tpls, X, H = flex_box()
+    tpl, sys0, tpls, X, H = flex_solute_box()
     sysA, P = alchemical_system(sys0, 0)
     sim = FlexibleSimulation(
         sysA,
         tpls,
         X,
         H,
-        settings(dipole_tol=1e-9),
+        alch_settings(dipole_tol=1e-9),
         dt=0.001,
         log=None,
         params=P,

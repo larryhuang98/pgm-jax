@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from _systems import requires
 
 from pgm_jax.channels import ElecChannel
 from pgm_jax.densities import gauss_bij, gauss_coulomb, gauss_overlap, gd6_jax, tt6_jax
@@ -115,6 +116,7 @@ def test_molecule_json_roundtrip():
     assert np.array_equal(m3.q, m.q) and np.all(m3.lj_sqrt_eps == 0) and m3.bonds == []
 
 
+@requires("networkx")
 def test_atom_mapping_permutation_invariance():
     """Shuffle the atom order of a geometry, map parameters onto it by bond graph: same pGM energy."""
     pytest.importorskip("networkx")

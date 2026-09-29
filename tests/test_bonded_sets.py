@@ -4,26 +4,15 @@ bonded terms (symmetry, rotation invariance, gradients, freezing for MD)."""
 import jax
 import jax.numpy as jnp
 import numpy as np
-from test_bonded import ethanal
-from test_grad import methanol
+from _systems import METHANOL_BONDS, ethanal, fd_check, methanol
 
 from pgm_jax.bonded import terms as T
 from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
 
-BONDS = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)]
-
 
 def _methanol_spec():
     m, x = methanol()
-    return MolSpec("methanol", list(m.elements), BONDS, [1] * 5, 0, x, m), x
-
-
-def _fd_check(E, x, rng, h=1e-6):
-    g = jax.grad(E)(jnp.asarray(x))
-    for _ in range(3):
-        d = rng.normal(size=x.shape)
-        fd = (E(jnp.asarray(x + h * d)) - E(jnp.asarray(x - h * d))) / (2 * h)
-        assert abs(float(fd) - float(jnp.sum(g * d))) < 1e-6 * max(1.0, abs(float(fd)))
+    return MolSpec("methanol", list(m.elements), METHANOL_BONDS, [1] * 5, 0, x, m), x
 
 
 def test_amber_set_typed_by_atom_type_and_gradients():
@@ -35,13 +24,12 @@ def test_amber_set_typed_by_atom_type_and_gradients():
     P["torsion_amber"]["K"] = P["torsion_amber"]["K"] + 1.0
     rng = np.random.default_rng(0)
     y = x + 0.005 * rng.normal(size=x.shape)
-    _fd_check(lambda R: model.energy(0, R, P)[0], y, rng)
+    fd_check(lambda R: model.energy(0, R, P)[0], y, rng)
     el, bonds, orders, xe = ethanal()
-    from test_bonded import ethanal as _e  # noqa: F401
 
     m2 = BondedModel([MolSpec("ethanal", el, bonds, orders, 0, xe)], BondedSettings(families=("improper_amber",)))
     P2 = m2.init_params()
-    _fd_check(lambda R: m2.bonded_energy(0, R, P2), xe + 0.01 * rng.normal(size=xe.shape), rng)
+    fd_check(lambda R: m2.bonded_energy(0, R, P2), xe + 0.01 * rng.normal(size=xe.shape), rng)
 
 
 def test_nnb_symmetry_invariance_gradients_and_freeze():
@@ -63,7 +51,7 @@ def test_nnb_symmetry_invariance_gradients_and_freeze():
 
     Q = np.linalg.qr(rng.normal(size=(3, 3)))[0]
     assert abs(float(E(y @ Q.T)) - float(E(y))) < 1e-9 * max(1.0, abs(float(E(y))))
-    _fd_check(E, np.asarray(y), rng)
+    fd_check(E, np.asarray(y), rng)
     Pf = dict(P)
     Pf["nnb"] = model.nnb.freeze(P["nnb"])
     assert abs(float(model.bonded_energy(0, y, Pf)) - float(E(y))) < 1e-10 * max(1.0, abs(float(E(y))))

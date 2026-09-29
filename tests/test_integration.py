@@ -7,9 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import water
-from test_hmr import _cluster
-from test_md import settings, small_box
+from _systems import flexible_water_box, md_settings, small_box, water, water_cluster_box, water_lattice
 
 from pgm_jax import System
 from pgm_jax.bias import BiasSet, Harmonic, cv
@@ -42,12 +40,12 @@ def test_iel_shadow_forces_are_exact_in_a_field(kind, precond, omega):
     sys, pos, H = small_box(1)
     pos = jnp.asarray(pos)
     fld = _field(kind)
-    ff = PGMForceField(sys, H, settings(iel="0scf", iel_precond=precond, iel_omega=omega))
+    ff = PGMForceField(sys, H, md_settings(iel="0scf", iel_precond=precond, iel_omega=omega))
     idx = ff.rows_for(pos, H)
     comp = jax.jit(lambda y, ind: ff.compute(y, H, idx, ind, efield=fld))
     ref = comp(pos, ff.init_induction())
     mu_star, e_star = ref.induction.mu, float(ref.energy["total"])
-    scf = PGMForceField(sys, H, settings())
+    scf = PGMForceField(sys, H, md_settings())
     r_scf = scf.compute(pos, H, idx, scf.init_induction(), efield=fld)
     assert _rel(mu_star, r_scf.induction.mu) < 1e-9
     assert abs(e_star - float(r_scf.energy["total"])) < 1e-9 * abs(e_star)
@@ -93,7 +91,7 @@ def test_iel_scf_step_converges_to_the_field_polarized_dipoles(kind):
     sys, pos, H = small_box(3)
     pos = jnp.asarray(pos)
     fld = _field(kind)
-    ff = PGMForceField(sys, H, settings(iel="scf", iel_iter=0, dipole_tol=1e-11))
+    ff = PGMForceField(sys, H, md_settings(iel="scf", iel_iter=0, dipole_tol=1e-11))
     idx = ff.rows_for(pos, H)
     ref = ff.compute(pos, H, idx, ff.init_induction(), efield=fld)
     mu = ref.induction.mu
@@ -117,7 +115,7 @@ def _econs(sim, blocks=8, n=50):
 def test_iel_nve_conserves_energy_in_a_field(field):
     sys, pos, H = small_box(6, nm=0)
     fld = EF.displacement((0.0, 0.0, 2.0)) if field == "D" else field
-    s = settings(cutoff=0.6, dipole_tol=1e-8, vdw="none", iel="0scf")
+    s = md_settings(cutoff=0.6, dipole_tol=1e-8, vdw="none", iel="0scf")
     sim = Simulation(sys, pos, H, settings=s, dt=0.001, thermostat=None, log=None, seed=1, efield=fld)
     ef0 = sim.observables()["field_energy"]
     e = _econs(sim)
@@ -132,7 +130,7 @@ def test_iel_nve_conserves_energy_in_a_field(field):
 def test_bias_with_field_and_iel(iel):
     """A static umbrella on an O-O distance together with an external field (and iEL/0-SCF): the
     bias forces add to the field forces, and NVE conserves econs."""
-    pos, H, w = _cluster()
+    pos, H, w = water_cluster_box()
     sys = System([water()] * (len(pos) // 3))
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False, iel=iel)
     d = cv.Distance(0, 9)
@@ -167,7 +165,7 @@ def test_walkers_book_the_work_of_a_time_dependent_field():
     heat booked for the explicit time dependence of E(t): walker 0 reproduces the single run."""
     from pgm_jax.bias.walkers import Walkers
 
-    pos, H, w = _cluster()
+    pos, H, w = water_cluster_box()
     sys = System([water()] * (len(pos) // 3))
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     d = cv.Distance(0, 9)
@@ -199,12 +197,11 @@ def test_walkers_book_the_work_of_a_time_dependent_field():
 
 # ----------------------------------------------------------------------------- other paths
 def test_flexible_minimize_with_mts():
-    from test_md_macro import _water_box
 
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
     from pgm_jax.md.mts import MTS
 
-    pos, H, w = _water_box(n_side=4, spacing=0.31)
+    pos, H, w = water_lattice(n_side=4, spacing=0.31)
     wat = water()
     sys = System([wat] * (len(pos) // 3))
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, max_iter=300, cutoff=0.55, skin=0.05)
@@ -225,18 +222,17 @@ def test_flexible_minimize_with_mts():
 
 
 def test_refused_combinations():
-    from test_pimd import T, _water_box
 
     from pgm_jax.interfaces.engine import PGMEngine
     from pgm_jax.md.flexible import FlexibleSimulation
     from pgm_jax.md.pimd import PIMDSimulation
 
-    tpl, sys, pos, H = _water_box()
+    tpl, sys, pos, H = flexible_water_box()
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=0.5, skin=0.05, lj_lrc=False, max_iter=200)
 
     def flex(settings=s, **kw):
         return FlexibleSimulation(
-            sys, [tpl] * sys.nmol, pos, H, settings, dt=0.0002, thermostat="bussi", temperature=T, log=None, **kw
+            sys, [tpl] * sys.nmol, pos, H, settings, dt=0.0002, thermostat="bussi", temperature=300.0, log=None, **kw
         )
 
     ub = BiasSet([Harmonic([cv.Distance(0, 3)], at=[0.3], kappa=[100.0])])
@@ -278,7 +274,7 @@ def test_strain_derivative_full_tensor_matches_finite_differences(molecular, fie
     off-diagonal ones, which take the box out of lower-triangular form) against central differences of
     the energy of strained configurations rotated back to a lower-triangular box."""
     sys, pos, H = small_box(4)
-    ff = PGMForceField(sys, H, settings(lj_lrc=True))
+    ff = PGMForceField(sys, H, md_settings(lj_lrc=True))
     idx = ff.rows_for(jnp.asarray(pos), H)
     fld = None if field is None else _field(field)
     mu = ff.compute(jnp.asarray(pos), H, idx, ff.init_induction(), efield=fld).induction.mu

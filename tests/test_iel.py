@@ -7,9 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import water
-from test_md import small_box
-from test_md_macro import _water_box
+from _systems import small_box, water, water_lattice
 
 from pgm_jax import System
 from pgm_jax.md.barostats import MonteCarloBarostat
@@ -30,7 +28,7 @@ def _settings(**kw):
 
 
 def _water(**kw):
-    pos, H, _ = _water_box()
+    pos, H, _ = water_lattice()
     return System([water()] * (len(pos) // 3)), pos, H
 
 
@@ -226,7 +224,7 @@ def test_barostat_and_flexible_engine():
     sim.advance(100)
     o = sim.observables()
     assert int(sim.state.mc[0]) == 20 and np.isfinite(o["epot"]) and 0.5 < o["density_g_cm3"] < 1.5
-    _, _, w = _water_box()
+    _, _, w = water_lattice()
     tpl = RigidTemplate(water(), w)
     fl = FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=0.001, thermostat=None, log=None)
     rg = Simulation(sys, pos, H, s, dt=0.001, thermostat=None, log=None)

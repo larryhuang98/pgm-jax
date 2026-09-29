@@ -9,13 +9,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import water
-from test_hmr import _cluster
-from test_md_macro import _water_box
+from _systems import random_atoms_box, rigid_water_sim, water, water_cluster_box, water_lattice
 
 from pgm_jax import System
 from pgm_jax.md.barostats import MonteCarloBarostat
-from pgm_jax.md.box import reduce_box
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.restraints import (
     AngleRestraint,
@@ -70,13 +67,6 @@ def test_flat_bottom_form():
         DistanceRestraint([0, 1], (0.1, 0.2, 0.3, 0.4), k=1.0, k2=2.0)
 
 
-def _system(seed=0, n=14):
-    """Random atoms in a skewed box (most pairs are minimum images across the boundary)."""
-    rng = np.random.default_rng(seed)
-    H = reduce_box(np.array([[1.6, 0.0, 0.0], [0.5, 1.5, 0.0], [-0.4, 0.6, 1.45]]))
-    return rng.uniform(size=(n, 3)) @ H, H
-
-
 def _all_kinds(pos, H):
     """One restraint set of every kind, parameters chosen so that every region of the forms is
     visited (some restraints inside the flat bottom, some on the linear walls)."""
@@ -106,7 +96,7 @@ def _all_kinds(pos, H):
 
 
 def test_forces_and_strain_derivative_match_finite_differences():
-    pos, H = _system()
+    pos, H = random_atoms_box()
     rs = _all_kinds(pos, H)
     E = jax.jit(rs.energy)
     assert set(rs.energies(pos, H)) == {"position", "distance", "angle", "dihedral", "com_distance"}
@@ -180,7 +170,7 @@ def test_dihedral_sign_and_periodicity():
 
 
 def test_reference_scaling():
-    pos, H = _system(2)
+    pos, H = random_atoms_box(2)
     ref = pos[:5] + 0.02
     w = np.array([1.0, 12.0, 16.0, 1.0, 14.0])
     F = np.eye(3) + np.array([[0.02, 0.0, 0.0], [0.01, -0.015, 0.0], [0.005, 0.003, 0.01]])  # deformation
@@ -223,17 +213,6 @@ def _cluster_restraints(pos, masses):
     )
 
 
-def _water_sim(engine, pos, H, w, settings, **kw):
-    from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
-    from pgm_jax.md.simulation import Simulation
-
-    wat = water()
-    sys = System([wat] * (len(pos) // 3))
-    if engine == "rigid":
-        return Simulation(sys, pos, H, settings, log=None, **kw)
-    return FlexibleSimulation(sys, [RigidTemplate(wat, w)] * sys.nmol, pos, H, settings, log=None, **kw)
-
-
 @pytest.mark.parametrize("engine", ["rigid", "atoms"])
 def test_nve_with_restraints_and_force_mapping(engine):
     """Both engines (rigid bodies; atoms with SHAKE / RATTLE): NVE conserves the energy while
@@ -241,11 +220,11 @@ def test_nve_with_restraints_and_force_mapping(engine):
     4x smaller at half the step); removing the restraints on the same state changes the forces by
     exactly the restraint forces (for rigid bodies mapped to centre forces and torques as the force
     field's) and epot by erestraint."""
-    pos, H, w = _cluster()
+    pos, H, w = water_cluster_box()
     masses = np.asarray(System([water()]).masses)
     rs = _cluster_restraints(pos, np.tile(masses, len(pos) // 3))
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
-    sim = _water_sim(engine, pos, H, w, s, dt=0.001, thermostat=None, restraints=rs)
+    sim = rigid_water_sim(engine, pos, H, w, s, dt=0.001, thermostat=None, restraints=rs)
     o = sim.observables()
     assert abs(o["erestraint"] - float(rs.energy(sim.positions(), H))) < 1e-10 and o["erestraint"] > 40.0
     assert set(sim.restraint_energies()) == {"position", "distance", "angle", "dihedral", "com_distance"}
@@ -286,14 +265,14 @@ def test_barostat_trials_include_restraints(engine):
     the barostat scales) the reference moves with the molecule, the restraint energy stays zero
     and the volume moves freely.  (A trial energy without the restraints would let the fixed
     reference be dragged: ~0.02 nm, hundreds of kJ/mol.)"""
-    pos, H, w = _water_box()
+    pos, H, w = water_lattice()
     m = np.tile(np.asarray(System([water()]).masses), len(pos) // 3)
     far = np.arange(3 * 63, 3 * 64)  # centre near (1.1, 1.1, 1.1) nm
     s = MDSettings().replace(precision="double", dipole_tol=1e-8, cutoff=0.55, skin=0.05)
     out = {}
     for scaling in ("none", "com"):
         r = PositionRestraint(far, pos[far], k=1e6, scaling=scaling, box=H, weights=m[far])
-        sim = _water_sim(
+        sim = rigid_water_sim(
             engine,
             pos,
             H,
@@ -323,7 +302,7 @@ def test_flexible_engine_restrained_atom_held():
     from its start moves to its reference and stays there."""
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
 
-    pos, H, w = _water_box()
+    pos, H, w = water_lattice()
     wat = water()
     nmol = len(pos) // 3
     sys = System([wat] * nmol)

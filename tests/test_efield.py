@@ -8,8 +8,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import cluster, methanol
-from test_md import settings, small_box
+from _systems import cluster, flux_settings, flux_template, md_settings, methanol, small_box, water_sim
 
 from pgm_jax import ElecChannel, Model, Molecule, System
 from pgm_jax.channels import molecular_polarizability
@@ -23,7 +22,7 @@ from pgm_jax.units import E_CHARGE_C, EPS0_SI, KB, KE
 E1 = np.array([0.3, -0.5, 0.8])  # V/nm, deliberately strong and oblique
 
 
-def test_units():
+def test_field_unit_conversions():
     assert abs(EF.VNM_TO_INTERNAL * KE - 96.48533212) < 1e-6  # 1 V/nm on 1 e: 96.485 kJ/mol/nm
     # eps - 1 = 4 pi M / (V F) in model units (F in e/nm^2) = EPS_FACTOR M / (V E) with E in V/nm
     M, V, E = 2.7, 15.4, 0.1
@@ -79,7 +78,7 @@ def test_gas_phase_response_is_the_molecular_polarizability(which):
 
 
 def _ff(sys, pos, H, **kw):
-    ff = PGMForceField(sys, H, settings(**kw))
+    ff = PGMForceField(sys, H, md_settings(**kw))
     return ff, ff.rows_for(pos, H)
 
 
@@ -117,7 +116,7 @@ def test_md_forces_equal_autodiff_and_finite_differences(elec):
         assert np.allclose(dF, np.asarray(P["q"])[:, None] * E1[None, :] * EF.FARADAY_KJ, atol=1e-9)
 
 
-def test_flux_and_virial_paths_accept_the_field():
+def test_field_adds_no_molecular_virial():
     """strain derivative with the field: zero extra virial for neutral molecules (molecular scaling)."""
     sys, pos, H = small_box(2)
     pos = jnp.asarray(pos)
@@ -175,7 +174,7 @@ def test_zero_field_is_the_field_free_engine():
     assert float(rz.energy["field"]) == 0.0
     assert abs(float(rz.energy["total"]) - float(r0.energy["total"])) < 1e-12 * abs(float(r0.energy["total"]))
     assert float(jnp.abs(rz.forces - r0.forces).max()) < 1e-12 * float(jnp.abs(r0.forces).max())
-    kw = dict(settings=settings(cutoff=0.6, dipole_tol=1e-8), dt=0.001, thermostat=None, log=None, seed=3)
+    kw = dict(settings=md_settings(cutoff=0.6, dipole_tol=1e-8), dt=0.001, thermostat=None, log=None, seed=3)
     a = Simulation(sys, pos, H, **kw)
     b = Simulation(sys, pos, H, efield=(0.0, 0.0, 0.0), **kw)
     a.advance(20)
@@ -199,7 +198,7 @@ def test_nve_conserves_energy_in_a_static_field(engine):
     pos = jnp.asarray(pos)
     # no van der Waals term: its truncation at the cutoff (not the field) would dominate the drift of this tiny box
     kw = dict(
-        settings=settings(cutoff=0.6, dipole_tol=1e-8, vdw="none"),
+        settings=md_settings(cutoff=0.6, dipole_tol=1e-8, vdw="none"),
         dt=0.001,
         thermostat=None,
         log=None,
@@ -232,7 +231,7 @@ def test_time_dependent_field_work_is_booked():
         sys,
         pos,
         H,
-        settings=settings(cutoff=0.6, dipole_tol=1e-8, vdw="none"),
+        settings=md_settings(cutoff=0.6, dipole_tol=1e-8, vdw="none"),
         dt=0.0005,
         thermostat=None,
         log=None,
@@ -254,12 +253,12 @@ def test_time_dependent_field_work_is_booked():
 def test_set_field_and_checkpoint(tmp_path):
     sys, pos, H = small_box(8)
     pos = jnp.asarray(pos)
-    sim = Simulation(sys, pos, H, settings=settings(cutoff=0.6), dt=0.001, log=None, efield=(0.0, 0.0, 0.2))
+    sim = Simulation(sys, pos, H, settings=md_settings(cutoff=0.6), dt=0.001, log=None, efield=(0.0, 0.0, 0.2))
     sim.set_field((0.0, 0.1, 0.0))
     assert np.allclose(np.asarray(sim.state.efield), [0, 0.1, 0])
     sim.advance(10)
     sim.save_checkpoint(str(tmp_path / "c.chk"))
-    sim2 = Simulation(sys, pos, H, settings=settings(cutoff=0.6), dt=0.001, log=None, efield=(0.0, 0.0, 0.2))
+    sim2 = Simulation(sys, pos, H, settings=md_settings(cutoff=0.6), dt=0.001, log=None, efield=(0.0, 0.0, 0.2))
     sim2.load_checkpoint(str(tmp_path / "c.chk"))
     assert np.allclose(np.asarray(sim2.state.efield), [0, 0.1, 0])
 
@@ -296,7 +295,7 @@ def _ions_box():
 
 def test_charged_molecules_energy_continuous_across_rewrapping():
     sys, pos, H = _ions_box()
-    kw = dict(settings=settings(cutoff=0.6, dipole_tol=1e-8), dt=0.001, log=None, seed=4)
+    kw = dict(settings=md_settings(cutoff=0.6, dipole_tol=1e-8), dt=0.001, log=None, seed=4)
     sim = Simulation(sys, pos, H, thermostat=None, efield=(0.0, 0.0, 2.0), **kw)
     st = sim.state
     # shift the Na+ by a lattice vector: the wrap in the driver books Q L in fshift, epot unchanged
@@ -398,7 +397,7 @@ def test_nve_conserves_energy_at_constant_displacement():
         sys,
         pos,
         H,
-        settings=settings(cutoff=0.6, dipole_tol=1e-8, vdw="none"),
+        settings=md_settings(cutoff=0.6, dipole_tol=1e-8, vdw="none"),
         dt=0.001,
         thermostat=None,
         log=None,
@@ -422,7 +421,7 @@ def test_field_replicas_batched_run_and_analysis(tmp_path):
         sys,
         pos,
         H,
-        settings=settings(cutoff=0.6, dipole_tol=1e-6),
+        settings=md_settings(cutoff=0.6, dipole_tol=1e-6),
         dt=0.001,
         thermostat="bussi",
         log=None,
@@ -446,7 +445,6 @@ def test_field_replicas_batched_run_and_analysis(tmp_path):
 def test_mts_with_a_field_is_the_ordinary_integrator_at_one_fast_step(engine):
     """MTS(inner=1) with a time-dependent field = the ordinary step with it (field at the outer
     evaluations, the work booked the same way)."""
-    from test_mts import water_sim
 
     from pgm_jax.md.mts import MTS
 
@@ -466,7 +464,6 @@ def test_mts_with_a_field_is_the_ordinary_integrator_at_one_fast_step(engine):
 def test_charge_flux_with_a_field(kind):
     """Charge flux (q(R), c(R)): the field's potential -E . r enters the charge pull-back; forces vs
     autodiff at fixed mu and vs differences of the energy with the dipoles re-solved."""
-    from test_flux import flux_template, tight
 
     from pgm_jax.md.flexible import FlexibleSimulation, liquid_box
 
@@ -475,9 +472,9 @@ def test_charge_flux_with_a_field(kind):
     pos, H = liquid_box(tpl, n, 0.55, seed=0, min_dist=0.18)
     pos = pos + 0.004 * np.random.default_rng(1).normal(size=pos.shape)
     sys = System([tpl.pgm] * n)
-    sim = FlexibleSimulation(sys, [tpl] * n, pos, H, tight(), thermostat=None, log=None)
+    sim = FlexibleSimulation(sys, [tpl] * n, pos, H, flux_settings(), thermostat=None, log=None)
     pos, H = jnp.asarray(sim.flex.pos0), jnp.asarray(H)
-    ff = PGMForceField(sys, H, tight(), topology=sim.topology, flux=sim.ff.flux)
+    ff = PGMForceField(sys, H, flux_settings(), topology=sim.topology, flux=sim.ff.flux)
     idx = ff.rows_for(pos, H)
     fld = (jnp.asarray(E1), None) if kind == "E" else (jnp.asarray(DD), None, "D")
     res = jax.jit(lambda y: ff.compute(y, H, idx, ff.init_induction(), efield=fld))(pos)

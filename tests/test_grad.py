@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from _systems import cluster, methanol
 
 from pgm_jax.channels import ElecChannel, molecular_polarizability
 from pgm_jax.ewald import PeriodicPGM
@@ -12,66 +13,6 @@ from pgm_jax.lj import LJChannel
 from pgm_jax.model import Model
 from pgm_jax.periodic import PeriodicModel
 from pgm_jax.system import QUANTITIES, Molecule, System
-
-
-def water():
-    return Molecule(
-        "WAT",
-        ["O", "H", "H"],
-        ["OW", "HW", "HW"],
-        np.array([-0.8, 0.4, 0.4]),
-        np.array([0.06, 0.05, 0.05]),
-        np.array([1.0e-3, 0.3e-3, 0.3e-3]),
-        cov=[(0, 1, -0.02), (0, 2, -0.02), (1, 0, 0.008), (2, 0, 0.008)],
-        lj_rmin_half=[0.178, 0.0, 0.0],
-        lj_sqrt_eps=[0.80, 0.0, 0.0],
-        bonds=[(0, 1), (0, 2)],
-    )
-
-
-def methanol():
-    x = (
-        np.array(
-            [
-                [-0.0467, 0.6590, 0.0],
-                [-0.0467, -0.7598, 0.0],
-                [-1.0830, 0.9930, 0.0],
-                [0.4406, 1.0735, 0.8902],
-                [0.4406, 1.0735, -0.8902],
-                [0.8785, -1.0591, 0.0],
-            ]
-        )
-        * 0.1
-    )
-    m = Molecule(
-        "MeOH",
-        ["C", "O", "H", "H", "H", "H"],
-        ["c3", "oh", "h1", "h1", "h1", "ho"],
-        np.array([0.12, -0.62, 0.02, 0.02, 0.02, 0.44]),
-        np.array([0.07, 0.06, 0.05, 0.05, 0.05, 0.05]),
-        np.array([1.2e-3, 0.8e-3, 0.4e-3, 0.4e-3, 0.4e-3, 0.3e-3]),
-        cov=[(0, 1, 0.01), (1, 0, -0.01), (1, 5, -0.02), (5, 1, 0.005)]
-        + [c for h in (2, 3, 4) for c in ((0, h, 0.002), (h, 0, -0.002))],
-        lj_rmin_half=[0.19, 0.172, 0.139, 0.139, 0.139, 0.02],
-        lj_sqrt_eps=[0.33, 0.85, 0.20, 0.20, 0.20, 0.1],
-        bonds=[(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)],
-    )
-    return m, x
-
-
-def _rot(rng):
-    return np.linalg.qr(rng.normal(size=(3, 3)))[0]
-
-
-def cluster(rng):
-    """Water + methanol + water, ~0.3 nm apart (nm)."""
-    t = np.radians(104.52 / 2)
-    w = np.array(
-        [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
-    )
-    m, xm = methanol()
-    pos = np.concatenate([w, (xm - xm.mean(0)) @ _rot(rng).T + [0.33, 0.05, 0.0], w @ _rot(rng).T + [0.12, 0.30, 0.08]])
-    return System([water(), m, water()]), pos
 
 
 def perturbed(params, rng, scale=0.05):

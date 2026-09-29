@@ -3,9 +3,7 @@
 flexible engine or with charge flux in a fast pair model; an alchemical region with charge flux."""
 
 import pytest
-from test_alchemy import alch_sim
-from test_flux import flux_template
-from test_vsites import _tip4pew_ideal
+from _systems import alch_sim, flux_template, tip4pew_ideal
 
 from pgm_jax import System
 from pgm_jax.md.alchemy import Alchemy, alchemical_system
@@ -30,7 +28,7 @@ def test_mts_refuses_an_alchemical_region():
 
 
 def test_mts_refuses_sites_in_the_flexible_engine():
-    sys, pos, H = _tip4pew_ideal()
+    sys, pos, H = tip4pew_ideal()
     s = MDSettings().replace(
         elec="q", cutoff=0.65, skin=0.05, ewald_beta=ewald_beta_for(0.65), pme_spacing=0.06, precision="double"
     )

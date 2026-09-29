@@ -5,8 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import methanol, water
-from test_md import need_water_box, settings, small_box
+from _systems import PGM3P25_RST, PGM3P25_TOP, md_settings, methanol, requires_pgm3p25, small_box, water, water_geometry
 
 from pgm_jax import ElecChannel, Molecule, System
 from pgm_jax.analysis import dielectric as D
@@ -18,7 +17,7 @@ from pgm_jax.units import C_LIGHT_M_S, DEBYE_E_NM, E_NM_C_M, EPS0_SI, KB, KE
 
 
 def _solve(sys, pos, H, **kw):
-    ff = PGMForceField(sys, H, settings(**kw))
+    ff = PGMForceField(sys, H, md_settings(**kw))
     idx = ff.rows_for(pos, H)
     return ff, idx, jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
 
@@ -44,10 +43,7 @@ def test_single_molecule_in_large_box_is_the_gas_phase_molecule(mol):
     periodic images, ~ 4 pi alpha p / (3 V) under tin-foil Ewald, so it falls as 1 / V."""
     if mol == "water":
         m = water()
-        t = np.radians(104.52 / 2)
-        x = np.array(
-            [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
-        )
+        x = water_geometry()
     else:
         m, x = methanol()
     rng = np.random.default_rng(1)
@@ -181,7 +177,7 @@ def test_read_dipoles_drops_records_superseded_by_a_continuation(tmp_path):
 
 def _run(tmp_path, name, report, engine="rigid"):
     sys, pos, H = small_box(0, nw=30, nm=0 if engine == "flexible" else 4)
-    s = settings(cutoff=0.6, pme_grid=(32, 32, 32), pme_order=6, dipole_tol=1e-9, max_iter=200)
+    s = md_settings(cutoff=0.6, pme_grid=(32, 32, 32), pme_order=6, dipole_tol=1e-9, max_iter=200)
     if engine == "rigid":
         sim = Simulation(sys, pos, H, settings=s, dt=0.001, thermostat="bussi", log=None, seed=4)
     else:
@@ -228,14 +224,12 @@ def test_recorded_series_match_the_state(tmp_path, monkeypatch, engine):
         assert np.abs(db["M"] - d["M"]).max() < 1e-8, np.abs(db["M"] - d["M"]).max()
 
 
-@need_water_box
+@requires_pgm3p25
 def test_trajectory_dipoles_of_an_amber_trajectory(tmp_path):
     """scripts/trajectory_dipoles.py on the Amber NetCDF trajectory of a run (the format pmemd
     writes) re-solves the induced dipoles and reproduces the cell dipoles the run recorded."""
     import importlib.util
     import os
-
-    from test_md import RST, TOP
 
     from pgm_jax.md.forcefield import MDSettings
 
@@ -257,13 +251,13 @@ def test_trajectory_dipoles_of_an_amber_trajectory(tmp_path):
         max_iter=300,
         precision="double",
     )
-    sim = Simulation.from_amber(TOP, RST, settings=s, dt=0.002, thermostat="bussi", log=None, seed=2)
+    sim = Simulation.from_amber(PGM3P25_TOP, PGM3P25_RST, settings=s, dt=0.002, thermostat="bussi", log=None, seed=2)
     prefix = str(tmp_path / "w")
     sim.run(20, report_every=10, traj_every=10, prefix=prefix, dipoles_every=10)
     out = str(tmp_path / "t.dip")
     trajectory_dipoles.main(
         [
-            TOP,
+            PGM3P25_TOP,
             prefix + ".nc",
             "-o",
             out,

@@ -4,31 +4,13 @@ invariance, the pGM part equal to the gas-phase ElecChannel, classical exclusion
 import jax
 import jax.numpy as jnp
 import numpy as np
-from test_grad import methanol
+from _systems import ethanal, methanol
 
 from pgm_jax.bonded import terms as T
 from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
 from pgm_jax.bonded.topology import build_topology
 from pgm_jax.channels import ElecChannel
 from pgm_jax.system import System
-
-
-def ethanal():
-    """Acetaldehyde, nm (planar carbonyl carbon -> improper)."""
-    x = np.array(
-        [
-            [0.0000, 0.0000, 0.0],
-            [0.1500, 0.0000, 0.0],
-            [0.2180, 0.1030, 0.0],
-            [0.1980, -0.0990, 0.0],
-            [-0.0360, -0.1030, 0.0],
-            [-0.0380, 0.0520, 0.0890],
-            [-0.0380, 0.0520, -0.0890],
-        ]
-    )
-    el = ["C", "C", "O", "H", "H", "H", "H"]
-    bonds = [(0, 1), (1, 2), (1, 3), (0, 4), (0, 5), (0, 6)]
-    return el, bonds, [1, 2, 1, 1, 1, 1], x
 
 
 def test_topology_counts():

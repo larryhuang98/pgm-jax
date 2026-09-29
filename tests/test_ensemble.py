@@ -3,7 +3,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
-from test_protein_bonded import ACE_ALA_GLY_NME, peptide_spec
+from _systems import ACE_ALA_GLY_NME, peptide_spec, requires
 
 from pgm_jax.bonded import terms as T
 from pgm_jax.bonded.model import BondedSettings, BondedTerms
@@ -49,6 +49,7 @@ def test_reweighting_gradient_is_the_covariance_formula():
     assert float(rw.n_eff(th)) < 200.0
 
 
+@requires("rdkit")
 def test_cmap_refinement_gradient_on_peptide_frames():
     s = peptide_spec(ACE_ALA_GLY_NME)
     terms = BondedTerms([s], BondedSettings(families=T.PROTEIN, lj14_scale=0.5))
