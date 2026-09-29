@@ -553,7 +553,7 @@ docs + README + examples (D). Every phase updates all of them in the same commit
 | `FieldReplicas.run(nsteps, every, prefix, report, append, restart, extra, log)`; `save(path)`/`load(path)` | `FieldReplicas(sim, fields, seed, log=None).run(nsteps, *, sample_every, prefix, report_every, checkpoint_every, append, extra)`; `save_checkpoint`/`load_checkpoint` | 2/2 | 2/2 | 1 |
 | `Walkers(sim, n, shared, bias_states, seed)`; `.run(nsteps, report, restart, prefix, append, log)`; `save/load(path)` | `Walkers(sim, walkers, shared, bias_states, seed, log=None)`; `.run(nsteps, *, prefix, report_every, checkpoint_every, append)`; `save_checkpoint`/`load_checkpoint` | 4/2 | 5/3 | 4/1 |
 | `FreeEnergyRun(windows, sample_every, exchange_every, seed, log, meta, param_grad)`; `.run(nsteps, prefix, report, restart)`; `save(prefix)`/`load(path)`/`load_windows(path)` | `FreeEnergyRun(windows, sample_every, exchange_every, seed, log=None, meta, param_grad)`; `.run(nsteps, *, prefix, report_every, checkpoint_every)`; `save_checkpoint`/`load_checkpoint`/`load_windows`, `save_samples(path)` (prefix_fe.npz) | 1/1 | 8/3 | 3/3 |
-| `LiquidFit(sys_, pos, H, space, objective, T, pressure, settings, dt, thermostat="bussi", tau_t, gamma, barostat_interval, ..., tol, ..., log=sys.stdout, ..., ensemble, replicas, ...)` | P5: `LiquidFit(sys_, pos, H, space, objective, T, settings, dt, thermostat=Bussi(), barostat=MonteCarloBarostat() (None: NVT), ..., tol, ..., log=None, ..., replicas, ...)`; P7 renames `system`, `positions`, `box`, `temperature`, `dipole_tol` | 1/1 | 3/1 | 1/1 |
+| `LiquidFit(sys_, pos, H, space, objective, T, pressure, settings, dt, thermostat="bussi", tau_t, gamma, barostat_interval, ..., tol, ..., log=sys.stdout, ..., ensemble, replicas, ...)` | `LiquidFit(system, positions, box, space, objective, temperature, settings, dt, thermostat=Bussi(), barostat=MonteCarloBarostat() (None: NVT), ..., dipole_tol, ..., log=None, ..., replicas, ...)` (P5: coupling objects, `log`; P7: `sys_`, `pos`, `H`, `T`, `tol` renamed; prefix.json key `"T"` -> `"temperature"`) | 1/1 | 3/1 | 1/1 |
 | `Integrator(ff, rigid, neighbors, dt, ensemble, temperature, gamma, pressure, barostat_interval, params, thermostat, tau_t, ...)`, `FlexibleIntegrator(...)`, MTS variants | same keywords as the engines (thermostat / barostat objects) | 0 | ~6 | 0 |
 | `make_thermostat(spec, gamma, tau)`, `Langevin(gamma)` | `make_thermostat(spec)` (string = defaults, or an object), `Langevin(friction)` | 0 | 3 | 1 |
 
@@ -579,7 +579,8 @@ bias classes, `PGMForceField.compute/rows_for/strain_derivative/init_induction`.
 | property `induction` (bool: induced dipoles on) | `has_induction` (the name `induction` is the group) |
 | `precision`, `differentiable`, `adjoint_tol` | unchanged (top level) |
 | `MDSettings(**flat)` in 55 script / 63 test / 31 doc lines | `MDSettings().replace(**flat)` keeps the flat names working for construction; attribute reads (`s.cutoff`) change to the group path (~120 sites in `pgm_jax/`, mostly `md/forcefield.py`, `md/mts.py`, `interfaces/engine.py`) |
-| (deferred to P7 with the other reference / fitting names) `PeriodicModel(sys, H, pos_ref, rc, b0, skin, lj, lj_rc, lj_lrc, k_tol, cg_tol, elec, vdw, gvdw_rep)`, `PeriodicPGM(..., b0, rc, k_tol, cg_tol)` | `PeriodicModel(system, box, positions_ref, cutoff, ewald_beta, skin, vdw_cutoff, lj_lrc, k_tol, dipole_tol, elec, vdw, gvdw_rep)` (`lj=False` removed: `vdw="none"`) - S 1/1, T 5/3, D 2 |
+| (P7) `PeriodicModel(sys, H, pos_ref, rc, b0, skin, lj, lj_rc, lj_lrc, k_tol, cg_tol, elec, vdw, gvdw_rep)` | `PeriodicModel(system, box, positions_ref, cutoff, ewald_beta, skin, vdw_cutoff, lj_lrc, k_tol, dipole_tol, elec, vdw, gvdw_rep)` (`lj=False` removed: `vdw="none"`; the methods keep `energy(pos, params, H)` etc.) - S 1, T 5, D 2 |
+| (P7) `PeriodicPGM(sys, H, pos_ref, b0, rc, skin, k_tol, cg_tol, nlist, elec)` | `PeriodicPGM(system, box, positions_ref, ewald_beta, cutoff, skin, k_tol, dipole_tol, nlist, elec)` - S 3, T 7, D 0 |
 
 ### 4.3 Fitting, analysis and module moves
 
@@ -590,9 +591,13 @@ bias classes, `PGMForceField.compute/rows_for/strain_derivative/init_induction`.
 | `pgm_jax.md.dielectric`, `pgm_jax.md.free_energy` | `pgm_jax.analysis.dielectric`, `pgm_jax.analysis.free_energy` | 4 | 3 | 3 |
 | `md.finite_field.{analyse, fluctuation_eps, saturation_fit, predicted_errors, block_mean, correlation_time}` | `analysis.finite_field.*` (`FieldReplicas`, `read_series` stay in `md.finite_field`) | 2 | 1 | 1 |
 | jackknife / block / correlation helpers (2.5) | `analysis.stats.{jackknife, jackknife_cov, block_means, statistical_inefficiency, correlation_time}` (existing call sites re-pointed; numerics of each kept) | 3 | 2 | 0 |
-| `md.fe_grad.{gradient_estimate, FreeEnergyTarget, combine, jackknife_error, gas_leg_gradient}` | `fit.free_energy.*`; `ParamGradients`, `alchemical_map`, `scaled_params` stay in `md.fe_grad` | 1 | 1 | 2 |
-| `md.fe_grad.ParamSpace`, `fit.ParameterSpace`, `qmfit.ParamMap` | one `fit.ParameterSpace` with `scales`/`shifts`/`values` modes and optional neutrality constraints (Q8) | 3 | 4 | 3 |
-| `LiquidSamples(frames, T, n_mol, mass, nblocks, pressure_bar)`, `FrameAnalyzer(..., tol, chunk)`, `md.dielectric.*(M, V, T)`, `predicted_errors(eps, eps_inf, V, T, E, tau_ps, run_ps)` | `temperature=`, `pressure=`, `dipole_tol=`, `field=` | 3 | 6 | 2 |
+| `md.fe_grad.{gradient_estimate, FEGradient, FreeEnergyTarget, combine}` | `fit.free_energy.*` (P7); `ParameterGradients`, `gas_leg_gradient` (evaluates the alchemical gas-phase Hamiltonian), `alchemical_map`, `scaled_params` stay in `md.fe_grad`; `jackknife_error` is `analysis.stats.jackknife_error` (P2) | 2 | 6 | 4/2 |
+| `md.fe_grad.ParamGradients` | `md.fe_grad.ParameterGradients` (P7) | 2 | 6 | 3/2 |
+| `fit.ParameterSpace(table, params, p0, prior_sigma)`, `fit.Param(quantity, kind="scale"\|"shift", keys, name, prior_sigma, extra)` | `fit.params.ParameterSpace(table, params, p0, prior_sigma, neutral)` with `Param(quantity, kind="scale"\|"shift"\|"values", keys, name, prior_sigma, bounds, step, extra)`; classmethods `scales(table, quantities, p0, prior_sigma)`, `values(table, free, p0, neutral, bounds, steps, prior_sigma)`, `from_names(names)`; attributes `names`, `n`, `theta0`, `lower`, `upper`, `step`, `prior_sigma`, `params`, `quantities`, `keys`, `slices`; the per-parameter index list `space.index` became `space.blocks[j].idx` and `index(name)` a method (P7, D9) | 3 | 6 | 2 |
+| `md.fe_grad.ParamSpace(table, quantities)`, `ParamSpace.from_names(names)`; `.flatten`, `.unflatten`, `.index`, `.select`, `.scale_direction`; `md.fe_grad.SCALE_GROUPS` | `ParameterSpace.values(table, quantities)`, `ParameterSpace.from_names(names)` (same methods; `flatten` / `unflatten` need a values-only space); `fit.params.SCALE_GROUPS` (P7) | 5 | 4 | 3/3 |
+| `qmfit.ParamMap(table, molecules, free, P0, bounds, scales)`; `.params(theta)`, `.scale`, `len()`; `QMFit(cm, pm, data, weights)`; `qm.SCALES` | `fit.qm.parameter_space(table, molecules, free, p0, bounds, steps)` -> a `ParameterSpace`; `space(theta)`, `.step`, `len()` (same `names`, `theta0`, `lower`, `upper`; charges keep the `q:null{j}` null-space coordinates); `QMFit(cm, space, data, weights)`; `qm.STEPS` (P7) | 8 | 5 | 9/5 |
+| `LiquidSamples(frames, T, n_mol, mass, nblocks, pressure_bar)` (attribute `.T`), `FrameAnalyzer(sys, H, settings, space, rdf, tol, max_iter, chunk, margin, row_block)`, `GasPhase(molecule, pos, table, space, elec)` | `LiquidSamples(frames, temperature, n_mol, mass, nblocks, pressure)` (attribute `.temperature`), `FrameAnalyzer(system, box, settings, space, rdf, dipole_tol, max_iter, chunk, margin, row_block)`, `GasPhase(molecule, positions, table, space, elec)` (P7) | 4 | 5 | 2/2 |
+| `analysis.dielectric.{fluctuation, jackknife, static_dielectric, block_errors, running, decomposition}(..., T, ...)`, `correlation_time(M, dt_ps, window)`, `ir_spectrum(M, dt_ps, V, T, segment_ps)`; `analysis.finite_field.fluctuation_eps(M, V, T, ...)`, `predicted_errors(eps, eps_inf, V, T, E, tau_ps, run_ps)` | `temperature` for `T` everywhere; `correlation_time(M, dt, window)`, `ir_spectrum(M, dt, V, temperature, segment_ps)` (`dt` in ps, the library unit); `predicted_errors(eps, eps_inf, V, temperature, field, tau_ps, run_ps)` (P7) | 10 | 9 | 0 |
 | `md.pimd.{flexible_water, qtip4pf_intra, QTIP4PF, water_geometry, harmonic_frequencies, WATER_FAMILIES}` | `pgm_jax.models.water.*` | 2 | 2 | 1 |
 | `md.iel.{add_iel_arguments, iel_settings}`, `md.mts.{add_mts_arguments, mts_from_args, mts_stats}` | `pgm_jax.cli.args.*` | 8 | 1 | 1 |
 | `pgm_jax.kernels` | `pgm_jax.densities` | 0 | 1 | 0 |
@@ -930,3 +935,33 @@ index, identity matrix). E402 is resolved by removing the `sys.path` edits (P3) 
   property `induction` is `has_induction`.  `precision`, `differentiable` and `adjoint_tol` stay top
   level (one field each would make one-field groups).  `PeriodicModel` / `PeriodicPGM` names are
   left to P7.
+
+### 9.3 Execution notes (P7)
+
+- One `pgm_jax.fit.params.ParameterSpace` (D9) replaces the three parameter maps.  Its blocks are
+  `Param`s of kind `"scale"` (theta = ln s, as the old `fit.ParameterSpace`), `"shift"` (added in
+  native units) or `"values"` (theta is the parameter itself, as `fe_grad.ParamSpace` and
+  `qmfit.ParamMap`); charges in a `"values"` block with `neutral=molecules` are parameterized in the
+  null space of the neutrality constraints (the old `ParamMap` behaviour, names `q:null{j}`).  Each
+  kind keeps the exact array operations of the class it replaces, so every fit, QM-fit and
+  free-energy-gradient result is bitwise the same (harness cases `fit_frames`, `qmfit_synthetic`,
+  `fe_windows`, `periodic_model`).  `fit.qm.parameter_space(...)` builds the QM-fit space with the
+  default bounds (`BOUNDS`) and step sizes (`STEPS`, was `SCALES`).
+- The free-energy estimators and fitting targets moved to `pgm_jax/fit/free_energy.py`;
+  `md/fe_grad.py` keeps the sampling side (`ParameterGradients`, `gas_leg_gradient`,
+  `alchemical_map`, `scaled_params`).  `gas_leg_gradient` stays with the sampling code (it
+  differentiates the alchemical gas-phase Hamiltonian), unlike the plan in table 4.3.
+- Names: `temperature` [K], `pressure` [bar], `dipole_tol`, `cutoff`, `ewald_beta`, `box`,
+  `positions`, `system` in `fit/`, `analysis/`, `PeriodicModel` and `PeriodicPGM` constructors;
+  time steps in ps (the library unit) are `dt`, durations keep `_ps` (`tau_ps`, `run_ps`,
+  `segment_ps`, `equil_ps`, ...).  The per-configuration methods of the reference models
+  (`energy(pos, params, H)`, `forces`, `strain_derivative`, ...) keep their short argument names;
+  they are positional everywhere.  `PeriodicLJ` / `PeriodicGVDW` (internal to `PeriodicModel`) keep
+  `rc`.  `LiquidFit` writes `"temperature"` instead of `"T"` in prefix.json (nothing in the
+  repository reads it).
+- `paper/main.tex` names the new class; the PDF was not rebuilt.
+- Docstring tooling for P8: `scripts/dev/check_docstrings.py` (AST: every module, class, function and
+  method, nested functions from 6 lines, per-file or per-directory counts, `--fail`,
+  `find_missing()` for a test); ruff D (numpy convention) runs report-only through
+  `ruff check --config ruff-docstrings.toml --exit-zero` (the enforced configuration in
+  `pyproject.toml` is unchanged); the standard is `docs/dev/style_guide.md`.
