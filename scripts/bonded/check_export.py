@@ -26,9 +26,10 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 
 from pgm_jax.bonded import terms as T  # noqa: E402
-from pgm_jax.bonded.amber import KCAL, export_bonded, init_from_prmtop, with_amber_impropers  # noqa: E402
+from pgm_jax.bonded.amber import export_bonded, init_from_prmtop, with_amber_impropers  # noqa: E402
 from pgm_jax.bonded.model import BondedSettings, BondedTerms, MolSpec  # noqa: E402
 from pgm_jax.prmtop import Prmtop  # noqa: E402
+from pgm_jax.units import KCAL
 
 WD = os.path.join(ROOT, "runs/check_export")
 os.makedirs(WD, exist_ok=True)

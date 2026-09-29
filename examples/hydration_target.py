@@ -20,8 +20,7 @@ jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pgm_jax.md import fe_grad as fg  # noqa: E402
-
-KCAL = 4.184
+from pgm_jax.units import KCAL
 
 
 def main():

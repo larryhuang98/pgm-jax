@@ -31,6 +31,7 @@ from pgm_jax.fit import FrameAnalyzer  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, elec_cutoff_settings  # noqa: E402
 from pgm_jax.md.remd import MDReplicas  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
+from pgm_jax.units import DEBYE_E_NM
 
 
 def main():
@@ -100,7 +101,7 @@ def main():
         np.savez(f"{a.out}_frames{seg:03d}.npz", theta=th, **fr)
         print(
             f"segment {seg}: {nper} x {a.nrep} frames, U/N {fr['U'].mean() / S['sys'].nmol:.3f} kJ/mol, "
-            f"D {fr['D'].mean() / 0.020819434:.4f} D, MD+analysis {time.time() - t1:.0f} s (analysis {ta:.0f} s)",
+            f"D {fr['D'].mean() / DEBYE_E_NM:.4f} D, MD+analysis {time.time() - t1:.0f} s (analysis {ta:.0f} s)",
             flush=True,
         )
 

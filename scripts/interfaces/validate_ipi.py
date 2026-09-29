@@ -31,8 +31,8 @@ import numpy as np  # noqa: E402
 from pgm_jax.interfaces import PGMEngine  # noqa: E402
 from pgm_jax.interfaces.ipi import BOHR_NM, IPIClient  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.integrate import KB  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
+from pgm_jax.units import KB
 
 TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
 RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")

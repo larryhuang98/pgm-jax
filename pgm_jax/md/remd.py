@@ -87,7 +87,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .integrate import KB
+from ..units import KB
 from .io import NetCDFTrajectory, write_restart
 
 FORMAT = "pgm_jax remd 1"

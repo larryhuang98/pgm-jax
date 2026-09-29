@@ -14,7 +14,6 @@ from test_grad import water
 from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate
 from pgm_jax.md.forcefield import MDSettings
-from pgm_jax.md.integrate import KB
 from pgm_jax.md.pimd import (
     HBAR,
     WATER_FAMILIES,
@@ -30,6 +29,7 @@ from pgm_jax.md.pimd import (
     water_geometry,
 )
 from pgm_jax.system import System
+from pgm_jax.units import KB
 
 T = 300.0
 

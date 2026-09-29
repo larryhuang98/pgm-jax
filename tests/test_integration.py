@@ -15,8 +15,8 @@ from pgm_jax import System
 from pgm_jax.bias import BiasSet, Harmonic, cv
 from pgm_jax.md import efield as EF
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
-from pgm_jax.md.integrate import KB
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.units import KB
 
 E1 = np.array([0.3, -0.5, 0.8])  # V/nm
 DD = np.array([1.0, -2.0, 3.0])  # D / eps0, V/nm

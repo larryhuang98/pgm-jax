@@ -16,10 +16,10 @@ from test_hmr import _cluster
 from pgm_jax import System
 from pgm_jax.bias import OPES, BiasSet, Harmonic, LowerWall, MetaD, StaticBias, UpperWall, cv
 from pgm_jax.bias import analysis as A
-from pgm_jax.bias.core import KB
 from pgm_jax.bias.toy import ToyLangevin, double_well, ring
 from pgm_jax.md.box import reduce_box
 from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.units import BAR_PER_KJMOL_NM3, KB
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
 
@@ -498,7 +498,7 @@ def test_md_opes_nvt_pressure_and_mts():
     p_with = sim.pressure()
     ref = _water_sim("rigid", pos, H, w, s, dt=0.001, ensemble="nvt", temperature=300.0)
     ref.state = st.set(bias=None)
-    dP = -float(jnp.trace(W)) / (3.0 * float(jnp.linalg.det(st.box))) * 16.605390671738466
+    dP = -float(jnp.trace(W)) / (3.0 * float(jnp.linalg.det(st.box))) * BAR_PER_KJMOL_NM3
     assert abs(p_with - ref.pressure() - dP) < 1e-6 * max(1.0, abs(dP))
     # multiple time stepping: the bias is part of the slow force
     m, _, _ = _cluster_bias(pace=5, height=1.0)

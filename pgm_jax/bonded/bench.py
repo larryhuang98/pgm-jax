@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.optimize import minimize
 
-from .fit import KCAL
+from ..units import KCAL
 from .terms import _dihedral
 
 

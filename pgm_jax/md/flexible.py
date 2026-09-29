@@ -43,12 +43,13 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..system import System
+from ..units import AMU_NM3_TO_G_CM3, BAR_PER_KJMOL_NM3, KB
 from ._jaxmd import simulate
 from .box import check_box, inv3, reduce_box, volume
 from .constraints import Constraints, hmr_masses
 from .flux import ChargeFlux
 from .forcefield import MDSettings, PGMForceField
-from .integrate import KB, Dynamics, Integrator, MDState, field_state, upgrade_state
+from .integrate import Dynamics, Integrator, MDState, field_state, upgrade_state
 from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .rigid import _unwrap
 from .simulation import Simulation
@@ -867,7 +868,7 @@ class FlexibleSimulation(Simulation):
             )
         W = W + self.integ.restraint_strain(pos, st.box, st.bias)
         ke_t = self.integ.kinetic(st)[1]
-        return (2.0 * ke_t - jnp.trace(W)) / (3.0 * volume(st.box)) * 16.605390671738466
+        return (2.0 * ke_t - jnp.trace(W)) / (3.0 * volume(st.box)) * BAR_PER_KJMOL_NM3
 
     def positions_nm(self):
         return np.asarray(self.state.dyn.position)
@@ -897,7 +898,7 @@ def liquid_box(
     x0 = np.asarray(tpl.spec.ref_xyz, float)
     m = np.asarray(tpl.pgm.masses, float)
     x0 = x0 - (m[:, None] * x0).sum(0) / m.sum()
-    L = (n_mol * m.sum() * 1.66053906660e-3 / density) ** (1.0 / 3.0)
+    L = (n_mol * m.sum() * AMU_NM3_TO_G_CM3 / density) ** (1.0 / 3.0)
     k = int(np.ceil(n_mol ** (1.0 / 3.0)))
     a = L / k
     sites = np.array([(i, j, l) for i in range(k) for j in range(k) for l in range(k)], float) * a + a / 2

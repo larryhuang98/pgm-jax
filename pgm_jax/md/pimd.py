@@ -77,17 +77,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..units import DEBYE_E_NM
+from ..units import AMU_NM3_TO_G_CM3, BAR_PER_KJMOL_NM3, C_CM_PS, DEBYE_E_NM, HBAR_KJMOL_PS, KB, KCAL, KJMOL_TO_MEV
 from ._jaxmd import dataclasses
 from .box import inv3, max_cutoff, volume
-from .integrate import KB
 from .io import NetCDFTrajectory, write_restart
 from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .thermostats import Bussi
 
-HBAR = 0.0635077993  # kJ/mol ps  (1.054571817e-34 J s * N_A)
-KJMOL_TO_MEV = 10.364269656262175  # 1 kJ/mol per particle in meV
-BAR = 16.605390671738466  # bar per kJ/mol/nm^3
 FORMAT = "pgm_jax pimd 1"
 
 
@@ -131,7 +127,7 @@ class RingPolymer:
         self.T = float(temperature)
         self.kT = KB * self.T
         self.kT_P = self.P * self.kT
-        self.omega_P = self.P * self.kT / HBAR
+        self.omega_P = self.P * self.kT / HBAR_KJMOL_PS
         C, idx = normal_modes(self.P)
         self.C = C
         self.omega = 2.0 * self.omega_P * np.sin(np.pi * idx / self.P)  # (P,) rad/ps
@@ -287,7 +283,7 @@ class PIMDIntegrator:
         if ensemble == "npt" and not hasattr(engine, "scale"):
             raise ValueError("the barostat needs an engine with molecules (PGMBeads)")
         self.ensemble = ensemble
-        self.pressure = float(pressure) / BAR  # bar -> kJ/mol/nm^3
+        self.pressure = float(pressure) / BAR_PER_KJMOL_NM3  # bar -> kJ/mol/nm^3
         self.interval = int(barostat_interval)
         self.engine = engine
         self.mass = jnp.asarray(np.asarray(masses, float).reshape(-1, 1))
@@ -973,7 +969,7 @@ class PIMDSimulation:
         }
         V = float(volume(st.box))
         out["volume_nm3"] = V
-        out["density_g_cm3"] = float(np.sum(self.sim.sys.masses)) / V * 1.66053906660e-3
+        out["density_g_cm3"] = float(np.sum(self.sim.sys.masses)) / V * AMU_NM3_TO_G_CM3
         if self.ensemble == "npt":
             out["mc_accept"] = int(st.mc[1]) / max(int(st.mc[0]), 1)
         for el in sorted(set(self.elements.tolist())):
@@ -1000,7 +996,7 @@ class PIMDSimulation:
         st = self.state
         W = self._w_jit(st.q, st.box, st.eng)
         V = float(volume(st.box))
-        return (self.sim.sys.nmol * KB * self.T0 - float(jnp.trace(W)) / 3.0) / V * BAR
+        return (self.sim.sys.nmol * KB * self.T0 - float(jnp.trace(W)) / 3.0) / V * BAR_PER_KJMOL_NM3
 
     def molecular_dipoles(self):
         """(bead-averaged molecular dipoles (nmol, 3), mean over beads and molecules of |mu_mol|), e nm:
@@ -1117,7 +1113,6 @@ class PIMDSimulation:
 
 
 # ----------------------------------------------------------------------------- flexible pGM water
-KCAL = 4.184
 QTIP4PF = {"D": 116.09 * KCAL, "alpha": 22.87, "r_eq": 0.09419, "k_theta": 87.85 * KCAL, "theta_eq": 107.4}
 """q-TIP4P/F intramolecular potential (Habershon, Markland & Manolopoulos, JCP 131, 024501 (2009)):
 quartic Morse O-H bonds D [a^2 dr^2 - a^3 dr^3 + 7/12 a^4 dr^4] (D kJ/mol, alpha 1/nm, r_eq nm) and a
@@ -1155,7 +1150,7 @@ def harmonic_frequencies(energy_fn, R, masses):
     m = np.repeat(np.asarray(masses, float), 3)
     w2 = np.linalg.eigvalsh(Hs / np.sqrt(np.outer(m, m)))
     w = np.sqrt(np.clip(np.sort(w2)[-(3 * n - 6) :], 0.0, None))  # rad/ps
-    return w / (2.0 * math.pi * 2.99792458e-2)  # 1/ps -> cm^-1
+    return w / (2.0 * math.pi * C_CM_PS)  # 1/ps -> cm^-1
 
 
 def flexible_water(

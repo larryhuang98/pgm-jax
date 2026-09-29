@@ -26,11 +26,11 @@ from experiments import families_of, load, mol_list  # noqa: E402
 
 from pgm_jax.bonded import terms as T  # noqa: E402
 from pgm_jax.bonded.data import frames  # noqa: E402
-from pgm_jax.bonded.fit import KCAL, Fitter  # noqa: E402
+from pgm_jax.bonded.fit import Fitter  # noqa: E402
 from pgm_jax.bonded.model import BondedModel, BondedSettings  # noqa: E402
+from pgm_jax.units import KB, KCAL
 
 MASS = {"H": 1.008, "C": 12.011, "N": 14.007, "O": 15.999, "F": 18.998, "P": 30.974, "S": 32.06, "Cl": 35.45}
-KB = 0.0083144626
 
 
 def langevin(efun, X0, masses, T_K, dt, nsteps, every, nrep, key, gamma=2.0):

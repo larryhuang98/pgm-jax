@@ -40,6 +40,7 @@ from pgm_jax.md.io import box_from_cell, read_coordinates  # noqa: E402
 from pgm_jax.md.simulation import Simulation, _dedupe  # noqa: E402
 from pgm_jax.param import read_prmtop_pgm  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
+from pgm_jax.units import KCAL
 
 TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
 RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
@@ -101,7 +102,7 @@ def main():
         xyz = paper_geometry(xyz, 0.9745, 103.64, [list(m.elements) for m in mols])
         sig, eps = 3.18156, 0.14473  # A, kcal/mol (A = 622716.4, B = 600.41)
         rh = np.array([2 ** (1 / 6) * sig / 2 * 0.1, 0.0, 0.0])
-        se = np.array([np.sqrt(eps * 4.184), 0.0, 0.0])
+        se = np.array([np.sqrt(eps * KCAL), 0.0, 0.0])
         new = {id(m): dataclasses.replace(m, lj_rmin_half=rh, lj_sqrt_eps=se) for m in mols}
         mols = [new[id(m)] for m in mols]
     H = box_from_cell(*box) * 0.1

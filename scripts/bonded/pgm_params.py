@@ -19,6 +19,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, ROOT)
 from pgm_jax.bonded.molecules import MOLECULES  # noqa: E402
 from pgm_jax.param import PGM_POL_TABLE, molecule_from_pyresp, read_pol_table, save_molecule  # noqa: E402
+from pgm_jax.units import KCAL
 
 AMBER = os.path.expanduser("~/amber25")
 ENV = dict(os.environ, AMBERHOME=AMBER, PATH=f"{AMBER}/bin:" + os.environ["PATH"])
@@ -204,7 +205,7 @@ def fit():
         d = json.load(open(os.path.join(ROOT, "data/bonded/molecules", f"{name}.json")))
         m.bonds = [tuple(b) for b in d["bonds"]]
         m.lj_rmin_half = np.array([lj[t.lower()][0] * 0.1 for t in inp["types"]])
-        m.lj_sqrt_eps = np.sqrt(np.array([lj[t.lower()][1] * 4.184 for t in inp["types"]]))
+        m.lj_sqrt_eps = np.sqrt(np.array([lj[t.lower()][1] * KCAL for t in inp["types"]]))
         m.extra["xyz_ref_A"] = np.array(inp["xyz_A"])
         save_molecule(m, os.path.join(OUT, f"{name}.json"))
         rr = [ln for ln in open(os.path.join(wd, "2nd.out")) if "RRMS" in ln.upper()]

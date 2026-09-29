@@ -65,9 +65,8 @@ from pgm_jax.md.topology import MDTopology  # noqa: E402
 from pgm_jax.prmtop import Prmtop  # noqa: E402
 from pgm_jax.protein import amber_template, load_amber, pmemd_mdin, write_pgm_prmtop  # noqa: E402
 from pgm_jax.protein.pmemd import pair_classes, pmemd_grid  # noqa: E402
-from pgm_jax.units import KE, KE_AMBER_PGM  # noqa: E402
+from pgm_jax.units import KCAL, KE, KE_AMBER_PGM  # noqa: E402
 
-KCAL = 4.184
 AMBER = os.path.expanduser("~/ambers/pgm-larry-install/bin")
 EXE = {"cpu": "pmemd.pgm", "gpu_dpfp": "pmemd.pgm.cuda_DPFP", "gpu_spfp": "pmemd.pgm.cuda_SPFP"}
 OUT = os.path.join(ROOT, "runs/check_pgm_prmtop")

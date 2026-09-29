@@ -23,8 +23,9 @@ import jax.numpy as jnp  # noqa: E402
 from experiments import concat, families_of  # noqa: E402
 
 from pgm_jax.bonded.data import frames, mol_spec  # noqa: E402
-from pgm_jax.bonded.fit import KCAL, Fitter  # noqa: E402
+from pgm_jax.bonded.fit import Fitter  # noqa: E402
 from pgm_jax.bonded.model import BondedModel, BondedSettings  # noqa: E402
+from pgm_jax.units import KCAL
 
 ap = argparse.ArgumentParser()
 ap.add_argument("name")

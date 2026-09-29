@@ -24,7 +24,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .core import KB, as_bias_set
+from ..units import KB
+from .core import as_bias_set
 
 
 class ToyState(NamedTuple):

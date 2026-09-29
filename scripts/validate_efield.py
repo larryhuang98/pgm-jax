@@ -30,7 +30,7 @@ from pgm_jax import ElecChannel, Model, System  # noqa: E402
 from pgm_jax.channels import molecular_polarizability  # noqa: E402
 from pgm_jax.md import efield as EF  # noqa: E402
 from pgm_jax.param import read_prmtop_pgm  # noqa: E402
-from pgm_jax.units import KE  # noqa: E402
+from pgm_jax.units import AMU_NM3_TO_G_CM3, DEBYE_E_NM, KB, KE  # noqa: E402
 
 P25 = os.path.expanduser("~/project/epsp/p25_512.prmtop")
 P25_RST = os.path.expanduser("~/project/epsp/p25_512.rst7")
@@ -99,7 +99,7 @@ def part_gas():
             "dmu_rel_err": rel,
             "energy_err": tot(e1) - expect,
             "force_fd_err": err,
-            "M0_debye": float(np.linalg.norm(M0) / 0.020819434),
+            "M0_debye": float(np.linalg.norm(M0) / DEBYE_E_NM),
             "alpha_iso_A3": float(np.trace(A) / 3 * 1000),
         }
         print(
@@ -154,7 +154,6 @@ def part_box1():
 
 def part_nve(ps: float = 20.0, only=None):
     from pgm_jax.md.forcefield import MDSettings
-    from pgm_jax.md.integrate import KB
     from pgm_jax.md.io import box_from_cell, read_coordinates
     from pgm_jax.md.simulation import Simulation, _dedupe
 
@@ -164,7 +163,7 @@ def part_nve(ps: float = 20.0, only=None):
     mols = _dedupe(read_prmtop_pgm(P25, first_residue_only=False))
     sys_ = System(mols)
     xyz, vel, box = read_coordinates(P25_RST)
-    pos, H = scale_to(sys_, xyz * 0.1, box_from_cell(*box) * 0.1, float(np.sum(sys_.masses)) / 1.010 * 1.66053906660e-3)
+    pos, H = scale_to(sys_, xyz * 0.1, box_from_cell(*box) * 0.1, float(np.sum(sys_.masses)) / 1.010 * AMU_NM3_TO_G_CM3)
     s = MDSettings(
         cutoff=0.9,
         skin=0.1,
@@ -242,7 +241,7 @@ def part_speed(nsteps: int = 5000):
     mols = _dedupe(read_prmtop_pgm(P25, first_residue_only=False))
     sys_ = System(mols)
     xyz, vel, box = read_coordinates(P25_RST)
-    pos, H = scale_to(sys_, xyz * 0.1, box_from_cell(*box) * 0.1, float(np.sum(sys_.masses)) / 1.010 * 1.66053906660e-3)
+    pos, H = scale_to(sys_, xyz * 0.1, box_from_cell(*box) * 0.1, float(np.sum(sys_.masses)) / 1.010 * AMU_NM3_TO_G_CM3)
     s = MDSettings(
         cutoff=0.9,
         skin=0.1,

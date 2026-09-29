@@ -73,10 +73,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ..units import KCAL
 from .box import min_image
 
 KCAL_A2 = 418.4  # kJ/mol/nm^2 per kcal/mol/A^2
-KCAL_RAD2 = 4.184  # kJ/mol/rad^2 per kcal/mol/rad^2
+KCAL_RAD2 = KCAL  # kJ/mol/rad^2 per kcal/mol/rad^2
 _HI = jax.lax.Precision.HIGHEST
 _TINY = 1e-60
 

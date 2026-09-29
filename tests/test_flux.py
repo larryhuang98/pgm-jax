@@ -18,9 +18,9 @@ from pgm_jax.md.dipoles import CellDipole
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
 from pgm_jax.md.flux import ChargeFlux, molecule_at
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
-from pgm_jax.md.integrate import KB
 from pgm_jax.protein import write_pgm_prmtop
 from pgm_jax.system import System
+from pgm_jax.units import KB
 
 BONDS = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)]
 

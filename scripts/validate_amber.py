@@ -41,7 +41,7 @@ from pgm_jax.model import Model
 from pgm_jax.param import read_prmtop_pgm
 from pgm_jax.periodic import strain_derivative
 from pgm_jax.system import System
-from pgm_jax.units import KE, KE_AMBER_PGM
+from pgm_jax.units import BOHR_NM, KCAL, KE, KE_AMBER_PGM
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REF = os.path.join(ROOT, "validation", "amber_ref")  # Amber runs: inputs + outputs (in git)
@@ -51,7 +51,6 @@ TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
 RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
 SANDER = os.path.expanduser("~/ambers/pgm-larry/build/AmberTools/src/sander/sander")
 PMEMD = os.path.expanduser("~/ambers/pgm-vdw/build/src/pmemd-pgm/src/pmemd-pgm")
-KCAL = 4.184
 SCALE = KE_AMBER_PGM / KE  # Amber pGM uses Tinker's Coulomb constant
 
 
@@ -268,7 +267,7 @@ def pyresp():
     compare our induced dipoles with its 'IND DIP GLOBAL' block (atomic units)."""
     from pgm_jax.system import Molecule
 
-    B = 0.052917721067
+    B = BOHR_NM
     ex = os.path.expanduser("~/amber25/AmberTools/examples/PyRESP")
     txt = open(os.path.join(ex, "test/water/resp-perm/wat.chg")).read()
 

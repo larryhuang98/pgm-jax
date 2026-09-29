@@ -34,8 +34,8 @@ import time
 
 import numpy as np
 
-BOHR_NM = 0.0529177210544  # nm per Bohr (CODATA 2022)
-HARTREE_KJMOL = 2625.4996394799  # kJ/mol per Hartree
+from ..units import BOHR_NM_CODATA2022, HARTREE_KJMOL
+
 HDRLEN = 12
 
 
@@ -119,8 +119,8 @@ class IPIClient:
     def _evaluate(self, h, pos_bohr, slot: int | None):
         """One structure: h (3, 3) i-PI cell (lattice vectors as columns, Bohr), positions (Bohr).
         Returns (energy Ha, forces Ha/Bohr (N, 3), virial Ha (3, 3), extras dict)."""
-        cell = np.asarray(h, float).T * BOHR_NM  # rows = lattice vectors, nm
-        pos = np.asarray(pos_bohr, float).reshape(-1, 3) * BOHR_NM
+        cell = np.asarray(h, float).T * BOHR_NM_CODATA2022  # rows = lattice vectors, nm
+        pos = np.asarray(pos_bohr, float).reshape(-1, 3) * BOHR_NM_CODATA2022
         self._ensure(h, pos_bohr)
         t0 = time.perf_counter()
         eng = self._engine
@@ -135,20 +135,20 @@ class IPIClient:
     def _ensure(self, h, pos_bohr):
         """Build the engine from the factory on the first structure."""
         if self._engine is None:
-            cell = np.asarray(h, float).T * BOHR_NM
-            self._engine = self._factory(np.asarray(pos_bohr, float).reshape(-1, 3) * BOHR_NM, cell)
+            cell = np.asarray(h, float).T * BOHR_NM_CODATA2022
+            self._engine = self._factory(np.asarray(pos_bohr, float).reshape(-1, 3) * BOHR_NM_CODATA2022, cell)
             self._print(f"# {self._engine.describe()}" if hasattr(self._engine, "describe") else "# engine ready")
         if self.dipole and hasattr(self._engine, "with_dipole"):
             self._engine.with_dipole = True  # the cell dipole in the same call (extras every step)
 
     def _convert(self, res):
         E = res.energy / HARTREE_KJMOL
-        F = res.forces * (BOHR_NM / HARTREE_KJMOL)
+        F = res.forces * (BOHR_NM_CODATA2022 / HARTREE_KJMOL)
         W = res.virial if (self.virial and res.virial is not None) else np.zeros((3, 3))
         vir = -0.5 * (W + W.T) / HARTREE_KJMOL
         extras = {"cg_iterations": int(res.iterations)}
         if self.dipole:
-            extras["dipole"] = (res.dipole / BOHR_NM).tolist()
+            extras["dipole"] = (res.dipole / BOHR_NM_CODATA2022).tolist()
         return E, np.ascontiguousarray(F, np.float64), np.ascontiguousarray(vir, np.float64), extras
 
     def _evaluate_batch(self, cells, pos_bohr):
@@ -159,13 +159,13 @@ class IPIClient:
             slots = list(range(len(cells)))
             if same_cell and hasattr(self._engine, "batch_slots"):  # i-PI does not keep the order of the beads
                 slots = self._engine.batch_slots(
-                    np.asarray(pos_bohr, float).reshape(len(cells), -1, 3) * BOHR_NM,
-                    np.asarray(cells[0], float).T * BOHR_NM,
+                    np.asarray(pos_bohr, float).reshape(len(cells), -1, 3) * BOHR_NM_CODATA2022,
+                    np.asarray(cells[0], float).T * BOHR_NM_CODATA2022,
                 )
             return [self._evaluate(cells[i], pos_bohr[i], int(slots[i])) for i in range(len(cells))]
         t0 = time.perf_counter()
-        cell = np.asarray(cells[0], float).T * BOHR_NM
-        res = self._engine.compute_batch(np.asarray(pos_bohr, float) * BOHR_NM, cell, virial=self.virial)
+        cell = np.asarray(cells[0], float).T * BOHR_NM_CODATA2022
+        res = self._engine.compute_batch(np.asarray(pos_bohr, float) * BOHR_NM_CODATA2022, cell, virial=self.virial)
         self.stats["t_engine"] += time.perf_counter() - t0
         self.stats["structures"] += len(res)
         return [self._convert(r) for r in res]

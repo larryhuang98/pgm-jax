@@ -14,9 +14,9 @@ from test_md_macro import _water_box
 from pgm_jax import System
 from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
 from pgm_jax.md.forcefield import MDSettings
-from pgm_jax.md.integrate import KB
 from pgm_jax.md.mts import MTS
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.units import KB
 
 S_WATER = MDSettings(precision="double", dipole_tol=1e-12, max_iter=300, cutoff=0.55, skin=0.05)
 

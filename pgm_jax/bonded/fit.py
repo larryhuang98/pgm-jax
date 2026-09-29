@@ -20,10 +20,9 @@ import jax.numpy as jnp
 import numpy as np
 from jax.flatten_util import ravel_pytree
 
-KCAL = 4.184  # kJ/mol
-EH = 2625.4996394799  # kJ/mol
-BOHR_NM = 0.052917721067
-S_E, S_F, S_MU = KCAL, KCAL * 10.0, 0.1 * 0.020819434  # kJ/mol, kJ/mol/nm, e nm (0.1 D)
+from ..units import DEBYE_E_NM, KCAL
+
+S_E, S_F, S_MU = KCAL, KCAL * 10.0, 0.1 * DEBYE_E_NM  # kJ/mol, kJ/mol/nm, e nm (0.1 D)
 S_ESP = 0.002  # hartree/e
 
 SCALES = {
@@ -280,7 +279,7 @@ class Fitter:
                 "n": len(fs),
             }
             if fs.mu is not None:
-                r["mu_RMSE_D"] = float(np.sqrt(np.mean(np.sum((fs.mu - D) ** 2, -1)))) / 0.020819434
+                r["mu_RMSE_D"] = float(np.sqrt(np.mean(np.sum((fs.mu - D) ** 2, -1)))) / DEBYE_E_NM
             if m in self.esp:
                 a, b = self.esp_rmse(m, P)
                 r["esp_RMSE_mEh"], r["esp_RRMSE"] = 1e3 * float(a), float(b)

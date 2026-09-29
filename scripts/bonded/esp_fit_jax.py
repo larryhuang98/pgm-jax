@@ -26,8 +26,8 @@ from scipy.optimize import minimize  # noqa: E402
 from pgm_jax.channels import ElecChannel  # noqa: E402
 from pgm_jax.param import load_molecule, save_molecule  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
+from pgm_jax.units import BOHR_NM
 
-BOHR_NM = 0.052917721067
 KE_AU = 1.0 / 138.935458  # (e^2 / nm) in kJ/mol -> we work in a.u. below
 
 

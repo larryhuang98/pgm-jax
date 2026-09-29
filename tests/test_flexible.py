@@ -11,8 +11,8 @@ from pgm_jax.bonded import terms as T
 from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
 from pgm_jax.md.forcefield import MDSettings
-from pgm_jax.md.integrate import KB
 from pgm_jax.system import System
+from pgm_jax.units import KB
 
 BONDS = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)]
 

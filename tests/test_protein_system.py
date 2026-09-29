@@ -9,6 +9,7 @@ from pgm_jax.bonded.amber import read_bonded
 from pgm_jax.md.flexible import FlexibleSimulation
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.protein import ResidueLibrary, amber_template, load_amber
+from pgm_jax.units import KCAL
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
 PRM, CRD = (
@@ -54,7 +55,7 @@ def test_amber_template_matches_prmtop_terms():
     # the typed parameters reproduce the ff19SB bond and angle constants of every instance
     P = tpl.P
     Im = tpl.terms.I[0]
-    Kb = np.asarray(P["bond_harm"]["Kb"])[Im["bond_harm"]["k"]] / (2 * 4.184 * 100)
+    Kb = np.asarray(P["bond_harm"]["Kb"])[Im["bond_harm"]["k"]] / (2 * KCAL * 100)
     ref = {tuple(sorted(e[:2])): e[2] for e in amb["bonds"] if e[0] < prot.n}
     for (i, j), k in zip(tpl.terms.mols[0].top.bonds, Kb):
         assert abs(ref[(int(i), int(j))] - k) < 1e-6 * ref[(int(i), int(j))]

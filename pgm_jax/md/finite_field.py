@@ -43,10 +43,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .efield import E_CHARGE, EPS0, EPS_FACTOR, finite_d_eps
+from ..units import E_CHARGE_C, EPS0_SI, KB_SI
+from .efield import EPS_FACTOR, finite_d_eps
 from .remd import MDReplicas, _stack
-
-KB_SI = 1.380649e-23
 
 
 class FieldReplicas(MDReplicas):
@@ -246,7 +245,7 @@ def fluctuation_eps(M, V, T, eps_inf: float = 1.0, nblocks: int = 10):
     """eps = eps_inf + (<M.M> - <M>.<M>) / (3 eps0 V kB T) (tin-foil) and its jackknife error over
     contiguous blocks; M (F, 3) e nm, V nm^3."""
     M = np.asarray(M, float)
-    c = (E_CHARGE * 1e-9) ** 2 / (3 * EPS0 * V * 1e-27 * KB_SI * T)
+    c = (E_CHARGE_C * 1e-9) ** 2 / (3 * EPS0_SI * V * 1e-27 * KB_SI * T)
 
     def est(m):
         return eps_inf + c * (np.mean(np.sum(m * m, 1)) - np.sum(np.mean(m, 0) ** 2))
@@ -368,7 +367,7 @@ def predicted_errors(eps: float, eps_inf: float, V: float, T: float, E: float, t
     """Statistical errors expected for eps from a +-E pair (each replica run_ps long) and from the
     fluctuations of a zero-field run of the same total length (2 run_ps), for a Gaussian M with
     integrated correlation time tau_ps (module docstring), and their cost ratio at equal error."""
-    var_Me = (eps - eps_inf) * EPS0 * V * 1e-27 * KB_SI * T / (E_CHARGE * 1e-9) ** 2  # (e nm)^2, one component
+    var_Me = (eps - eps_inf) * EPS0_SI * V * 1e-27 * KB_SI * T / (E_CHARGE_C * 1e-9) ** 2  # (e nm)^2, one component
     s_mean = np.sqrt(var_Me * 2 * tau_ps / run_ps)  # error of <M_e> of one run
     s_ff = EPS_FACTOR / (V * E) * s_mean / np.sqrt(2)  # the +-E combination
     s_fl = (eps - eps_inf) * np.sqrt(2 * tau_ps / (3 * 2 * run_ps))

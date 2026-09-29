@@ -64,7 +64,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pgm_jax.md import fe_grad as fg  # noqa: E402
 from pgm_jax.md import free_energy as fe  # noqa: E402
 from pgm_jax.md.alchemy import (  # noqa: E402
-    KCAL,
     Alchemy,
     FreeEnergyRun,
     GasPhaseLeg,
@@ -79,6 +78,7 @@ from pgm_jax.md.rigid import RigidBody  # noqa: E402
 from pgm_jax.md.simulation import Simulation, _dedupe  # noqa: E402
 from pgm_jax.param import read_prmtop_pgm  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
+from pgm_jax.units import AMU_NM3_TO_G_CM3, KCAL
 
 TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
 RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
@@ -105,7 +105,7 @@ def water_model(model: str):
         xyz = paper_geometry(xyz, 0.9745, 103.64, [list(m.elements) for m in mols])
         sig, eps = 3.18156, 0.14473
         rh = np.array([2 ** (1 / 6) * sig / 2 * 0.1, 0.0, 0.0])
-        se = np.array([np.sqrt(eps * 4.184), 0.0, 0.0])
+        se = np.array([np.sqrt(eps * KCAL), 0.0, 0.0])
         new = {id(m): dataclasses.replace(m, lj_rmin_half=rh, lj_sqrt_eps=se) for m in mols}
         mols = [new[id(m)] for m in mols]
         vel = None
@@ -259,7 +259,7 @@ def cmd_run(a):
         Vm = float(np.mean(vols[10:]))
         print(
             f"# NPT {a.npt_ps} ps: volume {vols[-1]:.4f} nm^3, mean of the second half {Vm:.4f} nm^3 "
-            f"(density {float(np.sum(sysA.masses)) / Vm * 1.66053906660e-3:.4f} g/cm^3)",
+            f"(density {float(np.sum(sysA.masses)) / Vm * AMU_NM3_TO_G_CM3:.4f} g/cm^3)",
             flush=True,
         )
         pos, H = scale_to_volume(npt, Vm)

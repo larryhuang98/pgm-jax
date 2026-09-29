@@ -10,6 +10,7 @@ from pgm_jax.lj import LJChannel
 from pgm_jax.model import Model
 from pgm_jax.param import Molecule, read_prmtop_pgm
 from pgm_jax.system import System
+from pgm_jax.units import KCAL
 
 AMBER_TEST = os.path.expanduser("~/amber25/test/pgm_4wat")
 PGM3P25_TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
@@ -33,9 +34,9 @@ def test_sander_parity_4wat():
     sys = System([w] * 4)
     pos = _restart_coords(os.path.join(AMBER_TEST, "restrt0"))
     e = Model([lambda s: ElecChannel()]).energy_fn(sys)(pos, None)
-    kcal = float(e["total"]) / 4.184
+    kcal = float(e["total"]) / KCAL
     assert abs(kcal - (-2164.4829)) / 2164.4829 < 1e-4, kcal
-    vdw = float(Model([LJChannel()]).energy_fn(sys)(pos)["total"]) / 4.184  # same run: VDWAALS = 6.7727
+    vdw = float(Model([LJChannel()]).energy_fn(sys)(pos)["total"]) / KCAL  # same run: VDWAALS = 6.7727
     assert abs(vdw - 6.7727) < 1e-4, vdw
 
 
@@ -48,7 +49,7 @@ def test_prmtop_reader_pgm3p25():
     # LJ from ACOEF/BCOEF: O only (A = 5.81935564e5 kcal/mol A^12, B = 5.94825035e2 kcal/mol A^6)
     A, B = 5.81935564e5, 5.94825035e2
     rmin_A, eps_kcal = (2 * A / B) ** (1 / 6), B * B / (4 * A)
-    assert np.isclose(w.lj_rmin_half[0], rmin_A / 20) and np.isclose(w.lj_sqrt_eps[0] ** 2, eps_kcal * 4.184)
+    assert np.isclose(w.lj_rmin_half[0], rmin_A / 20) and np.isclose(w.lj_sqrt_eps[0] ** 2, eps_kcal * KCAL)
     assert w.lj_rmin_half[1] == 0 and w.lj_sqrt_eps[1] == 0
     assert sorted(w.bonds) == [(0, 1), (0, 2), (1, 2)] and np.isclose(w.masses[0], 16.0)
 

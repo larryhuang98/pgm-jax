@@ -10,8 +10,8 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
+from pgm_jax.units import KB
 from pgm_jax.md.forcefield import MDSettings
-from pgm_jax.md.integrate import KB
 from pgm_jax.system import System
 
 OUT = os.path.join(ROOT, "paper/data/flex_methanol.json")

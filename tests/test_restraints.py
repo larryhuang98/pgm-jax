@@ -27,6 +27,7 @@ from pgm_jax.md.restraints import (
     harmonic,
     nmr_energy,
 )
+from pgm_jax.units import BAR_PER_KJMOL_NM3, KB
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
 PRM, CRD = os.path.join(DATA, "pep_wat.prmtop"), os.path.join(DATA, "pep_wat.inpcrd")
@@ -259,7 +260,7 @@ def test_nve_with_restraints_and_force_mapping(engine):
     F_r = rs.forces(x, st.box)
     mapped = sim.rigid.forces(st.dyn.position, F_r) if engine == "rigid" else F_r
     W = rs.strain_derivative(x, st.box, sim.ff.mol, sim.ff.masses, sim.sys.nmol)
-    dP = -float(jnp.trace(W)) / (3.0 * float(jnp.linalg.det(st.box))) * 16.605390671738466
+    dP = -float(jnp.trace(W)) / (3.0 * float(jnp.linalg.det(st.box))) * BAR_PER_KJMOL_NM3
     p_with = sim.pressure()
     sim.set_restraints(None)
     assert abs(p_with - sim.pressure() - dP) < 1e-6 * max(1.0, abs(dP)), (p_with, sim.pressure(), dP)
@@ -309,7 +310,7 @@ def test_barostat_trials_include_restraints(engine):
         sim._advance(120)
         o = sim.observables()
         out[scaling] = (o["erestraint"], o["mc_accept"], abs(o["volume_nm3"] / V0 - 1.0))
-    kT = 0.0083144626 * 300.0
+    kT = KB * 300.0
     e_none, acc_none, dv_none = out["none"]
     e_com, acc_com, dv_com = out["com"]
     assert e_none < 5 * kT and e_com < 0.05 * kT, out

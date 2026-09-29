@@ -24,9 +24,9 @@ import numpy as np
 
 from ..param import read_pol_table
 from ..prmtop import Prmtop
+from ..units import BOHR_NM_CODATA2018
 from .residues import residue_key
 
-BOHR_NM = 0.0529177210903
 FORMAT = "pgm_jax residue library 1"
 _GENERIC = {"H": "hc", "C": "c3", "N": "n", "O": "o", "S": "s"}
 # rough monatomic-ion values (bohr^3, bohr) for the placeholder only: free-ion polarizabilities
@@ -99,7 +99,11 @@ class ResidueLibrary:
                     alpha, rad = _ION[e]
                 else:
                     alpha, rad = tab[t if t in tab else _GENERIC.get(e, "c3")]
-                atoms[names[a]] = {"q": float(q[a]), "alpha_nm3": alpha * BOHR_NM**3, "radius_nm": rad * BOHR_NM}
+                atoms[names[a]] = {
+                    "q": float(q[a]),
+                    "alpha_nm3": alpha * BOHR_NM_CODATA2018**3,
+                    "radius_nm": rad * BOHR_NM_CODATA2018,
+                }
             res[key] = {"atoms": atoms, "cov": []}
         return cls(res, note=f"placeholder from {prmtop}: Amber charges, pGM-pol polarizabilities, no covalent dipoles")
 

@@ -22,11 +22,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from pgm_jax import Molecule, System  # noqa: E402
 from pgm_jax.bias import OPES, BiasSet, LowerWall, MetaD, StaticBias, UpperWall, cv  # noqa: E402
 from pgm_jax.bias import analysis as A  # noqa: E402
-from pgm_jax.bias.core import KB  # noqa: E402
 from pgm_jax.bias.io import read_table  # noqa: E402
 from pgm_jax.bias.walkers import Walkers  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
+from pgm_jax.units import KB
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--method", default="metad", choices=("metad", "opes"))

@@ -45,13 +45,16 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
-from pgm_jax.md.integrate import KB  # noqa: E402
 from pgm_jax.md.io import box_from_cell, read_coordinates  # noqa: E402
 from pgm_jax.md.simulation import Simulation, _dedupe  # noqa: E402
 from pgm_jax.md.vsites import VirtualSites  # noqa: E402
 from pgm_jax.param import read_prmtop_pgm  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
-from pgm_jax.units import KE  # noqa: E402
+from pgm_jax.units import (
+    KB,
+    KCAL,
+    KE,  # noqa: E402
+)
 
 OUT = os.path.join(ROOT, "runs", "vsites")
 JSON = os.path.join(ROOT, "validation", "validate_vsites.json")
@@ -59,7 +62,6 @@ AMBERHOME = os.path.expanduser("~/amber25")
 SANDER = os.path.join(AMBERHOME, "bin", "sander")
 TOP = os.path.join(OUT, "tip4pew512.prmtop")
 CRD = os.path.join(OUT, "tip4pew512.inpcrd")
-KCAL = 4.184
 KE_AMBER = 18.2223**2 * KCAL / 10.0  # kJ/mol nm e^-2: sander's Coulomb constant
 R_OH, R_HH, D_OM = 0.09572, 0.15136, 0.0125  # nm: Amber's SHAKE lengths and the EP bond
 NW = 512

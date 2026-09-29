@@ -17,6 +17,7 @@ from test_md import small_box
 
 from pgm_jax.interfaces import GasPhaseEngine, PGMEngine
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
+from pgm_jax.units import KB
 
 
 def settings(**kw):
@@ -474,5 +475,5 @@ def test_openmm_pythonforce_energy_forces_and_nve():
         integ.step(10)
         st = ctx.getState(getEnergy=True)
         E.append((st.getPotentialEnergy() + st.getKineticEnergy()).value_in_unit(unit.kilojoule_per_mole))
-    ke = 0.5 * (3 * 90 - 90 - 3) * 0.0083144626 * 300
+    ke = 0.5 * (3 * 90 - 90 - 3) * KB * 300
     assert np.std(E) < 3e-3 * ke

@@ -43,11 +43,10 @@ import numpy as np
 from .channels import ElecChannel, elec_decomposition, molecular_polarizability
 from .lj import LJChannel
 from .system import Molecule, ParamTable, System
+from .units import DEBYE_E_NM, KCAL
 from .vdw import GVDWChannel
 
-KCAL = 4.184  # kJ/mol
 ANG = 0.1  # nm
-DEBYE = 0.020819434  # e nm
 
 
 # =================================================================== dataset ==
@@ -429,7 +428,7 @@ class QMFit:
                 out.append(((F - Fq) / s).ravel())
                 out.append(((T - Tq) / (s * ANG)).ravel())
         if w.dipole > 0 and "dipole_D" in self.mono:
-            mu = jnp.linalg.norm(self.cm.monomer_dipole(P)) / DEBYE
+            mu = jnp.linalg.norm(self.cm.monomer_dipole(P)) / DEBYE_E_NM
             out.append(jnp.atleast_1d((mu - self.mono["dipole_D"]) / w.sigma_dip * np.sqrt(w.dipole)))
         if w.polarizability > 0 and "polarizability_A3" in self.mono:
             a = self.cm.monomer_polarizability(P) / ANG**3

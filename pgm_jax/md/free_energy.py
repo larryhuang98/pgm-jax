@@ -32,7 +32,7 @@ import numpy as np
 from scipy.optimize import brentq
 from scipy.special import expit, logsumexp
 
-KCAL = 4.184
+from ..units import KCAL
 
 
 # ----------------------------------------------------------------------------- time series

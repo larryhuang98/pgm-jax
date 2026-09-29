@@ -24,8 +24,8 @@ jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from pgm_jax.bias import OPES, MetaD, cv  # noqa: E402
 from pgm_jax.bias import analysis as A  # noqa: E402
-from pgm_jax.bias.core import KB  # noqa: E402
 from pgm_jax.bias.toy import ToyLangevin, double_well, mueller_brown, ring  # noqa: E402
+from pgm_jax.units import KB
 
 ap = argparse.ArgumentParser()
 ap.add_argument("system", choices=("dw", "ring", "mb"))

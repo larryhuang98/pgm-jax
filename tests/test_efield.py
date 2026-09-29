@@ -16,9 +16,8 @@ from pgm_jax.channels import molecular_polarizability
 from pgm_jax.md import efield as EF
 from pgm_jax.md.dipoles import CellDipole
 from pgm_jax.md.forcefield import PGMForceField
-from pgm_jax.md.integrate import KB
 from pgm_jax.md.simulation import Simulation
-from pgm_jax.units import KE
+from pgm_jax.units import KB, KE
 
 E1 = np.array([0.3, -0.5, 0.8])  # V/nm, deliberately strong and oblique
 

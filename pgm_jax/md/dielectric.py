@@ -34,11 +34,7 @@ from __future__ import annotations
 
 import numpy as np
 
-E_CHARGE = 1.602176634e-19  # C
-EPS0 = 8.8541878128e-12  # F/m
-KB_SI = 1.380649e-23  # J/K
-C_LIGHT = 2.99792458e8  # m/s
-E_NM = E_CHARGE * 1e-9  # 1 e nm in C m
+from ..units import C_LIGHT_M_S, E_NM_C_M, EPS0_SI, KB_SI
 
 
 def _series(M, V):
@@ -51,7 +47,7 @@ def fluctuation(M, V, T: float) -> float:
     """(<M.M> - <M>.<M>) / (3 eps0 <V> kB T) for M (F, 3) in e nm, V in nm^3 (scalar or (F,)), T in K."""
     M, V = _series(M, V)
     dM2 = np.mean(np.sum(M * M, axis=1)) - np.sum(np.mean(M, axis=0) ** 2)
-    return float(dM2 * E_NM**2 / (3.0 * EPS0 * np.mean(V) * 1e-27 * KB_SI * T))
+    return float(dM2 * E_NM_C_M**2 / (3.0 * EPS0_SI * np.mean(V) * 1e-27 * KB_SI * T))
 
 
 def eps_inf(alpha, V) -> tuple[float, float]:
@@ -75,7 +71,7 @@ def jackknife(M, V, T: float, nblocks: int = 10) -> tuple[float, float]:
     s1 = np.array([M[p].sum(0) for p in parts])
     s2 = np.array([np.sum(M[p] * M[p]) for p in parts])
     sv = np.array([V[p].sum() for p in parts])
-    conv = E_NM**2 / (3.0 * EPS0 * 1e-27 * KB_SI * T)
+    conv = E_NM_C_M**2 / (3.0 * EPS0_SI * 1e-27 * KB_SI * T)
 
     def f(nn, a1, a2, av):
         nn = np.asarray(nn, float)
@@ -133,7 +129,7 @@ def decomposition(parts: dict, V, T: float) -> dict:
     <dA.dA> and the cross terms 2 <dA.dB>, in units of eps."""
     names = list(parts)
     d = {k: np.asarray(v, float) - np.mean(v, axis=0) for k, v in parts.items()}
-    conv = E_NM**2 / (3.0 * EPS0 * float(np.mean(V)) * 1e-27 * KB_SI * T)
+    conv = E_NM_C_M**2 / (3.0 * EPS0_SI * float(np.mean(V)) * 1e-27 * KB_SI * T)
     out = {}
     for i, a in enumerate(names):
         out[a] = float(np.mean(np.sum(d[a] * d[a], 1)) * conv)
@@ -183,8 +179,8 @@ def ir_spectrum(M, dt_ps: float, V, T: float, segment_ps: float = 10.0):
     for s in starts:
         seg = d[s : s + n] - d[s : s + n].mean(0)
         S += np.sum(np.abs(np.fft.rfft(seg * h[:, None], axis=0)) ** 2, axis=1)
-    S *= dt / np.sum(h * h) / len(starts) * E_NM**2  # C(w), C^2 m^2 s
+    S *= dt / np.sum(h * h) / len(starts) * E_NM_C_M**2  # C(w), C^2 m^2 s
     w = 2.0 * np.pi * np.fft.rfftfreq(n, dt)  # rad/s
     V_m3 = float(np.mean(V)) * 1e-27
-    alpha_n = w**2 * S / (6.0 * C_LIGHT * EPS0 * V_m3 * KB_SI * T)  # 1/m
-    return w / (2.0 * np.pi * C_LIGHT) / 100.0, alpha_n / 100.0
+    alpha_n = w**2 * S / (6.0 * C_LIGHT_M_S * EPS0_SI * V_m3 * KB_SI * T)  # 1/m
+    return w / (2.0 * np.pi * C_LIGHT_M_S) / 100.0, alpha_n / 100.0

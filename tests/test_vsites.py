@@ -15,13 +15,13 @@ from test_grad import methanol, water
 from pgm_jax.md.box import lower_triangular_frame, reduce_box
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, RigidTemplate, liquid_box
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
-from pgm_jax.md.integrate import KB
 from pgm_jax.md.io import box_from_cell, read_coordinates
 from pgm_jax.md.simulation import Simulation, _dedupe
 from pgm_jax.md.topology import MDTopology, MoleculeRule
 from pgm_jax.md.vsites import VirtualSite, VirtualSites, amber_extra_points
 from pgm_jax.param import molecule_from_dict, molecule_to_dict, read_prmtop_pgm
 from pgm_jax.system import Molecule, System
+from pgm_jax.units import KB
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
 TET = np.radians(54.735)

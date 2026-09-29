@@ -17,9 +17,9 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 
 from pgm_jax.bonded.data import frames, mol_spec  # noqa: E402
-from pgm_jax.bonded.fit import KCAL  # noqa: E402
 from pgm_jax.bonded.model import BondedModel, BondedSettings  # noqa: E402
 from pgm_jax.bonded.molecules import MOLECULES  # noqa: E402
+from pgm_jax.units import DEBYE_E_NM, KCAL
 
 out = {}
 print(
@@ -43,8 +43,8 @@ for name in MOLECULES:
             "sd_Enb": float(np.std(e)) / KCAL,
             "sd_E": float(np.std(te.E)) / KCAL,
             "F_min": float(np.mean(np.linalg.norm(np.asarray(g), axis=-1))) / (KCAL * 10),
-            "dip_rmse_D": float(np.sqrt(np.mean(np.sum((np.asarray(d) - te.mu) ** 2, -1)))) / 0.020819434,
-            "dip_mean_D": float(np.mean(np.linalg.norm(te.mu, axis=-1))) / 0.020819434,
+            "dip_rmse_D": float(np.sqrt(np.mean(np.sum((np.asarray(d) - te.mu) ** 2, -1)))) / DEBYE_E_NM,
+            "dip_mean_D": float(np.mean(np.linalg.norm(te.mu, axis=-1))) / DEBYE_E_NM,
         }
     out[name] = r
     print(

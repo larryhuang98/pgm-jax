@@ -18,7 +18,6 @@ from test_md_macro import _water_box
 from pgm_jax import System
 from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
 from pgm_jax.md.forcefield import MDSettings
-from pgm_jax.md.integrate import BAR, KB
 from pgm_jax.md.remd import (
     ReplicaExchange,
     _broadcast,
@@ -30,6 +29,7 @@ from pgm_jax.md.remd import (
 )
 from pgm_jax.md.simulation import Simulation
 from pgm_jax.md.thermostats import GLE, Bussi, Langevin
+from pgm_jax.units import KB, KJMOL_NM3_PER_BAR
 
 
 # ----------------------------------------------------------------------------- toy replica engines
@@ -115,7 +115,7 @@ def test_ladder_pairs_and_criterion():
     acc, src = metropolis(temperature_reduced_energies([300.0, 330.0], U[::-1]), [(0, 1)], [0.9999])
     assert acc[0] and list(src) == [1, 0]  # downhill: always
     # constant pressure: enthalpies U + P V
-    V, P = np.array([30.0, 31.0]), 1.0 * BAR
+    V, P = np.array([30.0, 31.0]), 1.0 * KJMOL_NM3_PER_BAR
     uP = temperature_reduced_energies([300.0, 330.0], U, V, P)
     assert np.allclose(uP, temperature_reduced_energies([300.0, 330.0], U + P * V))
     with pytest.raises(ValueError):

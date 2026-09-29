@@ -27,8 +27,8 @@ from openmm import unit  # noqa: E402
 from pgm_jax.interfaces import PGMEngine  # noqa: E402
 from pgm_jax.interfaces.openmm import PGMOpenMM  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.integrate import KB  # noqa: E402
-from pgm_jax.md.simulation import AMU_NM3_TO_G_CM3, Simulation  # noqa: E402
+from pgm_jax.md.simulation import Simulation  # noqa: E402
+from pgm_jax.units import AMU_NM3_TO_G_CM3, KB
 
 TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
 RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")

@@ -39,6 +39,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ..units import KB, KJMOL_NM3_PER_BAR
 from ._jaxmd import dataclasses, rigid_body, simulate, space
 from .box import volume
 from .efield import as_field
@@ -46,9 +47,6 @@ from .forcefield import InductionState, PGMForceField
 from .restraints import as_restraints, molecular_strain
 from .rigid import RigidBody, RigidMolecules
 from .thermostats import Thermostat, make_thermostat
-
-KB = 0.0083144626181532  # kJ/mol/K
-BAR = 1.0 / 16.605390671738466  # kJ/mol/nm^3 per bar
 
 
 @dataclasses.dataclass
@@ -166,7 +164,7 @@ class Integrator:
         self.kT = KB * float(temperature)
         self.gamma_value = float(gamma)
         self.thermostat = None if ensemble == "nve" else make_thermostat(thermostat, gamma, tau_t)
-        self.pressure = float(pressure) * BAR
+        self.pressure = float(pressure) * KJMOL_NM3_PER_BAR
         self.interval = int(barostat_interval)
         self.params = params
         self.shift = space.free()[1]

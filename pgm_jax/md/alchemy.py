@@ -116,14 +116,13 @@ import numpy as np
 
 from ..lj import lj_long_range
 from ..system import ATOM_QUANTITIES, QUANTITIES, System
+from ..units import KB
 from .box import min_image, volume
 from .forcefield import full_strain_derivative
-from .integrate import KB
 from .io import write_restart
 from .remd import ExchangeStatistics, MDReplicas, _nocount, _stack, _take, exchange_pairs, metropolis
 
 PREFIX = "alch:"  # tying-key prefix of an alchemical molecule's own parameters
-KCAL = 4.184  # kJ per kcal
 FORMAT = "pgm_jax free energy 1"
 
 

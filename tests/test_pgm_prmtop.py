@@ -22,6 +22,7 @@ from pgm_jax.protein import (
     pmemd_mdin,
     write_pgm_prmtop,
 )
+from pgm_jax.units import KCAL
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
 PRM, CRD = os.path.join(DATA, "pep_wat.prmtop"), os.path.join(DATA, "pep_wat.inpcrd")  # ACE-ALA-SER-NME, TIP3P, NaCl
@@ -105,7 +106,7 @@ def test_protein_sections_round_trip(tmp_path):
     for a in range(nt):
         for b in range(nt):
             i, j = first[a], first[b]
-            eps = P["lj_sqrt_eps"][i] * P["lj_sqrt_eps"][j] / 4.184
+            eps = P["lj_sqrt_eps"][i] * P["lj_sqrt_eps"][j] / KCAL
             rmin = 10.0 * (P["lj_rmin_half"][i] + P["lj_rmin_half"][j])
             np.testing.assert_allclose([A[ico[a, b]], B[ico[a, b]]], [eps * rmin**12, 2 * eps * rmin**6], rtol=5e-9)
     np.testing.assert_allclose(pt.get("LENNARD_JONES_14_ACOEF"), 0.5 * A)

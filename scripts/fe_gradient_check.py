@@ -23,8 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pgm_jax.md import fe_grad as fg  # noqa: E402
 from pgm_jax.md import free_energy as fe  # noqa: E402
-
-KCAL = 4.184
+from pgm_jax.units import KCAL
 
 
 def point(path, group, discard_ps, n_blocks, solute=True):

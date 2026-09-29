@@ -25,6 +25,7 @@ from pgm_jax.qmfit import (
     rigid_water,
     superpose_monomers,
 )
+from pgm_jax.units import DEBYE_E_NM
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -131,7 +132,7 @@ def synthetic_set(rng, labels_from=None, cm=None, P=None):
                 X = np.asarray(recs[k]["xyz_A"]) * 0.1
                 g = np.asarray(cm.batch_grad(n)(jnp.asarray(X[None]), P)[0])
                 recs[k]["grad_int"] = (g / (KCAL / 0.1)).tolist()  # kcal/mol/A
-        dip = float(np.linalg.norm(cm.monomer_dipole(P)) / 0.020819434)
+        dip = float(np.linalg.norm(cm.monomer_dipole(P)) / DEBYE_E_NM)
         pol = float(cm.monomer_polarizability(P) / 1e-3)
         data.monomer.update(dipole_D=dip, polarizability_A3=pol)
     return data

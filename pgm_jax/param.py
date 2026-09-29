@@ -21,8 +21,8 @@ import re
 import numpy as np
 
 from .system import Molecule
+from .units import ANG_NM, BOHR_NM, KCAL
 
-ANG = 0.1
 Z2EL = {
     1: "H",
     3: "Li",
@@ -135,7 +135,7 @@ def read_prmtop_pgm(
         from .md.vsites import POINT_RADIUS
 
         q = np.array([float(x) for x in s["CHARGE"]]) / AMBER_CHARGE
-        rad = np.full(len(names), (POINT_RADIUS if point_radius is None else float(point_radius)) / ANG)
+        rad = np.full(len(names), (POINT_RADIUS if point_radius is None else float(point_radius)) / ANG_NM)
         alp = np.zeros(len(names))
         nptr, catm, cdip = [0] * len(names), [], []
     else:
@@ -161,7 +161,7 @@ def read_prmtop_pgm(
                         f"atom {i + 1} has a covalent dipole to atom {catm[k] + 1} of another residue: "
                         "read multi-residue molecules with protein.load_amber(electrostatics='prmtop')"
                     )
-                cov.append((i - a0, catm[k] - a0, cdip[k] * ANG))
+                cov.append((i - a0, catm[k] - a0, cdip[k] * ANG_NM))
         if "ATOMIC_NUMBER" in s:
             el = [Z2EL[int(z)] if a not in eps else "EP" for a, z in zip(range(a0, a1), s["ATOMIC_NUMBER"][a0:a1])]
         else:
@@ -183,8 +183,8 @@ def read_prmtop_pgm(
                 elements=el,
                 types=types[a0:a1],
                 q=q[a0:a1].copy(),
-                radius=rad[a0:a1] * ANG,
-                alpha=alp[a0:a1] * ANG**3,
+                radius=rad[a0:a1] * ANG_NM,
+                alpha=alp[a0:a1] * ANG_NM**3,
                 cov=cov,
                 lj_rmin_half=rh[a0:a1],
                 lj_sqrt_eps=se[a0:a1],
@@ -213,7 +213,7 @@ def _prmtop_lj(s) -> tuple[np.ndarray, np.ndarray]:
     A_lb, B_lb = ee * rm**12, 2 * ee * rm**6
     if not (np.allclose(A, A_lb, rtol=1e-6, atol=1e-8) and np.allclose(B, B_lb, rtol=1e-6, atol=1e-8)):
         raise ValueError("prmtop LJ pairs are not Lorentz-Berthelot combinations of the type diagonals (NBFIX?)")
-    return (rmin / 2 * ANG)[ti], np.sqrt(eps * 4.184)[ti]
+    return (rmin / 2 * ANG_NM)[ti], np.sqrt(eps * KCAL)[ti]
 
 
 def molecule_to_dict(m: Molecule) -> dict:
@@ -275,7 +275,6 @@ def load_molecule(path: str) -> Molecule:
 
 
 # ------------------------------------------------------------------ py_resp / pGM-pol --
-BOHR_NM = 0.052917721067
 PGM_POL_TABLE = os.path.expanduser("~/amber25/AmberTools/examples/PyRESP/polarizability/pGM-pol-2016-09-01")
 
 

@@ -14,6 +14,8 @@ import time
 
 import numpy as np
 
+from pgm_jax.units import HARTREE_KJMOL
+
 KJMOL_MEV = 10.364269656262175  # meV per kJ/mol
 
 
@@ -170,9 +172,6 @@ def start_server(workdir, address):
         env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
     log = open(os.path.join(workdir, "ipi.log"), "w")
     return subprocess.Popen(cmd + ["input.xml"], cwd=workdir, env=env, stdout=log, stderr=subprocess.STDOUT)
-
-
-HARTREE_KJMOL = 2625.4996394799
 
 
 def read_properties(path, hartree_to_kjmol=("conserved", "potential", "kinetic_md", "kinetic_cv")):

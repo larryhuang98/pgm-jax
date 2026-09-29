@@ -24,8 +24,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 jax.config.update("jax_enable_x64", True)
 
-from pgm_jax.md.integrate import KB  # noqa: E402
-from pgm_jax.md.pimd import HBAR, PIMDIntegrator, PotentialEngine, RingPolymer  # noqa: E402
+from pgm_jax.md.pimd import PIMDIntegrator, PotentialEngine, RingPolymer  # noqa: E402
+from pgm_jax.units import HBAR_KJMOL_PS, KB
 
 OUT = os.path.join(ROOT, "validation/pimd")
 
@@ -53,7 +53,8 @@ def harmonic(a):
     n, m = 256, 1.008
     rows = []
     for w in a.omega:
-        q = 0.25 * HBAR * w / math.tanh(0.5 * beta * HBAR * w)  # quantum <K> = <V> per degree of freedom
+        # quantum <K> = <V> per degree of freedom
+        q = 0.25 * HBAR_KJMOL_PS * w / math.tanh(0.5 * beta * HBAR_KJMOL_PS * w)
         dt = a.dt_factor / w
         for P in a.beads:
             r = RingPolymer(P, T)
@@ -66,7 +67,7 @@ def harmonic(a):
             X = X[:, :3] / (3 * n)
             row = {
                 "omega_rad_ps": w,
-                "beta_hbar_omega": beta * HBAR * w,
+                "beta_hbar_omega": beta * HBAR_KJMOL_PS * w,
                 "P": P,
                 "dt_fs": dt * 1e3,
                 "exact_P": ex,

@@ -53,10 +53,9 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..system import QUANTITIES
+from ..units import KCAL
 from . import free_energy as fe
 from .alchemy import PREFIX
-
-KCAL = 4.184
 
 # scale groups: parameter quantities scaled together and the exponent of the scale on each
 # (lj_sqrt_eps carries sqrt(eps), so scaling eps by s scales it by s^1/2)

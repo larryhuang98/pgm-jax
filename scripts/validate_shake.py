@@ -28,8 +28,8 @@ import numpy as np  # noqa: E402
 
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.integrate import KB  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
+from pgm_jax.units import KB
 
 OUT = os.path.join(ROOT, "runs/shake")
 T0, N = 298.0, 216

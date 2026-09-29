@@ -14,9 +14,7 @@ from pgm_jax.md import dielectric as D
 from pgm_jax.md.dipoles import DIP_COLUMNS, CellDipole, DipoleRecorder, cell_dipole, read_dipoles
 from pgm_jax.md.forcefield import PGMForceField
 from pgm_jax.md.simulation import Simulation
-from pgm_jax.units import KE
-
-KB = 0.0083144626181532
+from pgm_jax.units import DEBYE_E_NM, KB, KE
 
 
 def _solve(sys, pos, H, **kw):
@@ -209,7 +207,7 @@ def test_recorded_series_match_the_state(tmp_path, monkeypatch, engine):
     c = cell_dipole(sim)
     assert np.abs(d["M"][-1] - c["total"]).max() < 1e-9
     assert np.allclose(d["M_ind"][-1], c["ind"], atol=1e-9)
-    assert np.allclose(c["debye"]["total"] * 0.020819434, c["total"])
+    assert np.allclose(c["debye"]["total"] * DEBYE_E_NM, c["total"])
     assert np.isnan(d["alpha_nm3"][::2]).all() and np.isfinite(d["alpha_nm3"][1::2]).all()
     st = sim.state
     pos = sim.positions_nm()

@@ -10,7 +10,8 @@ import os
 import numpy as np
 
 from ..param import load_molecule
-from .fit import BOHR_NM, EH, FrameSet
+from ..units import BOHR_NM, HARTREE_KJMOL
+from .fit import FrameSet
 from .model import MolSpec
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -45,8 +46,8 @@ def frames(name: str, key: str) -> FrameSet | None:
         if len(z["index"]) == 0:
             continue
         X.append(z["X"] * 0.1)
-        E.append(z["energy_Eh"] * EH)
-        F.append(-z["gradient_Eh_bohr"] * EH / BOHR_NM)
+        E.append(z["energy_Eh"] * HARTREE_KJMOL)
+        F.append(-z["gradient_Eh_bohr"] * HARTREE_KJMOL / BOHR_NM)
         D.append(z["dipole_au"] * BOHR_NM)
         idx.append(z["index"])
         src += [os.path.basename(f)] * len(z["index"])

@@ -13,8 +13,7 @@ import numpy as np
 from .ewald import PeriodicPGM, neighbor_list
 from .lj import PeriodicLJ
 from .system import System
-
-KJMOL_NM3_BAR = 16.605390671738466  # 1 kJ/mol/nm^3 in bar
+from .units import BAR_PER_KJMOL_NM3
 
 
 def strain_derivative(energy, pos, H, sys: System | None = None):
@@ -40,7 +39,7 @@ def pressure_bar(dE_deps, H):
     """Static (potential) pressure P = -tr(dE/d eps) / (3 V), bar; add the kinetic part in MD.
     Amber's printed VIRIAL is tr(dE/d eps)/2 (kcal/mol) with molecular scaling."""
     V = jnp.abs(jnp.linalg.det(jnp.asarray(H)))
-    return -jnp.trace(dE_deps) / (3.0 * V) * KJMOL_NM3_BAR
+    return -jnp.trace(dE_deps) / (3.0 * V) * BAR_PER_KJMOL_NM3
 
 
 class PeriodicModel:

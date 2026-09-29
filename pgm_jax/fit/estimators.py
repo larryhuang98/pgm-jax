@@ -38,12 +38,8 @@ import jax.numpy as jnp
 import numpy as np
 from jax.scipy.special import logsumexp
 
-from ..units import DEBYE_E_NM, KE
+from ..units import AMU_NM3_TO_G_CM3, BAR_PER_KJMOL_NM3, DEBYE_E_NM, KB, KCAL, KE
 
-KB = 0.0083144626181532  # kJ/mol/K
-KCAL = 4.184
-G_CM3 = 1.66053906660e-3  # amu/nm^3 -> g/cm^3
-BAR_KJ = 16.605390671738466  # bar per kJ/mol/nm^3
 LIQUID = (
     "density",
     "hvap",
@@ -65,7 +61,7 @@ class LiquidSamples:
 
     def __init__(self, frames: dict, T: float, n_mol: int, mass: float, nblocks: int = 10, pressure_bar: float = 1.0):
         self.T, self.beta, self.N, self.mass = float(T), 1.0 / (KB * float(T)), int(n_mol), float(mass)
-        self.p = float(pressure_bar) / BAR_KJ
+        self.p = float(pressure_bar) / BAR_PER_KJMOL_NM3
         f = {k: np.asarray(v) for k, v in frames.items()}
         self.F = len(f["U"])
         V = f["V"]
@@ -73,7 +69,7 @@ class LiquidSamples:
         v, g = {}, {}
         v["U"], g["U"] = f["U"], f["dU"]
         v["V"], g["V"] = V, np.zeros((self.F, n))
-        v["rho"], g["rho"] = mass / V * G_CM3, np.zeros((self.F, n))
+        v["rho"], g["rho"] = mass / V * AMU_NM3_TO_G_CM3, np.zeros((self.F, n))
         v["M"], g["M"] = f["M"], f["dM"]
         v["M2"] = np.sum(f["M"] ** 2, axis=1)
         g["M2"] = 2.0 * np.einsum("fc,fcn->fn", f["M"], f["dM"])
@@ -122,7 +118,7 @@ class LiquidSamples:
         vals = {
             "U": new["U"],
             "V": V,
-            "rho": self.mass / V * G_CM3,
+            "rho": self.mass / V * AMU_NM3_TO_G_CM3,
             "M": new["M"],
             "M2": np.sum(new["M"] ** 2, 1),
             "aV": new["alpha"] / V,
@@ -164,7 +160,7 @@ class LiquidSamples:
         if name == "alpha_p":  # thermal expansion (1/K), NPT
             return (avg["VH"] - avg["V"] * avg["H"]) / (KB * self.T**2 * avg["V"])
         if name == "kappa_t":  # isothermal compressibility (1/bar), NPT
-            return (avg["V2"] - avg["V"] ** 2) / (kT * avg["V"]) / BAR_KJ
+            return (avg["V2"] - avg["V"] ** 2) / (kT * avg["V"]) / BAR_PER_KJMOL_NM3
         raise KeyError(f"unknown liquid observable {name!r}")
 
     def blocks_weights(self, nblocks: int | None = None):

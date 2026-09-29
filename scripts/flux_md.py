@@ -41,9 +41,8 @@ import numpy as np
 from pgm_jax.md.dipoles import CellDipole
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
 from pgm_jax.md.forcefield import MDSettings
-from pgm_jax.md.integrate import KB
 from pgm_jax.system import System
-from pgm_jax.units import DEBYE_E_NM
+from pgm_jax.units import DEBYE_E_NM, KB, KCAL
 
 ap = argparse.ArgumentParser()
 ap.add_argument("cmd", choices=("liquid", "nve", "speed", "gas"))
@@ -260,7 +259,7 @@ elif a.cmd == "gas":
             out["U_gas"][0] - L["epot_per_mol"][0] + KB * T,
             float(np.hypot(out["U_gas"][1], L["epot_per_mol"][1])),
         ]
-        out["dHvap_kcal_mol"] = [v / 4.184 for v in out["dHvap_kJ_mol"]]
+        out["dHvap_kcal_mol"] = [v / KCAL for v in out["dHvap_kJ_mol"]]
     print(out, flush=True)
     json.dump(out, open(stem + "_gas.json", "w"), indent=1)
 

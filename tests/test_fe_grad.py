@@ -26,6 +26,7 @@ from pgm_jax.md.alchemy import (
 )
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.units import KCAL
 
 
 def direction(space, P, seed=0):
@@ -370,7 +371,7 @@ def test_run_outputs_restart_and_fitting_target(tmp_path):
     est = t.estimate(theta_fn, jnp.array([0.0]), unit="kcal/mol")
     assert est["J"].shape == (1, 1) and est["loo"]["J"].shape == (2, 1, 1) and est["loo"]["y"].shape == (2, 1)
     assert (
-        abs(est["J"][0, 0] - proj / 4.184) < 1e-8 * max(1.0, abs(proj)) and abs(est["target"][0] + 20.0 / 4.184) < 1e-12
+        abs(est["J"][0, 0] - proj / KCAL) < 1e-8 * max(1.0, abs(proj)) and abs(est["target"][0] + 20.0 / KCAL) < 1e-12
     )
     # original (non-alchemical) table: the solute's copy and the solvent's key both follow P0
     sys0 = alch_sim()[3][2]

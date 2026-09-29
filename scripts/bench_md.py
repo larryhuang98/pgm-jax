@@ -172,7 +172,7 @@ def main():
         flush=True,
     )
     if a.ps > 0:
-        from pgm_jax.md.integrate import KB
+        from pgm_jax.units import KB
 
         n = max(1, int(round(0.5 / a.dt)))
         keys = (

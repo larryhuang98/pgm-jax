@@ -78,15 +78,11 @@ from dataclasses import dataclass
 import jax.numpy as jnp
 import numpy as np
 
-from ..units import KE
+from ..units import C_CM_PS, FARADAY_KJ, KE
 
-FARADAY_KJ = 96.48533212331002  # kJ/mol per (e V): e N_A
 VNM_TO_INTERNAL = FARADAY_KJ / KE  # e/nm^2 per V/nm (0.694468)
-E_CHARGE = 1.602176634e-19  # C
-EPS0 = 8.8541878128e-12  # F/m
 EPS_FACTOR = 4.0 * math.pi * KE / FARADAY_KJ  # eps - 1 = EPS_FACTOR <M.e> / (V |E|); M e nm, V nm^3, E V/nm:
 # e / (eps0 x 1 nm) = 18.0951 (the model's KE: equal to 1e-9)
-C_CM_PS = 0.0299792458  # speed of light, cm/ps
 
 
 @dataclass(frozen=True)

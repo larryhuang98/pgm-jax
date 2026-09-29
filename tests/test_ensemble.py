@@ -7,7 +7,8 @@ from test_protein_bonded import ACE_ALA_GLY_NME, peptide_spec
 
 from pgm_jax.bonded import terms as T
 from pgm_jax.bonded.model import BondedSettings, BondedTerms
-from pgm_jax.ensemble import ALPHA_BOX, KARPLUS, KB, Reweighting, backbone_torsions, in_region, karplus
+from pgm_jax.ensemble import ALPHA_BOX, KARPLUS, Reweighting, backbone_torsions, in_region, karplus
+from pgm_jax.units import KB
 
 
 def test_karplus_and_regions():

@@ -21,6 +21,7 @@ from experiments import load
 from pgm_jax.bonded import terms as T
 from pgm_jax.bonded.amber import init_from_prmtop, with_amber_impropers
 from pgm_jax.bonded.model import BondedModel, BondedSettings
+from pgm_jax.units import KCAL
 
 CPPTRAJ = os.path.expanduser("~/amber25/bin/cpptraj")
 for name in sys.argv[1:]:
@@ -30,7 +31,7 @@ for name in sys.argv[1:]:
     model = BondedModel(specs, BondedSettings(families=T.AMBER, typing="amber", lj14_scale=0.5))
     P = init_from_prmtop(model, model.init_params(), {0: prm})
     X = np.asarray(data[0]["test"].X)[:20]  # nm
-    ours = np.array([float(model.bonded_energy(0, jnp.asarray(x), P)) for x in X]) / 4.184
+    ours = np.array([float(model.bonded_energy(0, jnp.asarray(x), P)) for x in X]) / KCAL
     from pgm_jax.md.io import NetCDFTrajectory
 
     with tempfile.TemporaryDirectory() as wd:
@@ -47,7 +48,7 @@ for name in sys.argv[1:]:
     for f in T.AMBER:
         m1 = BondedModel(specs, BondedSettings(families=(f,), typing="amber", lj14_scale=0.5))
         P1 = {"ref": P["ref"], f: P[f]}
-        fam[f] = np.array([float(m1.bonded_energy(0, jnp.asarray(x), P1)) for x in X]) / 4.184
+        fam[f] = np.array([float(m1.bonded_energy(0, jnp.asarray(x), P1)) for x in X]) / KCAL
 
     def c(v):
         return v - v.mean()

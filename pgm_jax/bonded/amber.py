@@ -35,9 +35,9 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..prmtop import Prmtop
+from ..units import KCAL
 from . import terms as T
 
-KCAL = 4.184
 _A2 = 100.0  # A^2 per nm^2
 
 

@@ -30,13 +30,12 @@ from pgm_jax.interfaces import PGMEngine  # noqa: E402
 from pgm_jax.interfaces.ase import PGMCalculator, atoms_from_system, rigid_constraints  # noqa: E402
 from pgm_jax.md.box import volume  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.integrate import KB  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
+from pgm_jax.units import BAR_PER_KJMOL_NM3, KB
 
 TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
 RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
 KJ = units.kJ / units.mol
-BAR = 16.605390671738466  # bar per kJ/mol/nm^3
 
 
 def native_atomic(sim):
@@ -65,7 +64,7 @@ def single_point(prec, tol):
         if mode == "molecular":
             ke_t = float(sim.integ.kinetic(sim.state)[1])
             V = float(volume(sim.state.box))
-            P_ase = (2.0 * ke_t - V * np.trace(stress)) / (3.0 * V) * BAR
+            P_ase = (2.0 * ke_t - V * np.trace(stress)) / (3.0 * V) * BAR_PER_KJMOL_NM3
             P_nat = sim.pressure()
             Fcom = np.zeros((sim.sys.nmol, 3))
             np.add.at(Fcom, sim.sys.mol, F)
@@ -84,7 +83,7 @@ def single_point(prec, tol):
             )
         else:
             out["stress_atomic_kjmol_nm3"] = stress.tolist()
-            out["P_atomic_virial_bar"] = float(-np.trace(stress) / 3.0 * BAR)
+            out["P_atomic_virial_bar"] = float(-np.trace(stress) / 3.0 * BAR_PER_KJMOL_NM3)
     return out
 
 

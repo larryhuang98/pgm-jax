@@ -16,9 +16,9 @@ from test_md_macro import _water_box
 from pgm_jax import System
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.md.iel import spectral_radius
-from pgm_jax.md.integrate import KB
 from pgm_jax.md.neighbors import Neighbors
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.units import KB
 
 
 def _settings(**kw):

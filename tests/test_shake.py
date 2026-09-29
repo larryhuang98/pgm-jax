@@ -11,8 +11,8 @@ from test_flexible import template
 from pgm_jax.md.constraints import Constraints
 from pgm_jax.md.flexible import FlexibleSimulation, liquid_box
 from pgm_jax.md.forcefield import MDSettings
-from pgm_jax.md.integrate import KB
 from pgm_jax.system import System
+from pgm_jax.units import KB
 
 
 def _clusters():

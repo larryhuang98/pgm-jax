@@ -31,6 +31,7 @@ jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pgm_jax.md.finite_field import FieldReplicas, analyse, predicted_errors, read_series  # noqa: E402
+from pgm_jax.units import AMU_NM3_TO_G_CM3
 
 EPSP = os.path.expanduser("~/project/epsp")
 MODELS = {
@@ -38,7 +39,6 @@ MODELS = {
     "base": (f"{EPSP}/base/base_512.prmtop", f"{EPSP}/base/base_512.rst7", "pgm"),
     "tip3p": (f"{EPSP}/tip3p/tip3p_512.prmtop", f"{EPSP}/tip3p/tip3p_512.rst7", "amber"),
 }
-AMU_NM3_TO_G_CM3 = 1.66053906660e-3
 
 
 def build(a, ensemble="nvt"):

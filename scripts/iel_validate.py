@@ -34,15 +34,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
 from pgm_jax.md.iel import add_iel_arguments, iel_settings  # noqa: E402
-from pgm_jax.md.integrate import KB  # noqa: E402
 from pgm_jax.md.io import box_from_cell, read_coordinates  # noqa: E402
 from pgm_jax.md.simulation import Simulation, _dedupe  # noqa: E402
 from pgm_jax.param import read_prmtop_pgm  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
+from pgm_jax.units import AMU_NM3_TO_G_CM3, DEBYE_E_NM, KB, KCAL
 
 TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
 RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
-DEBYE_E_NM = 0.020819434  # 1 D in e nm
 
 
 def min_image(d, H):
@@ -122,7 +121,7 @@ def main():
         xyz = paper_geometry(xyz, 0.9745, 103.64, [list(m.elements) for m in mols])
         sig, eps = 3.18156, 0.14473
         rh = np.array([2 ** (1 / 6) * sig / 2 * 0.1, 0.0, 0.0])
-        se = np.array([np.sqrt(eps * 4.184), 0.0, 0.0])
+        se = np.array([np.sqrt(eps * KCAL), 0.0, 0.0])
         new = {id(m): dataclasses.replace(m, lj_rmin_half=rh, lj_sqrt_eps=se) for m in mols}
         mols = [new[id(m)] for m in mols]
     H = box_from_cell(*box) * 0.1
@@ -156,7 +155,7 @@ def main():
         from pgm_jax.md.box import volume
         from pgm_jax.md.rigid import RigidBody
 
-        mass = float(np.sum(sys_.masses)) * 1.66053906660e-3
+        mass = float(np.sum(sys_.masses)) * AMU_NM3_TO_G_CM3
         f = (mass / a.density / float(volume(start.box))) ** (1.0 / 3.0)
         body = start.dyn.position
         start = start.set(dyn=start.dyn.set(position=RigidBody(body.center * f, body.orientation)), box=start.box * f)

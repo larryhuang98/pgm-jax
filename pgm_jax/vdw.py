@@ -32,6 +32,7 @@ import numpy as np
 from jax.scipy.special import erf
 
 from .system import System
+from .units import KCAL
 
 _SQRT_PI = math.sqrt(math.pi)
 C0 = 8.0 / (9.0 * math.pi)
@@ -54,7 +55,6 @@ _GC = (
     15291334888 / 35078272337233125,
 )
 Y_SERIES = 0.6
-KCAL = 4.184
 
 
 def _poly(y2, coefs):

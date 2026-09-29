@@ -35,9 +35,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ..units import KB
 from .cv import CVSet, wrap
-
-KB = 0.0083144626181532  # kJ/mol/K
 
 
 def _vec(x, d, name):

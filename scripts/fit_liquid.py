@@ -39,10 +39,8 @@ from pgm_jax.md.io import box_from_cell, read_coordinates
 from pgm_jax.md.simulation import Simulation, _dedupe
 from pgm_jax.param import read_prmtop_pgm
 from pgm_jax.system import System
+from pgm_jax.units import AMU_NM3_TO_G_CM3, KB, KCAL
 
-KB = 0.0083144626181532  # kJ/mol/K
-KCAL = 4.184
-G_CM3 = 1.66053906660e-3  # amu/nm^3 -> g/cm^3
 WATER_TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
 WATER_RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
 EXP = {
@@ -194,7 +192,7 @@ def sample(sim, sysd, theta, p0, T, n_prod, every, to_params):
         u, g = dU(jnp.asarray(theta), pos, st.box, st.induction.mu, idx)
         out["U"].append(float(st.epot))
         out["U_check"].append(float(u))
-        out["rho"].append(M / float(volume(st.box)) * G_CM3)
+        out["rho"].append(M / float(volume(st.box)) * AMU_NM3_TO_G_CM3)
         out["dU"].append(np.asarray(g))
     return {k: np.asarray(v) for k, v in out.items()}
 

@@ -37,7 +37,7 @@ from ..multipole import quadrupoles as build_quadrupoles
 from ..options import check_vdw, elec_flags
 from ..solver import solve_linear_induction
 from ..system import System
-from ..units import KE
+from ..units import HARTREE_KJMOL, KE
 from ..vdw import gvdw_pair
 from . import terms as T
 from .topology import Topology, build_topology
@@ -515,7 +515,7 @@ class BondedModel(BondedTerms):
                 v = v + jnp.sum(jnp.einsum("pa,pab,pb->p", x, st["Theta"], x) * B2) / 3.0
             return v
 
-        return KE * jax.vmap(at)(grid) / 2625.4996394799
+        return KE * jax.vmap(at)(grid) / HARTREE_KJMOL
 
     def _flux(self, m, R, P, q, cov):
         """Bond charge flux (charge moves along a bond as it stretches, from the first atom of

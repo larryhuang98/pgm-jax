@@ -12,11 +12,12 @@ from test_grad import methanol, water
 from pgm_jax import PeriodicPGM, System
 from pgm_jax.md.box import min_image, reduce_box
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
-from pgm_jax.md.integrate import KB, Integrator
+from pgm_jax.md.integrate import Integrator
 from pgm_jax.md.io import NetCDFTrajectory, read_coordinates, write_restart
 from pgm_jax.md.neighbors import Neighbors
 from pgm_jax.md.rigid import RigidMolecules, matrix_to_quaternion
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.units import KB
 
 TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
 RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")

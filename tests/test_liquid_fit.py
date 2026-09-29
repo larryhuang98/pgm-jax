@@ -22,11 +22,10 @@ from pgm_jax.fit import (
     RDFSpec,
     Target,
 )
-from pgm_jax.fit.estimators import KB, KCAL
 from pgm_jax.fit.optimize import Estimate
 from pgm_jax.md.dipoles import CellDipole
 from pgm_jax.md.forcefield import PGMForceField
-from pgm_jax.units import DEBYE_E_NM, KE
+from pgm_jax.units import AMU_NM3_TO_G_CM3, BAR_PER_KJMOL_NM3, DEBYE_E_NM, KB, KCAL, KE, KJMOL_NM3_PER_BAR
 
 QTY = ["q", "cov", "alpha", "radius", "lj_r", "lj_eps"]
 
@@ -165,7 +164,7 @@ def test_jacobians_are_the_fluctuation_formulas():
         )
 
     V, M = fr["V"], fr["M"]
-    rho = 9000.0 / V * 1.66053906660e-3
+    rho = 9000.0 / V * AMU_NM3_TO_G_CM3
     d_rho = -beta * cov(rho)
     d_U = dU.mean(0) - beta * cov(fr["U"])
     d_h = (np.array([2.0, 0, 0]) - d_U / 512) / KCAL
@@ -420,7 +419,7 @@ def test_thermal_expansion_and_compressibility_gradients():
         ParameterSpace(_space_table(), [Param("q"), Param("cov"), Param("alpha")]),
     )
     est = obj.estimate(s, np.zeros(3))
-    beta, kT, p = s.beta, KB * s.T, 1.0 / 16.605390671738466
+    beta, kT, p = s.beta, KB * s.T, KJMOL_NM3_PER_BAR
     V, U, dU = fr["V"], fr["U"], fr["dU"]
     Hh = U + p * V
 
@@ -431,12 +430,12 @@ def test_thermal_expansion_and_compressibility_gradients():
         return m((a - m(a))[:, None] * (dU - m(dU)))
 
     a_p = (m(V * Hh) - m(V) * m(Hh)) / (KB * s.T**2 * m(V))
-    k_t = (m(V * V) - m(V) ** 2) / (kT * m(V)) / 16.605390671738466
+    k_t = (m(V * V) - m(V) ** 2) / (kT * m(V)) / BAR_PER_KJMOL_NM3
     dVH = m(V[:, None] * dU) - beta * cov(V * Hh)
     dV = -beta * cov(V)
     dH = m(dU) - beta * cov(Hh)
     da = (dVH - dV * m(Hh) - m(V) * dH) / (KB * s.T**2 * m(V)) - a_p * dV / m(V)
     dV2 = -beta * cov(V * V)
-    dk = ((dV2 - 2 * m(V) * dV) / (kT * m(V)) - (m(V * V) - m(V) ** 2) / (kT * m(V) ** 2) * dV) / 16.605390671738466
+    dk = ((dV2 - 2 * m(V) * dV) / (kT * m(V)) - (m(V * V) - m(V) ** 2) / (kT * m(V) ** 2) * dV) / BAR_PER_KJMOL_NM3
     assert np.isclose(est.y[0], a_p) and np.isclose(est.y[1], k_t)
     assert np.allclose(est.J[0], da, rtol=1e-8) and np.allclose(est.J[1], dk, rtol=1e-8)

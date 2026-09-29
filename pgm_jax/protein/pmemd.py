@@ -74,9 +74,9 @@ from ..bonded.topology import near_pairs
 from ..md.constraints import repartition_masses
 from ..md.topology import MoleculeRule
 from ..prmtop import Prmtop
+from ..units import KCAL
 
 AMBER_CHARGE = 18.2223  # e -> Amber's charge unit (sqrt(kcal/mol A))
-KCAL = 4.184
 CHARMM_TAG = "CHARMM-form 1-4 LJ tables only (pgm_jax pGM, lj14_scale {:g})"
 CHARMM_SECTIONS = (
     "FORCE_FIELD_TYPE",

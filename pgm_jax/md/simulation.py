@@ -27,16 +27,15 @@ import numpy as np
 
 from ..param import read_prmtop_pgm
 from ..system import Molecule, System
+from ..units import AMU_NM3_TO_G_CM3, BAR_PER_KJMOL_NM3, KB
 from .box import check_box, reduce_box, volume
 from .dipoles import DipoleRecorder, InducedDipoleFile
 from .forcefield import MDSettings, PGMForceField
-from .integrate import KB, Integrator, field_state, upgrade_state
+from .integrate import Integrator, field_state, upgrade_state
 from .io import NetCDFTrajectory, box_from_cell, read_coordinates, write_restart
 from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .rigid import RigidMolecules
 from .vsites import VirtualSites
-
-AMU_NM3_TO_G_CM3 = 1.66053906660e-3
 
 
 def _dedupe(mols: list[Molecule]) -> list[Molecule]:
@@ -298,7 +297,7 @@ class Simulation:
             )
         W = W + self.integ.restraint_strain(pos, st.box, st.bias)
         ke_t = self.integ.kinetic(st)[1]
-        return (2.0 * ke_t - jnp.trace(W)) / (3.0 * volume(st.box)) * 16.605390671738466
+        return (2.0 * ke_t - jnp.trace(W)) / (3.0 * volume(st.box)) * BAR_PER_KJMOL_NM3
 
     def pressure(self) -> float:
         """Instantaneous pressure (bar) from the molecular virial (at the converged dipoles; with the

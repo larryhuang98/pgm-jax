@@ -17,6 +17,8 @@ import openmm as mm
 import openmm.app as app
 import openmm.unit as u
 
+from pgm_jax.units import AMU_NM3_TO_G_CM3
+
 EPSP = os.path.expanduser("~/project/epsp/tip3p")
 EPS_FACTOR = 18.0951  # e / (eps0 nm): eps - 1 = EPS_FACTOR <M.e> / (V E), M e nm, V nm^3, E V/nm
 FARADAY = 96.48533212  # kJ/mol per (e V)
@@ -52,7 +54,7 @@ H = np.array([v.value_in_unit(u.nanometer) for v in crd.boxVectors])
 m = np.array([system.getParticleMass(i).value_in_unit(u.dalton) for i in range(system.getNumParticles())])
 mol = np.repeat(np.arange(len(pos) // 3), 3)
 V = abs(np.linalg.det(H))
-V_t = m.sum() * 1.66053906660e-3 / a.density
+V_t = m.sum() * AMU_NM3_TO_G_CM3 / a.density
 s = (V_t / V) ** (1 / 3)
 com = np.zeros((mol.max() + 1, 3))
 np.add.at(com, mol, m[:, None] * pos)
