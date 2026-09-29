@@ -1,7 +1,7 @@
 # Path-integral MD: PIMD, TRPMD, RPMD (nuclear quantum effects)
 
-`pgm_jax/md/pimd.py`; `scripts/pimd_water.py` (quantum flexible pGM water), `scripts/pimd_validate.py`
-(model systems), `scripts/pimd_openmm.py` (comparison with OpenMM's RPMDIntegrator). Tests:
+`pgm_jax/md/pimd.py`; `scripts/pimd/pimd_water.py` (quantum flexible pGM water), `scripts/pimd/pimd_validate.py`
+(model systems), `scripts/pimd/pimd_openmm.py` (comparison with OpenMM's RPMDIntegrator). Tests:
 `tests/test_pimd.py`.
 
 **In short.** A ring polymer of P beads per atom samples the quantum Boltzmann distribution of the
@@ -112,7 +112,7 @@ covalent dipoles): 3.9 kJ/mol RMS and a minimum drifting away; the quartic bond 
 
 The electrostatics and Lennard-Jones are those of the pGM water of the README
 (`~/pgm-gvdw-data/topology/rayl_512_v2.prmtop`, the 512-water box). The result
-(`validation/pimd/pgm_water_flex.flex`, `python scripts/pimd_water.py template`):
+(`data/validation/pimd/pgm_water_flex.flex`, `python scripts/pimd/pimd_water.py template`):
 
 | | flexible pGM water (gas phase) | q-TIP4P/F intramolecular target |
 |---|---|---|
@@ -136,7 +136,7 @@ only the monomer potential; comparisons with experiment are indicative.
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate
 from pgm_jax.md.pimd import PILE, PIMDSimulation
 
-tpl = FlexibleTemplate.load("validation/pimd/pgm_water_flex.flex")
+tpl = FlexibleTemplate.load("data/validation/pimd/pgm_water_flex.flex")
 sim = FlexibleSimulation(
     System([tpl.pgm] * n),
     [tpl] * n,
@@ -166,13 +166,13 @@ Any potential (model systems, tests): `PIMDIntegrator(PotentialEngine(V), masses
 thermostat)` with `V(x (N, 3), box)`; `PotentialEngine(V, soft=W, contract=P')` contracts `W`.
 
 ```bash
-python scripts/pimd_water.py template                                   # the flexible pGM water
-python scripts/pimd_water.py run --beads 32 --ps 10 --rdf --pressure --save --prefix runs/pimd/w32
-python scripts/pimd_water.py run --beads 32 --contract 8 ...           # contraction
-python scripts/pimd_water.py run --beads 32 --mode trpmd --load runs/pimd/w32.pimd.chk --classical-ps 0 --equil-ps 0 --ps 20
-python scripts/pimd_water.py bench --beads 8 32 --contract 0 1 4       # speed
-python scripts/pimd_validate.py harmonic | free | nve                  # model systems (CPU)
-~/miniconda3/envs/colabfold/bin/python scripts/pimd_openmm.py openmm; python scripts/pimd_openmm.py pgmjax
+python scripts/pimd/pimd_water.py template                                   # the flexible pGM water
+python scripts/pimd/pimd_water.py run --beads 32 --time-ps 10 --rdf --report-pressure --save -o runs/pimd/w32
+python scripts/pimd/pimd_water.py run --beads 32 --contract 8 ...           # contraction
+python scripts/pimd/pimd_water.py run --beads 32 --mode trpmd --continue-from runs/pimd/w32.pimd.chk --classical-ps 0 --equil-ps 0 --time-ps 20
+python scripts/pimd/pimd_water.py bench --beads 8 32 --contract 0 1 4       # speed
+python scripts/pimd/pimd_validate.py harmonic | free | nve                  # model systems (CPU)
+~/miniconda3/envs/colabfold/bin/python scripts/pimd/pimd_openmm.py openmm; python scripts/pimd/pimd_openmm.py pgmjax
 ```
 
 `run` writes `prefix.log` (estimators every `--report-ps`), `prefix.json` (means with block
@@ -181,7 +181,7 @@ errors, econs drift, speed, diffusion coefficient of the centroid molecular cent
 
 ## Validation
 
-All numbers: `validation/pimd/*.json` (model systems, CPU) and `validation/pimd/water/` (water on one
+All numbers: `data/validation/pimd/*.json` (model systems, CPU) and `data/validation/pimd/water/` (water on one
 RTX PRO 6000 Blackwell: the `run` summaries `*.json`, bead-averaged g(r) `*.rdf`, RPMD logs, speed
 benchmarks). Errors are standard errors from 10-20 blocks.
 
@@ -190,7 +190,7 @@ benchmarks). Errors are standard errors from 10-20 blocks.
 256 independent 3D oscillators (1.008 amu, 300 K), PILE-L (centroid 1/tau_centroid = omega), dt = 0.1/omega.
 For the discretised oscillator <K> = <V> = (kT/2) sum_l omega^2 / (omega_l^2 + omega^2) per degree of
 freedom at every P (both estimators have this average); the quantum value is (hbar omega / 4)
-coth(beta hbar omega / 2). kJ/mol per degree of freedom (`python scripts/pimd_validate.py harmonic`):
+coth(beta hbar omega / 2). kJ/mol per degree of freedom (`python scripts/pimd/pimd_validate.py harmonic`):
 
 | omega (beta hbar omega) | P | exact P-bead | exact / quantum - 1 | <V> | <K> primitive | <K> centroid virial |
 |---|---|---|---|---|---|---|
@@ -242,7 +242,7 @@ step into heat that no longer cancels. It is not a conservation diagnostic there
 
 ### 4. Independent code: OpenMM 8.2 `RPMDIntegrator` (PILE-L, force-group contraction)
 
-`scripts/pimd_openmm.py`: 64 particles (1.008 amu, 300 K), a stiff anharmonic well (the O-H Morse
+`scripts/pimd/pimd_openmm.py`: 64 particles (1.008 amu, 300 K), a stiff anharmonic well (the O-H Morse
 expansion, omega 700 /ps) in force group 0 on every bead and a soft anharmonic potential (omega 60
 /ps, cubic and quartic terms) in group 1, contracted to P' beads in both codes (OpenMM's Fourier
 contraction vs `contraction_matrix`); dt 0.05 fs, 1 ps of equilibration and 7.5 ps of samples (3000). Observables from bead
@@ -277,7 +277,7 @@ estimators, mode temperatures, the water fit.
 
 512 waters (1,536 atoms), 298 K, NVT at 0.9887 g/cm^3 (the box of the rigid model's NPT run), mixed
 precision, 0.9 nm cutoff, PME, dipole tolerance 1e-5, dt 0.25 fs, PILE-G (tau_centroid 0.1 ps, lam 1),
-Cayley step; 2 ps classical and 2 ps PIMD equilibration, then 10 ps (`scripts/pimd_water.py run`).
+Cayley step; 2 ps classical and 2 ps PIMD equilibration, then 10 ps (`scripts/pimd/pimd_water.py run`).
 Kinetic energies are per atom (centroid virial; primitive in brackets); the dipole is the
 bead-averaged molecular dipole (<|mu|> over beads in brackets); g peaks are the bead-averaged
 intermolecular g(r) (O-O first peak at 2.76 A, O-H hydrogen-bond peak at 1.81-1.84 A, H-H at 2.24-2.26 A).
@@ -346,7 +346,7 @@ statistical error, about +-0.05-0.1.)
 
 One RTX PRO 6000 Blackwell, 512 flexible pGM waters (1,536 atoms), mixed precision, 0.9 nm cutoff,
 PME 30^3, dipole tolerance 1e-5, dt 0.25 fs, PILE-G; ms per step (ns/day), and CG iterations per
-step (the batched solve runs until its slowest bead converges). `scripts/pimd_water.py bench`:
+step (the batched solve runs until its slowest bead converges). `scripts/pimd/pimd_water.py bench`:
 
 | P | all force beads | P' = 16 | P' = 8 | P' = 4 | P' = 1 |
 |---|---|---|---|---|---|

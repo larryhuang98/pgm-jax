@@ -318,7 +318,7 @@ removing everything up to 1-3, and removing 1-4 induction too is as bad as full 
 permanent 1-4 pairs add a smaller part (0.77 -> 1.09). This is the concrete sense in which pGM's
 missing exclusions pay off.
 
-Extrapolation: bonded terms trained on the 500 K MD frames only, no grid points (`--no_grid`):
+Extrapolation: bonded terms trained on the 500 K MD frames only, no grid points (`--no-grid`):
 
 <!-- TABLE_X6NG -->
 | Bonded form | pGM, all pairs | classical, excluded | Amber-like |
@@ -457,11 +457,11 @@ off by up to 1.19 D (pyridine).
 ```
 python scripts/bonded/build_molecules.py                     # RDKit molecules
 python scripts/bonded/mace_sample.py NAME --what md,scan     # MACE-OFF sampling (mace-off env)
-python scripts/bonded/pgm_params.py prep|fit NAME            # ESP + py_resp pGM parameters
+python scripts/bonded/pgm_params.py prep|fit                 # ESP + py_resp pGM parameters
 python scripts/bonded/make_dft_tasks.py TAG && sbatch runs/bonded/dft.sh   # psi4 labels
 python scripts/bonded/experiments.py run NAME --mols A1,A2,A3 --families paper [--elec 3] [--escale 1,2,3]
 python scripts/bonded/x6_dipeptide.py NAME --families paper+tw
-python scripts/bonded/md_check.py NAME --families paper --T 500
+python scripts/bonded/md_check.py NAME --families paper --temperature-K 500
 python scripts/bonded/loo_groups.py && python scripts/bonded/report.py --fill
 ```
 

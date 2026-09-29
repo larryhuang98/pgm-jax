@@ -342,7 +342,7 @@ Usage:
 Inputs: files read (and the environment variables that locate them, e.g. PGM_DATA, AMBERHOME).
 Outputs: files written (prefix_*.npz, <name>.json in data/validation/, ...), and what is printed.
 Units: of the command-line options (D2: the unit is in the option name, --dt-fs, --cutoff-nm;
-scripts/run_md.py keeps Amber's units and names) and of the outputs.
+scripts/md/run_md.py keeps Amber's units and names) and of the outputs.
 Runtime: typical time and hardware (CPU / GPU, memory), and restart behaviour.
 """
 

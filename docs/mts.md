@@ -1,8 +1,8 @@
 # Multiple time stepping (r-RESPA) for pGM MD
 
 `pgm_jax/md/mts.py`; `FlexibleSimulation(..., dt=outer, mts=MTS(...))` and
-`Simulation(..., mts=MTS(...))`; `--mts N` (and `--mts-*`) in `scripts/bench_md.py`,
-`scripts/protein/bench_protein.py` and `scripts/run_md.py`. Tests: `tests/test_mts.py`.
+`Simulation(..., mts=MTS(...))`; `--mts N` (and `--mts-*`) in `scripts/benchmarks/bench_md.py`,
+`scripts/protein/bench_protein.py` and `scripts/md/run_md.py`. Tests: `tests/test_mts.py`.
 
 **In short.** The framework integrates force groups at their own time steps (slow / optional
 short-range / bonded) for both engines, exactly: one fast step per outer step is the ordinary
@@ -254,7 +254,7 @@ So for this protein:
 
 ### Pure pGM water (4,096 pGM3P-25 molecules, 12,288 atoms)
 
-`scripts/bench_md.py --replicate 2 --elec-cut 0.7 --thermostat bussi`, 20 ps sampled after 2
+`scripts/benchmarks/bench_md.py --replicate 2 --elec-cutoff-nm 0.7 --thermostat bussi`, 20 ps sampled after 2
 ps; <U> relative to the best single step; fast model 0.5 nm, mutual.
 
 | engine, setting | ns/day | CG / solve | econs drift | dU (kJ/mol) | T (K), groups |
@@ -376,8 +376,8 @@ bonded level (bonded forces, SHAKE and RATTLE) 5 %.
 ## Recommended settings
 
 - **Proteins in water with HMR and X-H constraints:** `MTS(inner=3, split="special")` with dt =
-  7 fs and `MDSettings().replace(predictor="mu3", **elec_cutoff_settings(0.7))` (`--dt 0.007 --mts 3
-  --mts-split special --predictor mu3 --elec-cut 0.7`): the accuracy of the 4 fs single step at
+  7 fs and `MDSettings().replace(predictor="mu3", **elec_cutoff_settings(0.7))` (`--dt-fs 7 --mts 3
+  --mts-split special --predictor mu3 --elec-cutoff-nm 0.7`): the accuracy of the 4 fs single step at
   1.42x its speed. For the accuracy of 2 fs, the same at dt = 6 fs (1.25x). Bussi, with the O
   step at the outer level (the defaults).
 - **Water-dominated systems:** the single step with 4 amu water hydrogens at 4-5 fs

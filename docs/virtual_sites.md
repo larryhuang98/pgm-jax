@@ -154,7 +154,7 @@ only approximately, up to 0.3 A off for TIP5P's monomer).
   (`cuda/pgm_gpu.cpp`) never calls `kOrientForces`, so on the GPU the extra points' forces would not
   reach their frames.
 
-## Validation (`scripts/validate_vsites.py`)
+## Validation (`scripts/validation/validate_vsites.py`)
 
 TIP4P-Ew (Horn et al., J. Chem. Phys. 120, 9665 (2004)): 512 waters from tleap
 (`leaprc.water.tip4pew`, 24.88 A lattice box), Amber's SHAKE geometry (0.9572 / 1.5136 A), EP at
@@ -238,7 +238,7 @@ scatter-add for all forces), bound by launch latency rather than by the number o
 
 Without sites nothing changes: the code path is the previous one, and the results are bitwise
 those of the commit before this feature (`validate_vsites.py identical`, CPU: rigid NPT in mixed and
-double precision, constrained NVT); `scripts/bench_md.py --replicate 2` (4,096 pGM waters, four runs
+double precision, constrained NVT); `scripts/benchmarks/bench_md.py --replicate 2` (4,096 pGM waters, four runs
 each, alternating with the previous code): rigid 1.975 ms/step (before: 1.987), constraints at 2 fs
 2.229 ms/step (before: 2.223); the run-to-run spread is 3 %.
 

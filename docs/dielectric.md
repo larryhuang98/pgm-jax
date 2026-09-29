@@ -1,16 +1,16 @@
 # Cell dipole, induced dipoles and the static dielectric constant
 
 `pgm_jax/md/dipoles.py` computes the dipole moment of the periodic cell and records it during MD;
-`pgm_jax/analysis/dielectric.py` and `scripts/dielectric.py` turn the recorded series into the static
+`pgm_jax/analysis/dielectric.py` and `scripts/dielectric/dielectric.py` turn the recorded series into the static
 dielectric constant (with error bars and convergence) and, optionally, an infrared spectrum.
 
 ## Usage
 
 ```bash
-python scripts/run_md.py -p water.prmtop -c water.rst7 -o md --dt 2.0 --thermostat bussi \
-    --nsteps 5000000 --report 5000 --restart 250000 --dipoles 25          # M every 50 fs -> md.dip
-python scripts/dielectric.py md.dip --skip 200                             # eps, errors, convergence
-python scripts/dielectric.py ir.dip --ir ir_spectrum.dat                   # M sampled every step
+python scripts/md/run_md.py -p water.prmtop -c water.rst7 -o md --dt-fs 2.0 --thermostat bussi \
+    --nsteps 5000000 --report-every 5000 --checkpoint-every 250000 --dipoles-every 25         # M every 50 fs -> md.dip
+python scripts/dielectric/dielectric.py md.dip --skip-ps 200                            # eps, errors, convergence
+python scripts/dielectric/dielectric.py ir.dip --ir ir_spectrum.dat                   # M sampled every step
 ```
 
 ```python
@@ -57,7 +57,7 @@ kinetic temperature). `prefix.mu.nc` holds per-atom induced dipoles (NetCDF-3: `
   it jumps by Q_k L whenever molecule k is wrapped, it is the time integral of the ionic current
   (conductivity), and for a net-charged cell it depends on the origin. M is then the "molecular"
   dipole M_D of the electrolyte literature, defined for any cell; the header records the net
-  charge and the number of charged molecules, and `scripts/dielectric.py` refuses such series
+  charge and the number of charged molecules, and `scripts/dielectric/dielectric.py` refuses such series
   unless `--molecular` is given.
 
 ## The static dielectric constant with adiabatic induced dipoles
@@ -91,7 +91,7 @@ the model's units (tested). T is the thermostat target: the kinetic temperature 
 **Error bars.** M relaxes slowly (tau_M, from an exponential fit of its autocorrelation, is 3.7 ps
 for the pGM box, 6.7 ps with the pGM3P-25 geometry and 6.9 ps for TIP3P; the Debye time of water is
 8.3 ps), so samples are correlated. The error is the jackknife over
-contiguous blocks (leave one block out, full estimator including <M>^2); `scripts/dielectric.py`
+contiguous blocks (leave one block out, full estimator including <M>^2); `scripts/dielectric/dielectric.py`
 prints it against the number of blocks (it must plateau) and the running estimate against the run
 length. For a Gaussian M with exponential correlation the relative error of eps - eps_inf is
 sqrt(2 tau_M / (3 T_run)), independent of the system size, so small boxes are the cheapest way to
@@ -109,9 +109,9 @@ barostat every 100 steps), PME 48^3 order 6, beta 4 nm^-1, 0.9 nm cutoff with th
 tol 1e-5, mixed precision, one RTX PRO 6000; M every 25 steps; the first 200 ps (500 ps after the
 geometry change of the pGM3P-25 run) discarded; errors are jackknife over 10 blocks (the block
 tables plateau at these values, and they agree with sqrt(2 tau_M / 3 T_run)).
-`scripts/water_dielectric.py` makes every run (the production run of the pGM box used
-`run_md.py --dt 2.0 --thermostat bussi --nfft 48 48 48 --order 6 --dipoles 25`, stopped at 11.5 ns
-and continued from its 11.0 ns checkpoint with `--checkpoint`; `read_dipoles` keeps the continued
+`scripts/dielectric/water_dielectric.py` makes every run (the production run of the pGM box used
+`run_md.py --dt-fs 2.0 --thermostat bussi --nfft 48 48 48 --order 6 --dipoles-every 25`, stopped at 11.5 ns
+and continued from its 11.0 ns checkpoint with `--continue-from`; `read_dipoles` keeps the continued
 records).
 
 | Model | Engine, dt | Run | Density (g/cm^3) | <mu_mol> (D) | tau_M (ps) | eps_inf | eps |
@@ -164,7 +164,7 @@ What the numbers say:
   34 and the liquid dipole from 1.99 to 2.13 D.
 
 **Infrared spectrum** (pGM box, rigid bodies, NVT 2 fs, M every step, 180 ps after 20 ps;
-`scripts/water_dielectric.py --ensemble nvt --ns 0.2 --dipoles 1`, then `scripts/dielectric.py
+`scripts/dielectric/water_dielectric.py --barostat none --time-ns 0.2 --dipoles-every 1`, then `scripts/dielectric/dielectric.py
 --ir`): one broad librational band with its maximum at about 470 cm^-1 (alpha n = 2.6e3 cm^-1)
 and a shoulder near 250 cm^-1 (hydrogen-bond stretch), falling to 5 % of the maximum by
 1000 cm^-1; rigid molecules have no intramolecular bands. Liquid water's librational band peaks
@@ -173,9 +173,9 @@ near 680 cm^-1; the band of the pGM box lies about 200 cm^-1 lower.
 ## Independent check: pmemd.pgm.cuda with the published parameters
 
 To separate the model from the engine, pGM3P-25 with its published geometry and Lennard-Jones was
-written as a pmemd-pgm topology (`scripts/pgm3p25_prmtop.py`) and sampled with pmemd.pgm.cuda
+written as a pmemd-pgm topology (`scripts/dielectric/pgm3p25_prmtop.py`) and sampled with pmemd.pgm.cuda
 itself; the cell dipoles of its trajectories were then evaluated with the model's induced dipoles
-re-solved at every frame (`scripts/trajectory_dipoles.py`, tol 1e-6, one frame per ps).
+re-solved at every frame (`scripts/dielectric/trajectory_dipoles.py`, tol 1e-6, one frame per ps).
 
 Runs: pmemd.pgm.cuda_SPFP (`~/ambers/pgm-larry-install`), 4,096 waters (the 512-water box 2 x 2 x 2;
 pmemd.pgm.cuda needs three neighbour-list cells across the box), NPT 298 K / 1 bar, Langevin 1/ps,
@@ -302,6 +302,6 @@ same protocol (64 runs of 512 waters, 0.1 ns + 0.3 ns each) is running.
   enters the block length (as `traj` does).
 - The cell polarizability costs three CG solves (from zero, at `dipole_tol`) every
   `DipoleRecorder.alpha_every` = 100 samples; a solve that does not converge within `max_iter`
-  gives `nan`, and `scripts/dielectric.py` reports how many did.
+  gives `nan`, and `scripts/dielectric/dielectric.py` reports how many did.
 - Kinetic observables (IR spectrum, relaxation times) need physical masses; with hydrogen mass
   repartitioning only eps and other configurational averages are meaningful.

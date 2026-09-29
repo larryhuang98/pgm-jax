@@ -4,7 +4,7 @@
 exchange, the gas-phase leg) and `pgm_jax/analysis/free_energy.py` (TI, BAR, MBAR, statistical
 inefficiency) compute solvation free energies of small molecules, rigid (`Simulation`) or flexible
 (`FlexibleSimulation`, e.g. a fitted methanol among rigid waters).
-`scripts/solvation_free_energy.py` runs the whole protocol (`run`), analyses it (`analyze`) and
+`scripts/free_energy/solvation_free_energy.py` runs the whole protocol (`run`), analyses it (`analyze`) and
 measures its cost (`bench`). Units: nm, ps, kJ/mol, K, e (results also in kcal/mol).
 Parameter gradients of these free energies (fitting targets): `docs/fe_gradients.md`.
 
@@ -33,11 +33,11 @@ r["dG_hyd_mbar_kcal"], r["dG_hyd_mbar_err_kcal"]
 ```
 
 ```bash
-python scripts/solvation_free_energy.py run --model pgm -o runs/fe/pgm --ns 2          # water in pGM water
-python scripts/solvation_free_energy.py run --prmtop x.prmtop --coords x.rst7 --solute 0 -o runs/fe/x
-python scripts/solvation_free_energy.py run --solute-template methanol.flex -o runs/fe/meoh   # flexible solute
-python scripts/solvation_free_energy.py analyze runs/fe/pgm_fe.npz --discard-ps 200
-python scripts/solvation_free_energy.py bench --model pgm --windows 4,8,19
+python scripts/free_energy/solvation_free_energy.py run --model pgm -o runs/fe/pgm --time-ns 2         # water in pGM water
+python scripts/free_energy/solvation_free_energy.py run --prmtop x.prmtop --coords x.rst7 --solute 0 -o runs/fe/x
+python scripts/free_energy/solvation_free_energy.py run --solute-template methanol.flex -o runs/fe/meoh   # flexible solute
+python scripts/free_energy/solvation_free_energy.py analyze runs/fe/pgm_fe.npz --discard-ps 200
+python scripts/free_energy/solvation_free_energy.py bench --model pgm --windows 4,8,19
 ```
 
 ## Thermodynamic cycle and schedule
@@ -314,7 +314,7 @@ energy: Delta G_gas - Delta G_solv,elec and -Delta G_solv,vdW.
   liquid (dipole 1.99 D, static dielectric constant 31: `docs/dielectric.md`).
 - **pGM3P-25 with the published geometry and Lennard-Jones** (`--model pgm3p25`: the same
   electrostatic parameters with O-H 0.9745 A, 103.64 deg and sigma 3.18156 A, epsilon 0.14473
-  kcal/mol, as `scripts/water_dielectric.py`; the hydrogens rebuilt about each oxygen of the box,
+  kcal/mol, as `scripts/dielectric/water_dielectric.py`; the hydrogens rebuilt about each oxygen of the box,
   200 ps NPT (1.014 g/cm^3), 300 ps of each window discarded): **-4.91 +- 0.07 kcal/mol** (BAR -4.92
   +- 0.06, gas-subtracted TI -4.83 +- 0.08). The published geometry and Lennard-Jones strengthen the
   electrostatic part by 0.6 kcal/mol (-7.58; the longer O-H bond gives a larger molecular dipole)

@@ -256,7 +256,7 @@ canonical configurational distribution does not depend on the masses, so both ar
 equilibrium properties.
 
 pGM water, 4096 molecules, Bussi, tol 1e-5 (`runs/langevin/dtcheck.py`: 20 ps equilibration,
-60 ps production; `scripts/bench_md.py --hmr`):
+60 ps production; `scripts/benchmarks/bench_md.py --hmr-amu`):
 
 | dt | H mass (amu) | <U> per molecule (kJ/mol) | H~ drift (kT/ns/dof) | CG | ns/day (12k atoms) |
 |---|---|---|---|---|---|

@@ -20,7 +20,8 @@ except the DFT and ESP jobs, which are Slurm arrays on the CPU partition.
 | pGM parameters | `python scripts/bonded/pgm_params.py prep`, `sbatch runs/bonded/esp.sh`, `python scripts/bonded/pgm_params.py fit` (B3LYP/aug-cc-pVTZ ESP, py_resp, pGM-pol table, LJ from GAFF) | `data/bonded/params/<name>.json` |
 
 `make_dft_tasks.py` only writes tasks for frames without labels, so it can be rerun after
-failures (`RETRY`, `EXCLUDE`, `ONLY` environment variables; see the file).
+failures (`--retry`, `--exclude`, `--only`; `--help`). The slurm scripts of `make_dft_tasks.py` and
+`pgm_params.py prep` run psi4 with `--psi4-python` (default `$PGM_PSI4_PYTHON`, else `python`).
 
 ## 2. Fit and export
 
@@ -33,7 +34,7 @@ prints the test errors on the 298 K frames (energy MAE, force error, kcal/mol an
 writes `runs/flex/<name>.flex`. Families are listed in `pgm_jax/bonded/terms.py` (`REGISTRY`);
 named sets are in `scripts/bonded/experiments.py` (`FAMILY_SETS`). For systematic comparisons
 (several molecules, typed parameters shared across molecules, leave-one-out, torsion scans) use
-`scripts/bonded/experiments.py run ...`; `reports/bonded/README.md` has the findings so far.
+`scripts/bonded/experiments.py run ...`; `data/reports/bonded/README.md` has the findings so far.
 
 In Python:
 
@@ -60,7 +61,7 @@ charges and no learned pair scales (`FlexibleTemplate` checks this). Charge flux
 
 ```bash
 python examples/flex_methanol_check.py                      # methanol: forces vs gas phase, NVE, NPT
-python examples/run_flexible_liquid.py runs/flex/<name>.flex --n 216 --ps 100
+python examples/run_flexible_liquid.py runs/flex/<name>.flex --molecules 216 --time-ps 100
 python scripts/bonded/md_check.py <run> --mols <name> --families paper   # gas-phase MD: stays bounded? fluctuations vs MACE-OFF
 ```
 

@@ -853,7 +853,7 @@ These decisions override the recommendations above where they differ.
 | # | Decision | Where it lands |
 |---|---|---|
 | D1 | Hard breaks: no compatibility shims for renamed APIs or moved modules; every call site in the repository is updated in the same commit (library, scripts, tests, examples, docs, `paper/` scripts that import `pgm_jax`). (Q3) | every phase |
-| D2 | Script CLI units: common MD units with the unit in the option name: `--dt-fs`, `--cutoff-nm`, `--time-ns`, `--temperature-K`, `--pressure-bar`, ... `scripts/run_md.py` keeps its Amber style (Angstrom, Amber option names) for comparisons with pmemd and says so in its help. (Q1, Q14) | P9 (`pgm_jax/cli/args.py` groups from P3 on) |
+| D2 | Script CLI units: common MD units with the unit in the option name: `--dt-fs`, `--cutoff-nm`, `--time-ns`, `--temperature-K`, `--pressure-bar`, ... `scripts/md/run_md.py` keeps its Amber style (Angstrom, Amber option names) for comparisons with pmemd and says so in its help. (Q1, Q14) | P9 (`pgm_jax/cli/args.py` groups from P3 on) |
 | D3 | Checkpoints: a new versioned format, `.npz` arrays + JSON header with a format version, for every driver; old `.chk` pickles stay loadable through a reader / converter, tested on a real old checkpoint. (Q7) | P4 |
 | D4 | Research code (`scripts/bonded/`, the `reports/` and `validation/` producing scripts, one-off validation scripts) is cleaned to the same standard as the library (docstrings, structure, no `sys.path` edits, no hard-coded user paths) and organized by purpose. (Q10) | P3 (imports, paths), P9 (layout, docstrings) |
 | D5 | Every function (public and private, including non-trivial nested functions) has a docstring or a clear comment: what it does, arguments with units, returns, non-obvious physics / algorithm notes; every module has a module docstring; clear module responsibilities, no duplication, small functions. | P8 (library), P9 (scripts); new code from P1 on |
@@ -895,7 +895,7 @@ index, identity matrix). E402 is resolved by removing the `sys.path` edits (P3) 
   systems live in `pgm_jax/models/toy.py` (used by the harness, scripts and, from P10, the tests),
   the bonded-study catalogue and loaders in `pgm_jax/bonded/study/` (`families.py`, `data.py`,
   `gas_md.py`), the i-PI helpers in `pgm_jax/interfaces/ipi_tools.py`.  No `sys.path` edits remain
-  except in `scripts/efield_identical.py` and the subprocess script of `validate_vsites.py identical`,
+  except in `scripts/validation/efield_identical.py` and the subprocess script of `validate_vsites.py identical`,
   which load another code tree on purpose.  `bonded/terms/core._N` is a numpy array, so importing
   `pgm_jax` creates no JAX array and `jax_enable_x64` may be set after the imports.
 

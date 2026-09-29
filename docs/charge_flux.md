@@ -97,7 +97,7 @@ Without flux none of this code runs.
 
 ## Validation
 
-Single points and derivatives, float64, dipoles solved to 1e-12 (`scripts/validate_flux.py` on the
+Single points and derivatives, float64, dipoles solved to 1e-12 (`scripts/validation/validate_flux.py` on the
 fitted methanol with quadratic flux, `--flux 2`; `tests/test_flux.py` on made-up parameters):
 
 | Check | Result |
@@ -113,12 +113,12 @@ fitted methanol with quadratic flux, `--flux 2`; `tests/test_flux.py` on made-up
 | Differentiable path: d(w.F + w'.mu)/d(all parameters), /d(jb, jc, jc2), /d positions, /d box | 9e-12 to 1.5e-9 relative |
 | dE/d(jb, jc, jc2), 9 parameters | 1.9e-8 relative |
 
-MD with fitted templates (`scripts/flux_md.py`; one RTX PRO 6000 Blackwell, mixed precision,
+MD with fitted templates (`scripts/validation/flux_md.py`; one RTX PRO 6000 Blackwell, mixed precision,
 tol 1e-5, dt 0.5 fs). Liquid methanol, 216 molecules, NPT 298 K / 1 bar (Langevin 1/ps, barostat
 every 25 steps), 100
 ps of equilibration from a dilute lattice and 100 ps sampled (5 blocks); gas phase: 256
 independent molecules with the fitted gas-phase model (BondedModel), 100 ps each
-(`scripts/flux_md.py liquid <template>`, `gas <template>`). The three
+(`scripts/validation/flux_md.py liquid <template>`, `gas <template>`). The three
 templates are fits of the same class II bonded set with the same weights (energies, forces,
 dipoles; `examples/fit_bonded_template.py methanol --wmu 1 --maxiter 4000 [--flux 1 | 2]`):
 
@@ -146,7 +146,7 @@ differentiable path gives the gradients).
 
 NVE from the end of each liquid run (216 molecules, dt 0.5 fs, 3885 degrees of freedom; drift
 from a linear fit of E_tot, per ns and degree of freedom; RMS deviation of E_tot from the fit;
-`scripts/flux_md.py nve <template> --nve_ps 200` and `--nve_ps 0 --double_ps 100`):
+`scripts/validation/flux_md.py nve <template> --nve-ps 200` and `--nve-ps 0 --double-ps 100`):
 
 | | no flux | flux 1 | flux 2 |
 |---|---|---|---|
@@ -162,7 +162,7 @@ with flux, presumably because the flux forces, which act along the bonds, change
 
 Speed (one RTX PRO 6000 Blackwell; the flux-1 methanol liquid, NVT, mixed precision, tol 1e-5,
 dt 0.5 fs, 0.9 nm, PME spacing 0.08 nm; the same template with and without its flux, alternating
-blocks of 4000 steps in one process, 3 runs each; `scripts/flux_md.py speed [--replicate 2]
+blocks of 4000 steps in one process, 3 runs each; `scripts/validation/flux_md.py speed [--replicate 2]
 [--thermostat bussi] [--fixed_iter 5]`):
 
 | | 1,296 atoms: no flux | flux | 10,368 atoms: no flux | flux |

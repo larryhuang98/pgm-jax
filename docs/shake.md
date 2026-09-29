@@ -2,8 +2,8 @@
 
 `pgm_jax/md/constraints.py`, `FlexibleSimulation(..., constraints="h-bonds" | "all-bonds", hmr=...)`.
 Tests: `tests/test_shake.py` (and `test_hmr.py`, `test_md_macro.py`). Validation:
-`scripts/validate_shake.py` (fitted pGM methanol), `scripts/shake_vs_pmemd.py` (against
-pmemd.pgm.cuda with SHAKE), `scripts/bench_shake.py` (cost per call).
+`scripts/validation/validate_shake.py` (fitted pGM methanol), `scripts/validation/shake_vs_pmemd.py` (against
+pmemd.pgm.cuda with SHAKE), `scripts/benchmarks/bench_shake.py` (cost per call).
 
 **In short.** Distance constraints hold the X-H bonds (`"h-bonds"`) or every bond
 (`"all-bonds"`) of the flexible templates at their reference lengths; rigid templates (water,
@@ -123,7 +123,7 @@ dt^2; the molecular form avoids it). Section 3 checks it: the NPT runs average 1
 All runs: the fitted pGM methanol of the paper (`runs/flex/methanol.flex`: class II bonded terms,
 pGM with every pair, GAFF Lennard-Jones), 216 molecules (1,296 atoms), 0.9 nm cutoff, PME, LJ
 tail, mixed precision and dipole tolerance 1e-5 unless noted, 298 K; starting from 200 ps of NPT
-at 1 fs with X-H constraints (`scripts/validate_shake.py equil`). Configurations: `none` (every
+at 1 fs with X-H constraints (`scripts/validation/validate_shake.py equil`). Configurations: `none` (every
 bond flexible), `hb` (X-H bonds), `ab` (every bond), `hmr` (3.024 amu hydrogens); the number is the
 time step in fs.
 
@@ -150,7 +150,7 @@ step of NVE, NVT (Langevin, Bussi, GLE), NPT and multiple time stepping runs.
 
 2 ps Bussi at the configuration's own time step and masses, then 20 ps NVE (10 ps for float64 at
 tolerance 1e-9); drift = slope of E_tot per degree of freedom; fluctuation = RMS about the linear fit
-(`scripts/validate_shake.py nve`; the NVE runs ran on the CPU while the GPUs were busy). <T> is the
+(`scripts/validation/validate_shake.py nve`; the NVE runs ran on the CPU while the GPUs were busy). <T> is the
 full-step kinetic temperature (see section 3 on its bias at large steps).
 
 | run | constraints | dt (fs) | H mass (amu) | N_f | <T> full step (K) | drift, mixed (kT/ns/dof) | drift, float64 tol 1e-9 | E fluctuation, mixed (kJ/mol) | CG it./step |
@@ -187,7 +187,7 @@ full-step kinetic temperature (see section 3 on its bias at large steps).
 
 Peptide in water (ACE-ALA-SER-NME, 252 rigid TIP3P-geometry waters, Na+ and Cl-; placeholder pGM,
 ff19SB-form bonded terms; float64, tolerance 1e-6; 5 ps Bussi, 10 ps NVE;
-`scripts/validate_shake.py peptide`):
+`scripts/validation/validate_shake.py peptide`):
 
 | run | constraint blocks | N_f | drift (kT/ns/dof) | E fluctuation (kJ/mol) | max shake_err | max rattle_err | CG it./step |
 |---|---|---|---|---|---|---|---|
@@ -208,7 +208,7 @@ NPT at 298 K and 1 bar, Langevin 1/ps (which, unlike Bussi, does not use the deg
 count, so the measured temperature tests it), Monte Carlo barostat every 0.1 ps; six independent
 runs per configuration (20 ps of equilibration with the configuration's own settings from the
 common equilibrated state, then 0.1 ns, a frame every 0.5 ps); errors are standard errors over
-blocks (`scripts/validate_shake.py sample ... --seed k`, `analyze`). The reference is X-H
+blocks (`scripts/validation/validate_shake.py sample ... --seed k`, `analyze`). The reference is X-H
 constraints at 1 fs (BAOAB's configurational error is O(dt^2): a quarter of that at 2 fs).
 Distributions: O-O and O-HO radial distribution functions, the H-C-O-H dihedral, the C-O-H angle
 and the C-O length (the last two are flexible with X-H constraints); the last column gives the
@@ -253,7 +253,7 @@ N_f, the temperature would read 22 % low.
 
 125 methanols (Amber's MEOHBOX, 750 atoms, 2.009 nm box), placeholder pGM (Amber charges as
 Gaussian charges, pGM-pol polarizabilities and radii), parm10 bonded terms and LJ from the prmtop,
-written with `write_pgm_prmtop` (`scripts/shake_vs_pmemd.py`). Single point (float64, dipole
+written with `write_pgm_prmtop` (`scripts/validation/shake_vs_pmemd.py`). Single point (float64, dipole
 tolerance 1e-9, with the LJ tail): EELEC -8948.3885 (engine) / -8948.3876 kcal/mol (pmemd.pgm; the
 1e-7 is the known PME influence-function factor), BOND 15.2645, ANGLE 38.2507, DIHED 33.3117,
 VDWAALS -236.8170 in both: EPtot differs by 0.004 kJ/mol. MD: NVT 298 K, Langevin 1/ps, X-H bonds
@@ -286,7 +286,7 @@ structure (pmemd: 16 x (10 ps heating, 50 ps equilibration, 0.25 ns), CPU pmemd.
 
 216 methanols (1,296 atoms), one RTX PRO 6000 Blackwell, mixed precision, dipole tolerance 1e-5,
 NVT with Bussi 0.5 ps, 0.9 nm cutoff, PME 36^3; 10 ps after 2 ps of warm-up, no output
-(`scripts/validate_shake.py speed`):
+(`scripts/validation/validate_shake.py speed`):
 
 | run | constraints | dt (fs) | H (amu) | ms/step | CG it./step | ns/day | vs unconstrained 0.5 fs |
 |---|---|---|---|---|---|---|---|
@@ -305,7 +305,7 @@ four RATTLE calls per NVT step, launch-bound: see the per-call table), every bon
 (5-constraint clusters by elimination). 2 fs with X-H constraints is 2.7x faster than the
 unconstrained 0.5 fs step, all bonds + HMR at 4 fs 4.3x.
 
-Cost per call (`scripts/bench_shake.py`, same GPU, float64 positions; a displacement of the size of
+Cost per call (`scripts/benchmarks/bench_shake.py`, same GPU, float64 positions; a displacement of the size of
 a 2 fs step):
 
 | system | constraints | layout | SHAKE (ms) | RATTLE (ms) |

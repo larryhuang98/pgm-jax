@@ -27,8 +27,8 @@ sim = Simulation(sys, pos, H, settings=s, ...)          # rigid bodies, or Flexi
 
 Scripts: `--iel 0scf` (and `--iel-iter`, `--iel-order`, `--iel-precond`, `--iel-omega`,
 `--iel-kappa`, `--iel-alpha`, `--iel-no-shadow`) in `run_md.py`, `bench_md.py` and
-`water_dielectric.py`. `scripts/iel_validate.py` (`--model pgm3p25` for the paper's water) makes
-the validation runs below and `scripts/iel_cost.py` the cost per force call.
+`water_dielectric.py`. `scripts/validation/iel_validate.py` (`--model pgm3p25` for the paper's water) makes
+the validation runs below and `scripts/benchmarks/iel_cost.py` the cost per force call.
 
 | setting | default | meaning |
 |---|---|---|
@@ -130,7 +130,7 @@ For strict NVE at 2 fs use iEL/SCF-2 (-0.001 to -0.006) or omega = 0.5, K = 0 at
 
 ## Validation
 
-Two 512-water systems, mixed precision, one RTX PRO 6000 (runs made with `scripts/iel_validate.py`):
+Two 512-water systems, mixed precision, one RTX PRO 6000 (runs made with `scripts/validation/iel_validate.py`):
 
 - **pGM3P-25**: the model of Wu et al. (JCTC 21, 3563 (2025)) with the paper's geometry and
   Lennard-Jones (`water_dielectric.py --model pgm3p25`, the system of `~/project/epsp/p25_512`);
