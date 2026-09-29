@@ -19,6 +19,10 @@ any order. Validated against Amber (sander, pmemd-pgm) and PyRESP.
   solver, rigid or flexible molecules, NVE / NVT (Langevin, Bussi, smooth GLE) / Monte Carlo NPT,
   restraints, temperature replica exchange with batched replicas, cell dipole and dielectric
   constant, Amber inputs and outputs).
+- **Interfaces to other codes** (`pgm_jax.interfaces`, `docs/interfaces.md`): an ASE calculator
+  (energy, forces, stress, dipoles; vectorised SHAKE / RATTLE for rigid water), an i-PI socket client
+  (classical and path-integral MD driven by i-PI, batched beads) and an OpenMM `PythonForce` (OpenMM's
+  integrators, constraints and barostat with pGM forces), all on one device-resident engine.
 - **Parameterization:** gradients of QM losses (energies, forces, dipoles, ESP) by autodiff;
   gradients of liquid properties (density, heat of vaporization) by fluctuation formulas over MD
   frames; bonded terms for flexible pGM molecules (`pgm_jax.bonded`).
@@ -521,6 +525,8 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `scripts/solvation_free_energy.py` | hydration free energy of a rigid molecule: `run` (NPT at full coupling, batched windows, exchange), `analyze` (TI / BAR / MBAR, halves, equilibration), `bench` (cost per window) |
 | `pgm_jax/protein/` | proteins: `residues` (bond orders, terminal keys), `library` (`ResidueLibrary`: pGM parameters by residue and atom name, JSON), `amber` (`load_amber`: tleap system -> pgm_jax molecules; `amber_template`: ff19SB-form bonded terms + CMAP; `AmberSystem.hmr` per-kind hydrogen masses, `select` / `position_restraints`), `pmemd` (`write_pgm_prmtop`: the engine's model as a pmemd-pgm prmtop; `pmemd_mdin`, `pmemd_grid`) |
 | `scripts/protein/` | `build_amber.py` (PDB or residue sequence -> solvated tleap topology), `bench_protein.py` (speed of a solvated protein; `--elec-cut`, `--hmr-water`, `--prod-ps`: stability and <U> with block errors), `write_pgm_prmtop.py` (pmemd-pgm prmtop + mdin), `check_pgm_prmtop.py` (single points and MD against pmemd-pgm), `elec_accuracy.py` (electrostatic error of real-space cutoffs), `remd_peptide.py` (replica exchange of a solvated peptide vs plain MD: acceptance, round trips, phi/psi populations, replica speed) |
+| `pgm_jax/interfaces/` | other MD codes drive pGM: `engine.py` (`PGMEngine`: one jitted call per configuration, dipole-history slots, overflow handling, general cells, atomic / molecular virial; `GasPhaseEngine`), `ase.py` (`PGMCalculator`, `FixRigidMolecules`), `ipi.py` (i-PI socket client, `python -m pgm_jax.interfaces.ipi`), `openmm.py` (`PGMOpenMM`: PythonForce, System, Topology) |
+| `scripts/interfaces/` | `validate_ase.py`, `validate_ipi.py`, `validate_openmm.py` (single points, NVE / NVT / NPT / PIMD against the native engine), `bench_interfaces.py` (cost per step), `ipi_tools.py` (i-PI inputs, server, output) |
 | `pgm_jax/ensemble.py` | `Reweighting`: ensemble averages, n_eff and parameter gradients from saved frames; Karplus J couplings, phi/psi regions |
 | `pgm_jax/md/topology.py` | `MDTopology`: neighbour-list groups (heavy-atom groups for large molecules), special pairs with van der Waals weights, constraints |
 | `pgm_jax/md/constraints.py` | SHAKE / RATTLE solved exactly per cluster (water, CH3, ...), vectorised; hydrogen mass repartitioning (one mass or per molecule, `hmr_masses`) |
