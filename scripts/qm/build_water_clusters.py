@@ -1,13 +1,14 @@
-"""Geometries of the water-cluster QM set (rigid monomers at the pGM3P-25 geometry).
+"""Build the geometries of the water-cluster QM set (rigid monomers at the pGM3P-25 geometry).
 
 Every monomer is replaced by the rigid water of the model (r_OH, HOH angle of the pGM3P-25
 prmtop / restart: 0.9745 A, 103.64 deg), superposed on the source monomer (mass-weighted Kabsch,
 centre of mass kept), so model and QM see the same geometry and the interaction energies contain
-no monomer deformation.
+no monomer deformation (docs/qmfit.md).  The QM jobs of each record are run by
+scripts/qm/psi4_clusters.py and collected by scripts/qm/collect_water_qm.py.
 
 Sets (record "set"):
   smith        symmetry-constrained MP2/aug-cc-pVDZ stationary structures of the dimer
-               (scripts/qmfit/smith_opt.py; ~/project/qmdata/smith/*.json)
+               (scripts/qm/smith_opt.py; PGM_QMDATA/smith/*.json)
   radial       O-O scans of four of them (the partner translated along O...O)
   angular      scans around the minimum: acceptor flap, donor bend, acceptor twist
   liquid2      pairs from pGM liquid snapshots, stratified in R_OO
@@ -16,7 +17,16 @@ Sets (record "set"):
   liquid3/4/5  trimers, tetramers, pentamers cut from the snapshots (a molecule and neighbours)
   pairs        every pair of every cluster with n >= 3 (2-body corrections to the cluster MP2)
 
-    python scripts/qmfit/build_water_clusters.py [--smith DIR] [--out data/qm/water_geoms.json]
+Usage:
+
+    python scripts/qm/build_water_clusters.py [--smith DIR] [--out data/qm/water_geoms.json]
+    python scripts/qm/build_water_clusters.py --help
+
+Inputs: the Smith structures (--smith, default PGM_QMDATA/smith), the liquid snapshots (PGM_EPSP:
+p25_4096.rst7, p25_512.rst7, base/base_4096.rst7), data/qm/water27_raw.json.
+Outputs: the geometry file (--out; records with id, set, n, xyz_A, jobs, meta); printed counts.
+Units: Angstrom, degrees.
+Runtime: seconds.  The random choices use a fixed seed (the file is reproducible).
 """
 
 from __future__ import annotations
@@ -25,29 +35,31 @@ import argparse
 import itertools
 import json
 import os
+from collections import Counter
 
 import numpy as np
 
-from pgm_jax.paths import resource
+from pgm_jax.paths import repo_path, resource
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 R_OH, HOH = 0.9745, 103.64  # pGM3P-25 rigid water (p25_512.rst7), Angstrom / degrees
-MASS = np.array([15.999, 1.008, 1.008])
+MASS = np.array([15.999, 1.008, 1.008])  # O, H, H [amu] (Kabsch weights)
 SNAPSHOTS = {
     "p25_4096": resource("epsp", "p25_4096.rst7"),
     "p25_512": resource("epsp", "p25_512.rst7"),
     "base_4096": resource("epsp", "base/base_4096.rst7"),
 }
 DIMER_JOBS = ["sapt0", "mp2:aug-cc-pvtz", "mp2:aug-cc-pvqz", "ccsdt:aug-cc-pvtz"]
+CLUSTER_JOBS = ["mbe:mp2:aug-cc-pvtz:3"]
 
 
-def model_water():
+def model_water() -> np.ndarray:
+    """Return the model's rigid water (O, H, H) [A], O at the origin, bisector along +y."""
     t = np.radians(HOH) / 2
     return np.array([[0, 0, 0], [R_OH * np.sin(t), R_OH * np.cos(t), 0], [-R_OH * np.sin(t), R_OH * np.cos(t), 0]])
 
 
-def kabsch(P, Q, w):
-    """Rotation Rm and translation minimizing sum w |Rm P + t - Q|^2."""
+def kabsch(P: np.ndarray, Q: np.ndarray, w: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return the rotation Rm (3, 3) and translation t (3,) minimizing sum w |Rm P + t - Q|^2."""
     pc, qc = (w[:, None] * P).sum(0) / w.sum(), (w[:, None] * Q).sum(0) / w.sum()
     H = ((P - pc) * w[:, None]).T @ (Q - qc)
     U, _, Vt = np.linalg.svd(H)
@@ -56,8 +68,8 @@ def kabsch(P, Q, w):
     return Rm, qc - Rm @ pc
 
 
-def rigidify(X):
-    """(3n, 3) O,H,H per molecule -> the same with the model's rigid water superposed on each."""
+def rigidify(X: np.ndarray) -> np.ndarray:
+    """Return the coordinates (3n, 3) [A] (O, H, H per molecule) with the model's rigid water superposed on each."""
     X = np.asarray(X, float).reshape(-1, 3, 3)
     M = model_water()
     out = []
@@ -67,8 +79,8 @@ def rigidify(X):
     return np.concatenate(out)
 
 
-def group_waters(atoms):
-    """[[el, x, y, z], ...] with any atom order -> (3n, 3) O,H,H per molecule (H to the nearest O)."""
+def group_waters(atoms: list) -> np.ndarray:
+    """Return (3n, 3) coordinates O, H, H per molecule from [[el, x, y, z], ...] in any order (H to the nearest O)."""
     el = [a[0] for a in atoms]
     X = np.array([a[1:] for a in atoms], float)
     O = [k for k, e in enumerate(el) if e == "O"]
@@ -80,13 +92,15 @@ def group_waters(atoms):
     return np.concatenate([X[[o] + own[o]] for o in O])
 
 
-def rot(axis, ang):
+def rot(axis: np.ndarray, ang: float) -> np.ndarray:
+    """Return the rotation matrix (3, 3) about `axis` by `ang` [rad] (Rodrigues)."""
     a = np.asarray(axis, float) / np.linalg.norm(axis)
     K = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
     return np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * K @ K
 
 
-def read_rst7(path):
+def read_rst7(path: str) -> tuple[np.ndarray, np.ndarray]:
+    """Return the coordinates (N, 3) [A] and the box (3, 3) [A] (vectors as rows) of an ASCII rst7."""
     L = open(path).read().splitlines()
     n = int(L[1].split()[0])
     v = []
@@ -104,11 +118,11 @@ def read_rst7(path):
     return X, H
 
 
-IMAGES = np.array(list(itertools.product((-1, 0, 1), repeat=3)), float)
+IMAGES = np.array(list(itertools.product((-1, 0, 1), repeat=3)), float)  # neighbouring cells
 
 
-def min_image(d, H, Hinv):
-    """Shortest periodic image of displacement(s) d (..., 3)."""
+def min_image(d: np.ndarray, H: np.ndarray, Hinv: np.ndarray) -> np.ndarray:
+    """Return the shortest periodic image of displacement(s) d (..., 3) in box H (checks the 27 nearest cells)."""
     f = d @ Hinv
     d0 = (f - np.round(f)) @ H
     cand = d0[..., None, :] + IMAGES @ H
@@ -117,7 +131,21 @@ def min_image(d, H, Hinv):
 
 
 class Snapshot:
-    def __init__(self, name, path):
+    """A liquid water snapshot with whole molecules (O, H, H), for cutting clusters.
+
+    Attributes
+    ----------
+    name : str
+    H, Hinv : np.ndarray (3, 3)
+        Box [A] and its inverse.
+    W : np.ndarray (M, 3, 3)
+        Molecules, hydrogens imaged next to their oxygen [A].
+    O : np.ndarray (M, 3)
+        Oxygen positions [A].
+    """
+
+    def __init__(self, name: str, path: str) -> None:
+        """Read the snapshot from an ASCII rst7 and make the molecules whole."""
         X, H = read_rst7(path)
         self.name, self.H, self.Hinv = name, H, np.linalg.inv(H)
         W = X.reshape(-1, 3, 3)
@@ -125,14 +153,15 @@ class Snapshot:
         self.W = W
         self.O = W[:, 0]
 
-    def neighbours(self, i):
+    def neighbours(self, i: int) -> tuple[np.ndarray, np.ndarray]:
+        """Return the O-O distances (M,) [A] (inf for i itself) and minimum-image vectors (M, 3) from molecule i."""
         d = min_image(self.O - self.O[i], self.H, self.Hinv)
         r = np.linalg.norm(d, axis=-1)
         r[i] = np.inf
         return r, d
 
-    def cluster(self, idx):
-        """Molecules idx imaged around molecule idx[0], (3n, 3), centred."""
+    def cluster(self, idx: list[int]) -> np.ndarray:
+        """Return the molecules idx imaged around molecule idx[0], (3n, 3) [A], centred."""
         c = self.O[idx[0]]
         out = []
         for k in idx:
@@ -142,7 +171,8 @@ class Snapshot:
         return X - X.mean(0)
 
 
-def rec(rid, set_, X, jobs, **meta):
+def rec(rid: str, set_: str, X: np.ndarray, jobs: list[str], **meta) -> dict:
+    """Return a geometry record (id, set, n, xyz_A rounded to 1e-8 A, jobs, meta = the keywords)."""
     X = np.asarray(X)
     return {
         "id": rid,
@@ -154,18 +184,22 @@ def rec(rid, set_, X, jobs, **meta):
     }
 
 
-def roo(X, i=0, j=1):
+def roo(X: np.ndarray, i: int = 0, j: int = 1) -> float:
+    """Return the O-O distance [A] of molecules i and j of X (O, H, H per molecule)."""
     return float(np.linalg.norm(X[3 * i] - X[3 * j]))
 
 
-def main(a):
-    rng = np.random.default_rng(20260928)
+def dimer_records(smith_dir: str) -> list[dict]:
+    """Return the monomer, the Smith stationary structures and the radial and angular dimer scans.
+
+    Structures that converged onto another one (same MP2 energy to 1e-6 Eh) are kept once.
+    """
     records = [rec("monomer/p25", "monomer", model_water(), ["props:ccsd:aug-cc-pvtz"])]
-    # ---- Smith-type stationary structures and scans
     smith = {}
-    for fn in sorted(os.listdir(a.smith)):
+    for fn in sorted(os.listdir(smith_dir)):
         if fn.endswith(".json"):
-            d = json.load(open(os.path.join(a.smith, fn)))
+            with open(os.path.join(smith_dir, fn)) as fh:
+                d = json.load(fh)
             smith[d["name"]] = d
     seen = []
     for name, d in sorted(smith.items(), key=lambda kv: kv[1]["E_mp2_adz"]):
@@ -218,8 +252,12 @@ def main(a):
         records.append(
             rec(f"angular/twist/{deg:03d}", "angular", Y, DIMER_JOBS, parent="Cs_open", angle=deg, R_OO=roo(Y))
         )
-    # ---- liquid snapshots
-    snaps = {k: Snapshot(k, p) for k, p in SNAPSHOTS.items()}
+    return records
+
+
+def liquid_pairs(snaps: dict, rng: np.random.Generator) -> list[dict]:
+    """Return pairs from the snapshots, stratified in R_OO (bins of [A] with counts split over the snapshots)."""
+    records = []
     bins = [
         (2.40, 2.70, 30),
         (2.70, 2.90, 40),
@@ -245,7 +283,15 @@ def main(a):
                 jobs = DIMER_JOBS + ["mp2grad:aug-cc-pvtz"]
                 records.append(rec(f"liquid2/{sname}/{i}-{j}", "liquid2", Y, jobs, snapshot=sname, R_OO=roo(Y)))
                 got += 1
-    cl_jobs = ["mbe:mp2:aug-cc-pvtz:3"]
+    return records
+
+
+def liquid_clusters(snaps: dict, rng: np.random.Generator) -> list[dict]:
+    """Return trimers (first shell, and first + second shell), tetramers and pentamers cut from the snapshots.
+
+    First shell: O-O < 3.3 A; second shell 3.3-5.0 A; pentamers are a molecule and its four nearest
+    neighbours.
+    """
     clusters = []
     for sname, n3, n3x, n4, n5 in (("p25_4096", 30, 8, 8, 5), ("base_4096", 15, 4, 4, 3)):
         s = snaps[sname]
@@ -271,9 +317,19 @@ def main(a):
                 idx, kind = [i] + list(np.argsort(r)[:4]), "liquid5"
             idx = [int(k) for k in idx]
             Y = rigidify(s.cluster(idx))
-            clusters.append(rec(f"{kind}/{sname}/" + "-".join(map(str, idx)), kind, Y, cl_jobs, snapshot=sname))
+            clusters.append(rec(f"{kind}/{sname}/" + "-".join(map(str, idx)), kind, Y, CLUSTER_JOBS, snapshot=sname))
             made += 1
-    W27 = json.load(open(os.path.join(ROOT, "data/qm/water27_raw.json")))
+    return clusters
+
+
+def water27_records() -> tuple[list[dict], list[dict]]:
+    """Return the WATER27 dimer record(s) and cluster records (monomers rigidified).
+
+    Clusters up to 6 molecules get the 3-body many-body expansion, the octamers only the 1-body
+    terms and the whole cluster.
+    """
+    with open(repo_path("data", "qm", "water27_raw.json")) as fh:
+        W27 = json.load(fh)
     labels = {
         "H2O2": "dimer",
         "H2O3": "trimer",
@@ -286,20 +342,37 @@ def main(a):
         "H2O8d2d": "octamer_D2d",
         "H2O8s4": "octamer_S4",
     }
+    dimers, clusters = [], []
     for k, lab in labels.items():
         Y = rigidify(group_waters(W27[k]))
         n = len(Y) // 3
         if n == 2:
-            records.append(rec(f"water27/{k}", "water27", Y, DIMER_JOBS, label=lab))
+            dimers.append(rec(f"water27/{k}", "water27", Y, DIMER_JOBS, label=lab))
         else:
             jobs = ["mbe:mp2:aug-cc-pvtz:3"] if n <= 6 else ["mbe:mp2:aug-cc-pvtz:1"]
             clusters.append(rec(f"water27/{k}", "water27", Y, jobs, label=lab))
-    records += clusters
-    for c in clusters:  # 2-body corrections
+    return dimers, clusters
+
+
+def pair_records(clusters: list[dict]) -> list[dict]:
+    """Return every pair of every cluster (the 2-body corrections)."""
+    records = []
+    for c in clusters:
         X = np.asarray(c["xyz_A"])
         for i, j in itertools.combinations(range(c["n"]), 2):
             Y = np.concatenate([X[3 * i : 3 * i + 3], X[3 * j : 3 * j + 3]])
             records.append(rec(f"{c['id']}/p{i}-{j}", "pairs", Y, DIMER_JOBS, parent=c["id"], pair=[i, j], R_OO=roo(Y)))
+    return records
+
+
+def check_records(records: list[dict]) -> None:
+    """Check unique ids and rigid monomers; store the shortest intermolecular distance as meta d_min [A].
+
+    Raises
+    ------
+    AssertionError
+        Duplicate ids or a monomer that is not rigid.
+    """
     ids = [r["id"] for r in records]
     assert len(ids) == len(set(ids)), "duplicate ids"
     for r in records:  # sanity: rigid monomers, no clashes
@@ -314,21 +387,36 @@ def main(a):
             default=9,
         )
         r["meta"]["d_min"] = round(float(dmin), 4)
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line, build all records and write the geometry file (see the module docstring)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--smith", default=resource("qmdata", "smith"), help="directory of the smith_opt.py JSON files")
+    ap.add_argument("-o", "--out", default=repo_path("data", "qm", "water_geoms.json"), help="geometry file")
+    a = ap.parse_args(argv)
+    rng = np.random.default_rng(20260928)
+    records = dimer_records(a.smith)
+    snaps = {k: Snapshot(k, p) for k, p in SNAPSHOTS.items()}
+    records += liquid_pairs(snaps, rng)
+    clusters = liquid_clusters(snaps, rng)
+    dimers, w27 = water27_records()
+    records += dimers
+    clusters += w27
+    records += clusters
+    records += pair_records(clusters)
+    check_records(records)
     out = {
         "about": "water clusters, rigid pGM3P-25 monomers (r_OH 0.9745 A, HOH 103.64 deg); coordinates in Angstrom, "
-        "atoms O,H,H per molecule; built by scripts/qmfit/build_water_clusters.py",
+        "atoms O,H,H per molecule; built by scripts/qm/build_water_clusters.py",
         "records": records,
     }
-    json.dump(out, open(a.out, "w"), separators=(",", ":"))
-    from collections import Counter
-
+    with open(a.out, "w") as fh:
+        json.dump(out, fh, separators=(",", ":"))
     print(Counter(r["set"] for r in records), len(records))
     print("tasks", Counter(j for r in records for j in r["jobs"]))
     print("min contact", min(r["meta"]["d_min"] for r in records))
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--smith", default=resource("qmdata", "smith"))
-    ap.add_argument("--out", default=os.path.join(ROOT, "data/qm/water_geoms.json"))
-    main(ap.parse_args())
+    main()

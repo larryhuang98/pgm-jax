@@ -1,21 +1,54 @@
-"""Water dimer stationary structures (Smith-type, symmetry-constrained): build a start geometry in
-the point group, optimize at MP2/aug-cc-pVDZ with psi4 (optking keeps the point group), write xyz.
+"""Optimize Smith-type water dimer stationary structures with psi4, keeping their point group.
 
-    python scripts/qmfit/smith_opt.py NAME OUTDIR [threads]
+A start geometry in the point group is built from rigid waters (O-H 0.96 A, 104.5 deg; O-O
+2.91 A, bifurcated 3.0 A), optimized at DF-MP2/aug-cc-pVDZ (frozen core) with psi4; optking keeps
+the point group (symmetry set from the start geometry, symmetrized to 1e-3).  The structures are
+part of the water-cluster QM set (scripts/qm/build_water_clusters.py; docs/qmfit.md).
+
 Names: Cs_open Cs_planar Ci_cyclic C2_cyclic C2h_cyclic C2v_bifurcated C2v_planar_bifurcated
+
+Usage:
+
+    <python with psi4> scripts/qm/smith_opt.py NAME OUTDIR [--threads 8] [--opt-coordinates redundant]
+    python scripts/qm/smith_opt.py --help
+
+Inputs: none.
+Outputs: <out>/<name>.json (point groups, MP2 energy [Eh], elements, optimized xyz [A], time),
+<out>/<name>.out (psi4 output); the JSON is printed.
+Units: A (geometries), Eh (energy).
+Runtime: CPU, minutes.  Needs psi4 (imported in main; this script does not import pgm_jax).
 """
 
+from __future__ import annotations
+
+import argparse
 import json
 import os
-import sys
 import time
 
 import numpy as np
 
-R, TH = 0.96, np.radians(104.5)
+R, TH = 0.96, np.radians(104.5)  # O-H [A], H-O-H [rad] of the start geometries
+NAMES = ["Cs_open", "Cs_planar", "Ci_cyclic", "C2_cyclic", "C2h_cyclic", "C2v_bifurcated", "C2v_planar_bifurcated"]
 
 
-def water(O, u, v):
+def water(O: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Return a water (O, H, H) [A] with its bisector along u and its plane spanned by u and v.
+
+    Parameters
+    ----------
+    O : array (3,)
+        Oxygen position [A].
+    u : array (3,)
+        Direction of the H-O-H bisector (normalized here).
+    v : array (3,)
+        In-plane direction (its component along u is removed).
+
+    Returns
+    -------
+    np.ndarray (3, 3)
+        Coordinates [A].
+    """
     u = np.asarray(u, float)
     u /= np.linalg.norm(u)
     v = np.asarray(v, float)
@@ -26,15 +59,22 @@ def water(O, u, v):
     return np.array([O, O + R * (c * u + s * v), O + R * (c * u - s * v)])
 
 
-def donor_along_x(O):
-    """Water with O at O and its first O-H along +x, in the xy plane."""
+def donor_along_x(O: np.ndarray) -> np.ndarray:
+    """Return a water (3, 3) [A] with its oxygen at O and its first O-H along +x, in the xy plane."""
     u = np.array([np.cos(TH / 2), -np.sin(TH / 2), 0.0])
     v = np.array([np.sin(TH / 2), np.cos(TH / 2), 0.0])
     return water(O, u, v)
 
 
-def build(name):
-    d = 2.91
+def build(name: str) -> np.ndarray:
+    """Return the start geometry (6, 3) [A] of the named dimer (donor first).
+
+    Raises
+    ------
+    KeyError
+        An unknown name.
+    """
+    d = 2.91  # O-O distance [A]
     if name == "Cs_open":
         D = donor_along_x([0, 0, 0])
         b = np.radians(57)
@@ -70,11 +110,19 @@ def build(name):
     return np.vstack([D, A])
 
 
-def main():
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line, optimize the dimer and write its JSON (see the module docstring)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("name", choices=NAMES, help="stationary structure")
+    ap.add_argument("out", help="output directory")
+    ap.add_argument("--threads", type=int, default=8, help="psi4 threads")
+    ap.add_argument(
+        "--opt-coordinates", default="redundant", help="optking opt_coordinates (redundant, cartesian, both, ...)"
+    )
+    a = ap.parse_args(argv)
     import psi4
 
-    name, out = sys.argv[1], sys.argv[2]
-    nt = int(sys.argv[3]) if len(sys.argv) > 3 else 8
+    name, out, nt = a.name, a.out, a.threads
     os.makedirs(out, exist_ok=True)
     X = build(name)
     el = ["O", "H", "H", "O", "H", "H"]
@@ -97,7 +145,7 @@ def main():
             "freeze_core": True,
             "g_convergence": "gau_tight",
             "geom_maxiter": 200,
-            "opt_coordinates": os.environ.get("OPT_COORDS", "redundant"),
+            "opt_coordinates": a.opt_coordinates,
         }
     )
     t0 = time.time()
@@ -113,7 +161,8 @@ def main():
         "sec": time.time() - t0,
         "level": "MP2/aug-cc-pVDZ (DF, fc) optimized",
     }
-    json.dump(rec, open(os.path.join(out, f"{name}.json"), "w"), indent=1)
+    with open(os.path.join(out, f"{name}.json"), "w") as fh:
+        json.dump(rec, fh, indent=1)
     print(json.dumps(rec))
 
 

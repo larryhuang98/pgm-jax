@@ -1,9 +1,10 @@
 """QM reference data for water clusters with psi4: one worker of a dynamic work queue.
 
-Tasks are (record, job) pairs from data/qm/water_geoms.json; workers claim tasks with an atomic
-mkdir on the shared file system, so any number of workers (slurm array tasks) balance the load and
-a killed run is resumed by starting workers again (a claimed task without a result line is retried
-after --stale hours).  Results are appended as JSON lines to <out>/results_<worker>.jsonl.
+Tasks are (record, job) pairs from the geometry file (data/qm/water_geoms.json, written by
+scripts/qm/build_water_clusters.py); workers claim tasks with an atomic mkdir on the shared file
+system, so any number of workers (slurm array tasks) balance the load and a killed run is resumed
+by starting workers again (a claimed task without a result line is retried after --stale-hours).
+Results are appended as JSON lines to <out>/results_<worker>.jsonl (docs/qmfit.md).
 
 Jobs (all counterpoise corrected in the basis of the whole record, frozen core, DF-SCF):
   sapt0                 SAPT0/jun-cc-pVDZ components (all psi4 SAPT* variables, Eh), dimers only
@@ -15,7 +16,17 @@ Jobs (all counterpoise corrected in the basis of the whole record, frozen core, 
                         in the cluster basis (the CP many-body expansion; interaction energy from the
                         full cluster and the monomers)
 
-    python scripts/qmfit/psi4_clusters.py GEOMS OUTDIR WORKER --threads 16 --memory 30 [--only ids]
+Usage:
+
+    <python with psi4> scripts/qm/psi4_clusters.py GEOMS OUTDIR WORKER --threads 16 --memory-GB 30 [--only ids]
+    python scripts/qm/psi4_clusters.py --help
+
+Inputs: the geometry file (records with id, n, xyz_A, jobs, optional elements, atoms_per_mol).
+Outputs: <out>/results_<worker>.jsonl (id, job, res or error, sec, threads), <out>/psi4_<worker>.out,
+<out>/claims/; one printed line per task.
+Units: energies in Eh, gradients in Eh/bohr, properties in atomic units (psi4's); geometries in A.
+Runtime: CPU (psi4); from seconds (SAPT0 dimers) to hours (CCSD(T) of large clusters) per task.
+Needs psi4 (imported in main; this script does not import pgm_jax).
 """
 
 from __future__ import annotations
@@ -27,11 +38,26 @@ import os
 import socket
 import time
 
+import numpy as np
+
 SAPT_BASIS = "jun-cc-pvdz"
 
 
-def mol_string(frags, active):
-    """frags: list of (elements, xyz_A); active: fragment indices that are real (others ghosts)."""
+def mol_string(frags: list, active: set[int]) -> str:
+    """Return a psi4 molecule string of the fragments, with the inactive ones as ghost atoms.
+
+    Parameters
+    ----------
+    frags : list of (list of str, array (A, 3))
+        Elements and coordinates [A] of each fragment.
+    active : set of int
+        Indices of the real fragments (the others are ghosts: their basis functions only).
+
+    Returns
+    -------
+    str
+        Fragments separated by "--", charge 0 multiplicity 1 each, c1 symmetry, fixed frame.
+    """
     out = []
     for k, (el, xyz) in enumerate(frags):
         if k:
@@ -43,14 +69,37 @@ def mol_string(frags, active):
     return "\n".join(out + ["units angstrom", "symmetry c1", "no_com", "no_reorient"])
 
 
-def frags_of(rec):
+def frags_of(rec: dict) -> list:
+    """Return the fragments (elements, xyz [A]) of a record (default: water, O H H per molecule)."""
     X = rec["xyz_A"]
     el = rec.get("elements") or ["O", "H", "H"] * rec["n"]
     na = rec.get("atoms_per_mol", 3)
     return [(el[na * k : na * k + na], X[na * k : na * k + na]) for k in range(rec["n"])]
 
 
-def run_job(psi4, rec, job):
+def run_job(psi4: object, rec: dict, job: str) -> dict:
+    """Run one job (see the module docstring) on one record and return its results.
+
+    Parameters
+    ----------
+    psi4 : module
+        The imported psi4 module.
+    rec : dict
+        The geometry record.
+    job : str
+        Job specification, e.g. "mp2:aug-cc-pvtz".
+
+    Returns
+    -------
+    dict
+        sapt0 and props: psi4 variables by name; mp2, ccsdt, mp2grad, mbe: per subset of molecules
+        ("0,1", "0", ...) the energies [Eh] (and gradients [Eh/bohr]).
+
+    Raises
+    ------
+    ValueError
+        An unknown job kind.
+    """
     frags = frags_of(rec)
     n = len(frags)
     psi4.core.clean_options()  # options persist between jobs
@@ -109,8 +158,6 @@ def run_job(psi4, rec, job):
         psi4.set_options({"basis": basis, "freeze_core": True, "e_convergence": 1e-10, "d_convergence": 1e-10})
         mol = psi4.geometry(mol_string(frags, set(range(n))))
         psi4.properties(method, properties=["dipole", "polarizability"], molecule=mol)
-        import numpy as np
-
         res = {
             k: np.asarray(v.np if hasattr(v, "np") else v, float).tolist()
             for k, v in psi4.core.variables().items()
@@ -121,7 +168,18 @@ def run_job(psi4, rec, job):
     return res
 
 
-def main(a):
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line and work through the tasks (see the module docstring)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("geoms", help="geometry file (JSON with records)")
+    ap.add_argument("out", help="output directory (shared by all workers)")
+    ap.add_argument("worker", help="worker name (e.g. the slurm array index)")
+    ap.add_argument("--threads", type=int, default=16, help="psi4 threads")
+    ap.add_argument("--memory-GB", type=float, default=30.0, help="psi4 memory [GB]")
+    ap.add_argument("--stale-hours", type=float, default=12.0, help="claims older than this are retried [h]")
+    ap.add_argument("--only", default="", help="comma-separated record ids (default: all)")
+    ap.add_argument("--quiet", action="store_true", help="psi4.core.be_quiet()")
+    a = ap.parse_args(argv)
     import psi4
 
     recs = json.load(open(a.geoms))["records"]
@@ -137,10 +195,11 @@ def main(a):
                     if "error" not in d:
                         done.add((d["id"], d["job"]))
     out = os.path.join(a.out, f"results_{a.worker}.jsonl")
-    psi4.set_memory(f"{a.memory} GB")
+    psi4.set_memory(f"{a.memory_GB} GB")
     psi4.set_num_threads(a.threads)
     psi4.core.set_output_file(os.path.join(a.out, f"psi4_{a.worker}.out"), False)
-    psi4.core.be_quiet() if a.quiet else None
+    if a.quiet:
+        psi4.core.be_quiet()
     for rec, job in tasks:
         if (rec["id"], job) in done:
             continue
@@ -148,10 +207,11 @@ def main(a):
         try:
             os.mkdir(claim)
         except FileExistsError:
-            if time.time() - os.path.getmtime(claim) < a.stale * 3600:
+            if time.time() - os.path.getmtime(claim) < a.stale_hours * 3600:
                 continue
             os.utime(claim)
-        open(os.path.join(claim, "owner"), "w").write(f"{a.worker} {socket.gethostname()} {time.ctime()}\n")
+        with open(os.path.join(claim, "owner"), "w") as fh:
+            fh.write(f"{a.worker} {socket.gethostname()} {time.ctime()}\n")
         t0 = time.time()
         line = {"id": rec["id"], "job": job}
         try:
@@ -168,13 +228,4 @@ def main(a):
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("geoms")
-    ap.add_argument("out")
-    ap.add_argument("worker")
-    ap.add_argument("--threads", type=int, default=16)
-    ap.add_argument("--memory", type=float, default=30.0)
-    ap.add_argument("--stale", type=float, default=12.0)
-    ap.add_argument("--only", default="")
-    ap.add_argument("--quiet", action="store_true")
-    main(ap.parse_args())
+    main()
