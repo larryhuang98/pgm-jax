@@ -1,13 +1,24 @@
 """Finite-difference check of free-energy parameter gradients with independent runs.
 
-    python scripts/fe_gradient_check.py --group charge runs/fg/wq090_fe.npz runs/fg/wq100_fe.npz runs/fg/wq110_fe.npz
+Each run (scripts/free_energy/solvation_free_energy.py run --grad --solute-scale GROUP=s) gives the
+hydration free energy G(s) (MBAR) and its gradient dG/ds (fit.free_energy.gradient_estimate,
+MBAR-weighted and end-state estimators, block jackknife errors).  The runs are independent, so
+G(s_j) - G(s_i) is compared with the integral of the gradient between them: the trapezoid rule
+over neighbouring runs and, for three equally spaced runs, Simpson's rule (exact for a cubic G(s))
+and the central value g(s_mid) (the central difference, truncation error delta^2 G''' / 6);
+docs/fe_gradients.md.
 
-Each run (solvation_free_energy.py run --grad --solute-scale GROUP=s) gives the hydration free energy
-G(s) (MBAR) and its gradient dG/ds (fit.free_energy.gradient_estimate, MBAR-weighted and end-state
-estimators, block jackknife errors).  The runs are independent, so G(s_j) - G(s_i) is compared with
-the integral of the gradient between them: the trapezoid rule over neighbouring runs and, for three
-equally spaced runs, Simpson's rule (exact for a cubic G(s)) and the central value
-g(s_mid) (the central difference, truncation error delta^2 G'''/6).  Values in kcal/mol."""
+Usage:
+
+    python scripts/free_energy/fe_gradient_check.py --group charge runs/fg/wq090_fe.npz runs/fg/wq100_fe.npz
+        runs/fg/wq110_fe.npz
+    python scripts/free_energy/fe_gradient_check.py --help
+
+Inputs: the runs' <prefix>_fe.npz files.
+Outputs: printed tables (z = difference / combined error); --json the results.
+Units: kcal/mol (free energies), kcal/mol per unit scale (gradients); --discard-ps ps.
+Runtime: seconds (CPU).
+"""
 
 from __future__ import annotations
 
@@ -23,8 +34,8 @@ from pgm_jax.fit.params import SCALE_GROUPS, ParameterSpace
 from pgm_jax.units import KCAL
 
 
-def point(path, group, discard_ps, n_blocks, solute=True):
-    """Free energy and its gradient along one parameter-group scaling for one run.
+def point(path: str, group: str, discard_ps: float, n_blocks: int, solute: bool = True) -> dict:
+    """Return the free energy and its gradient along one parameter-group scaling for one run.
 
     Parameters
     ----------
@@ -67,28 +78,20 @@ def point(path, group, discard_ps, n_blocks, solute=True):
     return out
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("npz", nargs="+", help="runs at increasing scales of the group")
-    ap.add_argument("--group", default="charge", choices=sorted(SCALE_GROUPS))
-    ap.add_argument("--environment", action="store_true", help="the group's environment parameters, not the solute's")
-    ap.add_argument("--discard-ps", type=float, default=200.0)
-    ap.add_argument("--blocks", type=int, default=10)
-    ap.add_argument("--json")
-    a = ap.parse_args()
-    pts = sorted((point(p, a.group, a.discard_ps, a.blocks, not a.environment) for p in a.npz), key=lambda x: x["s"])
-    print(
-        f"# group {a.group} ({'environment' if a.environment else 'solute'}), discard {a.discard_ps} ps, "
-        f"{a.blocks} jackknife blocks; kcal/mol"
-    )
-    print("#     s    samples     G (MBAR)          [asympt.]   dG/ds MBAR-weighted    dG/ds end states")
-    for p in pts:
-        print(
-            f"  {p['s']:6.3f} {p['samples_per_window']:7d}  {p['G']:9.4f} +- {p['G_err']:.4f} "
-            f"[{p['G_err_mbar_asymptotic']:.4f}]"
-            f"  {p['g_mbar']:9.3f} +- {p['g_mbar_err']:.3f}   {p['g_end']:9.3f} +- {p['g_end_err']:.3f}"
-        )
-    res = {"points": pts, "pairs": []}
+def compare_neighbours(pts: list[dict]) -> list[dict]:
+    """Print and return the finite difference of neighbouring runs vs the trapezoid rule of their gradients.
+
+    Parameters
+    ----------
+    pts : list of dict
+        Results of `point`, sorted by scale.
+
+    Returns
+    -------
+    list of dict
+        Per pair: s (the two scales), fd, fd_err, and per estimator [trapezoid, error, z] [kcal/mol].
+    """
+    rows = []
     print("# neighbouring runs: finite difference vs trapezoid of the gradients (z = difference / combined error)")
     for p, q in zip(pts[:-1], pts[1:]):
         ds = q["s"] - p["s"]
@@ -101,26 +104,69 @@ def main():
             z = (fd - tr) / math.hypot(fde, te)
             row[est] = [tr, te, z]
             line += f" | {est} {tr:9.3f} +- {te:.3f} (z {z:+.2f})"
-        res["pairs"].append(row)
+        rows.append(row)
         print(line)
+    return rows
+
+
+def compare_outer(pts: list[dict]) -> dict:
+    """Print and return the outer finite difference of three equally spaced runs vs central value and Simpson.
+
+    Parameters
+    ----------
+    pts : list of 3 dict
+        Results of `point`, sorted by scale, equally spaced.
+
+    Returns
+    -------
+    dict
+        fd, fd_err, and per estimator central and simpson as [value, error, z] [kcal/mol].
+    """
+    p0, p1, p2 = pts
+    ds = p2["s"] - p0["s"]
+    fd, fde = (p2["G"] - p0["G"]) / ds, math.hypot(p2["G_err"], p0["G_err"]) / ds
+    print(f"# outer runs {p0['s']:.3f} -> {p2['s']:.3f}: FD {fd:.3f} +- {fde:.3f}")
+    out = {"fd": fd, "fd_err": fde}
+    for est in ("mbar", "end"):
+        g = [p[f"g_{est}"] for p in pts]
+        e = [p[f"g_{est}_err"] for p in pts]
+        simp = (g[0] + 4 * g[1] + g[2]) / 6
+        simpe = math.sqrt(e[0] ** 2 + 16 * e[1] ** 2 + e[2] ** 2) / 6
+        zc = (fd - g[1]) / math.hypot(fde, e[1])
+        zs = (fd - simp) / math.hypot(fde, simpe)
+        out[est] = {"central": [g[1], e[1], zc], "simpson": [simp, simpe, zs]}
+        print(
+            f"  {est:5s}: gradient at the centre {g[1]:.3f} +- {e[1]:.3f} (z {zc:+.2f}); Simpson {simp:.3f} +- "
+            f"{simpe:.3f} (z {zs:+.2f})"
+        )
+    return out
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line, evaluate the runs and print the comparisons (see the module docstring)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("npz", nargs="+", help="runs at increasing scales of the group")
+    ap.add_argument("--group", default="charge", choices=sorted(SCALE_GROUPS), help="scale group")
+    ap.add_argument("--environment", action="store_true", help="the group's environment parameters, not the solute's")
+    ap.add_argument("--discard-ps", type=float, default=200.0, help="time discarded at the start of every window [ps]")
+    ap.add_argument("--blocks", type=int, default=10, help="jackknife blocks")
+    ap.add_argument("--json", help="write the results to this JSON file")
+    a = ap.parse_args(argv)
+    pts = sorted((point(p, a.group, a.discard_ps, a.blocks, not a.environment) for p in a.npz), key=lambda x: x["s"])
+    print(
+        f"# group {a.group} ({'environment' if a.environment else 'solute'}), discard {a.discard_ps} ps, "
+        f"{a.blocks} jackknife blocks; kcal/mol"
+    )
+    print("#     s    samples     G (MBAR)          [asympt.]   dG/ds MBAR-weighted    dG/ds end states")
+    for p in pts:
+        print(
+            f"  {p['s']:6.3f} {p['samples_per_window']:7d}  {p['G']:9.4f} +- {p['G_err']:.4f} "
+            f"[{p['G_err_mbar_asymptotic']:.4f}]"
+            f"  {p['g_mbar']:9.3f} +- {p['g_mbar_err']:.3f}   {p['g_end']:9.3f} +- {p['g_end_err']:.3f}"
+        )
+    res = {"points": pts, "pairs": compare_neighbours(pts)}
     if len(pts) == 3 and abs((pts[1]["s"] - pts[0]["s"]) - (pts[2]["s"] - pts[1]["s"])) < 1e-9:
-        p0, p1, p2 = pts
-        ds = p2["s"] - p0["s"]
-        fd, fde = (p2["G"] - p0["G"]) / ds, math.hypot(p2["G_err"], p0["G_err"]) / ds
-        print(f"# outer runs {p0['s']:.3f} -> {p2['s']:.3f}: FD {fd:.3f} +- {fde:.3f}")
-        res["outer"] = {"fd": fd, "fd_err": fde}
-        for est in ("mbar", "end"):
-            g = [p[f"g_{est}"] for p in pts]
-            e = [p[f"g_{est}_err"] for p in pts]
-            simp = (g[0] + 4 * g[1] + g[2]) / 6
-            simpe = math.sqrt(e[0] ** 2 + 16 * e[1] ** 2 + e[2] ** 2) / 6
-            zc = (fd - g[1]) / math.hypot(fde, e[1])
-            zs = (fd - simp) / math.hypot(fde, simpe)
-            res["outer"][est] = {"central": [g[1], e[1], zc], "simpson": [simp, simpe, zs]}
-            print(
-                f"  {est:5s}: gradient at the centre {g[1]:.3f} +- {e[1]:.3f} (z {zc:+.2f}); Simpson {simp:.3f} +- "
-                f"{simpe:.3f} (z {zs:+.2f})"
-            )
+        res["outer"] = compare_outer(pts)
     if a.json:
         with open(a.json, "w") as fh:
             json.dump(res, fh, indent=1)

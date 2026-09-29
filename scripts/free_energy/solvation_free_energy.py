@@ -1,15 +1,9 @@
-"""Hydration (solvation) free energy of one rigid molecule by alchemical lambda windows
-(pgm_jax/md/alchemy.py, estimators in pgm_jax/analysis/free_energy.py; docs/free_energy.md).
+"""Hydration (solvation) free energy of one molecule by alchemical lambda windows (`pgm-jax solvation`).
 
-    # water in water: the 512-water box of the README (pGM3P-25 electrostatics on TIP3P geometry and LJ)
-    python scripts/solvation_free_energy.py run --model pgm -o runs/fe/pgm --ns 2
-    python scripts/solvation_free_energy.py run --model tip3p -o runs/fe/tip3p --ns 2       # TIP3P control
-    python scripts/solvation_free_energy.py run --prmtop sys.prmtop --coords sys.rst7 --solute 0 -o runs/fe/x
-    python scripts/solvation_free_energy.py run --solute-template methanol.flex -o runs/fe/meoh    # flexible solute
-    python scripts/solvation_free_energy.py analyze runs/fe/pgm_fe.npz --discard-ps 200
-    python scripts/solvation_free_energy.py run ... --checkpoint runs/fe/pgm.fe.chk        # continue a run
-    python scripts/solvation_free_energy.py bench --model pgm --windows 1,4,19              # cost per window
-    python scripts/solvation_free_energy.py finite-size --model pgm                          # PME / image check
+The alchemical Hamiltonian is pgm_jax/md/alchemy.py, the estimators pgm_jax/analysis/free_energy.py
+(docs/free_energy.md).  Subcommands: run (sample the windows), analyze (TI, BAR, MBAR), bench
+(cost per window), finite-size (periodic self-image and PME error of the solute's intramolecular
+electrostatics).
 
 Protocol (`run`): NPT at full coupling (--npt-ps; Monte Carlo barostat, the alchemical Hamiltonian
 at lambda = (1, 1)), the box then scaled to the mean volume of the second half; all windows of
@@ -20,7 +14,7 @@ dU/dlambda every --sample-ps, Hamiltonian replica exchange between neighbours ev
 samples; `analyze` prints TI, BAR and MBAR (Delta G of switching off in solution, the two stages,
 the hydration free energy) with the statistical inefficiencies and the smallest overlap.
 
-Models (--model, the box of ~/pgm-gvdw-data): "pgm" as in the prmtop (pGM3P-25 charges, covalent
+Models (--model, the 512-water box of PGM_GVDW_DATA): "pgm" as in the prmtop (pGM3P-25 charges, covalent
 dipoles, radii and polarizabilities of Wu et al., JCTC 21, 3563 (2025), on TIP3P's geometry
 0.9572 A / 104.52 deg and TIP3P's Lennard-Jones); "pgm3p25" with the paper's geometry (0.9745 A,
 103.64 deg) and Lennard-Jones (sigma 3.18156 A, epsilon 0.14473 kcal/mol); "tip3p" the TIP3P
@@ -41,10 +35,32 @@ dU/dP of the two end-state Hamiltonians at every window's configuration, and `an
 d DeltaG_hyd / dP (MBAR-weighted and end-state estimators, block jackknife errors), with the
 derivatives along scale directions of the solute's and the environment's parameters (charge =
 charges and covalent dipoles, eps, rmin, alpha, radius).  --solute-scale charge=1.05,eps=0.9 runs
-at scaled solute parameters (finite-difference checks: scripts/fe_gradient_check.py);
+at scaled solute parameters (finite-difference checks: scripts/free_energy/fe_gradient_check.py);
 --start-from prefix.fe.chk starts the windows from another run's configurations (no NPT);
 --elec-only runs only the electrostatics stage (its free energy is the whole dependence on the
-solute's electrostatic parameters: the van der Waals stage runs at lambda_elec = 0)."""
+solute's electrostatic parameters: the van der Waals stage runs at lambda_elec = 0).
+
+Usage:
+
+    # water in water: the 512-water box of the README (pGM3P-25 electrostatics on TIP3P geometry and LJ)
+    python scripts/free_energy/solvation_free_energy.py run --model pgm -o runs/fe/pgm --time-ns 2
+    python scripts/free_energy/solvation_free_energy.py run --model tip3p -o runs/fe/tip3p --time-ns 2   # control
+    python scripts/free_energy/solvation_free_energy.py run --prmtop s.prmtop --coords s.rst7 --solute 0 -o runs/fe/x
+    python scripts/free_energy/solvation_free_energy.py run --solute-template methanol.flex -o runs/fe/meoh  # flexible
+    python scripts/free_energy/solvation_free_energy.py analyze runs/fe/pgm_fe.npz --discard-ps 200
+    python scripts/free_energy/solvation_free_energy.py run ... --continue-from runs/fe/pgm.fe.chk   # continue a run
+    python scripts/free_energy/solvation_free_energy.py bench --model pgm --windows 1,4,19        # cost per window
+    python scripts/free_energy/solvation_free_energy.py finite-size --model pgm                   # PME / image check
+    pgm-jax solvation run --help
+
+Inputs: the water box of PGM_GVDW_DATA (pgm_jax.paths) or --prmtop/--coords; --solute-template.
+Outputs: run: <out>_fe.npz (samples, meta), <out>.fe.chk (checkpoint), <out>_npt.* (NPT stage), the
+log tables and the printed report; analyze, bench, finite-size: printed.
+Units: --time-ns ns (per window), durations in ps (--npt-ps, --sample-ps, --exchange-ps,
+--report-ps, --checkpoint-ps, --discard-ps), --dt-fs fs, --temperature-K K, --cutoff-nm and
+--clear-nm nm, --ewald-beta-per-nm 1/nm; free energies printed in kJ/mol and kcal/mol.
+Runtime: GPU (all windows batched); sets jax_enable_x64.
+"""
 
 from __future__ import annotations
 
@@ -59,7 +75,15 @@ import jax
 import numpy as np
 
 from pgm_jax.analysis import free_energy as fe
-from pgm_jax.cli.args import setup_logging
+from pgm_jax.cli.args import (
+    add_dipole_tol_arg,
+    add_dt_arg,
+    add_precision_arg,
+    add_seed_arg,
+    add_temperature_arg,
+    setup_logging,
+)
+from pgm_jax.cli.main import load_script, scripts_dir
 from pgm_jax.fit.free_energy import gradient_estimate
 from pgm_jax.fit.params import SCALE_GROUPS, ParameterSpace
 from pgm_jax.md import fe_grad as fg
@@ -74,26 +98,50 @@ from pgm_jax.md.alchemy import (
 from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.box import (
     box_from_cell,
+    reduce_box,
     volume,
 )
-from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, RigidTemplate
+from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.md.io import read_coordinates
 from pgm_jax.md.rigid import RigidBody
 from pgm_jax.md.simulation import Simulation
 from pgm_jax.md.thermostats import Bussi
 from pgm_jax.param import read_prmtop_molecules
-from pgm_jax.paths import resource
+from pgm_jax.paths import pgm3p25_files
 from pgm_jax.system import System
 from pgm_jax.units import AMU_NM3_TO_G_CM3, KCAL
 
 jax.config.update("jax_enable_x64", True)
-TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
-RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
+TOP, RST = pgm3p25_files()
+MODELS = ["pgm", "pgm3p25", "tip3p"]
 
 
-def water_model(model: str):
-    """(molecules, xyz (A), velocities (A/ps) or None, box (a, b, c, alpha, beta, gamma), elec level)
-    of the 512-water box with the chosen water model."""
+def water_model(model: str) -> tuple[list, np.ndarray, np.ndarray | None, tuple, str]:
+    """Return the 512-water box with the chosen water model.
+
+    Parameters
+    ----------
+    model : {"pgm", "pgm3p25", "tip3p"}
+        See the module docstring.
+
+    Returns
+    -------
+    mols : list of Molecule
+    xyz : np.ndarray (N, 3)
+        Coordinates [A].
+    vel : np.ndarray (N, 3) or None
+        Velocities of the restart [A/ps] (None for pgm3p25, whose geometry is rebuilt).
+    box : tuple
+        (lengths [A], angles [deg]) of the restart.
+    elec : str
+        Electrostatics level ("qpi", or "q" for tip3p).
+
+    Raises
+    ------
+    ValueError
+        An unknown model.
+    """
     mols = read_prmtop_molecules(TOP)
     xyz, vel, box = read_coordinates(RST)
     elec = "qpi"
@@ -107,10 +155,10 @@ def water_model(model: str):
         mols = [tip[id(m)] for m in mols]
         elec = "q"
     elif model == "pgm3p25":
-        from water_dielectric import paper_geometry
-
+        # the hydrogens rebuilt at the paper's geometry (scripts/dielectric/water_dielectric.py)
+        paper_geometry = load_script(os.path.join(scripts_dir(), "dielectric", "water_dielectric.py")).paper_geometry
         xyz = paper_geometry(xyz, 0.9745, 103.64, [list(m.elements) for m in mols])
-        sig, eps = 3.18156, 0.14473
+        sig, eps = 3.18156, 0.14473  # A, kcal/mol
         rh = np.array([2 ** (1 / 6) * sig / 2 * 0.1, 0.0, 0.0])
         se = np.array([np.sqrt(eps * KCAL), 0.0, 0.0])
         new = {id(m): dataclasses.replace(m, lj_rmin_half=rh, lj_sqrt_eps=se) for m in mols}
@@ -121,9 +169,30 @@ def water_model(model: str):
     return mols, xyz, vel, box, elec
 
 
-def lattice_box(mols, xyz, n: int, seed: int = 0):
-    """n^3 copies of the first molecule (its geometry in xyz, A) on a cubic lattice at 1 g/cm^3,
-    randomly rotated: a small box for cheap checks (equilibrate it with --npt-ps)."""
+def lattice_box(mols: list, xyz: np.ndarray, n: int, seed: int = 0) -> tuple[list, np.ndarray, tuple]:
+    """Return n^3 randomly rotated copies of the first molecule on a cubic lattice at 1 g/cm^3.
+
+    A small box for cheap checks (equilibrate it with --npt-ps).
+
+    Parameters
+    ----------
+    mols : list of Molecule
+        Molecules of the box (the first one is copied).
+    xyz : np.ndarray (N, 3)
+        Coordinates [A] (the first molecule's geometry is used).
+    n : int
+        Copies per box edge.
+    seed : int
+        Seed of the random rotations.
+
+    Returns
+    -------
+    mols : list of Molecule
+    xyz : np.ndarray (n^3 A, 3)
+        Coordinates [A].
+    box : tuple
+        (lengths [A], angles [deg]) of the cubic box.
+    """
     m = mols[0]
     x = np.asarray(xyz[: m.n], float)
     x = x - x.mean(axis=0)
@@ -140,11 +209,33 @@ def lattice_box(mols, xyz, n: int, seed: int = 0):
     return [m] * n**3, np.concatenate(pos), (np.full(3, L), np.full(3, 90.0))
 
 
-def insert_solute(tpl, mols, xyz_nm, H, clear: float):
-    """The template's molecule at the centre of the box (its reference geometry), waters with an atom
-    within `clear` nm of it removed: (molecules, positions nm, templates) with the solute first."""
-    from pgm_jax.md.flexible import RigidTemplate
+def insert_solute(
+    tpl: FlexibleTemplate, mols: list, xyz_nm: np.ndarray, H: np.ndarray, clear: float
+) -> tuple[list, np.ndarray, list]:
+    """Put the template's molecule at the centre of the box and remove the waters that overlap it.
 
+    Parameters
+    ----------
+    tpl : FlexibleTemplate
+        The solute (inserted at its reference geometry).
+    mols : list of Molecule
+        Molecules of the box.
+    xyz_nm : np.ndarray (N, 3)
+        Coordinates [nm].
+    H : np.ndarray (3, 3)
+        Box [nm].
+    clear : float
+        Molecules with an atom within this distance of a solute atom are removed [nm].
+
+    Returns
+    -------
+    mols : list of Molecule
+        The solute first, then the kept molecules.
+    positions : np.ndarray (N', 3)
+        Positions [nm].
+    templates : list
+        The solute's template, then a RigidTemplate per kept molecule.
+    """
     x = np.asarray(tpl.spec.ref_xyz, float)
     x = x - x.mean(axis=0) + 0.5 * H.sum(axis=0)
     Hinv = np.linalg.inv(H)
@@ -164,7 +255,26 @@ def insert_solute(tpl, mols, xyz_nm, H, clear: float):
     return keep_m, np.concatenate(keep_x), templates
 
 
-def build(a):
+def build(a: argparse.Namespace) -> tuple:
+    """Return the alchemical system and its settings from the options.
+
+    Parameters
+    ----------
+    a : argparse.Namespace
+        Options: model or prmtop / coords / elec, lattice, solute_template, clear_nm,
+        rigid_solute, solute, cutoff_nm, ewald_beta_per_nm, nfft, order, dipole_tol, precision, seed.
+
+    Returns
+    -------
+    tuple
+        (alchemical System, parameters, positions (N, 3) [nm], velocities [nm/ps] or None, box (3, 3)
+        [nm], MDSettings, electrostatics level, templates (None: rigid engine)).
+
+    Raises
+    ------
+    ValueError
+        Coordinates without a box, or --solute other than 0 with --solute-template.
+    """
     templates = None
     if a.prmtop:
         mols = read_prmtop_molecules(a.prmtop)
@@ -180,9 +290,7 @@ def build(a):
     H = box_from_cell(*box) * 0.1
     xyz = xyz * 0.1
     if getattr(a, "solute_template", None):
-        from pgm_jax.md.flexible import FlexibleTemplate
-
-        mols, xyz, templates = insert_solute(FlexibleTemplate.load(a.solute_template), mols, xyz, H, a.clear)
+        mols, xyz, templates = insert_solute(FlexibleTemplate.load(a.solute_template), mols, xyz, H, a.clear_nm)
         vel = None
         if getattr(a, "rigid_solute", False):  # the template's reference geometry, rigid
             templates = None
@@ -191,31 +299,36 @@ def build(a):
     sys0 = System(mols)
     sysA, P = alchemical_system(sys0, a.solute)
     settings = MDSettings().replace(
-        cutoff=a.cut,
+        cutoff=a.cutoff_nm,
         skin=0.1,
-        ewald_beta=a.ew_coeff,
+        ewald_beta=a.ewald_beta_per_nm,
         pme_grid=tuple(a.nfft),
         pme_order=a.order,
         lj_lrc=True,
-        dipole_tol=a.tol,
+        dipole_tol=a.dipole_tol,
         precision=a.precision,
         elec=elec,
     )
     return sysA, P, xyz, None if vel is None else vel * 0.1, H, settings, elec, templates
 
 
-def engine(sysA, templates, pos, H, **kw):
-    """Simulation (rigid molecules) or FlexibleSimulation (a flexible solute: X-H bonds constrained)."""
+def engine(
+    sysA: System, templates: list | None, pos: np.ndarray, H: np.ndarray, **kw
+) -> Simulation | FlexibleSimulation:
+    """Return a Simulation (rigid molecules) or FlexibleSimulation (a flexible solute: X-H bonds constrained).
+
+    `**kw` goes to the engine's constructor.
+    """
     if templates is None:
         return Simulation(sysA, pos, H, **kw)
-    from pgm_jax.md.flexible import FlexibleSimulation
-
     return FlexibleSimulation(sysA, templates, pos, H, constraints="h-bonds", **kw)
 
 
-def scale_to_volume(sim, V):
-    """Positions (nm) of sim's current configuration with molecular centres scaled to volume V (the
-    barostat's molecular scaling), and the box."""
+def scale_to_volume(sim: Simulation | FlexibleSimulation, V: float) -> tuple[np.ndarray, np.ndarray]:
+    """Return the current positions with the molecular centres scaled to a volume, and the scaled box.
+
+    The barostat's molecular scaling; V in nm^3, positions and box in nm.
+    """
     st = sim.state
     s = (V / float(volume(st.box))) ** (1.0 / 3.0)
     if hasattr(sim, "flex"):
@@ -226,8 +339,8 @@ def scale_to_volume(sim, V):
     return np.asarray(sim.rigid.positions(body)), np.asarray(st.box) * s
 
 
-def cmd_run(a):
-    """The `run` command: build the solvated system and the lambda windows, and sample them.
+def cmd_run(a: argparse.Namespace) -> None:
+    """Build the solvated system and the lambda windows, and sample them (the `run` subcommand).
 
     Parameters
     ----------
@@ -250,8 +363,8 @@ def cmd_run(a):
         print(f"# solute parameters scaled: {scales}", flush=True)
     kw = dict(
         settings=settings,
-        dt=a.dt / 1000.0,
-        temperature=a.temp,
+        dt=a.dt_fs / 1000.0,
+        temperature=a.temperature_K,
         thermostat=Bussi(1.0),
         params=P,
         alchemy=alch,
@@ -261,9 +374,9 @@ def cmd_run(a):
     lam = standard_schedule(a.n_elec, None if a.vdw is None else [float(x) for x in a.vdw.split(",")])
     if a.elec_only:
         lam = lam[: a.n_elec]
-    if a.checkpoint is None and a.start_from is None and a.npt_ps > 0:
+    if a.continue_from is None and a.start_from is None and a.npt_ps > 0:
         npt = engine(sysA, templates, pos, H, barostat=MonteCarloBarostat(1.0, 100), velocities=vel, **kw)
-        n = int(round(a.npt_ps / (a.dt / 1000.0)))
+        n = int(round(a.npt_ps / (a.dt_fs / 1000.0)))
         rep = max(n // 20, 1)
         vols = []
         for _ in range(20):
@@ -284,8 +397,8 @@ def cmd_run(a):
         "solute": a.solute,
         "elec": elec,
         "settings": dataclasses.asdict(settings),
-        "dt_fs": a.dt,
-        "temperature": a.temp,
+        "dt_fs": a.dt_fs,
+        "temperature": a.temperature_K,
         "volume_nm3": float(volume(sim.state.box)),
         "sc_alpha": a.sc_alpha,
         "alpha_floor": alch.alpha_floor,
@@ -315,7 +428,8 @@ def cmd_run(a):
     win = LambdaWindows(sim, lam, batched=not a.sequential, seed=a.seed + 1)
 
     def to_steps(ps):
-        return int(round(ps / (a.dt / 1000.0)))
+        """Return the number of steps in `ps` picoseconds."""
+        return int(round(ps / (a.dt_fs / 1000.0)))
 
     pg = fg.ParameterGradients(win, quantities=quant) if a.grad else None
     run = FreeEnergyRun(
@@ -327,26 +441,46 @@ def cmd_run(a):
         meta=meta,
         param_grad=pg,
     )
-    if a.checkpoint:
-        run.load_checkpoint(a.checkpoint)
+    if a.continue_from:
+        run.load_checkpoint(a.continue_from)
     elif a.start_from:
         run.load_windows(a.start_from)
         print(f"# windows start from {a.start_from}", flush=True)
-    total = to_steps(a.ns * 1000.0)
+    total = to_steps(a.time_ns * 1000.0)
     summary = run.run(
-        total - run.step, prefix=a.out, report_every=to_steps(a.report_ps), checkpoint_every=to_steps(a.restart_ps)
+        total - run.step, prefix=a.out, report_every=to_steps(a.report_ps), checkpoint_every=to_steps(a.checkpoint_ps)
     )
     summary["wall_s"] = time.time() - t0
     print(json.dumps(summary, indent=1))
     report(fe.load(a.out + "_fe.npz"), a.discard_ps)
 
 
-def report(d, discard_ps):
+def report(d: dict, discard_ps: float) -> dict:
+    """Print the free-energy analysis of a run (the `analyze` subcommand) and return the estimates.
+
+    Statistical inefficiencies, smallest MBAR overlap, per-window <dU/dlambda> and BAR / MBAR
+    steps, Delta G of switching the solute off in solution (TI, BAR, MBAR, per stage), the
+    hydration free energy with the gas-phase leg, the two halves of the run, the parameter
+    gradients (when sampled) and the detected equilibration times.
+
+    Parameters
+    ----------
+    d : dict
+        The run's samples (analysis.free_energy.load of <out>_fe.npz).
+    discard_ps : float
+        Time discarded at the start of every window [ps].
+
+    Returns
+    -------
+    dict
+        analysis.free_energy.estimate's result [kJ/mol].
+    """
     meta = d["meta"]
     gas = {"delta_g": meta["gas_delta_g"], "dudl": meta["gas_dudl"]} if "gas_delta_g" in meta else None
     r = fe.estimate(d, discard_ps=discard_ps, gas=gas)
 
     def k(x):
+        """Convert kJ/mol to kcal/mol."""
         return x / KCAL
 
     print(
@@ -402,8 +536,8 @@ def report(d, discard_ps):
     return r
 
 
-def parse_scales(text):
-    """'charge=1.05,eps=0.9' -> {'charge': 1.05, 'eps': 0.9}."""
+def parse_scales(text: str | None) -> dict[str, float]:
+    """Return the scale factors of --solute-scale: 'charge=1.05,eps=0.9' -> {'charge': 1.05, 'eps': 0.9}."""
     out = {}
     for item in (text or "").split(","):
         if item.strip():
@@ -412,10 +546,27 @@ def parse_scales(text):
     return out
 
 
-def grad_report(d, discard_ps, n_blocks=10):
-    """Parameter gradients of the hydration free energy (or of the solution leg without a gas leg):
-    MBAR-weighted and end-state estimators, block jackknife errors; derivatives along the scale
-    directions of the solute's and of the environment's parameters, and per solute entry."""
+def grad_report(d: dict, discard_ps: float, n_blocks: int = 10) -> tuple[dict, dict]:
+    """Print the parameter gradients of the hydration free energy (or of the solution leg without a gas leg).
+
+    MBAR-weighted and end-state estimators with block jackknife errors; derivatives along the scale
+    directions of the solute's and of the environment's parameters [kcal/mol per ln s], and per
+    solute entry [kJ/mol per unit of the parameter].
+
+    Parameters
+    ----------
+    d : dict
+        The run's samples (with "dudp").
+    discard_ps : float
+        Time discarded at the start of every window [ps].
+    n_blocks : int
+        Blocks of the jackknife.
+
+    Returns
+    -------
+    (dict, dict)
+        fit.free_energy.gradient_estimate's result, and the printed scale derivatives [kcal/mol].
+    """
     meta = d["meta"]
     gas = {"delta_g": meta["gas_delta_g"], "grad": meta.get("gas_grad")} if "gas_delta_g" in meta else None
     r = gradient_estimate(d, discard_ps=discard_ps, gas=gas, n_blocks=n_blocks)
@@ -424,9 +575,10 @@ def grad_report(d, discard_ps, n_blocks=10):
     p = np.asarray(meta["params_flat"], float)
 
     def k(x):
+        """Convert kJ/mol to kcal/mol."""
         return x / KCAL
 
-    m, e = r[leg]["mbar"], r[leg]["end"]
+    m, e = r[leg]["mbar"], r[leg]["end"]  # k() converts kJ/mol to kcal/mol
     print(
         f"# parameter gradients of {'the hydration free energy' if leg == 'hyd' else 'Delta G(first -> last)'}, "
         f"block jackknife over {n_blocks} blocks: value {k(m.value):.3f} +- {k(m.value_err):.3f} kcal/mol"
@@ -451,14 +603,18 @@ def grad_report(d, discard_ps, n_blocks=10):
     return r, out
 
 
-def cmd_bench(a):
-    """ms per step of plain MD, of one alchemical window, and per window of K batched windows (the
-    first K windows of the schedule, spread over it), and the cost of one sample of all windows."""
+def cmd_bench(a: argparse.Namespace) -> None:
+    """Print the cost of plain MD, of one alchemical window and of K batched windows (the `bench` subcommand).
+
+    ms per step of plain MD, of one alchemical window, and per window of K batched windows (K
+    windows spread over the schedule), the cost of one sample of all windows (and of the
+    parameter-gradient samples with --grad), and the corresponding ns/day.
+    """
     sysA, P, pos, vel, H, settings, elec, templates = build(a)
     kw = dict(
         settings=settings,
-        dt=a.dt / 1000.0,
-        temperature=a.temp,
+        dt=a.dt_fs / 1000.0,
+        temperature=a.temperature_K,
         thermostat=Bussi(1.0),
         params=P,
         log=None,
@@ -469,6 +625,7 @@ def cmd_bench(a):
     n = a.steps
 
     def timed(f, reps=3):
+        """Return the best wall time [s] of `reps` calls of f (after one warm-up call)."""
         f()
         best = np.inf
         for _ in range(reps):
@@ -478,7 +635,10 @@ def cmd_bench(a):
         return best
 
     def md(sim):
+        """Return ms per MD step of sim."""
+
         def f():
+            """Advance n steps and wait for the result."""
             sim.advance(n)
             jax.block_until_ready(sim.state.epot)
 
@@ -497,6 +657,7 @@ def cmd_bench(a):
         win = LambdaWindows(sim, lam[idx], batched=True, seed=1)
 
         def f():
+            """Advance the batched windows n steps and wait for the result."""
             win.advance(n)
             jax.block_until_ready(win.S.epot)
 
@@ -511,7 +672,8 @@ def cmd_bench(a):
         print(f"{k:40s} {v:.4f}" if isinstance(v, float) else f"{k:40s} {v}")
 
     def per_day(ms):
-        return a.dt * 1e-6 / (ms * 1e-3) * 86400.0
+        """Return ns/day at `ms` milliseconds per step."""
+        return a.dt_fs * 1e-6 / (ms * 1e-3) * 86400.0
 
     print(
         f"# ns/day: plain MD {per_day(out['plain_ms_per_step']):.1f}, one alchemical window "
@@ -525,15 +687,16 @@ def cmd_bench(a):
     )
 
 
-def cmd_finite_size(a):
-    """The solute alone in the production box (its PME settings) at random positions and
-    orientations: [E_pbc(1) - E_pbc(0)] - [E_gas(1) - E_gas(0)] of switching its electrostatics off,
-    i.e. the periodic self-image energy plus the PME error of its intramolecular terms, which the
-    solution leg carries and the gas-phase leg does not (a rigid solute; its template geometry)."""
-    sysA, P, pos, vel, H, settings, elec, templates = build(a)
-    from pgm_jax.md.box import reduce_box
-    from pgm_jax.md.forcefield import PGMForceField
+def cmd_finite_size(a: argparse.Namespace) -> None:
+    """Print the periodic self-image energy of switching the solute's electrostatics off (`finite-size`).
 
+    The solute alone in the production box (its PME settings) at --placements random positions
+    and orientations: [E_pbc(1) - E_pbc(0)] - [E_gas(1) - E_gas(0)] of switching its
+    electrostatics off, i.e. the periodic self-image energy plus the PME error of its
+    intramolecular terms, which the solution leg carries and the gas-phase leg does not (a rigid
+    solute at its geometry in the box).
+    """
+    sysA, P, pos, vel, H, settings, elec, templates = build(a)
     sub, idx = sysA.sub((a.solute,))
     x0 = pos[idx] - pos[idx].mean(axis=0)
     H = reduce_box(H)
@@ -557,25 +720,52 @@ def cmd_finite_size(a):
     )
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    r = sub.add_parser("run")
-    r.add_argument("-o", "--out", required=True, help="output prefix")
-    r.add_argument("--model", default="pgm", choices=["pgm", "pgm3p25", "tip3p"])
-    r.add_argument("--prmtop", help="Amber pGM prmtop instead of --model (with --coords)")
-    r.add_argument("--coords")
-    r.add_argument("--elec", default="qpi", help="electrostatics level for --prmtop")
-    r.add_argument("--solute", type=int, default=0, help="molecule (residue) index of the solute")
-    r.add_argument(
+def add_system_args(p: argparse.ArgumentParser, md: bool = True) -> None:
+    """Add the options that define the system and the force-field settings to a subcommand.
+
+    Parameters
+    ----------
+    p : argparse.ArgumentParser
+        The subcommand's parser.
+    md : bool
+        Also the MD options (time step, temperature, solute insertion, lattice box).
+    """
+    p.add_argument("--model", default="pgm", choices=MODELS, help="water model of the 512-water box")
+    p.add_argument("--prmtop", help="Amber pGM prmtop instead of --model (with --coords)")
+    p.add_argument("--coords", help="coordinates with a box matching --prmtop")
+    p.add_argument("--elec", default="qpi", help="electrostatics level for --prmtop")
+    p.add_argument("--solute", type=int, default=0, help="molecule (residue) index of the solute")
+    add_dipole_tol_arg(p)
+    p.add_argument("--cutoff-nm", type=float, default=0.9, help="cutoff [nm]")
+    p.add_argument("--ewald-beta-per-nm", type=float, default=4.0, help="Ewald coefficient [1/nm]")
+    p.add_argument("--nfft", type=int, nargs=3, default=[48, 48, 48], help="PME grid")
+    p.add_argument("--order", type=int, default=6, help="PME order")
+    add_precision_arg(p)
+    add_seed_arg(p)
+    if not md:
+        return
+    add_dt_arg(p, 2.0)
+    add_temperature_arg(p, 298.0)
+    p.add_argument("--solute-template", help="flexible solute (FlexibleTemplate file) inserted into the water box")
+    p.add_argument(
+        "--clear-nm", type=float, default=0.25, help="waters this close to the inserted solute are removed [nm]"
+    )
+    p.add_argument(
         "--lattice",
         type=int,
         default=0,
         help="n: a small box of n^3 copies of the model's first "
-        "molecule on a lattice (cheap checks; with --npt-ps, --cut, --nfft for the small box)",
+        "molecule on a lattice (cheap checks; with --npt-ps, --cutoff-nm, --nfft for the small box)",
     )
-    r.add_argument("--solute-template", help="flexible solute (FlexibleTemplate file) inserted into the water box")
-    r.add_argument("--clear", type=float, default=0.25, help="nm: waters this close to the inserted solute are removed")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Return the argument parser with the subcommands run, bench, finite-size and analyze."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    r = sub.add_parser("run", help="sample the lambda windows")
+    r.add_argument("-o", "--out", required=True, help="output prefix")
+    add_system_args(r)
     r.add_argument(
         "--rigid-solute",
         action="store_true",
@@ -586,27 +776,18 @@ def main():
         choices=["annihilate", "keep"],
         help="solute's intramolecular electrostatics (default: annihilate for rigid, keep for flexible)",
     )
-    r.add_argument("--ns", type=float, default=2.0, help="length of every window (ns)")
-    r.add_argument("--npt-ps", type=float, default=100.0, help="NPT equilibration at full coupling (ps)")
-    r.add_argument("--n-elec", type=int, default=8)
+    r.add_argument("--time-ns", type=float, default=2.0, help="length of every window [ns]")
+    r.add_argument("--npt-ps", type=float, default=100.0, help="NPT equilibration at full coupling [ps]")
+    r.add_argument("--n-elec", type=int, default=8, help="electrostatics windows")
     r.add_argument("--vdw", help="lambda_vdw values of the second stage (comma separated, decreasing to 0)")
-    r.add_argument("--sample-ps", type=float, default=1.0)
-    r.add_argument("--exchange-ps", type=float, default=1.0, help="0: no Hamiltonian exchange")
-    r.add_argument("--report-ps", type=float, default=20.0)
-    r.add_argument("--restart-ps", type=float, default=200.0)
-    r.add_argument("--discard-ps", type=float, default=200.0)
-    r.add_argument("--dt", type=float, default=2.0, help="fs")
-    r.add_argument("--temp", type=float, default=298.0)
-    r.add_argument("--tol", type=float, default=1e-5)
-    r.add_argument("--cut", type=float, default=0.9)
-    r.add_argument("--ew-coeff", type=float, default=4.0)
-    r.add_argument("--nfft", type=int, nargs=3, default=[48, 48, 48])
-    r.add_argument("--order", type=int, default=6)
-    r.add_argument("--precision", default="mixed")
-    r.add_argument("--sc-alpha", type=float, default=0.5)
+    r.add_argument("--sample-ps", type=float, default=1.0, help="time between samples [ps]")
+    r.add_argument("--exchange-ps", type=float, default=1.0, help="time between exchanges [ps] (0: none)")
+    r.add_argument("--report-ps", type=float, default=20.0, help="time between log lines [ps]")
+    r.add_argument("--checkpoint-ps", type=float, default=200.0, help="time between checkpoints [ps]")
+    r.add_argument("--discard-ps", type=float, default=200.0, help="time discarded by the final report [ps]")
+    r.add_argument("--sc-alpha", type=float, default=0.5, help="soft-core alpha of the van der Waals stage")
     r.add_argument("--sequential", action="store_true", help="windows one after the other (not batched)")
-    r.add_argument("--seed", type=int, default=0)
-    r.add_argument("--checkpoint", help="continue from prefix.fe.chk")
+    r.add_argument("--continue-from", help="continue from <prefix>.fe.chk")
     r.add_argument(
         "--start-from",
         help="start the windows from the configurations of another run's prefix.fe.chk "
@@ -620,54 +801,24 @@ def main():
         "covalent dipoles; eps, rmin, alpha, radius)",
     )
     r.add_argument("--elec-only", action="store_true", help="only the electrostatics windows (lambda_vdw = 1)")
-    b = sub.add_parser("bench")
-    b.add_argument("--model", default="pgm", choices=["pgm", "pgm3p25", "tip3p"])
+    b = sub.add_parser("bench", help="cost per window")
+    add_system_args(b)
     b.add_argument("--windows", default="1,4,8,19", help="numbers of batched windows")
-    b.add_argument("--steps", type=int, default=1000)
-    b.add_argument("--n-elec", type=int, default=8)
+    b.add_argument("--steps", type=int, default=1000, help="timed steps")
+    b.add_argument("--n-elec", type=int, default=8, help="electrostatics windows of the schedule")
     b.add_argument("--grad", action="store_true", help="also time the parameter-gradient samples")
-    for x in r._actions:
-        if x.dest in (
-            "prmtop",
-            "coords",
-            "elec",
-            "solute",
-            "dt",
-            "temp",
-            "tol",
-            "cut",
-            "ew_coeff",
-            "nfft",
-            "order",
-            "precision",
-            "seed",
-            "solute_template",
-            "clear",
-            "lattice",
-        ):
-            b._add_action(x)
-    fs = sub.add_parser("finite-size")
-    fs.add_argument("--model", default="pgm", choices=["pgm", "pgm3p25", "tip3p"])
-    fs.add_argument("--placements", type=int, default=40)
-    for x in r._actions:
-        if x.dest in (
-            "prmtop",
-            "coords",
-            "elec",
-            "solute",
-            "tol",
-            "cut",
-            "ew_coeff",
-            "nfft",
-            "order",
-            "precision",
-            "seed",
-        ):
-            fs._add_action(x)
-    z = sub.add_parser("analyze")
-    z.add_argument("npz")
-    z.add_argument("--discard-ps", type=float, default=200.0)
-    a = ap.parse_args()
+    fs = sub.add_parser("finite-size", help="periodic self-image energy of the solute")
+    add_system_args(fs, md=False)
+    fs.add_argument("--placements", type=int, default=40, help="random placements of the solute")
+    z = sub.add_parser("analyze", help="TI, BAR, MBAR of a run")
+    z.add_argument("npz", help="<out>_fe.npz of a run")
+    z.add_argument("--discard-ps", type=float, default=200.0, help="time discarded at the start of every window [ps]")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line and run the subcommand (see the module docstring)."""
+    a = build_parser().parse_args(argv)
     setup_logging()
     if a.cmd == "run":
         cmd_run(a)
