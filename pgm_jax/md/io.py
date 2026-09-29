@@ -1,22 +1,56 @@
-"""Amber file I/O: coordinates/velocities/box in (ASCII inpcrd or NetCDF restart), NetCDF
-trajectories and restarts out (AMBER convention 1.0, readable by cpptraj, VMD, MDTraj)."""
+"""Amber file I/O: coordinates, velocities and box in; NetCDF trajectories and restarts out.
+
+Contents: `read_coordinates` (ASCII inpcrd / restart or NetCDF restart, Amber units),
+`read_coordinates_nm` (the same in library units), `read_trajectory` (NetCDF trajectory frames),
+`write_restart` (NetCDF restart) and `NetCDFTrajectory` (an appendable NetCDF trajectory written
+without a NetCDF library).  The files follow the AMBER NetCDF convention 1.0, readable by
+cpptraj, VMD and MDTraj.
+
+Units: Amber's (Angstrom, Angstrom/ps, ps, degrees) in every name with a suffix (`xyz_A`,
+`vel_A_ps`, `H_A`, `time_ps`); `read_coordinates_nm` returns nm and nm/ps.  Velocities in ASCII
+files and NetCDF restarts are stored in Amber's unit A / (1/20.455 ps) (`AMBER_VEL`).
+"""
 
 from __future__ import annotations
 
 import os
 import struct
+from collections.abc import Sequence
 
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.io import netcdf_file
 
 from ..units import ANG_NM
 from .box import box_from_cell, cell_parameters
 
-AMBER_VEL = 20.455  # Amber velocity unit: A / (1/20.455 ps)
+AMBER_VEL = 20.455  # Amber velocity unit: A / (1/20.455 ps); v [A/ps] = v_file * AMBER_VEL
 
 
-def read_coordinates(path: str):
-    """-> (xyz A (N, 3), vel A/ps (N, 3) or None, box lengths A, box angles deg or None)."""
+def read_coordinates(
+    path: str,
+) -> tuple[np.ndarray, np.ndarray | None, tuple[np.ndarray, np.ndarray] | None]:
+    """Read coordinates, velocities and box of an Amber coordinate file (Amber units).
+
+    The format is detected from the magic number: NetCDF ("CDF") or ASCII inpcrd / restart (fixed
+    12-character fields after the title and atom-count lines; velocities if there are at least
+    3 N more numbers, a box if 6 numbers remain).
+
+    Parameters
+    ----------
+    path : str
+        ASCII inpcrd / restart or NetCDF restart.
+
+    Returns
+    -------
+    xyz : np.ndarray (N, 3)
+        Coordinates [Angstrom].
+    vel : np.ndarray (N, 3) or None
+        Velocities [Angstrom/ps] (converted with the file's scale factor, default 20.455), None if
+        the file has none.
+    box : tuple of np.ndarray or None
+        (cell lengths [Angstrom] (3,), cell angles [deg] (3,)), None if the file has no box.
+    """
     with open(path, "rb") as fh:
         magic = fh.read(4)
     if magic[:3] == b"CDF":
@@ -50,8 +84,8 @@ def read_coordinates(path: str):
     return xyz, vel, box
 
 
-def read_coordinates_nm(path: str):
-    """Coordinates of an Amber file in pgm_jax units.
+def read_coordinates_nm(path: str) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
+    """Read the coordinates of an Amber file in library units.
 
     Parameters
     ----------
@@ -60,21 +94,41 @@ def read_coordinates_nm(path: str):
 
     Returns
     -------
-    positions : (N, 3) np.ndarray
-        [nm].
-    velocities : (N, 3) np.ndarray or None
-        [nm/ps].
-    box : (3, 3) np.ndarray or None
-        Lattice vectors as rows [nm].
+    positions : np.ndarray (N, 3)
+        Positions [nm].
+    velocities : np.ndarray (N, 3) or None
+        Velocities [nm/ps].
+    box : np.ndarray (3, 3) or None
+        Lattice vectors as rows, lower triangular (box.box_from_cell) [nm].
     """
     xyz, vel, box = read_coordinates(path)
     H = None if box is None else box_from_cell(*box) * ANG_NM
     return xyz * ANG_NM, None if vel is None else vel * ANG_NM, H
 
 
-def read_trajectory(path: str, atoms=None, stride: int = 1):
-    """Frames of an Amber NetCDF trajectory: (coordinates A (F, N, 3) float64, box lengths A (F, 3)
-    or None, time ps (F,)); `atoms` selects atoms (e.g. the protein), `stride` frames."""
+def read_trajectory(
+    path: str, atoms: Sequence[int] | np.ndarray | None = None, stride: int = 1
+) -> tuple[np.ndarray, np.ndarray | None, np.ndarray]:
+    """Read the frames of an Amber NetCDF trajectory.
+
+    Parameters
+    ----------
+    path : str
+        NetCDF trajectory.
+    atoms : Sequence[int] or np.ndarray, optional
+        Atoms to keep (e.g. the protein; None: all).
+    stride : int
+        Keep every `stride`-th frame.
+
+    Returns
+    -------
+    xyz : np.ndarray (F, N, 3) float64
+        Coordinates [Angstrom].
+    lengths : np.ndarray (F, 3) or None
+        Cell lengths [Angstrom] (None without a box).
+    time : np.ndarray (F,)
+        Time [ps] (the frame index if the file has no time variable).
+    """
     f = netcdf_file(path, "r", mmap=False)
     v = f.variables
     X = np.array(v["coordinates"][::stride], float)
@@ -86,7 +140,32 @@ def read_trajectory(path: str, atoms=None, stride: int = 1):
     return X, box, t
 
 
-def write_restart(path: str, xyz_A, vel_A_ps, H_A, time_ps: float, title: str = "pgm_jax restart"):
+def write_restart(
+    path: str,
+    xyz_A: ArrayLike,
+    vel_A_ps: ArrayLike | None,
+    H_A: ArrayLike,
+    time_ps: float,
+    title: str = "pgm_jax restart",
+) -> None:
+    """Write an Amber NetCDF restart (AMBERRESTART convention 1.0, float64).
+
+    Parameters
+    ----------
+    path : str
+        Output file (overwritten).
+    xyz_A : ArrayLike (N, 3)
+        Coordinates [Angstrom].
+    vel_A_ps : ArrayLike (N, 3), optional
+        Velocities [Angstrom/ps] (stored divided by AMBER_VEL with scale_factor AMBER_VEL; None:
+        no velocities).
+    H_A : ArrayLike (3, 3)
+        Box, lattice vectors as rows [Angstrom] (stored as cell lengths and angles).
+    time_ps : float
+        Simulation time [ps].
+    title : str
+        Title attribute.
+    """
     f = netcdf_file(path, "w", version=2)
     f.Conventions, f.ConventionVersion, f.program, f.programVersion, f.title = (
         "AMBERRESTART",
@@ -129,19 +208,52 @@ def write_restart(path: str, xyz_A, vel_A_ps, H_A, time_ps: float, title: str = 
 
 
 class NetCDFTrajectory:
-    """Appendable Amber NetCDF trajectory (NetCDF-3, 64-bit offsets): time, coordinates (A,
-    float32), cell_lengths, cell_angles.  The header is written once; each frame appends one
-    record and bumps the record count, so the file is valid after every frame."""
+    """Appendable Amber NetCDF trajectory, written byte by byte (NetCDF-3, 64-bit offsets).
+
+    Variables: time (ps, float32), coordinates (Angstrom, float32), cell_lengths (Angstrom) and
+    cell_angles (deg).  The header is written once; each frame appends one record and bumps the
+    record count, so the file is valid after every frame (a crashed run keeps its frames).
+
+        traj = NetCDFTrajectory("run.nc", n_atoms)
+        traj.write(time_ps, xyz_A, H_A)
+
+    Attributes
+    ----------
+    path : str
+        File name.
+    n : int
+        Number of atoms.
+    recsize : int
+        Bytes per frame record (4 + 12 n + 24 + 24).
+    nframes : int
+        Frames in the file.
+    NC_DIM, NC_VAR, NC_ATT : int
+        NetCDF header tags of the dimension, variable and attribute lists.
+    CHAR, FLOAT, DOUBLE : int
+        NetCDF type codes.
+    """
 
     NC_DIM, NC_VAR, NC_ATT = 10, 11, 12
     CHAR, FLOAT, DOUBLE = 2, 5, 6
 
-    def __init__(self, path: str, n_atoms: int, append: bool = False):
+    def __init__(self, path: str, n_atoms: int, append: bool = False) -> None:
+        """Create the file and write its header, or open an existing file for appending.
+
+        Parameters
+        ----------
+        path : str
+            File name.
+        n_atoms : int
+            Number of atoms.
+        append : bool
+            If the file exists, append to it (the frame count is read from its header; the atom count
+            is not checked); otherwise the file is created (overwritten).
+        """
         self.path, self.n = path, int(n_atoms)
         self.recsize = 4 + 12 * self.n + 24 + 24  # time, coordinates, cell lengths, cell angles
         if append and os.path.exists(path):
             with open(path, "rb") as fh:
-                fh.seek(4)
+                fh.seek(4)  # after the magic "CDF\x02": numrecs, big-endian int32
                 self.nframes = struct.unpack(">i", fh.read(4))[0]
             return
         self.nframes = 0
@@ -149,25 +261,34 @@ class NetCDFTrajectory:
 
     @staticmethod
     def _name(s: str) -> bytes:
+        """Return a NetCDF name: big-endian length, the bytes, zero padding to a multiple of 4."""
         b = s.encode()
         return struct.pack(">i", len(b)) + b + b"\0" * (-len(b) % 4)
 
-    def _att(self, name, value) -> bytes:
+    def _att(self, name: str, value: str | float) -> bytes:
+        """Return one NetCDF attribute: a string (CHAR) or a number (one DOUBLE)."""
         if isinstance(value, str):
             b = value.encode()
             return self._name(name) + struct.pack(">ii", self.CHAR, len(b)) + b + b"\0" * (-len(b) % 4)
         return self._name(name) + struct.pack(">iid", self.DOUBLE, 1, float(value))
 
     def _atts(self, atts: dict) -> bytes:
+        """Return a NetCDF attribute list (ABSENT, eight zero bytes, if empty)."""
         if not atts:
             return b"\0" * 8
         return struct.pack(">ii", self.NC_ATT, len(atts)) + b"".join(self._att(k, v) for k, v in atts.items())
 
-    def _write_header(self):
+    def _write_header(self) -> None:
+        """Write the header and the fixed-size variables (spatial, cell_spatial, cell_angular).
+
+        The header is built twice: once with zero offsets to get its length, then with the begin
+        offsets of the fixed variables (after the header) and of the record variables (after the fixed
+        ones; one record = time, coordinates, cell_lengths, cell_angles).
+        """
         n = self.n
         dims = [("frame", 0), ("spatial", 3), ("atom", n), ("cell_spatial", 3), ("cell_angular", 3), ("label", 5)]
         D = {k: i for i, (k, _) in enumerate(dims)}
-        # (name, dims, type, attributes, bytes per record or total)
+        # (name, dims, type, attributes, bytes per record or total, is a record variable)
         vars_ = [
             ("spatial", ["spatial"], self.CHAR, {}, 4, False),
             ("cell_spatial", ["cell_spatial"], self.CHAR, {}, 4, False),
@@ -179,7 +300,8 @@ class NetCDFTrajectory:
         ]
         gatts = {"Conventions": "AMBER", "ConventionVersion": "1.0", "program": "pgm_jax", "programVersion": "0.2"}
 
-        def header(begins):
+        def header(begins: Sequence[int]) -> bytes:
+            """Return the header bytes for the given begin offsets of the variables."""
             h = b"CDF\x02" + struct.pack(">i", self.nframes)
             h += struct.pack(">ii", self.NC_DIM, len(dims)) + b"".join(
                 self._name(k) + struct.pack(">i", v) for k, v in dims
@@ -191,7 +313,7 @@ class NetCDFTrajectory:
                 h += self._atts(att) + struct.pack(">ii", t, size) + struct.pack(">q", beg)
             return h
 
-        hlen = len(header([0] * len(vars_)))
+        hlen = len(header([0] * len(vars_)))  # the header length does not depend on the offsets
         begins, off = [], hlen
         for v in vars_:
             if not v[5]:
@@ -205,9 +327,20 @@ class NetCDFTrajectory:
         assert rec - off == self.recsize
         with open(self.path, "wb") as fh:
             fh.write(header(begins))
-            fh.write(b"xyz\0" + b"abc\0" + b"alphabeta gamma\0")
+            fh.write(b"xyz\0" + b"abc\0" + b"alphabeta gamma\0")  # fixed-size variables, padded to 4 bytes
 
-    def write(self, time_ps: float, xyz_A, H_A):
+    def write(self, time_ps: float, xyz_A: ArrayLike, H_A: ArrayLike) -> None:
+        """Append one frame and update the record count.
+
+        Parameters
+        ----------
+        time_ps : float
+            Time [ps].
+        xyz_A : ArrayLike (N, 3)
+            Coordinates [Angstrom] (stored as float32).
+        H_A : ArrayLike (3, 3)
+            Box, lattice vectors as rows [Angstrom] (stored as cell lengths and angles).
+        """
         L, A = cell_parameters(H_A)
         rec = (
             struct.pack(">f", float(time_ps))

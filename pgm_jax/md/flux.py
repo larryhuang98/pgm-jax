@@ -1,5 +1,9 @@
 """Charge flux in MD: Gaussian charges and covalent-dipole strengths that depend on bond lengths.
 
+Contents: `ChargeFlux` (the flux tables of a system and the map R -> (q, c)), built from fitted
+templates by `ChargeFlux.from_templates`; `molecule_at` (a rigid molecule frozen at one
+geometry of its flux model); `template_flux_order`.
+
 The functional form and conventions are those of the bonded fitting model (BondedModel._flux,
 pgm_jax/bonded/model.py; BondedSettings.flux), so that a template fitted with flux runs in MD
 unchanged.  For a bond b = (i, j) of length r_b = |r_j - r_i|, with reference length b0_b and
@@ -17,7 +21,6 @@ dipoles still flux.  Both covalent dipoles of a bond (i -> j and j -> i) take th
 dipoles along virtual bonds (pairs that are not bonds) have none.  jc2 is present for fits with
 BondedSettings(flux=2).  Every molecule keeps its total charge.  b0 is the fit's reference bond
 length (P["ref"]["b0"], the same b0 as the bond-stretch terms), not the geometry's.
-Units: nm, e; jb e/nm, jc e (e nm of dipole per nm), jc2 e/nm (e nm per nm^2).
 
 Energy and forces (PGMForceField with `flux=`).  E(R, q(R), c(R), mu) with the induced dipoles mu
 variational (dE/dmu = 0 at the solution), so
@@ -49,22 +52,48 @@ the flux forces of a constrained bond lie along it and are removed with the cons
 Parameters.  ChargeFlux.params = {"jb", "jc"[, "jc2"]}, one value per parameter key (bond keys of
 the fits, one block per template); PGMForceField takes them from params["flux"] when the parameter
 pytree has that entry (for gradients, e.g. {**sys.params0, "flux": ff.flux.params}) and from
-ChargeFlux.params otherwise.  write_pgm_prmtop refuses models with flux (pmemd-pgm has none)."""
+ChargeFlux.params otherwise.  write_pgm_prmtop refuses models with flux (pmemd-pgm has none).
+
+Units: nm, e; jb e/nm, jc e (e nm of dipole per nm), jc2 e/nm (e nm per nm^2).
+
+See also docs/charge_flux.md.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
 import numpy as np
+from jax.typing import ArrayLike
 
 from .box import min_image
+
+if TYPE_CHECKING:
+    import jax
+
+    from ..system import Molecule, System
+    from .flexible import FlexibleTemplate, RigidTemplate
 
 FLUX_PARAMS = ("jb", "jc", "jc2")
 
 
-def template_flux_order(tpl) -> int:
-    """BondedSettings.flux of a template's fit (0: no flux; RigidTemplate and other templates: 0)."""
+def template_flux_order(tpl: FlexibleTemplate | RigidTemplate | object) -> int:
+    """Return BondedSettings.flux of a template's fit (0: no flux).
+
+    Parameters
+    ----------
+    tpl : FlexibleTemplate, RigidTemplate or object
+        A template; only a dict `settings` attribute (FlexibleTemplate) is read, anything else
+        (RigidTemplate, other templates) gives 0.
+
+    Returns
+    -------
+    int
+        0 (no flux), 1 (linear dipole flux) or 2 (with jc2).
+    """
     st = getattr(tpl, "settings", None)
     return int(st.get("flux", 0) or 0) if isinstance(st, dict) else 0
 
@@ -73,15 +102,33 @@ def template_flux_order(tpl) -> int:
 class ChargeFlux:
     """Charge and covalent-dipole flux of a system (global atom indices, System order).
 
-    bonds     (nb, 2) atoms of every bond with flux; charge flows from column 0 to column 1
-    b0        (nb,) reference lengths (nm)
-    key       (nb,) parameter index of each bond into the vectors of `params`
-    sign      (nb,) s_b in {-1, 0, 1}: the charge moved along bond b is s_b jb[key_b] db_b
-    cov_bond  (n_cov,) for each covalent dipole of the System (sys.cov_i order) the index of its
-              bond in `bonds`, -1 for none (no dipole flux)
-    params    {"jb": (nk,) e/nm, "jc": (nk,) e[, "jc2": (nk,) e/nm]}
-    n_atoms   atoms of the System
-    names     parameter key names (nk,), for inspection"""
+    A mutable dataclass of host arrays; `__post_init__` checks the fields and builds the gather
+    tables of `charges`.  Not a pytree: the parameters that are differentiated are passed to
+    `charges` as `theta` (a dict pytree).
+
+        flux = ChargeFlux.from_templates(system, templates)     # None without flux
+        q, c = flux.charges(pos, H, q0, c0, flux.theta(params))
+
+    Parameters
+    ----------
+    bonds : np.ndarray (nb, 2) int32
+        Atoms of every bond with flux; charge flows from column 0 to column 1.
+    b0 : np.ndarray (nb,)
+        Reference lengths [nm].
+    key : np.ndarray (nb,) int32
+        Parameter index of each bond into the vectors of `params`.
+    sign : np.ndarray (nb,)
+        s_b in {-1, 0, 1}: the charge moved along bond b is s_b jb[key_b] db_b.
+    cov_bond : np.ndarray (n_cov,) int32
+        For each covalent dipole of the System (sys.cov_i order) the index of its bond in `bonds`,
+        -1 for none (no dipole flux).
+    params : dict of str to np.ndarray
+        {"jb": (nk,) [e/nm], "jc": (nk,) [e][, "jc2": (nk,) [e/nm]]}.
+    n_atoms : int
+        Atoms of the System.
+    names : tuple of str
+        Parameter key names (nk,), for inspection (may be empty).
+    """
 
     bonds: np.ndarray
     b0: np.ndarray
@@ -92,7 +139,16 @@ class ChargeFlux:
     n_atoms: int
     names: tuple = field(default=())
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Normalize the dtypes and shapes, check the fields and build the gather tables.
+
+        Raises
+        ------
+        ValueError
+            Unknown or missing parameters (jb and jc are required), parameter vectors of different
+            lengths, bonds outside the system or joining an atom to itself, keys out of range, signs
+            other than -1, 0, 1, cov_bond entries out of range, or a wrong number of names.
+        """
         self.bonds = np.asarray(self.bonds, np.int32).reshape(-1, 2)
         nb = len(self.bonds)
         self.b0 = np.asarray(self.b0, np.float64).reshape(nb)
@@ -144,10 +200,27 @@ class ChargeFlux:
     # ------------------------------------------------------------------ evaluation
     @property
     def n_bonds(self) -> int:
+        """Number of bonds with flux."""
         return len(self.bonds)
 
-    def theta(self, params=None) -> dict:
-        """The flux parameters of a parameter pytree: params["flux"] if present, else self.params."""
+    def theta(self, params: dict | None = None) -> dict[str, jax.Array]:
+        """Return the flux parameters of a parameter pytree: params["flux"] if present, else self.params.
+
+        Parameters
+        ----------
+        params : dict, optional
+            Parameter pytree (None, or a dict without "flux": the model's own parameters).
+
+        Returns
+        -------
+        dict of str to jax.Array
+            {"jb", "jc"[, "jc2"]} as float64 arrays (nk,).
+
+        Raises
+        ------
+        ValueError
+            If the keys or shapes differ from the model's (a gather would clamp indices silently).
+        """
         th = self.params if not isinstance(params, dict) or "flux" not in params else params["flux"]
         if set(th) != set(self.params):
             raise ValueError(f"flux parameters {sorted(th)}, the model has {sorted(self.params)}")
@@ -159,17 +232,55 @@ class ChargeFlux:
             )
         return {k: jnp.asarray(v, jnp.float64) for k, v in th.items()}
 
-    def deviations(self, pos, H):
-        """db (nb,) nm: bond lengths minus reference lengths (minimum image, molecules whole or not)."""
+    def deviations(self, pos: jax.Array, H: jax.Array) -> jax.Array:
+        """Return db = bond lengths minus reference lengths (minimum image; molecules need not be whole).
+
+        Parameters
+        ----------
+        pos : jax.Array (N, 3)
+            Positions [nm].
+        H : jax.Array (3, 3)
+            Box, lattice vectors as rows [nm].
+
+        Returns
+        -------
+        jax.Array (nb,)
+            db [nm].
+        """
         v = min_image(pos[self.bonds[:, 1]] - pos[self.bonds[:, 0]], H)
         return jnp.sqrt(jnp.sum(v * v, axis=-1)) - self.b0
 
-    def charges(self, pos, H, q, cov, theta):
-        """(q, cov) at the geometry pos: charges (N,) and covalent-dipole strengths (n_cov,) of the
-        base values q, cov (the parameters' q^0, c^0) plus the flux terms; theta from `theta`.
-        Differentiable in pos, H, q, cov and theta."""
+    def charges(
+        self, pos: jax.Array, H: jax.Array, q: jax.Array, cov: jax.Array, theta: dict[str, jax.Array]
+    ) -> tuple[jax.Array, jax.Array]:
+        """Return the charges and covalent-dipole strengths at the geometry pos.
+
+        The base values plus the flux terms of the module docstring.  Differentiable in pos, H, q,
+        cov and theta (its jax.vjp is the engine's force pull-back).
+
+        Parameters
+        ----------
+        pos : jax.Array (N, 3)
+            Positions [nm].
+        H : jax.Array (3, 3)
+            Box, lattice vectors as rows [nm].
+        q : jax.Array (N,)
+            Base charges q^0 [e].
+        cov : jax.Array (n_cov,)
+            Base covalent-dipole strengths c^0 [e nm].
+        theta : dict of str to jax.Array
+            Flux parameters, from `theta`.
+
+        Returns
+        -------
+        q : jax.Array (N,)
+            Charges [e] (the total of every molecule unchanged).
+        cov : jax.Array (n_cov,)
+            Covalent-dipole strengths [e nm].
+        """
         db = self.deviations(pos, H)
         t = self.sign * theta["jb"][self.key] * db
+        # t (nb,): charge moved along each bond; the appended 0 is the padding bond nb
         q = q + jnp.sum(self._asgn * jnp.concatenate([t, jnp.zeros(1)])[self._abond], axis=1)
         if self._n_cov_flux:
             d = jnp.concatenate([db, jnp.zeros(1)])[self._cb]
@@ -181,11 +292,30 @@ class ChargeFlux:
 
     # ------------------------------------------------------------------ from fitted templates
     @classmethod
-    def from_templates(cls, sys, templates) -> ChargeFlux | None:
-        """The flux of a system of FlexibleTemplates (templates[k] belongs to sys.molecules[k], as
-        in FlexibleSimulation); None when no template was fitted with flux.  Each template's
-        parameters form one block of `params` (templates are identified by object, as the MD
-        engine groups them); molecules without flux contribute nothing."""
+    def from_templates(cls, sys: System, templates: Sequence[FlexibleTemplate | RigidTemplate]) -> ChargeFlux | None:
+        """Return the flux of a system of templates, or None when no template was fitted with flux.
+
+        Each template's parameters form one block of `params` (templates are identified by object,
+        as the MD engine groups them); molecules without flux contribute nothing.  Covalent dipoles
+        along a flux bond (either direction) get its jc, jc2; the others none.
+
+        Parameters
+        ----------
+        sys : System
+            The system.
+        templates : Sequence[FlexibleTemplate or RigidTemplate] (nmol,)
+            templates[k] belongs to sys.molecules[k], as in FlexibleSimulation.
+
+        Returns
+        -------
+        ChargeFlux or None
+            jc2 is present if any template has it (zeros for the others).
+
+        Raises
+        ------
+        ValueError
+            If len(templates) != sys.nmol, or from `_template_flux`.
+        """
         if len(templates) != sys.nmol:
             raise ValueError("one template per molecule")
         blocks, bonds, b0, key, sign, cov_bond = {}, [], [], [], [], []
@@ -198,7 +328,7 @@ class ChargeFlux:
             if id(tpl) not in blocks:
                 blocks[id(tpl)] = (_template_flux(tpl), sum(len(b[0]["jb"]) for b in blocks.values()))
             (tb, off) = blocks[id(tpl)]
-            loc = {tuple(sorted(map(int, b))): n for n, b in enumerate(tb["bonds"])}
+            loc = {tuple(sorted(map(int, b))): n for n, b in enumerate(tb["bonds"])}  # {(i, j) i < j: bond}
             a0 = int(sys.offsets[k])
             bonds.append(tb["bonds"] + a0)
             b0.append(tb["b0"])
@@ -227,6 +357,7 @@ class ChargeFlux:
         )
 
     def describe(self) -> str:
+        """Return one line for the log header (bonds, charge-flux bonds, covalent dipoles, parameter keys)."""
         n_cov = self._n_cov_flux
         return (
             f"charge flux on {self.n_bonds} bonds ({int(np.sum(self.sign != 0))} with charge flux, {n_cov} covalent "
@@ -234,10 +365,28 @@ class ChargeFlux:
         )
 
 
-def _template_flux(tpl) -> dict:
-    """Flux data of one fitted template (local atom indices): bonds in the topology's order, b0,
-    parameter keys (the bond keys of the fit this molecule uses, renumbered), signs from the fit's
-    canonical key order, parameter vectors and names."""
+def _template_flux(tpl: FlexibleTemplate) -> dict:
+    """Return the flux data of one fitted template (local atom indices).
+
+    Parameters
+    ----------
+    tpl : FlexibleTemplate
+        A template fitted with flux (its bonded terms, class keys and parameters are read).
+
+    Returns
+    -------
+    dict
+        "bonds" (nb, 2) int32 in the topology's order, "b0" (nb,) [nm] (the fit's reference
+        lengths), "key" (nb,) int32 (the bond keys of the fit this molecule uses, renumbered from
+        0), "sign" (nb,) (from the fit's canonical class order), "names" (list of key names), and
+        the parameter vectors "jb" [e/nm], "jc" [e], "jc2" [e/nm] present in the fit, one value per
+        renumbered key.
+
+    Raises
+    ------
+    ValueError
+        If the template's parameters have no "flux" or "ref" entry.
+    """
     terms, m = tpl.terms, tpl.index
     top, Im, cl = terms.mols[m].top, terms.I[m], terms.keyf[m]
     P = tpl.P
@@ -247,6 +396,7 @@ def _template_flux(tpl) -> dict:
     kb = np.asarray(Im["bond"], int)
     used, local = np.unique(kb, return_inverse=True)
     cls_ = [cl([int(a)], "atom") for a in range(len(tpl.spec.elements))]
+    # s_b = +1 if the first atom has the lower class key, -1 if the higher, 0 between equivalent atoms
     sign = np.array([0.0 if cls_[i] == cls_[j] else (1.0 if cls_[i] < cls_[j] else -1.0) for i, j in bonds])
     out = {
         "bonds": bonds,
@@ -261,14 +411,37 @@ def _template_flux(tpl) -> dict:
     return out
 
 
-def molecule_at(tpl, xyz=None, params=None, name: str | None = None):
-    """The template's pGM molecule (a copy) with the charges and covalent-dipole strengths of its
-    flux model at the geometry xyz (n, 3) nm (default: the template's reference geometry), for
-    molecules held rigid: their flux is a constant shift.  Charges and covalent dipoles get
-    per-atom / per-dipole tying keys (prefixed by `name`, default the molecule's name + "@flux";
-    give molecules frozen at different geometries different names) so the values are kept exactly.
-    params: parameters of the template's System([tpl.pgm]) as for PGMForceField (None: initial
-    values, flux from the fit)."""
+def molecule_at(
+    tpl: FlexibleTemplate, xyz: ArrayLike | None = None, params: dict | None = None, name: str | None = None
+) -> Molecule:
+    """Return the template's pGM molecule (a copy) with its flux values at one geometry.
+
+    For molecules held rigid, whose flux is a constant shift.  Charges and covalent dipoles get
+    per-atom / per-dipole tying keys (prefixed by `name`) so that the values are kept exactly; give
+    molecules frozen at different geometries different names.
+
+    Parameters
+    ----------
+    tpl : FlexibleTemplate
+        A template fitted with flux.
+    xyz : ArrayLike (n, 3), optional
+        Geometry [nm] (None: the template's reference geometry).
+    params : dict, optional
+        Parameters of the template's System([tpl.pgm]) as for PGMForceField (None: initial values,
+        flux from the fit).
+    name : str, optional
+        Name of the new molecule and prefix of its keys (None: the molecule's name + "@flux").
+
+    Returns
+    -------
+    Molecule
+        The molecule with charges q [e] and covalent-dipole strengths [e nm] at `xyz`.
+
+    Raises
+    ------
+    ValueError
+        If the template has no charge flux.
+    """
     from dataclasses import replace
 
     from ..system import System
