@@ -492,7 +492,7 @@ def _pmemd_fft_ok(n: int) -> bool:
 def pmemd_grid(H_nm, spacing: float = 0.08) -> tuple:
     """Smallest PME grid with at most `spacing` nm between planes that pmemd.pgm and
     pmemd.pgm.cuda both accept (multiples of 4, prime factors 2, 3, 5): run the engine with
-    MDSettings(pme_grid=pmemd_grid(H)) so that both codes use the same grid."""
+    MDSettings().replace(pme_grid=pmemd_grid(H)) so that both codes use the same grid."""
     H = np.asarray(H_nm, float)
     V = abs(np.linalg.det(H))
     heights = [V / np.linalg.norm(np.cross(H[(i + 1) % 3], H[(i + 2) % 3])) for i in range(3)]
@@ -547,15 +547,15 @@ def pmemd_mdin(
     from ..md.pme import grid_size
 
     H = np.asarray(H_nm, float)
-    grid = tuple(settings.pme_grid) if settings.pme_grid is not None else tuple(grid_size(H, settings.pme_spacing))
+    grid = tuple(settings.pme.grid) if settings.pme.grid is not None else tuple(grid_size(H, settings.pme.spacing))
     if not all(_pmemd_fft_ok(int(k)) for k in grid):
         raise ValueError(
             f"PME grid {grid}: pmemd.pgm(.cuda) needs multiples of 4 with prime factors 2, 3, 5; run "
-            f"the engine with MDSettings(pme_grid=pmemd_grid(H, spacing)), e.g. "
-            f"{pmemd_grid(H, settings.pme_spacing)}"
+            f"the engine with MDSettings().replace(pme_grid=pmemd_grid(H, spacing)), e.g. "
+            f"{pmemd_grid(H, settings.pme.spacing)}"
         )
-    cut = 10.0 * settings.cutoff
-    if settings.vdw != "lj" or settings.elec != "qpi":
+    cut = 10.0 * settings.cutoffs.cutoff
+    if settings.terms.vdw != "lj" or settings.terms.elec != "qpi":
         raise ValueError("pmemd_mdin writes LJ + full pGM (vdw='lj', elec='qpi')")
     ntc, ntf = {"h-bonds": (2, 2), "none": (1, 1)}[constraints]
     if maxcyc > 0:
@@ -582,9 +582,9 @@ def pmemd_mdin(
         f" {title}\n &cntrl\n{head}"
         f"   ntc={ntc}, ntf={ntf}, tol=0.0000001, cut={cut:g},\n"
         f"   ntpr={ntpr}, ntwx={ntwx}, ntwr={ntwr}, ntwf={ntwf}, ioutfm=1,\n /\n"
-        f" &ewald\n   nfft1={grid[0]}, nfft2={grid[1]}, nfft3={grid[2]}, order={settings.pme_order},"
-        f" ew_coeff={settings.ewald_beta / 10.0:g},\n   skinnb={10.0 * settings.skin:g},"
-        f" vdwmeth={1 if settings.lj_lrc else 0},\n /\n"
-        f" &pol_gauss\n   ee_dsum_cut={cut:g}, dipole_scf_tol={settings.dipole_tol:g},"
-        f" scf_cg_niter={settings.max_iter},\n /\n"
+        f" &ewald\n   nfft1={grid[0]}, nfft2={grid[1]}, nfft3={grid[2]}, order={settings.pme.order},"
+        f" ew_coeff={settings.pme.ewald_beta / 10.0:g},\n   skinnb={10.0 * settings.neighbors.skin:g},"
+        f" vdwmeth={1 if settings.terms.lj_lrc else 0},\n /\n"
+        f" &pol_gauss\n   ee_dsum_cut={cut:g}, dipole_scf_tol={settings.induction.tol:g},"
+        f" scf_cg_niter={settings.induction.max_iter},\n /\n"
     )

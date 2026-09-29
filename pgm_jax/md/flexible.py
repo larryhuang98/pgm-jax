@@ -203,13 +203,24 @@ class FlexibleTemplate:
     has_bonded = True
 
     def check_settings(self, settings):
-        """The MD model must be the model the bonded terms were fitted with."""
-        st = self.terms.s
+        """Check that the MD model is the model the bonded terms were fitted with.
+
+        Parameters
+        ----------
+        settings : MDSettings
+            The MD settings (their terms: elec, vdw, gvdw_rep).
+
+        Raises
+        ------
+        ValueError
+            A term of the MD settings differs from the fit's (gvdw_rep only matters for GVDW).
+        """
+        st, md = self.terms.s, settings.terms
         for name in ("elec", "vdw", "gvdw_rep"):
-            if getattr(st, name) != getattr(settings, name) and not (name == "gvdw_rep" and st.vdw != "gvdw"):
+            if getattr(st, name) != getattr(md, name) and not (name == "gvdw_rep" and st.vdw != "gvdw"):
                 raise ValueError(
                     f"template {self.name} was fitted with {name}={getattr(st, name)!r}, "
-                    f"the MD settings have {getattr(settings, name)!r}"
+                    f"the MD settings have {getattr(md, name)!r}"
                 )
 
     def bonded_energy(self, R, P=None):
@@ -644,7 +655,6 @@ class FlexibleSimulation(MDEngine):
         hmr=None,
         constraint_options: dict | None = None,
         r_margin: float = 0.05,
-        neighbor_list: str = "auto",
         log=None,
     ):
         """Set up MD of flexible molecules.
@@ -691,8 +701,6 @@ class FlexibleSimulation(MDEngine):
             "max_single" (largest molecule solved as one block, md/topology.py).
         r_margin : float
             Margin [nm] added to the largest group radius for the molecular neighbour list.
-        neighbor_list : str
-            "auto", "molecule" or "atom".
         log : text stream or None
             Receives the rows of the log table of `run` too (diagnostics go to the logger
             "pgm_jax.md.flexible").
@@ -704,7 +712,7 @@ class FlexibleSimulation(MDEngine):
             options or combinations.
         """
         H = reduce_box(box)
-        check_box(H, settings.pair_cutoff + settings.skin)
+        check_box(H, settings.pair_cutoff + settings.neighbors.skin)
         self.sys, self.settings, self.log = system, settings, log
         uniq = {id(t): t for t in templates}.values()
         for tpl in uniq:
@@ -724,7 +732,6 @@ class FlexibleSimulation(MDEngine):
         self.ff.masses = jnp.asarray(masses)
         self.constraints = Constraints(self.topology.constraints, self.topology.constraint_d0, masses, **copts)
         self.r_list = self._r_list = self.flex.r_max + r_margin
-        self._nb_mode = neighbor_list
         self._make_neighbors(H)
         pos0 = self.flex.pos0
         self._size_lists(pos0, H)
@@ -759,7 +766,7 @@ class FlexibleSimulation(MDEngine):
             f"{'' if self.vsites is None else f' ({self.vsites.n_sites} virtual sites)'}, "
             f"{self.topology.n_group} list groups, {self.constraints.nc} constraints, {self._describe_coupling()}, "
             f"dt {dt * 1000:g} fs, {settings.precision} precision, PME grid {self.ff.pme.K} order "
-            f"{settings.pme_order}, {settings.describe_cutoffs()}, {self.nb.kind} neighbour list (group radius "
+            f"{settings.pme.order}, {settings.describe_cutoffs()}, {self.nb.kind} neighbour list (group radius "
             f"{self.r_list:.3f} nm), {settings.describe_induction()}, device {jax.devices()[0]}"
         )
         if self.constraints.nc:

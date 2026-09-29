@@ -26,7 +26,7 @@ out = {"n_mol": N, "n_atoms": N * tpl.n, "T": T, "exp_density": 0.7866, "familie
        "device": str(jax.devices()[0])}
 rng = np.random.default_rng(0)
 x = np.asarray(tpl.spec.ref_xyz) + 0.003 * rng.normal(size=(tpl.n, 3))
-s1 = FlexibleSimulation(System([tpl.pgm]), [tpl], x + 2.0, np.eye(3) * 4.0, MDSettings(precision="double", dipole_tol=1e-9, cutoff=1.8, skin=0.05, lj_lrc=False), thermostat=None, log=None)
+s1 = FlexibleSimulation(System([tpl.pgm]), [tpl], x + 2.0, np.eye(3) * 4.0, MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=1.8, skin=0.05, lj_lrc=False), thermostat=None, log=None)
 P = jax.tree_util.tree_map(jnp.asarray, tpl.P)
 g = np.asarray(jax.grad(lambda R: tpl.model.energy(tpl.index, R, P)[0])(jnp.asarray(x)))
 F = np.asarray(s1.state.dyn.force)
@@ -66,7 +66,7 @@ out["nve"] = []
 for label, dt_n, prec, tol, ps in (("0.5 fs, mixed, tol 1e-5", 0.0005, "mixed", 1e-5, 20.0),
                                    ("0.25 fs, mixed, tol 1e-5", 0.00025, "mixed", 1e-5, 10.0),
                                    ("0.5 fs, double, tol 1e-8", 0.0005, "double", 1e-8, 10.0)):
-    s = FlexibleSimulation(sys_, [tpl] * N, x_eq, H_eq, MDSettings(precision=prec, dipole_tol=tol), dt=dt_n, thermostat=None, velocities=v_eq, log=None)
+    s = FlexibleSimulation(sys_, [tpl] * N, x_eq, H_eq, MDSettings().replace(precision=prec, dipole_tol=tol), dt=dt_n, thermostat=None, velocities=v_eq, log=None)
     every = int(round(0.1 / dt_n))
     t, E = [], []
     for _ in range(int(round(ps / 0.1))):

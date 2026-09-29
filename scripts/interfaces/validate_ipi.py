@@ -70,7 +70,7 @@ def setup(args):
     from pgm_jax.md.flexible import FlexibleTemplate
 
     tpl = FlexibleTemplate.load(args.template)
-    s = MDSettings(cutoff=0.9, dipole_tol=args.tol, precision=args.precision)
+    s = MDSettings().replace(cutoff=0.9, dipole_tol=args.tol, precision=args.precision)
     return tpl, s
 
 

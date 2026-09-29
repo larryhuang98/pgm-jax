@@ -112,7 +112,7 @@ def model(name):
 
 
 def settings_for(H, cutoff=0.9, spacing=0.08, order=6, beta=4.0):
-    return MDSettings(
+    return MDSettings().replace(
         cutoff=cutoff,
         skin=0.1,
         ewald_beta=beta,
@@ -366,17 +366,17 @@ def single_points(names, gpu, pme=None, tag=""):
             "atoms": int(len(xyz)),
             "write": {k: v for k, v in info.items() if k != "exported"},
             "settings": {
-                "cut_A": 10 * st.cutoff,
-                "ew_coeff": st.ewald_beta / 10,
-                "nfft": list(st.pme_grid),
-                "order": st.pme_order,
-                "dipole_scf_tol": st.dipole_tol,
+                "cut_A": 10 * st.cutoffs.cutoff,
+                "ew_coeff": st.pme.ewald_beta / 10,
+                "nfft": list(st.pme.grid),
+                "order": st.pme.order,
+                "dipole_scf_tol": st.induction.tol,
             },
             "engine": eng,
             "rms_force": float(np.sqrt(np.mean(F_eng**2))),
         }
         runs = ["cpu"] + (["gpu_dpfp", "gpu_spfp"] if gpu else [])
-        if st.pme_order not in (4, 5, 6):
+        if st.pme.order not in (4, 5, 6):
             runs = ["cpu"]  # pmemd.pgm.cuda: PME orders 4, 5, 6 only
         if name.startswith("water"):
             runs.append("cpu_original")
@@ -458,7 +458,7 @@ def md_engine(name, ps, seed):
     asys, templates = model(name)
     wd = os.path.join(OUT, f"engine_md_{name}_s{seed}")
     os.makedirs(wd, exist_ok=True)
-    st = MDSettings(cutoff=0.9, dipole_tol=1e-5, pme_grid=pmemd_grid(asys.box))
+    st = MDSettings().replace(cutoff=0.9, dipole_tol=1e-5, pme_grid=pmemd_grid(asys.box))
     sim = FlexibleSimulation(
         asys.system(),
         templates,
@@ -499,7 +499,7 @@ def md(name, ps, hmr, seed=11):
     os.makedirs(wd, exist_ok=True)
     prm = os.path.join(wd, f"{name}_pgm.prmtop")
     write_pgm_prmtop(asys, prm, templates, hmr=hmr)
-    st = MDSettings(cutoff=0.9, dipole_tol=1e-5, pme_grid=pmemd_grid(asys.box))  # docs/protein_ff.md settings
+    st = MDSettings().replace(cutoff=0.9, dipole_tol=1e-5, pme_grid=pmemd_grid(asys.box))  # docs/protein_ff.md settings
     run_pmemd(
         "gpu_spfp", os.path.join(wd, "min"), prm, SYSTEMS[name][1], pmemd_mdin(st, asys.box, maxcyc=500, ntpr=100)
     )
@@ -538,7 +538,7 @@ def md(name, ps, hmr, seed=11):
         "hmr": hmr,
         "thermostat": "Langevin 1/ps",
         "ms_per_step": float(ms[-1]) if ms else None,
-        "pme_grid": list(st.pme_grid),
+        "pme_grid": list(st.pme.grid),
         "shake": "X-H + rigid water",
         "temperature_mean": float(T.mean()),
         "temperature_std": float(T.std()),

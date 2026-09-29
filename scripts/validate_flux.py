@@ -17,7 +17,6 @@ and gradients against finite differences, in float64 with the dipoles solved to 
 import os
 import sys
 import time
-from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
@@ -68,7 +67,9 @@ print(
     f"{float(e_gas):.10f}: rel. diff {abs(float(e_nb - e_lj - e_gas)) / abs(float(e_gas)):.1e}; induced dipoles "
     f"max diff {float(jnp.abs(aux['mu'] - st['mu']).max()):.1e} e nm"
 )
-s1 = MDSettings(precision="double", dipole_tol=1e-12, max_iter=500, peek=0.0, cutoff=2.4, skin=0.05, lj_lrc=False)
+s1 = MDSettings().replace(
+    precision="double", dipole_tol=1e-12, max_iter=500, peek=0.0, cutoff=2.4, skin=0.05, lj_lrc=False
+)
 L = 5.0
 sim_f = FlexibleSimulation(sys1, [tpl], x + L / 2, np.eye(3) * L, s1, thermostat=None, log=None)
 Hb = jnp.eye(3) * L
@@ -107,7 +108,7 @@ n = 32
 pos, H = liquid_box(tpl, n, 0.55, seed=0, min_dist=0.18)
 pos = pos + 0.004 * rng.normal(size=pos.shape)
 sysn = System([tpl.pgm] * n)
-s = MDSettings(
+s = MDSettings().replace(
     cutoff=0.6,
     skin=0.05,
     ewald_beta=6.0,
@@ -171,7 +172,7 @@ print(
     f"tr W_atomic - tr W_molecular {float(jnp.trace(Wa) - jnp.trace(W)):.3f} kJ/mol"
 )
 
-sd = replace(s, differentiable=True, adjoint_tol=1e-12)
+sd = s.replace(differentiable=True, adjoint_tol=1e-12)
 ffd = PGMForceField(sysn, H, sd, topology=sim.topology, flux=sim.ff.flux)
 wF, wmu = rng.normal(size=pos.shape), rng.normal(size=pos.shape)
 

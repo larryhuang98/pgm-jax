@@ -137,7 +137,7 @@ def test_peptide_forces_match_gas_phase_model():
     van der Waals from the special pairs, 1-4 scaled) equal the gradient of the gas-phase model."""
     tpl, model, P, x = _peptide_template()
     y = x + 0.003 * np.random.default_rng(0).normal(size=x.shape)
-    s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=2.2, skin=0.05, lj_lrc=False)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=2.2, skin=0.05, lj_lrc=False)
     sim = FlexibleSimulation(System([tpl.pgm]), [tpl], y + 3.0, np.eye(3) * 6.0, s, thermostat=None, log=None)
     assert sim.topology.n_group > 1
     F = np.asarray(sim.state.dyn.force)
@@ -167,7 +167,7 @@ def test_rigid_water_by_constraints_matches_rigid_bodies():
     pos, H, w = _water_box()
     wat = water()
     sys = System([wat] * (len(pos) // 3))
-    s = MDSettings(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
     rig = Simulation(sys, pos, H, s, dt=0.001, thermostat=None, log=None)
     tpl = RigidTemplate(wat, w)
     flex = FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=0.002, thermostat=None, log=None)
@@ -203,7 +203,7 @@ def test_peptide_in_water_hbond_constraints_hmr():
     waters = np.concatenate([pos_w[3 * k : 3 * k + 3] for k in keep])
     wat = water()
     sys = System([tpl.pgm] + [wat] * len(keep))
-    s = MDSettings(precision="double", dipole_tol=1e-8, cutoff=0.7, skin=0.08)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-8, cutoff=0.7, skin=0.08)
     sim = FlexibleSimulation(
         sys,
         [tpl] + [RigidTemplate(wat, w)] * len(keep),

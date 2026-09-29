@@ -376,7 +376,7 @@ def test_md_bias_forces_and_static_nve(engine):
     unbiased ones equal -dV/dx (mapped to the bodies for rigid molecules) and the bias forces match
     finite differences of V(s(x)); NVE conserves E_tot while ~20 kJ/mol move in and out of the bias."""
     pos, H, w = _cluster()
-    s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, d, phi = _cluster_bias(pace=0)
     s0 = np.array([float(d(pos, H)), float(phi(pos, H))])
     st = m.init()
@@ -422,7 +422,7 @@ def test_md_deposition_in_loop(engine, tmp_path):
     from pgm_jax.bias.io import read_table
 
     pos, H, w = _cluster()
-    s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, d, phi = _cluster_bias(pace=10, height=1.0)
     bs = BiasSet([m, Harmonic(d, 0.30, 2000.0)], colvar=5)
     sim = _water_sim(engine, pos, H, w, s, dt=0.0005, thermostat=None, bias=bs)
@@ -472,7 +472,7 @@ def test_md_opes_nvt_pressure_and_mts():
     from pgm_jax.md.restraints import molecular_strain
 
     pos, H, w = _cluster()
-    s = MDSettings(precision="double", dipole_tol=1e-8, cutoff=1.2, skin=0.1, lj_lrc=False)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-8, cutoff=1.2, skin=0.1, lj_lrc=False)
     d = cv.Distance(0, 9)
     op = OPES(d, sigma=0.02, pace=20, barrier=15.0)
     sim = _water_sim(
@@ -515,7 +515,7 @@ def test_flexible_peptide_dihedral_bias():
     q = np.asarray(top.cmaps)[0]  # C-N-CA-C-N of residue 1
     phi, psi = cv.Dihedral(*q[:4]), cv.Dihedral(*q[1:])
     m = MetaD([phi, psi], sigma=0.35, height=1.0, pace=5, biasfactor=6.0, grid=(-np.pi, np.pi, 72))
-    s = MDSettings(dipole_tol=1e-5, cutoff=0.8, skin=0.1)
+    s = MDSettings().replace(dipole_tol=1e-5, cutoff=0.8, skin=0.1)
     sim = FlexibleSimulation(
         asys.system(),
         asys.templates({0: tpl}),
@@ -545,7 +545,7 @@ def test_remd_refuses_dynamic_bias():
     from pgm_jax.md.remd import ReplicaExchange
 
     pos, H, w = _cluster()
-    s = MDSettings(precision="double", dipole_tol=1e-8, cutoff=1.2, skin=0.1, lj_lrc=False)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-8, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, _, _ = _cluster_bias(pace=10)
     sim = _water_sim("rigid", pos, H, w, s, dt=0.001, temperature=300.0, bias=m)
     with pytest.raises(NotImplementedError):
@@ -651,7 +651,7 @@ def test_walkers(shared, tmp_path):
     from pgm_jax.bias.walkers import Walkers
 
     pos, H, w = _cluster()
-    s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, d, phi = _cluster_bias(pace=10, height=1.0)
     sim = _water_sim(
         "rigid", pos, H, w, s, dt=0.001, thermostat="bussi", temperature=300.0, bias=BiasSet([m], colvar=5)

@@ -188,7 +188,7 @@ def build(a):
             raise ValueError("with --solute-template the solute is molecule 0")
     sys0 = System(mols)
     sysA, P = alchemical_system(sys0, a.solute)
-    settings = MDSettings(
+    settings = MDSettings().replace(
         cutoff=a.cut,
         skin=0.1,
         ewald_beta=a.ew_coeff,
@@ -531,7 +531,7 @@ def cmd_finite_size(a):
     alch = Alchemy(sub, 0)
     gas = GasPhaseLeg(alch, x0, elec)
     dg = gas.energy(1.0, P) - gas.energy(0.0, P)
-    ff = PGMForceField(sub, H, dataclasses.replace(settings, dipole_tol=min(settings.dipole_tol, 1e-7), max_iter=200))
+    ff = PGMForceField(sub, H, settings.replace(dipole_tol=min(settings.induction.tol, 1e-7), max_iter=200))
     alch.check(ff)
     E = jax.jit(lambda x, i, le: alch.energy(ff, x, H, i, ff.init_induction(), P, (le, 1.0))[0])
     rng = np.random.default_rng(a.seed)

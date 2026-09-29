@@ -79,7 +79,7 @@ def main(argv=None):
     S = System(mols)
     it = frames(a.traj)
     t, pos, H = next(it)
-    st = MDSettings(
+    st = MDSettings().replace(
         cutoff=a.cut / 10,
         skin=0.1,
         ewald_beta=a.ew_coeff * 10,
@@ -93,7 +93,7 @@ def main(argv=None):
         vdw="none",
     )
     ff = PGMForceField(S, H, st)
-    nb = AtomNeighbors(S.n, H, st.pair_cutoff, st.skin)
+    nb = AtomNeighbors(S.n, H, st.pair_cutoff, st.neighbors.skin)
     cd = CellDipole(ff)
     Qk = cd.molecular_charges()
     mol = np.asarray(S.mol)
@@ -131,7 +131,7 @@ def main(argv=None):
         "n_molecules": S.nmol,
         "net_charge": round(float(Qk.sum()), 6),
         "charged_molecules": int(np.sum(np.abs(Qk) > 1e-6)),
-        "elec": st.elec,
+        "elec": st.terms.elec,
         "alpha_every": a.alpha_every,
     }
     head = [

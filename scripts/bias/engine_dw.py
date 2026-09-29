@@ -59,7 +59,9 @@ if a.method == "metad":
 else:
     b = OPES(r, sigma=0.03, pace=500, barrier=25.0)
 bs = BiasSet([b, StaticBias(r, U, name="model"), LowerWall(r, 0.3, 2000.0), UpperWall(r, 1.4, 2000.0)], colvar=250)
-s = MDSettings(precision="double", elec="q", vdw="none", cutoff=1.2, skin=0.1, pme_grid=(8, 8, 8), lj_lrc=False)
+s = MDSettings().replace(
+    precision="double", elec="q", vdw="none", cutoff=1.2, skin=0.1, pme_grid=(8, 8, 8), lj_lrc=False
+)
 sim = Simulation(
     sys_,
     pos,

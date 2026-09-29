@@ -89,7 +89,7 @@ def test_constrained_nvt_runs_conserve_effective_energy():
     pos, H, w = _water_box()
     wat = water()
     sys = System([wat] * (len(pos) // 3))
-    s = MDSettings(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
     tpl = RigidTemplate(wat, w)
     res = {}
     for name in ("nve", "langevin", "bussi", "gle"):

@@ -123,7 +123,7 @@ def _cluster():
     return tpl, System([tpl.pgm] * 8), pos + 1.4, np.eye(3) * 3.6
 
 
-SCL = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.7, skin=0.05, lj_lrc=False)
+SCL = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.7, skin=0.05, lj_lrc=False)
 
 
 def test_rules_and_degrees_of_freedom():
@@ -219,7 +219,7 @@ def test_npt_bussi_and_mts_keep_constraints():
     from pgm_jax.md.mts import MTS
 
     tpl, sys_, pos, H = _methanol_box()
-    s = MDSettings(precision="mixed", dipole_tol=1e-5, cutoff=0.6, skin=0.05)
+    s = MDSettings().replace(precision="mixed", dipole_tol=1e-5, cutoff=0.6, skin=0.05)
     sim = FlexibleSimulation(
         sys_,
         [tpl] * 32,
@@ -267,7 +267,7 @@ def test_iterative_solver_in_md():
     from test_md_macro import _peptide_template
 
     tpl, model, P, x = _peptide_template()
-    s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.05, lj_lrc=False)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.05, lj_lrc=False)
     sim = FlexibleSimulation(
         System([tpl.pgm]),
         [tpl],

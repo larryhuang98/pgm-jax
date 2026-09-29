@@ -41,7 +41,7 @@ def system(n):
     shifts = [i * H[0] + j * H[1] + k * H[2] for i in range(n) for j in range(n) for k in range(n)]
     pos = np.concatenate([xyz * 0.1 + s for s in shifts])
     v = np.concatenate([vel * 0.1] * len(shifts))
-    s = MDSettings(cutoff=0.9, pme_grid=(48 * n,) * 3, pme_order=6, dipole_tol=1e-5, precision="mixed")
+    s = MDSettings().replace(cutoff=0.9, pme_grid=(48 * n,) * 3, pme_order=6, dipole_tol=1e-5, precision="mixed")
     return System(mols * len(shifts)), pos, v, H * n, s
 
 

@@ -85,11 +85,9 @@ class FrameAnalyzer:
         row_block: int = 1024,
     ):
         """sys, settings: those of the MD (same PME grid: pass settings with pme_grid set, e.g.
-        dataclasses.replace(settings, pme_grid=sim.ff.pme.K)); space: ParameterSpace; tol: CG
+        settings.replace(pme_grid=sim.ff.pme.K)); space: ParameterSpace; tol: CG
         tolerance of the dipole and adjoint solves (pmemd-pgm's criterion)."""
-        s = dataclasses.replace(
-            settings, differentiable=False, dipole_tol=tol, max_iter=max_iter, peek=0.0, predictor="none"
-        )
+        s = settings.replace(differentiable=False, dipole_tol=tol, max_iter=max_iter, peek=0.0, predictor="none")
         self.ff = PGMForceField(sys, np.asarray(H), s)
         if self.ff.flux is not None or any(getattr(m, "vsites", None) for m in sys.molecules):
             raise NotImplementedError("charge flux / virtual sites are not handled by FrameAnalyzer")

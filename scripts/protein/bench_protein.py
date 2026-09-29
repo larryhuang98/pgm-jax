@@ -113,7 +113,7 @@ t0 = time.time()
 asys = load_amber(a.prmtop, a.inpcrd, electrostatics=lib)
 prot = [k for k, m in enumerate(asys.molecules) if m.kind == "protein"]
 tpl = {k: amber_template(asys.molecules[k], a.prmtop) for k in prot}
-st = MDSettings(
+st = MDSettings().replace(
     cutoff=a.cut,
     skin=0.1,
     dipole_tol=a.tol,

@@ -32,7 +32,7 @@ def settings(**kw):
         precision="double",
     )
     base.update(kw)
-    return MDSettings(**base)
+    return MDSettings().replace(**base)
 
 
 def water_box(seed=0):
@@ -105,7 +105,7 @@ def test_flexible_templates_match_flexible_simulation():
     from pgm_jax.md.flexible import FlexibleSimulation
 
     tpl, sysm, pos, H = _box()
-    s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=0.6, skin=0.05, lj_lrc=False)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=0.6, skin=0.05, lj_lrc=False)
     sim = FlexibleSimulation(sysm, [tpl] * sysm.nmol, pos, H, s, thermostat=None, log=None)
     eng = PGMEngine(sysm, sim.positions(), H, s, templates=[tpl] * sysm.nmol)
     r = eng.compute(sim.positions(), H, virial=True)
@@ -415,7 +415,7 @@ def test_ipi_real_server_short_nvt(tmp_path):
     from pgm_jax.interfaces.ipi import IPIClient
 
     tpl, sysm, pos, H = _box()
-    s = MDSettings(precision="double", dipole_tol=1e-8, cutoff=0.6, skin=0.05, lj_lrc=False)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-8, cutoff=0.6, skin=0.05, lj_lrc=False)
     tpls = [tpl] * sysm.nmol
     E0 = PGMEngine(sysm, pos, H, s, templates=tpls).compute(pos, H).energy
     symbols = [e for m in sysm.molecules for e in m.elements]

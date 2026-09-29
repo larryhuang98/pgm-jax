@@ -167,7 +167,7 @@ elif a.cmd == "nve":
             [tpl] * N,
             z["pos"],
             z["box"],
-            MDSettings(precision=prec, dipole_tol=tol),
+            MDSettings().replace(precision=prec, dipole_tol=tol),
             dt=dt,
             thermostat=None,
             velocities=z["vel"],
@@ -276,7 +276,7 @@ else:
     res = {}
     sims = {}
     for label, t in (("flux", tpl), ("no flux", no_flux(tpl))):
-        st = MDSettings() if not a.fixed_iter else MDSettings(dipole_tol=0.0, max_iter=a.fixed_iter)
+        st = MDSettings() if not a.fixed_iter else MDSettings().replace(dipole_tol=0.0, max_iter=a.fixed_iter)
         sims[label] = FlexibleSimulation(
             sys_,
             [t] * N,

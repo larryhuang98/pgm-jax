@@ -64,7 +64,7 @@ def test_amber_template_matches_prmtop_terms():
 def test_solvated_peptide_md_with_constraints():
     asys = load_amber(PRM, CRD)
     tpl = amber_template(asys.molecules[0], PRM)
-    s = MDSettings(precision="mixed", cutoff=0.8, skin=0.1, dipole_tol=1e-5)
+    s = MDSettings().replace(precision="mixed", cutoff=0.8, skin=0.1, dipole_tol=1e-5)
     sim = FlexibleSimulation(
         asys.system(),
         asys.templates({0: tpl}),

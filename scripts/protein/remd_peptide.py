@@ -155,7 +155,7 @@ if a.mode == "analyze":
     raise SystemExit(0)
 
 tpl = amber_template(prot, a.prmtop)
-st = MDSettings(cutoff=0.9, skin=0.1, dipole_tol=a.tol)
+st = MDSettings().replace(cutoff=0.9, skin=0.1, dipole_tol=a.tol)
 sim = FlexibleSimulation(
     asys.system(),
     asys.templates({kp: tpl}),

@@ -265,16 +265,16 @@ class Alchemy:
         s = ff.s
         if ff.sys.fingerprint() != self.sys.fingerprint():
             raise ValueError("the alchemical region was built for another System")
-        if s.vdw not in ("lj", "none"):
+        if s.terms.vdw not in ("lj", "none"):
             raise NotImplementedError(
-                f"soft-core van der Waals is implemented for vdw='lj' (and 'none'), not {s.vdw!r}"
+                f"soft-core van der Waals is implemented for vdw='lj' (and 'none'), not {s.terms.vdw!r}"
             )
         if getattr(ff, "flux", None) is not None:
             raise NotImplementedError(
                 "an alchemical region with charge flux: lambda scales the fixed charges, "
                 "not the flux terms, so the decoupled state would keep charges"
             )
-        b = (s.vdw, float(ff.rc_v), bool(s.lj_lrc), s.elec)
+        b = (s.terms.vdw, float(ff.rc_v), bool(s.terms.lj_lrc), s.terms.elec)
         if self.bound is not None and self.bound != b:
             raise ValueError(f"the alchemical region is bound to other settings {self.bound}, not {b}")
         self.bound = b
@@ -288,7 +288,7 @@ class Alchemy:
             for c, j in enumerate(sp[i])
             if i < j < self.sys.n and w[i, c] != 0.0
         ]
-        if pairs and s.vdw != "none":
+        if pairs and s.terms.vdw != "none":
             ii, jj, ww = (np.array(x) for x in zip(*pairs))
             self._intra = (jnp.asarray(ii, jnp.int32), jnp.asarray(jj, jnp.int32), jnp.asarray(ww, jnp.float64))
         else:
@@ -298,7 +298,7 @@ class Alchemy:
             from ..model import Model
 
             sub, _ = self.sys.sub((self.solute,))
-            self._gas = Model([ElecChannel.level(s.elec)]).energy_fn(sub)
+            self._gas = Model([ElecChannel.level(s.terms.elec)]).energy_fn(sub)
 
     @property
     def vdw(self) -> str:
@@ -497,9 +497,9 @@ def lone_solute(sys: System, solute: int, pos, box_nm: float = 4.0):
     the gas-phase leg of a flexible solute, sampled with the same engine at the lambda_elec windows
     (FlexibleSimulation + LambdaWindows + FreeEnergyRun, as the solution leg).  The sub-system shares
     sys's parameter table, so the same params and Alchemy(sub, 0) apply.  The periodic images of a
-    neutral molecule contribute ~1e-3 kJ/mol at 4 nm (tests); run it with MDSettings(lj_lrc=False)
+    neutral molecule contribute ~1e-3 kJ/mol at 4 nm (tests); run it with MDSettings().replace(lj_lrc=False)
     (there is no continuum of other atoms), a PME grid for this box and an atom neighbour list
-    (neighbor_list="atom": a molecule list has no other molecule to list).  `pos`: positions of sys
+    (MDSettings neighbors.mode "atom": a molecule list has no other molecule to list).  `pos`: positions of sys
     with the solute whole."""
     sub, idx = sys.sub((int(solute),))
     x = np.asarray(pos, float)[idx]

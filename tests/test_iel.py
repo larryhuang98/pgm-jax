@@ -3,8 +3,6 @@ iEL/0-SCF (finite differences), second-order shadow energy error, time reversibi
 auxiliary-dipole propagation, agreement with converged SCF along a trajectory, energy conservation
 in a tiny box, iEL/SCF, the barostat path and the flexible engine."""
 
-import dataclasses
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -28,7 +26,7 @@ def _settings(**kw):
         cutoff=0.55, skin=0.05, pme_grid=(24, 24, 24), pme_order=6, precision="double", dipole_tol=1e-10, max_iter=200
     )
     base.update(kw)
-    return MDSettings(**base)
+    return MDSettings().replace(**base)
 
 
 def _water(**kw):
@@ -51,7 +49,7 @@ def test_niklasson_recurrence_is_stable_on_the_pgm_water_spectrum():
 def _ff_state(settings, seed=1):
     sys, pos, H = small_box(seed)
     ff = PGMForceField(sys, H, settings)
-    idx = AtomNeighbors(sys.n, H, settings.cutoff, settings.skin).allocate(pos, None, H).idx
+    idx = AtomNeighbors(sys.n, H, settings.cutoffs.cutoff, settings.neighbors.skin).allocate(pos, None, H).idx
     return ff, jnp.asarray(pos), jnp.asarray(H), idx
 
 
@@ -151,7 +149,7 @@ def _trajectory(settings, n=8, block=25, dt=0.001, seed=5, nvt=False):
 def test_dipoles_and_energy_follow_the_converged_solution():
     s = _settings(iel="0scf")
     sim = _trajectory(s)
-    ref = PGMForceField(sim.sys, np.asarray(sim.state.box), dataclasses.replace(s, iel="none"))
+    ref = PGMForceField(sim.sys, np.asarray(sim.state.box), s.replace(iel="none"))
     ref.mc = sim.ff.mc
     solve = jax.jit(lambda pos, H, idx: ref.compute(pos, H, idx, ref.init_induction()))
     rel, de = [], []
@@ -197,7 +195,7 @@ def _drift_and_noise(settings, dt=0.001, n=12, block=50):
 def test_energy_conservation_in_a_tiny_box():
     base = _settings()
     d_scf, n_scf = _drift_and_noise(base)
-    d_iel, n_iel = _drift_and_noise(dataclasses.replace(base, iel="0scf"))
+    d_iel, n_iel = _drift_and_noise(base.replace(iel="0scf"))
     # shadow Hamiltonian conserved as well as the converged one (both dominated by the 1 fs integrator)
     assert abs(d_iel) < max(3 * abs(d_scf), 0.05), (d_iel, d_scf)
     assert n_iel < 3 * n_scf + 1e-5, (n_iel, n_scf)
@@ -205,14 +203,14 @@ def test_energy_conservation_in_a_tiny_box():
 
 def test_iel_scf_modes():
     base = _settings(dipole_tol=1e-8)
-    sim = _trajectory(dataclasses.replace(base, iel="scf", iel_iter=0))  # CG from x to tolerance
+    sim = _trajectory(base.replace(iel="scf", iel_iter=0))  # CG from x to tolerance
     sim.advance(40)
     it_x = float(sim.state.cg_total) / 40
     ref = _trajectory(base)
     ref.advance(40)
     it_mu4 = float(ref.state.cg_total) / 40
     assert it_x < it_mu4 + 3, (it_x, it_mu4)
-    sim2 = _trajectory(dataclasses.replace(base, iel="scf", iel_iter=2))
+    sim2 = _trajectory(base.replace(iel="scf", iel_iter=2))
     sim2.advance(40)
     assert int(sim2.state.iters) == 2 and np.isfinite(sim2.observables()["etot"])
 

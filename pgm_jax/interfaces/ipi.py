@@ -263,7 +263,7 @@ def _engine_factory(args):
     kw = json.loads(args.settings) if args.settings else {}
     if args.precision:
         kw["precision"] = args.precision
-    settings = MDSettings(**kw)
+    settings = MDSettings().replace(**kw)
     templates = None
     if args.template:
         from ..md.flexible import FlexibleTemplate

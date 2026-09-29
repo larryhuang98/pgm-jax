@@ -38,7 +38,7 @@ from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
 
 sys_, pos, H = small_box(0, nm=0)
-s = MDSettings(cutoff=0.6, skin=0.05, pme_grid=(32, 32, 32), dipole_tol=1e-5, precision="mixed")
+s = MDSettings().replace(cutoff=0.6, skin=0.05, pme_grid=(32, 32, 32), dipole_tol=1e-5, precision="mixed")
 out = {}
 sim = Simulation(sys_, pos, H, s, dt=0.002, thermostat="bussi", log=None, seed=7)
 sim.advance(300)

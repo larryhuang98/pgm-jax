@@ -43,7 +43,7 @@ def settings(**kw):
         peek=0.0,
     )
     base.update(kw)
-    return MDSettings(**base)
+    return MDSettings().replace(**base)
 
 
 def box(seed=0):
@@ -281,7 +281,7 @@ def test_gas_phase_leg_matches_a_lone_molecule_in_a_large_box():
     )
     xyz = xyz @ np.linalg.qr(rng.normal(size=(3, 3)))[0].T + 2.1
     H = np.eye(3) * 4.2
-    s = MDSettings(
+    s = MDSettings().replace(
         precision="double",
         cutoff=1.2,
         skin=0.0,
@@ -475,7 +475,7 @@ def test_flexible_windows_and_lone_solute_gas_leg():
     assert np.allclose(ub, us, atol=1e-7) and np.allclose(gb, gs, atol=1e-6)
     assert np.allclose(np.diag(ub), wb.potentials() / float(wb.integ.kT), atol=1e-7)
     sub, x, Hg = lone_solute(sysA, 0, np.asarray(wb.state(0).dyn.position), 4.2)
-    sg = MDSettings(
+    sg = MDSettings().replace(
         precision="double",
         cutoff=1.2,
         skin=0.0,
@@ -486,11 +486,10 @@ def test_flexible_windows_and_lone_solute_gas_leg():
         max_iter=200,
         peek=0.0,
         lj_lrc=False,
+        neighbor_list="atom",
     )
     alch_g = Alchemy(sub, 0)
-    gsim = FlexibleSimulation(
-        sub, [tpl], x, Hg, sg, log=None, params=P, alchemy=alch_g, thermostat=None, neighbor_list="atom"
-    )
+    gsim = FlexibleSimulation(sub, [tpl], x, Hg, sg, log=None, params=P, alchemy=alch_g, thermostat=None)
 
     def E(le):
         return float(gsim.integ.forces(gsim.state.set(lam=jnp.array([le, 1.0])), False).epot)

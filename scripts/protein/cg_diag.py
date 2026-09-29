@@ -33,7 +33,7 @@ sim = FlexibleSimulation(
     asys.templates(tpl),
     asys.system_positions(),
     asys.box,
-    MDSettings(dipole_tol=1e-5),
+    MDSettings().replace(dipole_tol=1e-5),
     dt=dt,
     constraints="h-bonds",
     hmr=3.024,

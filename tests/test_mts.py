@@ -20,7 +20,7 @@ from pgm_jax.md.simulation import Simulation
 from pgm_jax.md.thermostats import Bussi, Langevin
 from pgm_jax.units import KB
 
-S_WATER = MDSettings(precision="double", dipole_tol=1e-12, max_iter=300, cutoff=0.55, skin=0.05)
+S_WATER = MDSettings().replace(precision="double", dipole_tol=1e-12, max_iter=300, cutoff=0.55, skin=0.05)
 
 
 def water_sim(engine, mts=None, dt=0.002, thermostat=None, seed=3, settings=S_WATER, **kw):
@@ -48,7 +48,7 @@ def water_sim(engine, mts=None, dt=0.002, thermostat=None, seed=3, settings=S_WA
 def methanol_sim(mts=None, dt=0.001, thermostat=None, **kw):
     """32 flexible methanols (class II bonded terms, 1-4 scaled LJ), 0.6 nm cutoff, float64; NVE by default."""
     tpl, sys, pos, H = _box(n=32, density=0.55)
-    s = MDSettings(precision="double", dipole_tol=1e-10, max_iter=300, cutoff=0.6, skin=0.05, lj_lrc=False)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-10, max_iter=300, cutoff=0.6, skin=0.05, lj_lrc=False)
     return FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=dt, thermostat=thermostat, log=None, mts=mts, **kw)
 
 
@@ -172,7 +172,7 @@ def test_energy_conservation():
 def test_group_temperatures(engine, thermostat, o_step):
     """NVT with MTS (outer 4 fs, fast 2 fs): translational and rotational (rigid bodies) or centre-of-
     mass and internal (constraints) temperatures at the target."""
-    s = MDSettings(precision="mixed", dipole_tol=1e-5, cutoff=0.55, skin=0.05)
+    s = MDSettings().replace(precision="mixed", dipole_tol=1e-5, cutoff=0.55, skin=0.05)
     sim = water_sim(
         engine,
         MTS(inner=2, r_short=0.4, buffer=0.1, o_step=o_step),
@@ -214,7 +214,7 @@ def test_npt_restraints_and_checkpoint(tmp_path):
 
     pos, H, w = _water_box(n_side=4, spacing=0.31)
     rest = PositionRestraint([0, 3], pos[[0, 3]], k=500.0)
-    s = MDSettings(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
 
     def mk():
         return water_sim(
@@ -248,13 +248,13 @@ def test_refused_settings():
         water_sim(
             "constraints",
             MTS(inner=2, r_short=0.4, polarization="direct"),
-            settings=MDSettings(precision="double", cutoff=0.55, skin=0.05, elec="qp"),
+            settings=MDSettings().replace(precision="double", cutoff=0.55, skin=0.05, elec="qp"),
         )
     with pytest.raises(ValueError, match="predictor"):
         water_sim(
             "constraints",
             MTS(inner=2, r_short=0.4, anchor=True),
-            settings=MDSettings(precision="double", cutoff=0.55, skin=0.05, predictor="ls"),
+            settings=MDSettings().replace(precision="double", cutoff=0.55, skin=0.05, predictor="ls"),
         )
     from pgm_jax.md.remd import MDReplicas
 

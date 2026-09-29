@@ -118,7 +118,7 @@ def settings(**kw):
         precision="double",
     )
     base.update(kw)
-    return MDSettings(**base)
+    return MDSettings().replace(**base)
 
 
 # ----------------------------------------------------------------------------- constructions
@@ -444,7 +444,7 @@ def test_engines_with_sites_agree_and_conserve_energy():
     from pgm_jax.md.forcefield import ewald_beta_for
 
     sys, pos, H = _tip4pew_ideal()
-    s = MDSettings(
+    s = MDSettings().replace(
         elec="q", cutoff=0.65, skin=0.05, ewald_beta=ewald_beta_for(0.65), pme_spacing=0.06, precision="double"
     )
     eq = Simulation(sys, pos, H, s, dt=0.001, thermostat=Bussi(0.1), log=None, seed=1)
@@ -493,7 +493,7 @@ def test_flexible_molecule_with_sites_nvt_nve_and_hmr():
     tpl = FlexibleTemplate.from_fit(model, model.init_params())
     pos, H = liquid_box(tpl, 27, 0.45, seed=0, min_dist=0.18)
     sys = System([mol] * 27)
-    s = MDSettings(precision="double", dipole_tol=1e-9, cutoff=0.6, skin=0.05, lj_lrc=False)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=0.6, skin=0.05, lj_lrc=False)
     sim = FlexibleSimulation(
         sys,
         [tpl] * 27,
@@ -560,7 +560,7 @@ def test_load_amber_protein_in_tip4pew():
         tpls,
         asys.system_positions(),
         asys.box,
-        MDSettings(cutoff=0.8, skin=0.05, pme_spacing=0.1),
+        MDSettings().replace(cutoff=0.8, skin=0.05, pme_spacing=0.1),
         dt=0.002,
         thermostat="bussi",
         constraints="h-bonds",
@@ -588,7 +588,7 @@ def test_replica_exchange_with_sites():
     from pgm_jax.md.remd import ReplicaExchange
 
     sys, pos, H = _tip4pew_ideal()
-    s = MDSettings(
+    s = MDSettings().replace(
         elec="q", cutoff=0.65, skin=0.05, ewald_beta=ewald_beta_for(0.65), pme_spacing=0.06, precision="double"
     )
     sim = FlexibleSimulation(

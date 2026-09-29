@@ -86,7 +86,7 @@ def read_prmtop_pgm(
     protein.load_amber(prmtop, coords, electrostatics="prmtop").
     charges="amber" reads a classical prmtop instead: point charges CHARGE / 18.2223 (Gaussian
     radius `point_radius`, default md.vsites.POINT_RADIUS = 1e-4 nm), no polarizability, no
-    covalent dipoles (run with MDSettings(elec="q")).
+    covalent dipoles (run with MDSettings().replace(elec="q")).
     Extra points (atom type EP, mass 0) become virtual sites (Molecule.vsites) with Amber's frames
     (md/vsites.py); their element is "EP"."""
     s = Prmtop.read(path)

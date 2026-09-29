@@ -88,10 +88,10 @@ def build(bias):
     q = q + sl.start
     phi, psi = cv.Dihedral(*q[:4], name="phi"), cv.Dihedral(*q[1:], name="psi")
     if a.solvated:
-        s = MDSettings(precision=a.precision, dipole_tol=a.tol, cutoff=1.0, skin=0.1)
+        s = MDSettings().replace(precision=a.precision, dipole_tol=a.tol, cutoff=1.0, skin=0.1)
     else:  # one molecule: a small Ewald coefficient makes a coarse PME grid accurate
         g = a.pme_grid or 20
-        s = MDSettings(
+        s = MDSettings().replace(
             precision=a.precision,
             dipole_tol=a.tol,
             cutoff=1.2,

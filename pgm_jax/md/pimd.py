@@ -593,7 +593,7 @@ class PGMBeads:
             raise NotImplementedError("path integrals with mts / alchemy / restraints are not supported yet")
         if getattr(sim.ff, "iel", False):
             raise NotImplementedError(
-                "path integrals with extended-Lagrangian dipoles (MDSettings.iel): every bead "
+                "path integrals with extended-Lagrangian dipoles (MDSettings.induction.iel): every bead "
                 "would need its own auxiliary dipoles; use iel='none'"
             )
         if getattr(integ, "bias", None) is not None or getattr(integ, "efield", None) is not None:
@@ -654,14 +654,16 @@ class PGMBeads:
     def make_neighbors(self, H):
         sim, s = self.sim, self.sim.settings
         self.r_list = float(sim.r_list) + self.bead_margin
-        mode = sim._nb_mode
+        mode = s.neighbors.mode
         if mode == "auto":
-            mode = "molecule" if MoleculeNeighbors.fits(H, s.pair_cutoff, s.skin, self.r_list) else "atom"
+            mode = "molecule" if MoleculeNeighbors.fits(H, s.pair_cutoff, s.neighbors.skin, self.r_list) else "atom"
         if mode == "molecule":
-            self.nb = MoleculeNeighbors(sim.topology.group, sim.topology.n_group, self.r_list, H, s.pair_cutoff, s.skin)
+            self.nb = MoleculeNeighbors(
+                sim.topology.group, sim.topology.n_group, self.r_list, H, s.pair_cutoff, s.neighbors.skin
+            )
         else:  # pairs of bead atoms within the cutoff: centroid atoms within cutoff + 2 margins
             rc = s.pair_cutoff + 2.0 * self.bead_margin
-            skin = min(s.skin, max_cutoff(H) - rc - 0.002)
+            skin = min(s.neighbors.skin, max_cutoff(H) - rc - 0.002)
             if skin < 0.02:
                 raise ValueError(
                     f"box too small for the bead margin: cutoff {s.pair_cutoff} + 2 x {self.bead_margin} "

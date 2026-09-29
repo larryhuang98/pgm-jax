@@ -48,7 +48,7 @@ def test_single_molecule_matches_gas_phase_model():
     gradient of the gas-phase model the bonded terms are fitted with."""
     tpl, x = template()
     y = x + 0.004 * np.random.default_rng(0).normal(size=x.shape)
-    s = MDSettings(precision="double", dipole_tol=1e-9, cutoff=1.8, skin=0.05, lj_lrc=False)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=1.8, skin=0.05, lj_lrc=False)
     sim = FlexibleSimulation(System([tpl.pgm]), [tpl], y + 2.0, np.eye(3) * 4.0, s, thermostat=None, log=None)
     F = np.asarray(sim.state.dyn.force)
     P = jax.tree_util.tree_map(jnp.asarray, tpl.P)
@@ -65,7 +65,7 @@ def _box(n=32, density=0.55):
 
 def test_nve_energy_conservation():
     tpl, sys, pos, H = _box()
-    s = MDSettings(precision="double", dipole_tol=1e-8, cutoff=0.6, skin=0.05, lj_lrc=False)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-8, cutoff=0.6, skin=0.05, lj_lrc=False)
     sim = FlexibleSimulation(
         sys, [tpl] * sys.nmol, pos, H, s, dt=0.0005, thermostat=Langevin(10.0), temperature=298.0, log=None
     )
@@ -97,7 +97,7 @@ def test_npt_compresses_dilute_box():
     """NPT at 2 kbar from a dilute box: the box shrinks by far more than the neighbour lists were
     built for, so the driver must rebuild them on the way (and the molecules must stay whole)."""
     tpl, sys, pos, H = _box(density=0.45)
-    s = MDSettings(precision="mixed", dipole_tol=1e-5, cutoff=0.5, skin=0.05)
+    s = MDSettings().replace(precision="mixed", dipole_tol=1e-5, cutoff=0.5, skin=0.05)
     sim = FlexibleSimulation(
         sys,
         [tpl] * sys.nmol,

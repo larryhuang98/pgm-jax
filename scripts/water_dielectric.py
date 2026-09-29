@@ -113,7 +113,7 @@ def main():
     pos = np.concatenate([xyz * 0.1 + s for s in shifts])
     v = None if vel is None else np.concatenate([vel * 0.1] * len(shifts))
     sys_ = System(mols * len(shifts))
-    st = MDSettings(
+    st = MDSettings().replace(
         cutoff=0.9,
         skin=0.1,
         ewald_beta=4.0,

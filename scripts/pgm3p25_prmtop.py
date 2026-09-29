@@ -137,7 +137,7 @@ def main(argv=None):
         from pgm_jax.protein.pmemd import pmemd_mdin
 
         H = box_from_cell(L, angles) * 0.1
-        st = MDSettings(
+        st = MDSettings().replace(
             cutoff=0.9,
             skin=0.1,
             ewald_beta=4.0,

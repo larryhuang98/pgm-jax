@@ -47,7 +47,7 @@ def native_atomic(sim):
 
 
 def single_point(prec, tol):
-    s = MDSettings(precision=prec, dipole_tol=tol)
+    s = MDSettings().replace(precision=prec, dipole_tol=tol)
     sim = Simulation.from_amber(TOP, RST, settings=s, thermostat=None, log=None)
     pos, F_nat, E_nat, mu_nat = native_atomic(sim)
     H = np.asarray(sim.state.box)

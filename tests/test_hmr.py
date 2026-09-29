@@ -91,7 +91,7 @@ def test_flexible_simulation_per_molecule_hmr():
     nmol = len(pos) // 3
     sys = System([wat] * nmol)
     hmr = [4.0, None] * (nmol // 2)
-    s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     sim = FlexibleSimulation(
         sys, [RigidTemplate(wat, w)] * nmol, pos, H, s, dt=0.002, thermostat=None, hmr=hmr, temperature=300.0, log=None
     )

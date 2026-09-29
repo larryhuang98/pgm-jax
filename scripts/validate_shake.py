@@ -77,7 +77,7 @@ def sim_for(name, x, H, prec="mixed", tol=1e-5, thermostat="langevin", npt=True,
     0.1 ps (needs a thermostat)."""
     cons, dt_fs, hmr = CONFIGS[name]
     tpl = template()
-    st = MDSettings(precision=prec, dipole_tol=tol)  # 0.9 nm, PME, LJ tail (the model's settings)
+    st = MDSettings().replace(precision=prec, dipole_tol=tol)  # 0.9 nm, PME, LJ tail (the model's settings)
     th = {"langevin": Langevin(1.0), "bussi": Bussi(0.5)}.get(thermostat, thermostat)
     baro = MonteCarloBarostat(every=max(1, int(round(0.1 / (dt_fs * 1e-3))))) if npt else None
     return FlexibleSimulation(
@@ -455,7 +455,7 @@ def peptide(ps=10.0):
     asys = load_amber(prm, crd)
     tpl = {k: amber_template(m, prm) for k, m in enumerate(asys.molecules) if m.kind == "protein"}
     templates = asys.templates(tpl)
-    st = MDSettings(cutoff=0.8, dipole_tol=1e-6, precision="double")
+    st = MDSettings().replace(cutoff=0.8, dipole_tol=1e-6, precision="double")
     path = os.path.join(OUT, "peptide.json")
     out = json.load(open(path)) if os.path.exists(path) else {}
     x0 = None

@@ -39,7 +39,7 @@ sim = FlexibleSimulation(
     [tpl],
     x + 2.0,
     H,
-    MDSettings(precision="double", dipole_tol=1e-8, cutoff=1.8, skin=0.05),
+    MDSettings().replace(precision="double", dipole_tol=1e-8, cutoff=1.8, skin=0.05),
     thermostat=None,
     log=None,
 )
@@ -56,7 +56,7 @@ print(
 
 # 2. NVE energy conservation, 216 molecules
 pos, H = liquid_box(tpl, 216, 0.55, seed=1, min_dist=0.18)
-st = MDSettings(precision="mixed", dipole_tol=1e-5)
+st = MDSettings().replace(precision="mixed", dipole_tol=1e-5)
 sim = FlexibleSimulation(
     System([tpl.pgm] * 216), [tpl] * 216, pos, H, st, dt=0.0005, thermostat=Langevin(5.0), temperature=298.0, log=None
 )

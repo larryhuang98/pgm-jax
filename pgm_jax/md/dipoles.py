@@ -10,7 +10,7 @@ Cell dipole (e nm; 1 D = units.DEBYE_E_NM = 0.020819434 e nm):
 A Gaussian charge or dipole density has the dipole moment of the point multipole at its centre, so M
 is the dipole moment of the model's charge density.  With charge flux (md/flux.py) the charges and
 covalent dipoles are those of the current geometry.  The terms follow the electrostatics level
-(MDSettings.elec): no permanent dipoles for "q" / "qi", no induced dipoles for "q" / "qp".
+(MDSettings.terms.elec): no permanent dipoles for "q" / "qi", no induced dipoles for "q" / "qp".
 
 Conventions
   * Molecules are whole.  Both engines keep them whole (rigid bodies; the atoms of a flexible
@@ -129,7 +129,7 @@ class CellDipole:
     def polarizability(self, pos, H, idx, params=None, tol=None):
         """(3, 3) float64, nm^3: alpha_ab = dM_a/dF_b at fixed nuclei, the response of the induced
         dipoles to a uniform field F (e/nm^2) with Ewald (tin-foil) dipole couplings.  idx: candidate
-        rows as for PGMForceField.compute; tol: CG tolerance (default settings.dipole_tol).  Zero
+        rows as for PGMForceField.compute; tol: CG tolerance (default settings.induction.tol).  Zero
         without induced dipoles; nan if a solve does not converge within settings.max_iter."""
         ff = self.ff
         if not ff.ind:
@@ -141,7 +141,7 @@ class CellDipole:
         alpha = P["alpha"]
         A = ff._operator(g, S, Gk, alpha)
         norm = jnp.mean(alpha) / 3.0  # mean|alpha b| for a unit field
-        tol = ff.s.dipole_tol if tol is None else tol
+        tol = ff.s.induction.tol if tol is None else tol
         cols = []
         for a in range(3):
             b = jnp.zeros((ff.n, 3), ff.cd).at[:, a].set(1.0)
@@ -196,7 +196,7 @@ class DipoleRecorder:
             "n_molecules": sim.sys.nmol,
             "net_charge": round(float(Qk.sum()), 6),
             "charged_molecules": int(np.sum(np.abs(Qk) > 1e-6)),
-            "elec": sim.settings.elec,
+            "elec": sim.settings.terms.elec,
             "alpha_every": self.alpha_every,
         }
         fld = getattr(sim.integ, "efield", None)

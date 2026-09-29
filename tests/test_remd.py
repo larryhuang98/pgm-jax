@@ -222,7 +222,7 @@ def test_md_swap_and_batched_equals_sequential():
     pos, H, w = _water_box()
     wat = water()
     sys = System([wat] * (len(pos) // 3))
-    s = MDSettings(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
     sim = FlexibleSimulation(
         sys,
         [RigidTemplate(wat, w)] * sys.nmol,
@@ -318,7 +318,7 @@ def test_md_npt_sequential_restart(tmp_path):
     checkpoint reproduces the continued run."""
     pos, H, _ = _water_box()
     sys = System([water()] * (len(pos) // 3))
-    s = MDSettings(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
     sim = Simulation(
         sys, pos, H, s, dt=0.001, thermostat=Bussi(0.1), barostat=MonteCarloBarostat(every=5), log=None, seed=2
     )
@@ -350,7 +350,7 @@ def test_md_rigid_batched_checkpoint_continues_sequentially(tmp_path):
     continues exactly as the batched run does."""
     pos, H, _ = _water_box()
     sys = System([water()] * (len(pos) // 3))
-    s = MDSettings(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
     sim = Simulation(sys, pos, H, s, dt=0.001, thermostat=Langevin(5.0), log=None, seed=4)
     T = [300.0, 304.0, 308.0, 312.0]
     rb = ReplicaExchange(sim, T, exchange_every=5, batched=True, seed=6, log=None)

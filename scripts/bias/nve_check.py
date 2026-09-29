@@ -36,7 +36,7 @@ setup_logging()
 pos, H, w = water_cluster_box()
 wat = water()
 sys_ = System([wat] * (len(pos) // 3))
-s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
+s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
 d = cv.Distance(0, 9)
 hyd = [i for i in range(len(pos)) if i % 3 and i // 3 != 0]
 phi = cv.Coordination([0], hyd, r0=0.35, name="n_OH")  # smooth; a dihedral through two molecules has

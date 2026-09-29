@@ -185,7 +185,7 @@ def main():
         ew = {k: v for k, v in elec_cutoff_settings(a.cutoff).items() if k != "elec_cutoff"}
     if a.ewald_beta:
         ew["ewald_beta"] = a.ewald_beta
-    st = MDSettings(
+    st = MDSettings().replace(
         cutoff=a.cutoff,
         skin=a.skin,
         pme_grid=(a.nfft,) * 3 if a.nfft else None,

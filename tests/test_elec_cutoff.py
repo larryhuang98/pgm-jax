@@ -22,7 +22,7 @@ RC_E, RC_V = 0.45, 0.6
 def _setup(sys, pos, H, s, capacity=True, topology=None):
     """Force field, candidate rows (pair cutoff + skin) and, with `capacity`, sized (compacted) rows."""
     ff = PGMForceField(sys, H, s, topology=topology)
-    idx = AtomNeighbors(sys.n, H, s.pair_cutoff, s.skin).allocate(pos, None, H).idx
+    idx = AtomNeighbors(sys.n, H, s.pair_cutoff, s.neighbors.skin).allocate(pos, None, H).idx
     if capacity:
         ff.size_rows(jnp.asarray(pos), jnp.asarray(H), idx)
     return ff, idx

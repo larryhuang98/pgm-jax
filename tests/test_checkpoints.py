@@ -27,7 +27,7 @@ from pgm_jax.md.thermostats import Bussi, Langevin
 from pgm_jax.system import Molecule, System
 
 LEGACY = os.path.join(os.path.dirname(__file__), "data", "legacy_checkpoints")
-S = MDSettings(precision="double", dipole_tol=1e-10, max_iter=300, cutoff=0.55, skin=0.05)
+S = MDSettings().replace(precision="double", dipole_tol=1e-10, max_iter=300, cutoff=0.55, skin=0.05)
 LAMBDAS = np.array([[1.0, 1.0], [0.0, 1.0], [0.0, 0.0]])
 FIELDS = [(0.0, 0.0, 0.5), (0.0, 0.0, -0.5)]
 
@@ -92,7 +92,7 @@ def rigid():
 def rigid_metad():
     """8 rigid waters with a two-CV metadynamics bias, Langevin NVT."""
     pos, _, _ = water_lattice(2)
-    s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     m = MetaD(
         [cv.Distance(0, 9), cv.Dihedral(1, 0, 9, 10)],
         sigma=[0.03, 0.4],
@@ -128,7 +128,7 @@ def alchemy_sim():
     """64 waters, the first one alchemical (PME), Bussi NVT."""
     pos, H, _ = water_lattice()
     sysA, P = alchemical_system(System([water()] * 64), 0)
-    s = MDSettings(
+    s = MDSettings().replace(
         precision="double",
         dipole_tol=1e-9,
         max_iter=400,
@@ -168,7 +168,7 @@ def pimd_sim():
                 R = np.linalg.qr(rng.normal(size=(3, 3)))[0]
                 c = (np.array([i, j, k]) + 0.5) * 1.5 / 2 + rng.normal(scale=0.02, size=3)
                 pos.append((x - x.mean(0)) @ R.T + c)
-    s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=0.5, skin=0.05, lj_lrc=False, max_iter=200)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=0.5, skin=0.05, lj_lrc=False, max_iter=200)
     return FlexibleSimulation(
         System([tpl.pgm] * 8),
         [tpl] * 8,

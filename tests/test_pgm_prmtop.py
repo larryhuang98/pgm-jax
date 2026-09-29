@@ -141,7 +141,7 @@ def test_protein_sections_round_trip(tmp_path):
     D2 = np.concatenate([p2.get("DIHEDRALS_INC_HYDROGEN"), p2.get("DIHEDRALS_WITHOUT_HYDROGEN")]).reshape(-1, 5)
     assert sorted(map(tuple, D0)) == sorted(map(tuple, D2))
     # mdin: the engine's nonbonded settings
-    st = MDSettings(
+    st = MDSettings().replace(
         cutoff=0.9, ewald_beta=3.5, pme_grid=pmemd_grid(asys.box), pme_order=8, lj_lrc=False, dipole_tol=1e-6
     )
     txt = pmemd_mdin(st, asys.box, nstlim=100)
@@ -153,11 +153,11 @@ def test_protein_sections_round_trip(tmp_path):
         "vdwmeth=0",
         "dipole_scf_tol=1e-06",
         "ipgm=1",
-        f"nfft1={st.pme_grid[0]},",
+        f"nfft1={st.pme.grid[0]},",
     ):
         assert s in txt, s
     with pytest.raises(ValueError, match="multiples of 4"):
-        pmemd_mdin(MDSettings(pme_grid=(33, 36, 36)), asys.box)
+        pmemd_mdin(MDSettings().replace(pme_grid=(33, 36, 36)), asys.box)
 
 
 @pytest.mark.skipif(not os.path.exists(WATER_TOP), reason="pGM3P-25 water prmtop not available")

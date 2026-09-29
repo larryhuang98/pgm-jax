@@ -134,7 +134,7 @@ def test_bias_with_field_and_iel(iel):
     bias forces add to the field forces, and NVE conserves econs."""
     pos, H, w = _cluster()
     sys = System([water()] * (len(pos) // 3))
-    s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False, iel=iel)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False, iel=iel)
     d = cv.Distance(0, 9)
     d0 = float(d(jnp.asarray(pos), jnp.asarray(H)))
     kw = dict(dt=0.0005, thermostat=None, log=None, seed=2, efield=(0.0, 0.4, 0.8))
@@ -169,7 +169,7 @@ def test_walkers_book_the_work_of_a_time_dependent_field():
 
     pos, H, w = _cluster()
     sys = System([water()] * (len(pos) // 3))
-    s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     d = cv.Distance(0, 9)
     fld = EF.ExternalField((0.0, 0.0, 1.5), omega=2 * np.pi / 0.1)
 
@@ -207,7 +207,7 @@ def test_flexible_minimize_with_mts():
     pos, H, w = _water_box(n_side=4, spacing=0.31)
     wat = water()
     sys = System([wat] * (len(pos) // 3))
-    s = MDSettings(precision="double", dipole_tol=1e-10, max_iter=300, cutoff=0.55, skin=0.05)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-10, max_iter=300, cutoff=0.55, skin=0.05)
     sim = FlexibleSimulation(
         sys,
         [RigidTemplate(wat, w)] * sys.nmol,
@@ -232,7 +232,7 @@ def test_refused_combinations():
     from pgm_jax.md.pimd import PIMDSimulation
 
     tpl, sys, pos, H = _water_box()
-    s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=0.5, skin=0.05, lj_lrc=False, max_iter=200)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=0.5, skin=0.05, lj_lrc=False, max_iter=200)
 
     def flex(settings=s, **kw):
         return FlexibleSimulation(
@@ -244,7 +244,7 @@ def test_refused_combinations():
         dict(bias=ub),
         dict(efield=(0.0, 0.0, 0.1)),
         dict(constraints="h-bonds"),
-        dict(settings=MDSettings(precision="double", cutoff=0.5, skin=0.05, lj_lrc=False, iel="0scf")),
+        dict(settings=MDSettings().replace(precision="double", cutoff=0.5, skin=0.05, lj_lrc=False, iel="0scf")),
     ):
         with pytest.raises((NotImplementedError, ValueError)):
             PIMDSimulation(flex(**kw), beads=4, log=None)
@@ -252,7 +252,7 @@ def test_refused_combinations():
         with pytest.raises(NotImplementedError):
             PGMEngine.from_simulation(flex(**kw), templates=[tpl] * sys.nmol)
     with pytest.raises(NotImplementedError):
-        PGMEngine(sys, pos, H, MDSettings(cutoff=0.5, skin=0.05, iel="0scf"), templates=[tpl] * sys.nmol)
+        PGMEngine(sys, pos, H, MDSettings().replace(cutoff=0.5, skin=0.05, iel="0scf"), templates=[tpl] * sys.nmol)
 
 
 # ----------------------------------------------------------------------------- full virial tensor

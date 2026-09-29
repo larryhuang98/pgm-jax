@@ -60,7 +60,6 @@ class Simulation(MDEngine):
         mts=None,
         bias=None,
         efield=None,
-        neighbor_list: str = "auto",
         log=None,
     ):
         """Set up rigid-body MD of `system` at `positions` in `box`.
@@ -96,8 +95,6 @@ class Simulation(MDEngine):
             Restraints (md/restraints.py), an alchemical region (md/alchemy.py), multiple time
             stepping (md/mts.py), biases on collective variables (pgm_jax.bias), an external field
             (md/efield.py: ExternalField or three numbers in V/nm).
-        neighbor_list : str
-            "auto" (molecular-centre list when the box allows it), "molecule" or "atom".
         log : text stream or None
             Receives the rows of the log table of `run` too (diagnostics go to the logger
             "pgm_jax.md.simulation").
@@ -108,7 +105,7 @@ class Simulation(MDEngine):
             A box too small for the cutoff, invalid options or combinations.
         """
         H = reduce_box(box)
-        check_box(H, settings.pair_cutoff + settings.skin)
+        check_box(H, settings.pair_cutoff + settings.neighbors.skin)
         self.sys, self.settings, self.log = system, settings, log
         self.vsites = VirtualSites.of(system)
         pos_nm = positions
@@ -118,7 +115,6 @@ class Simulation(MDEngine):
         self.rigid = RigidMolecules(system, pos_nm, H)
         self.ff = PGMForceField(system, H, settings)
         self._r_list = float(jnp.max(jnp.linalg.norm(self.rigid.local, axis=1)))
-        self._nb_mode = neighbor_list
         self._make_neighbors(H)
         self._size_lists(self.rigid.body0, H)
         integ, extra = Integrator, {}
@@ -152,7 +148,7 @@ class Simulation(MDEngine):
             f"pgm_jax MD: {system.nmol} rigid molecules, {system.n} atoms"
             f"{'' if self.vsites is None else f' ({self.vsites.n_sites} virtual sites)'}, "
             f"{self._describe_coupling()}, dt {dt * 1000:g} fs, "
-            f"{settings.precision} precision, PME grid {self.ff.pme.K} order {settings.pme_order}, "
+            f"{settings.precision} precision, PME grid {self.ff.pme.K} order {settings.pme.order}, "
             f"{settings.describe_cutoffs()}, {self.nb.kind} neighbour list, {settings.describe_induction()}, "
             f"template fit RMSD {self.rigid.fit_rmsd:.2e} nm, device {jax.devices()[0]}"
         )
@@ -175,7 +171,7 @@ class Simulation(MDEngine):
             Start from the file's velocities when it has them.
         charges : str
             "pgm" (a pGM prmtop) or "amber" (the point charges of a classical prmtop, e.g.
-            TIP4P-Ew; with MDSettings(elec="q")).
+            TIP4P-Ew; with MDSettings().replace(elec="q")).
         **kw
             Keywords of the constructor (settings, dt, temperature, thermostat, ...).
 

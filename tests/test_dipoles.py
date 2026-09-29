@@ -246,7 +246,7 @@ def test_trajectory_dipoles_of_an_amber_trajectory(tmp_path):
     trajectory_dipoles = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(trajectory_dipoles)
 
-    s = MDSettings(
+    s = MDSettings().replace(
         cutoff=0.9,
         skin=0.1,
         ewald_beta=4.0,

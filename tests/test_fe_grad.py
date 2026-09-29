@@ -229,7 +229,7 @@ def test_gas_leg_gradient_and_exact_sampled_case():
     fd = (gas.delta_g(Pp) - gas.delta_g(Pm)) / (2 * h)
     assert abs(fd - gg @ v) < 1e-6 * max(1.0, abs(fd))
     H = np.eye(3) * 4.2
-    s = MDSettings(
+    s = MDSettings().replace(
         precision="double",
         cutoff=1.2,
         skin=0.1,
@@ -240,6 +240,7 @@ def test_gas_leg_gradient_and_exact_sampled_case():
         max_iter=200,
         peek=0.0,
         lj_lrc=False,
+        neighbor_list="atom",
     )
     sim = Simulation(
         sysA,
@@ -251,7 +252,6 @@ def test_gas_leg_gradient_and_exact_sampled_case():
         params=P,
         alchemy=alch,
         thermostat="bussi",
-        neighbor_list="atom",
         temperature=298.0,
     )
     L = np.array([[1.0, 1.0], [0.5, 1.0], [0.0, 1.0]])

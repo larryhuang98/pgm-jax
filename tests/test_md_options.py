@@ -22,7 +22,7 @@ def _gvdw_box(seed=0):
 
 
 def _list(sys, pos, H, s):
-    return AtomNeighbors(sys.n, H, s.cutoff, s.skin).allocate(pos, None, H).idx
+    return AtomNeighbors(sys.n, H, s.cutoffs.cutoff, s.neighbors.skin).allocate(pos, None, H).idx
 
 
 @pytest.mark.parametrize("elec", ["q", "qp", "qi"])
@@ -103,7 +103,7 @@ def test_flexible_gvdw_single_molecule_and_settings_check():
     tpl = FlexibleTemplate.from_fit(model, model.init_params())
     assert len(tpl.lj_pairs()[0]) == 3
     y = x + 0.004 * np.random.default_rng(0).normal(size=x.shape)
-    s = MDSettings(precision="double", dipole_tol=1e-9, cutoff=1.8, skin=0.05, lj_lrc=False, vdw="gvdw")
+    s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=1.8, skin=0.05, lj_lrc=False, vdw="gvdw")
     sim = FlexibleSimulation(System([tpl.pgm]), [tpl], y + 2.0, np.eye(3) * 4.0, s, thermostat=None, log=None)
     F = np.asarray(sim.state.dyn.force)
     P = jax.tree_util.tree_map(jnp.asarray, tpl.P)
@@ -115,7 +115,7 @@ def test_flexible_gvdw_single_molecule_and_settings_check():
             [tpl],
             y + 2.0,
             np.eye(3) * 4.0,
-            MDSettings(cutoff=1.8, skin=0.05),
+            MDSettings().replace(cutoff=1.8, skin=0.05),
             thermostat=None,
             log=None,
         )

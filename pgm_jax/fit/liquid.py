@@ -147,10 +147,10 @@ class LiquidFit:
         ValueError
             No thermostat, replicas with a barostat, an rdf target without rdf.
         """
-        if settings.pme_grid is None:
+        if settings.pme.grid is None:
             from ..md.pme import grid_size
 
-            settings = dataclasses.replace(settings, pme_grid=tuple(int(k) for k in grid_size(H, settings.pme_spacing)))
+            settings = settings.replace(pme_grid=tuple(int(k) for k in grid_size(H, settings.pme.spacing)))
         self.sys, self.space, self.obj = sys_, space, objective
         self.pos, self.H, self.vel = np.asarray(pos, float), np.asarray(H, float), None
         self.T, self.settings, self.dt = float(T), settings, float(dt)

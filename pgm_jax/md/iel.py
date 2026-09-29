@@ -1,9 +1,9 @@
-"""Extended-Lagrangian induced dipoles (MDSettings.iel; the engine is in forcefield.py): the linear
+"""Extended-Lagrangian induced dipoles (MDSettings.induction.iel; the engine is in forcefield.py): the linear
 stability of the auxiliary-dipole recurrence and the response spectrum (command-line options:
 cli/args.py).
 
-    MDSettings(iel="0scf")                    # iEL/0-SCF: one field sweep per step, no CG
-    MDSettings(iel="scf", iel_iter=2)         # iEL/SCF: two CG iterations from the auxiliary dipoles
+    MDSettings().replace(iel="0scf")                    # iEL/0-SCF: one field sweep per step, no CG
+    MDSettings().replace(iel="scf", iel_iter=2)         # iEL/SCF: two CG iterations from the auxiliary dipoles
 
 docs/iel.md has the equations, the validation and the speed."""
 
@@ -45,7 +45,7 @@ def response_spectrum(ff, pos, H, idx, params=None, iters: int = 60, precond: st
     import jax.numpy as jnp
 
     pos, H = jnp.asarray(pos, jnp.float64), jnp.asarray(H, jnp.float64)
-    precond = ff.s.iel_precond if precond is None else precond
+    precond = ff.s.induction.iel.precond if precond is None else precond
     P = ff._atoms(params)
     g = ff.geometry(pos, H, idx, P)
     S, Gk = ff.pme.setup(pos, H), ff.pme.influence(H)

@@ -83,7 +83,7 @@ def settings(**kw):
     """Production settings: 0.9 nm cutoff with the LJ tail, PME 0.08 nm order 6, Ewald 4.0 nm^-1."""
     base = dict(elec="q", cutoff=0.9, skin=0.1, lj_lrc=True, pme_order=6, precision="mixed")
     base.update(kw)
-    return MDSettings(**base)
+    return MDSettings().replace(**base)
 
 
 def update_json(key, value):
@@ -545,7 +545,7 @@ def pgm(a):
     sys_ = System([m] * n_side**3)
     vs = VirtualSites.of(sys_)
     pos = np.asarray(vs.place(np.concatenate(pos), H))
-    s = MDSettings(
+    s = MDSettings().replace(
         cutoff=0.7,
         skin=0.05,
         ewald_beta=5.2,

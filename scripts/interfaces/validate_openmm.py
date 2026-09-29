@@ -93,7 +93,7 @@ def main():
     rep = 100
 
     # ---- single point, double precision
-    s2 = MDSettings(precision="double", dipole_tol=1e-10)
+    s2 = MDSettings().replace(precision="double", dipole_tol=1e-10)
     sim = Simulation.from_amber(TOP, RST, settings=s2, thermostat=None, log=None)
     st = sim.state
     pos = sim.positions()

@@ -69,13 +69,13 @@ def settings(**kw):
         precision="double",
     )
     base.update(kw)
-    return MDSettings(**base)
+    return MDSettings().replace(**base)
 
 
 def ff_and_list(sys, pos, H, **kw):
     s = settings(**kw)
     ff = PGMForceField(sys, H, s)
-    nb = AtomNeighbors(sys.n, H, s.cutoff, s.skin)
+    nb = AtomNeighbors(sys.n, H, s.cutoffs.cutoff, s.neighbors.skin)
     return ff, nb.allocate(pos, None, H).idx
 
 
@@ -262,7 +262,7 @@ def test_netcdf_trajectory_and_restart(tmp_path):
 
 @need_water_box
 def test_nve_energy_conservation_and_exact_restart(tmp_path):
-    s = MDSettings(cutoff=0.8, skin=0.1, pme_grid=(48, 48, 48), dipole_tol=1e-6, precision="mixed")
+    s = MDSettings().replace(cutoff=0.8, skin=0.1, pme_grid=(48, 48, 48), dipole_tol=1e-6, precision="mixed")
     sim = Simulation.from_amber(TOP, RST, settings=s, thermostat=None, dt=0.001, log=None)
     E = []
     for _ in range(10):

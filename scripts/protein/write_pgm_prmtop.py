@@ -84,7 +84,7 @@ else:
 info["exported"] = {str(k): v for k, v in info["exported"].items()}
 print(json.dumps(info, indent=1, default=float))
 if a.mdin:
-    st = MDSettings(
+    st = MDSettings().replace(
         cutoff=a.cut,
         ewald_beta=a.beta,
         pme_grid=pmemd_grid(asys.box, a.spacing),
@@ -102,5 +102,5 @@ if a.mdin:
     )
     print(
         f"mdin: {a.mdin}.min.in, .heat.in, .md.in (engine settings: MDSettings(cutoff={a.cut}, ewald_beta={a.beta}, "
-        f"pme_grid={st.pme_grid}, pme_order={a.order}, lj_lrc={bool(a.lrc)}, dipole_tol={a.tol}))"
+        f"pme_grid={st.pme.grid}, pme_order={a.order}, lj_lrc={bool(a.lrc)}, dipole_tol={a.tol}))"
     )

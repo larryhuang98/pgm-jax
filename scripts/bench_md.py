@@ -107,7 +107,7 @@ def main():
     beta = a.beta if a.beta is not None else (4.0 if a.elec_cut is None else ewald_beta_for(a.elec_cut, a.dsum_tol))
     per = a.grid if a.grid is not None else int(np.ceil(48 * (beta / 4.0) ** 1.6 / 4.0 - 1e-9)) * 4
     grid = tuple(per * n for _ in range(3))
-    st = MDSettings(
+    st = MDSettings().replace(
         cutoff=a.cut,
         skin=a.skin,
         ewald_beta=beta,

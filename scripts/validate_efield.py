@@ -122,7 +122,7 @@ def part_box1():
     print("# one pGM3P-25 water in a cubic box, E = 0.1 V/nm along z: engine response vs gas phase")
     for L in (2.0, 3.0, 4.0, 6.0):
         H = np.eye(3) * L
-        s = MDSettings(
+        s = MDSettings().replace(
             cutoff=0.9,
             skin=0.0,
             ewald_beta=4.0,
@@ -162,7 +162,7 @@ def part_nve(ps: float = 20.0, only=None):
     sys_ = System(mols)
     xyz, vel, box = read_coordinates(P25_RST)
     pos, H = scale_to(sys_, xyz * 0.1, box_from_cell(*box) * 0.1, float(np.sum(sys_.masses)) / 1.010 * AMU_NM3_TO_G_CM3)
-    s = MDSettings(
+    s = MDSettings().replace(
         cutoff=0.9,
         skin=0.1,
         ewald_beta=4.0,
@@ -240,7 +240,7 @@ def part_speed(nsteps: int = 5000):
     sys_ = System(mols)
     xyz, vel, box = read_coordinates(P25_RST)
     pos, H = scale_to(sys_, xyz * 0.1, box_from_cell(*box) * 0.1, float(np.sum(sys_.masses)) / 1.010 * AMU_NM3_TO_G_CM3)
-    s = MDSettings(
+    s = MDSettings().replace(
         cutoff=0.9,
         skin=0.1,
         ewald_beta=4.0,

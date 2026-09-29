@@ -131,7 +131,7 @@ def main(argv=None):
         a.ew_coeff = 0.4 if a.es_cut is None else ewald_beta_for(a.es_cut / 10, a.dsum_tol) / 10
     if a.pme_spacing is None:
         a.pme_spacing = 0.5 if a.es_cut is None else 0.5 * (0.4 / a.ew_coeff) ** 1.6
-    st = MDSettings(
+    st = MDSettings().replace(
         cutoff=a.cut / 10,
         skin=a.skin / 10,
         ewald_beta=a.ew_coeff * 10,

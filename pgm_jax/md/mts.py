@@ -67,7 +67,7 @@ not support MTS yet.
 
     from pgm_jax.md.mts import MTS
     # a solvated protein: bonded terms and special pairs every 7/3 fs, the rest every 7 fs
-    sim = FlexibleSimulation(sys, templates, pos, H, MDSettings(predictor="mu3", **elec_cutoff_settings(0.7)),
+    sim = FlexibleSimulation(sys, templates, pos, H, MDSettings().replace(predictor="mu3", **elec_cutoff_settings(0.7)),
                              dt=0.007, mts=MTS(inner=3, split="special"), constraints="h-bonds", hmr=3.024,
                              thermostat="bussi")
 
@@ -217,11 +217,11 @@ class _MTSMixin:
             )
         anchor = m.anchor
         if anchor is None:
-            anchor = pol != "none" and s.predictor in _PRED
-        if anchor and not (pol != "none" and s.predictor in _PRED):
+            anchor = pol != "none" and s.induction.predictor in _PRED
+        if anchor and not (pol != "none" and s.induction.predictor in _PRED):
             raise ValueError(
                 "the anchored predictor needs fast induced dipoles (polarization 'mutual' or 'direct') "
-                f"and predictor mu3 or mu4 (got {pol!r}, {s.predictor!r})"
+                f"and predictor mu3 or mu4 (got {pol!r}, {s.induction.predictor!r})"
             )
         self.anchor = bool(anchor)
         if self.short:
@@ -236,7 +236,7 @@ class _MTSMixin:
                     f"MTS r_short + buffer = {m.r_short + m.buffer:g} nm exceeds the electrostatics "
                     f"cutoff {ff.rc_e:g} nm (the short-range list is taken from its rows)"
                 )
-            if s.vdw != "none" and m.r_short > ff.rc_v + 1e-12:
+            if s.terms.vdw != "none" and m.r_short > ff.rc_v + 1e-12:
                 raise ValueError(f"MTS r_short {m.r_short:g} nm exceeds the van der Waals cutoff {ff.rc_v:g} nm")
             self.r_on, self.r_off, self.r_list = r_on, float(m.r_short), float(m.r_short + m.buffer)
             self.beta_s = float(BETA_R / m.r_short if m.beta_short is None else m.beta_short)
@@ -408,7 +408,7 @@ class _MTSMixin:
     def _vdw_params(self, P, k, at):
         """Pair parameters of the van der Waals form for rows at(.) and partners k (PGMForceField
         ._vdw_params with a subset of row atoms)."""
-        cd, vdw = self.ff.cd, self.ff.s.vdw
+        cd, vdw = self.ff.cd, self.ff.s.terms.vdw
         if vdw == "lj":
             rh, se = P["lj_rmin_half"].astype(cd), P["lj_sqrt_eps"].astype(cd)
             return (at(rh)[:, None] + rh[k], at(se)[:, None] * se[k])

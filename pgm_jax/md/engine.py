@@ -289,18 +289,18 @@ class MDEngine:
     # ----------------------------------------------------------------- neighbour lists and sizes
     def _make_neighbors(self, H) -> None:
         """Neighbour-list object for box H [nm]: molecular-centre list when the box is large enough
-        for the groups' radius (`neighbor_list` "auto" / "molecule"), else an atom list.  JAX-MD's
+        for the groups' radius (MDSettings.neighbors.mode "auto" / "molecule"), else an atom list.  JAX-MD's
         cell list is laid out for one box shape, so it is rebuilt when the volume drifts by 10 %
         or a block keeps overflowing (driver.advance_with_rebuilds)."""
         s = self.settings
-        mode = self._nb_mode
+        mode = s.neighbors.mode
         if mode == "auto":
-            mode = "molecule" if MoleculeNeighbors.fits(H, s.pair_cutoff, s.skin, self._r_list) else "atom"
+            mode = "molecule" if MoleculeNeighbors.fits(H, s.pair_cutoff, s.neighbors.skin, self._r_list) else "atom"
         if mode == "molecule":
             group, n_group = self._list_groups()
-            self.nb = MoleculeNeighbors(group, n_group, self._r_list, H, s.pair_cutoff, s.skin)
+            self.nb = MoleculeNeighbors(group, n_group, self._r_list, H, s.pair_cutoff, s.neighbors.skin)
         else:
-            self.nb = AtomNeighbors(self.sys.n, H, s.pair_cutoff, s.skin)
+            self.nb = AtomNeighbors(self.sys.n, H, s.pair_cutoff, s.neighbors.skin)
         self._nb_volume = float(volume(jnp.asarray(H)))
 
     def _size_lists(self, dynpos, H, factor: float = 1.2, nbr=None):

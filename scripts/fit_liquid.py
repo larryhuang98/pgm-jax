@@ -128,7 +128,7 @@ def gas_energy(sysd, p0, T, settings):
 
     x = _unwrap(np.asarray(sysd["pos"])[sl], np.asarray(sysd["H"]))
     Hb = np.eye(3) * 5.0
-    big = MDSettings(precision="double", dipole_tol=1e-9, cutoff=2.2, skin=0.05, lj_lrc=False)
+    big = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=2.2, skin=0.05, lj_lrc=False)
     ff = PGMForceField(System([mol]), Hb, big)
 
     def e_md(y):

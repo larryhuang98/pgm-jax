@@ -7,7 +7,6 @@ and iEL/0-SCF, per call, on the current device.
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import time
 
 import jax
@@ -40,7 +39,7 @@ def main():
     pos = jnp.asarray(np.concatenate([xyz * 0.1 + s for s in shifts]))
     H = jnp.asarray(H * n)
     sys_ = System(mols * len(shifts))
-    base = MDSettings(
+    base = MDSettings().replace(
         cutoff=0.9,
         skin=0.1,
         ewald_beta=4.0,
@@ -54,8 +53,8 @@ def main():
     ff0 = PGMForceField(sys_, H, base)
     ff0.size_rows(pos, H, idx)
     print(f"# {sys_.nmol} waters, rows {ff0.mc}, device {jax.devices()[0]}", flush=True)
-    cases = [(f"scf-{k}", dataclasses.replace(base, iel="scf", iel_iter=k)) for k in (1, 2, 3, 4, 6)]
-    cases += [("0scf", dataclasses.replace(base, iel="0scf")), ("mu4 tol 1e-5", base)]
+    cases = [(f"scf-{k}", base.replace(iel="scf", iel_iter=k)) for k in (1, 2, 3, 4, 6)]
+    cases += [("0scf", base.replace(iel="0scf")), ("mu4 tol 1e-5", base)]
     for name, s in cases:
         ff = PGMForceField(sys_, H, s)
         ff.mc = ff0.mc

@@ -13,7 +13,7 @@ from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate, liquid_box
 from pgm_jax.md.forcefield import MDSettings, ewald_beta_for
 from pgm_jax.md.mts import MTS
 
-FLUX_SETTINGS = MDSettings(
+FLUX_SETTINGS = MDSettings().replace(
     cutoff=0.5, skin=0.05, ewald_beta=6.0, pme_grid=(32, 32, 32), lj_lrc=False, precision="double"
 )
 
@@ -31,7 +31,7 @@ def test_mts_refuses_an_alchemical_region():
 
 def test_mts_refuses_sites_in_the_flexible_engine():
     sys, pos, H = _tip4pew_ideal()
-    s = MDSettings(
+    s = MDSettings().replace(
         elec="q", cutoff=0.65, skin=0.05, ewald_beta=ewald_beta_for(0.65), pme_spacing=0.06, precision="double"
     )
     tpl = RigidTemplate(sys.molecules[0], pos[:4])

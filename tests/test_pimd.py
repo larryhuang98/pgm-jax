@@ -218,7 +218,7 @@ def _water_box(n_side=2, L=1.5, seed=0):
 
 def _sim(**kw):
     tpl, sys, pos, H = _water_box()
-    s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=0.5, skin=0.05, lj_lrc=False, max_iter=200)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=0.5, skin=0.05, lj_lrc=False, max_iter=200)
     return FlexibleSimulation(
         sys, [tpl] * sys.nmol, pos, H, s, dt=0.0002, thermostat="bussi", temperature=T, log=None, **kw
     )

@@ -127,7 +127,7 @@ def main():
     shifts = [i * H[0] + j * H[1] + k * H[2] for i in range(n) for j in range(n) for k in range(n)]
     pos = np.concatenate([xyz * 0.1 + s for s in shifts])
     sys_ = System(mols * len(shifts))
-    st = MDSettings(
+    st = MDSettings().replace(
         cutoff=0.9,
         skin=0.1,
         ewald_beta=4.0,
@@ -164,7 +164,7 @@ def main():
         flush=True,
     )
     # fully converged reference: float64, tol 1e-9, from scratch
-    ref_s = MDSettings(
+    ref_s = MDSettings().replace(
         cutoff=0.9,
         skin=0.1,
         ewald_beta=4.0,

@@ -244,7 +244,7 @@ def test_nve_with_restraints_and_force_mapping(engine):
     pos, H, w = _cluster()
     masses = np.asarray(System([water()]).masses)
     rs = _cluster_restraints(pos, np.tile(masses, len(pos) // 3))
-    s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     sim = _water_sim(engine, pos, H, w, s, dt=0.001, thermostat=None, restraints=rs)
     o = sim.observables()
     assert abs(o["erestraint"] - float(rs.energy(sim.positions(), H))) < 1e-10 and o["erestraint"] > 40.0
@@ -289,7 +289,7 @@ def test_barostat_trials_include_restraints(engine):
     pos, H, w = _water_box()
     m = np.tile(np.asarray(System([water()]).masses), len(pos) // 3)
     far = np.arange(3 * 63, 3 * 64)  # centre near (1.1, 1.1, 1.1) nm
-    s = MDSettings(precision="double", dipole_tol=1e-8, cutoff=0.55, skin=0.05)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-8, cutoff=0.55, skin=0.05)
     out = {}
     for scaling in ("none", "com"):
         r = PositionRestraint(far, pos[far], k=1e6, scaling=scaling, box=H, weights=m[far])
@@ -329,7 +329,7 @@ def test_flexible_engine_restrained_atom_held():
     sys = System([wat] * nmol)
     ref = pos[[0]] + [[0.0, 0.2, 0.0]]
     rs = PositionRestraint([0], ref, k=3000.0, r0=0.01)
-    s = MDSettings(precision="double", dipole_tol=1e-8, cutoff=0.55, skin=0.05)
+    s = MDSettings().replace(precision="double", dipole_tol=1e-8, cutoff=0.55, skin=0.05)
     sim = FlexibleSimulation(
         sys,
         [RigidTemplate(wat, w)] * nmol,

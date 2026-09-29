@@ -83,7 +83,7 @@ def build(a, log=sys.stdout):
     H = box_from_cell(*box) * 0.1
     pos = xyz * 0.1
     n = len(pos) // 3
-    s = MDSettings(cutoff=a.cut, dipole_tol=a.tol, precision=a.precision)
+    s = MDSettings().replace(cutoff=a.cut, dipole_tol=a.tol, precision=a.precision)
     sim = FlexibleSimulation(
         System([tpl.pgm] * n),
         [tpl] * n,

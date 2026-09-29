@@ -90,8 +90,8 @@ products are requested at full precision (NVIDIA GPUs otherwise use TF32, ~1e-3 
 
 from __future__ import annotations
 
+import dataclasses as _dc
 import math
-from dataclasses import dataclass
 from typing import NamedTuple
 
 import jax
@@ -112,104 +112,349 @@ from .topology import MDTopology
 _SQRT_PI = math.sqrt(math.pi)
 
 
-@dataclass(frozen=True)
-class MDSettings:
-    """Nonbonded and induction settings; names in comments are the pmemd-pgm equivalents."""
+@_dc.dataclass(frozen=True)
+class Terms:
+    """The interactions of the force field.
 
-    cutoff: float = 0.9  # nm; cut / vdw_cutoff (van der Waals; electrostatics too unless elec_cutoff)
-    elec_cutoff: float | None = None  # nm; es_cutoff: real-space electrostatics (None: cutoff).  Shorter than
-    # cutoff: set ewald_beta and the PME grid for it (elec_cutoff_settings)
-    skin: float = 0.1  # nm; skinnb
-    ewald_beta: float = 4.0  # nm^-1; ew_coeff (0.4 A^-1)
-    pme_grid: tuple | None = None  # nfft1..3; None: from pme_spacing
-    pme_spacing: float = 0.08  # nm
-    pme_order: int = 6  # order
-    lj_lrc: bool = True  # vdwmeth = 1 (the r^-6 tail of LJ, or of the GVDW dispersion)
-    dipole_tol: float = (
-        1e-5  # dipole_scf_tol (max|alpha r| / mean|alpha b|); 1e-4: ~20 % faster, NVE drift 0.02 kT/ns/dof
-    )
-    max_iter: int = 50  # scf_cg_niter
-    predictor: str = "mu4"  # mu4 | mu3 | ls | none
-    fused: bool = True  # fused initial residual (mu3/mu4)
-    norm_refresh: int = 1000  # steps between unfused steps (convergence normaliser)
-    local_cut: float = 0.3  # nm; scf_local_cut
-    local_niter: int = 0  # scf_local_niter; 0: Jacobi (fastest on GPU)
-    peek: float = 0.65  # scf_sor_coefficient (0: no peek step)
-    extrap_order: int = 3  # dipole_scf_init_order (predictor "ls")
-    extrap_steps: int = 2  # dipole_scf_init_step (predictor "ls")
-    precision: str = "mixed"  # "mixed" | "double"
-    differentiable: bool = False  # forces and induced dipoles differentiable (reverse mode) in
-    # parameters, positions and box: implicit differentiation of
-    # the dipole solve, one adjoint CG per gradient
-    adjoint_tol: float = 1e-6  # adjoint CG: max|alpha r| / mean|alpha rhs|
-    elec: str = "qpi"  # "q" charges | "qp" + permanent dipoles | "qi" charges + induction |
-    # "qpi" pGM (options.py); quadrupoles are not in the MD engine yet
-    vdw: str = "lj"  # "lj" | "gvdw" (vdw.py; pmemd-pgm igvdw=1) | "none"
-    gvdw_rep: str = "gauss"  # GVDW repulsion: "gauss" (gvdw_rep_form=0) | "slater" (=1)
-    # extended-Lagrangian induced dipoles (docs/iel.md): auxiliary dipoles x propagated by Niklasson's
-    # time-reversible Verlet with dissipation, x' = 2x - x_ - kappa (mu - x) + a sum_k c_k x_k
-    iel: str = "none"  # "none": SCF from the predictor (above) | "0scf": iEL/0-SCF, no CG:
-    # mu = x + alpha r(x) and exact forces of the shadow energy |
-    # "scf": iEL/SCF, CG started from x (iel_iter iterations)
-    iel_iter: int = 1  # "scf": CG iterations per step (0: to dipole_tol)
-    iel_order: int = 7  # Niklasson dissipation order K (3..9; 0: none, exactly time-reversible)
-    iel_kappa: float | None = None  # kappa = (omega dt)^2; None: Niklasson's value for K (1.0 for K = 0)
-    iel_alpha: float | None = None  # dissipation strength a; None: Niklasson's value for K
-    iel_precond: str = "block"  # "0scf": delta = omega alpha r ("jacobi") or omega M^-1 r with M = 1/alpha +
-    # the intramolecular row blocks of molecules of <= 8 atoms ("block")
-    iel_omega: float = 1.0  # "0scf": mu = x + omega alpha r(x) (omega < 1: damped Jacobi step)
-    iel_shadow: bool = True  # "0scf": energy and forces of the shadow potential (exact, conserved);
-    # False: fixed-dipole forces at mu (error second order in mu - x)
+    Attributes
+    ----------
+    elec : str
+        Electrostatics: "q" charges, "qp" charges + permanent dipoles, "qi" charges + induction,
+        "qpi" pGM (charges, permanent and induced dipoles; options.py).  Quadrupoles are not in
+        the MD engine.
+    vdw : str
+        Van der Waals term: "lj" (Lennard-Jones), "gvdw" (vdw.py; pmemd-pgm igvdw=1) or "none".
+    gvdw_rep : str
+        GVDW repulsion: "gauss" (gvdw_rep_form=0) or "slater" (=1).
+    lj_lrc : bool
+        Long-range correction of the r^-6 tail of LJ or of the GVDW dispersion (vdwmeth = 1).
+    """
+
+    elec: str = "qpi"
+    vdw: str = "lj"
+    gvdw_rep: str = "gauss"
+    lj_lrc: bool = True
+
+
+@_dc.dataclass(frozen=True)
+class Cutoffs:
+    """Cutoffs of the pair terms and of the neighbour list.
+
+    Attributes
+    ----------
+    cutoff : float
+        Van der Waals cutoff [nm], and the electrostatics cutoff unless elec_cutoff is set
+        (pmemd: cut / vdw_cutoff).
+    elec_cutoff : float or None
+        Real-space electrostatics cutoff [nm] (pmemd: es_cutoff); None: `cutoff`.  Shorter than
+        cutoff: set the Ewald coefficient and the PME grid for it (elec_cutoff_settings).
+    """
+
+    cutoff: float = 0.9
+    elec_cutoff: float | None = None
+
+
+@_dc.dataclass(frozen=True)
+class NeighborList:
+    """The Verlet neighbour list of the engines.
+
+    Attributes
+    ----------
+    skin : float
+        Skin added to the pair cutoff [nm] (pmemd: skinnb); the list is rebuilt when an atom (or a
+        group centre) has moved by half of it.
+    mode : str
+        "auto" (a list of molecule / group centres when the box is large enough for the groups'
+        radius, else of atoms), "molecule" or "atom".
+    """
+
+    skin: float = 0.1
+    mode: str = "auto"
+
+
+@_dc.dataclass(frozen=True)
+class PMESettings:
+    """Smooth particle-mesh Ewald.
+
+    Attributes
+    ----------
+    ewald_beta : float
+        Ewald coefficient [1/nm] (pmemd: ew_coeff; 4.0 /nm = 0.4 /A).
+    grid : tuple of 3 int or None
+        Grid points per box vector (pmemd: nfft1..3); None: from `spacing` and the box.
+    spacing : float
+        Largest grid spacing [nm] when grid is None.
+    order : int
+        B-spline order (pmemd: order).
+    """
+
+    ewald_beta: float = 4.0
+    grid: tuple | None = None
+    spacing: float = 0.08
+    order: int = 6
+
+
+@_dc.dataclass(frozen=True)
+class ExtendedLagrangian:
+    """Extended-Lagrangian induced dipoles (docs/iel.md).
+
+    Auxiliary dipoles x are propagated by Niklasson's time-reversible Verlet with dissipation,
+    x' = 2x - x_ - kappa (mu - x) + a sum_k c_k x_k.
+
+    Attributes
+    ----------
+    scheme : str
+        "none": SCF from the predictor (Induction); "0scf": iEL/0-SCF, no CG, mu = x + alpha r(x)
+        with the exact forces of the shadow energy; "scf": iEL/SCF, CG started from x.
+    iterations : int
+        "scf": CG iterations per step (0: to Induction.tol).
+    order : int
+        Niklasson dissipation order K (3..9; 0: none, exactly time-reversible).
+    kappa : float or None
+        kappa = (omega dt)^2; None: Niklasson's value for K (1.0 for K = 0).
+    alpha : float or None
+        Dissipation strength a; None: Niklasson's value for K.
+    precond : str
+        "0scf": delta = omega alpha r ("jacobi") or omega M^-1 r with M = 1/alpha + the
+        intramolecular row blocks of molecules of <= 8 atoms ("block").
+    omega : float
+        "0scf": mu = x + omega alpha r(x) (omega < 1: damped Jacobi step).
+    shadow : bool
+        "0scf": energy and forces of the shadow potential (exact, conserved); False: fixed-dipole
+        forces at mu (error second order in mu - x).
+    """
+
+    scheme: str = "none"
+    iterations: int = 1
+    order: int = 7
+    kappa: float | None = None
+    alpha: float | None = None
+    precond: str = "block"
+    omega: float = 1.0
+    shadow: bool = True
+
+
+@_dc.dataclass(frozen=True)
+class Induction:
+    """The induced-dipole solver (preconditioned CG, pmemd-pgm's scheme) and its predictor.
+
+    Attributes
+    ----------
+    tol : float
+        Convergence: max |alpha r| / mean |alpha b| (pmemd: dipole_scf_tol); 1e-4 is about 20 %
+        faster with an NVE drift of 0.02 kT/ns/dof.
+    max_iter : int
+        Largest number of CG iterations (pmemd: scf_cg_niter).
+    predictor : str
+        Initial guess from earlier steps: "mu4", "mu3", "ls" (least squares) or "none".
+    fused : bool
+        Fused initial residual of the mu3 / mu4 predictors.
+    norm_refresh : int
+        Steps between unfused steps (they refresh the convergence normaliser).
+    local_cut : float
+        Cutoff of the local preconditioner [nm] (pmemd: scf_local_cut).
+    local_niter : int
+        Iterations of the local preconditioner (pmemd: scf_local_niter); 0: Jacobi (fastest on GPU).
+    peek : float
+        Coefficient of the peek step after the CG (pmemd: scf_sor_coefficient; 0: none).
+    extrap_order : int
+        Order of the "ls" predictor (pmemd: dipole_scf_init_order).
+    extrap_steps : int
+        Step of the "ls" predictor (pmemd: dipole_scf_init_step).
+    iel : ExtendedLagrangian
+        Extended-Lagrangian dipoles (scheme "none": off, the solver above from the predictor).
+    """
+
+    tol: float = 1e-5
+    max_iter: int = 50
+    predictor: str = "mu4"
+    fused: bool = True
+    norm_refresh: int = 1000
+    local_cut: float = 0.3
+    local_niter: int = 0
+    peek: float = 0.65
+    extrap_order: int = 3
+    extrap_steps: int = 2
+    iel: ExtendedLagrangian = _dc.field(default_factory=ExtendedLagrangian)
+
+
+# flat names of the settings (the pmemd-like names of the single-level MDSettings of pgm_jax up to
+# commit e72c57c, still accepted by MDSettings.replace) -> path of groups and field
+FLAT_SETTINGS = {
+    "elec": ("terms", "elec"),
+    "vdw": ("terms", "vdw"),
+    "gvdw_rep": ("terms", "gvdw_rep"),
+    "lj_lrc": ("terms", "lj_lrc"),
+    "cutoff": ("cutoffs", "cutoff"),
+    "elec_cutoff": ("cutoffs", "elec_cutoff"),
+    "skin": ("neighbors", "skin"),
+    "neighbor_list": ("neighbors", "mode"),
+    "ewald_beta": ("pme", "ewald_beta"),
+    "pme_grid": ("pme", "grid"),
+    "pme_spacing": ("pme", "spacing"),
+    "pme_order": ("pme", "order"),
+    "dipole_tol": ("induction", "tol"),
+    "max_iter": ("induction", "max_iter"),
+    "predictor": ("induction", "predictor"),
+    "fused": ("induction", "fused"),
+    "norm_refresh": ("induction", "norm_refresh"),
+    "local_cut": ("induction", "local_cut"),
+    "local_niter": ("induction", "local_niter"),
+    "peek": ("induction", "peek"),
+    "extrap_order": ("induction", "extrap_order"),
+    "extrap_steps": ("induction", "extrap_steps"),
+    "iel": ("induction", "iel", "scheme"),
+    "iel_iter": ("induction", "iel", "iterations"),
+    "iel_order": ("induction", "iel", "order"),
+    "iel_kappa": ("induction", "iel", "kappa"),
+    "iel_alpha": ("induction", "iel", "alpha"),
+    "iel_precond": ("induction", "iel", "precond"),
+    "iel_omega": ("induction", "iel", "omega"),
+    "iel_shadow": ("induction", "iel", "shadow"),
+}
+
+
+def _set_path(obj, path: tuple, value):
+    """A copy of the frozen dataclass `obj` with the field at `path` (names of nested fields) set."""
+    if len(path) == 1:
+        return _dc.replace(obj, **{path[0]: value})
+    return _dc.replace(obj, **{path[0]: _set_path(getattr(obj, path[0]), path[1:], value)})
+
+
+_GROUPS = {
+    "terms": Terms,
+    "cutoffs": Cutoffs,
+    "neighbors": NeighborList,
+    "pme": PMESettings,
+    "induction": Induction,
+}
+
+
+@_dc.dataclass(frozen=True)
+class MDSettings:
+    """Force-field and solver settings of the MD engines, in groups.
+
+        MDSettings()                                           # the defaults
+        MDSettings(induction=Induction(tol=1e-6), precision="double")
+        MDSettings().replace(dipole_tol=1e-6, cutoff=0.8, iel="0scf")   # flat (pmemd-like) names
+
+    Frozen and hashable (compiled functions are cached on it); change it with `replace`.
+
+    Attributes
+    ----------
+    terms : Terms
+        Electrostatics and van der Waals terms.
+    cutoffs : Cutoffs
+        Cutoffs of the pair terms [nm].
+    neighbors : NeighborList
+        Neighbour-list skin [nm] and kind.
+    pme : PMESettings
+        Ewald coefficient and PME grid.
+    induction : Induction
+        Induced-dipole solver, predictor and extended-Lagrangian dipoles.
+    precision : str
+        "mixed" (float32 kernels, float64 accumulation where it matters) or "double".
+    differentiable : bool
+        Forces and induced dipoles differentiable (reverse mode) in parameters, positions and
+        box: implicit differentiation of the dipole solve, one adjoint CG per gradient.
+    adjoint_tol : float
+        Convergence of the adjoint CG: max |alpha r| / mean |alpha rhs|.
+    """
+
+    terms: Terms = _dc.field(default_factory=Terms)
+    cutoffs: Cutoffs = _dc.field(default_factory=Cutoffs)
+    neighbors: NeighborList = _dc.field(default_factory=NeighborList)
+    pme: PMESettings = _dc.field(default_factory=PMESettings)
+    induction: Induction = _dc.field(default_factory=Induction)
+    precision: str = "mixed"
+    differentiable: bool = False
+    adjoint_tol: float = 1e-6
+
+    def replace(self, **changes) -> MDSettings:
+        """A copy with some settings changed.
+
+        Parameters
+        ----------
+        **changes
+            Top-level fields (precision, differentiable, adjoint_tol), whole groups (terms=Terms(...),
+            cutoffs, neighbors, pme, induction), or single settings under their flat names
+            (FLAT_SETTINGS: dipole_tol, cutoff, skin, pme_grid, iel="0scf", iel_iter, ...).
+
+        Returns
+        -------
+        MDSettings
+
+        Raises
+        ------
+        TypeError
+            An unknown name.
+        """
+        out = self
+        for k, v in changes.items():
+            if k in _GROUPS or k in ("precision", "differentiable", "adjoint_tol"):
+                out = _dc.replace(out, **{k: v})
+            elif k in FLAT_SETTINGS:
+                out = _set_path(out, FLAT_SETTINGS[k], v)
+            else:
+                raise TypeError(f"MDSettings.replace: unknown setting {k!r}")
+        return out
 
     @property
     def perm_dipoles(self) -> bool:
-        return elec_flags(self.elec)[0]
+        """Whether the electrostatics have permanent dipoles."""
+        return elec_flags(self.terms.elec)[0]
 
     @property
-    def induction(self) -> bool:
-        return elec_flags(self.elec)[1]
+    def has_induction(self) -> bool:
+        """Whether the electrostatics have induced dipoles."""
+        return elec_flags(self.terms.elec)[1]
 
     @property
     def dtype(self):
+        """Floating-point type of the kernels (float32 in mixed precision)."""
         return jnp.float32 if self.precision == "mixed" else jnp.float64
 
     @property
     def elec_rc(self) -> float:
         """Real-space electrostatics cutoff (nm)."""
-        return float(self.cutoff) if self.elec_cutoff is None else float(self.elec_cutoff)
+        c = self.cutoffs
+        return float(c.cutoff) if c.elec_cutoff is None else float(c.elec_cutoff)
 
     @property
     def pair_cutoff(self) -> float:
         """Cutoff of the pair rows and of the neighbour list (nm): the larger of the electrostatics
         and van der Waals cutoffs (the latter only with a van der Waals term)."""
-        return self.elec_rc if self.vdw == "none" else max(float(self.cutoff), self.elec_rc)
+        return self.elec_rc if self.terms.vdw == "none" else max(float(self.cutoffs.cutoff), self.elec_rc)
 
     def describe_induction(self) -> str:
         """Induced-dipole scheme for log headers."""
-        if self.iel == "none":
-            return f"predictor {self.predictor}{' (fused)' if self.fused else ''}, dipole tol {self.dipole_tol:g}"
-        kap, a, _ = _XL[self.iel_order]
-        kap = kap if self.iel_kappa is None else self.iel_kappa
-        a = a if self.iel_alpha is None else self.iel_alpha
+        ind = self.induction
+        x = ind.iel
+        if x.scheme == "none":
+            return f"predictor {ind.predictor}{' (fused)' if ind.fused else ''}, dipole tol {ind.tol:g}"
+        kap, a, _ = _XL[x.order]
+        kap = kap if x.kappa is None else x.kappa
+        a = a if x.alpha is None else x.alpha
         what = (
-            ("iEL/0-SCF" if self.iel_shadow else "iEL/0-SCF (fixed-dipole forces)")
-            if self.iel == "0scf"
-            else f"iEL/SCF ({self.iel_iter} CG iterations)"
-            if self.iel_iter > 0
+            ("iEL/0-SCF" if x.shadow else "iEL/0-SCF (fixed-dipole forces)")
+            if x.scheme == "0scf"
+            else f"iEL/SCF ({x.iterations} CG iterations)"
+            if x.iterations > 0
             else "iEL/SCF (CG to tol)"
         )
-        om = f", omega {self.iel_omega:g}" if (self.iel == "0scf" and self.iel_omega != 1.0) else ""
-        om += ", block preconditioner" if (self.iel == "0scf" and self.iel_precond == "block") else ""
+        om = f", omega {x.omega:g}" if (x.scheme == "0scf" and x.omega != 1.0) else ""
+        om += ", block preconditioner" if (x.scheme == "0scf" and x.precond == "block") else ""
         return (
-            f"{what} extended-Lagrangian dipoles (K {self.iel_order}, kappa {kap:g}, a {a:g}{om}), "
-            f"dipole tol {self.dipole_tol:g} (warm-up)"
+            f"{what} extended-Lagrangian dipoles (K {x.order}, kappa {kap:g}, a {a:g}{om}), "
+            f"dipole tol {ind.tol:g} (warm-up)"
         )
 
     def describe_cutoffs(self) -> str:
         """Cutoffs for log headers."""
-        if self.elec_cutoff is None or self.elec_rc == float(self.cutoff):
-            return f"cutoff {self.cutoff} nm"
-        return f"cutoff {self.cutoff} nm (electrostatics {self.elec_rc} nm, Ewald {self.ewald_beta:.4g} /nm)"
+        c = self.cutoffs
+        if c.elec_cutoff is None or self.elec_rc == float(c.cutoff):
+            return f"cutoff {c.cutoff} nm"
+        return f"cutoff {c.cutoff} nm (electrostatics {self.elec_rc} nm, Ewald {self.pme.ewald_beta:.4g} /nm)"
 
 
 # Direct-sum tolerance, in Amber's convention (ewald_beta_for), of the default pair 0.9 nm / 4.0 nm^-1.
@@ -249,7 +494,7 @@ def elec_cutoff_settings(elec_cutoff: float, dsum_tol: float = DSUM_TOL, exponen
     the PME grid spacing h = 0.08 nm (4.0 / beta)^exponent, scaled from the default pair
     (4.0 nm^-1, 0.08 nm).
 
-        MDSettings(cutoff=0.9, **elec_cutoff_settings(0.7))   # LJ at 0.9 nm, electrostatics at 0.7
+        MDSettings().replace(cutoff=0.9, **elec_cutoff_settings(0.7))   # LJ at 0.9 nm, electrostatics at 0.7
 
     At a fixed spline order the PME force error of pGM (charges and dipoles) grows roughly as
     beta^9.5 h^6 (measured, order 6, ubiquitin in water): keeping beta x h fixed (exponent 1: 0.7 nm,
@@ -313,7 +558,7 @@ class InductionState:
     rec: jnp.ndarray  # (4, S, N, 3) "ls" records: alpha b, mu, mu - pred1, mu - pred2
     pred: jnp.ndarray  # (2, N, 3) "ls" order-1 and order-2 predictions
     lscount: jnp.ndarray  # (4,) int32
-    xl: jnp.ndarray = None  # (K1, N, 3) extended-Lagrangian auxiliary dipoles x_{n+1}, x_n, ... (settings.iel)
+    xl: jnp.ndarray = None  # (K1, N, 3) extended-Lagrangian auxiliary dipoles x_{n+1}, x_n, ... (induction.iel)
 
 
 class Result(NamedTuple):
@@ -368,33 +613,33 @@ class PGMForceField:
         flux=None,
     ):
         self.sys, self.s = sys, settings
-        if settings.predictor not in ("mu4", "mu3", "ls", "none"):
-            raise ValueError(f"unknown predictor {settings.predictor!r}")
-        check_vdw(settings.vdw, settings.gvdw_rep)
-        self.pd, self.ind = elec_flags(settings.elec)
-        if settings.iel not in ("none", "0scf", "scf"):
-            raise ValueError(f"unknown iel {settings.iel!r} (none | 0scf | scf)")
-        if settings.iel != "none":
-            if settings.iel_order not in _XL:
-                raise ValueError(f"iel_order must be one of {sorted(_XL)}, got {settings.iel_order}")
+        if settings.induction.predictor not in ("mu4", "mu3", "ls", "none"):
+            raise ValueError(f"unknown predictor {settings.induction.predictor!r}")
+        check_vdw(settings.terms.vdw, settings.terms.gvdw_rep)
+        self.pd, self.ind = elec_flags(settings.terms.elec)
+        if settings.induction.iel.scheme not in ("none", "0scf", "scf"):
+            raise ValueError(f"unknown iel {settings.induction.iel.scheme!r} (none | 0scf | scf)")
+        if settings.induction.iel.scheme != "none":
+            if settings.induction.iel.order not in _XL:
+                raise ValueError(f"iel_order must be one of {sorted(_XL)}, got {settings.induction.iel.order}")
             if settings.differentiable:
                 raise ValueError("iel (extended-Lagrangian dipoles) and differentiable=True are exclusive")
-            if settings.iel_iter < 0:
+            if settings.induction.iel.iterations < 0:
                 raise ValueError("iel_iter must be >= 0")
-            if not 0.0 < settings.iel_omega < 2.0:
+            if not 0.0 < settings.induction.iel.omega < 2.0:
                 raise ValueError("iel_omega must be in (0, 2)")
-            if settings.iel_precond not in ("jacobi", "block"):
-                raise ValueError(f"iel_precond must be jacobi or block, got {settings.iel_precond!r}")
+            if settings.induction.iel.precond not in ("jacobi", "block"):
+                raise ValueError(f"iel_precond must be jacobi or block, got {settings.induction.iel.precond!r}")
         if any(len(m.quad) for m in sys.molecules):
             import warnings
 
             warnings.warn("quadrupole terms are ignored by the MD engine (gas phase only for now)", stacklevel=2)
         self.cd = settings.dtype
         self.n = sys.n
-        self.b0 = float(settings.ewald_beta)
+        self.b0 = float(settings.pme.ewald_beta)
         self.c_self = 4.0 * self.b0**3 / (3.0 * _SQRT_PI)
-        grid = settings.pme_grid or grid_size(H, settings.pme_spacing)
-        self.pme = PME(grid, settings.pme_order, self.b0, self.cd)
+        grid = settings.pme.grid or grid_size(H, settings.pme.spacing)
+        self.pme = PME(grid, settings.pme.order, self.b0, self.cd)
         mol = np.asarray(sys.mol)
         self.mol = jnp.asarray(mol)
         self.cov_i, self.cov_j = jnp.asarray(sys.cov_i), jnp.asarray(sys.cov_j)
@@ -403,15 +648,18 @@ class PGMForceField:
         # passed at call time with new zeros need a force field built from a table with zeros
         self.alpha_mask = bool(np.any(np.asarray(sys.expand()["alpha"]) == 0.0))
         self.masses = jnp.asarray(sys.masses)
-        self.S = max(1, int(settings.extrap_steps))
+        self.S = max(1, int(settings.induction.extrap_steps))
         self.ms = int(short_capacity)
         self.mc = row_capacity  # pairs kept per row (None: no compaction)
         # cutoffs (nm): electrostatics, van der Waals, rows.  With elec_cutoff < cutoff (and a van der
         # Waals term) the rows are split: mc_e electrostatic entries, then mc - mc_e van der Waals ones
-        self.rc_e, self.rc_v, self.rc_pair = settings.elec_rc, float(settings.cutoff), settings.pair_cutoff
+        self.rc_e, self.rc_v, self.rc_pair = settings.elec_rc, float(settings.cutoffs.cutoff), settings.pair_cutoff
         if not (self.rc_e > 0.0 and self.rc_v > 0.0):
-            raise ValueError(f"cutoffs must be positive (cutoff {settings.cutoff}, elec_cutoff {settings.elec_cutoff})")
-        self.split = settings.vdw != "none" and self.rc_e < self.rc_v
+            raise ValueError(
+                f"cutoffs must be positive (cutoff {settings.cutoffs.cutoff}, "
+                f"elec_cutoff {settings.cutoffs.elec_cutoff})"
+            )
+        self.split = settings.terms.vdw != "none" and self.rc_e < self.rc_v
         if elec_capacity is not None and not self.split:
             raise ValueError(
                 "elec_capacity applies only to split rows (elec_cutoff < cutoff with a van der Waals term)"
@@ -430,7 +678,7 @@ class PGMForceField:
         )
         self.first = jnp.asarray(first)
         self._blocks = None
-        if settings.iel == "0scf" and settings.iel_precond == "block":
+        if settings.induction.iel.scheme == "0scf" and settings.induction.iel.precond == "block":
             self._blocks = self._block_layout(mol, first, sys.nmol)
         self.flux = flux  # md/flux.py ChargeFlux (geometry-dependent q and c) or None
         if flux is not None and (flux.n_atoms != sys.n or len(flux.cov_bond) != len(sys.cov_i)):
@@ -690,8 +938,8 @@ class PGMForceField:
                 kv, xv, vin, wvv = vrows
                 rv = jnp.sqrt(jnp.where(vin, xv[0] * xv[0] + xv[1] * xv[1] + xv[2] * xv[2], 1.0))
                 g["vdw_rows"] = {"k": kv, "x": xv, "r": rv, "wv": wvv, "vp": self._vdw_params(P, kv)}
-        if self.s.local_niter > 0:
-            short = within & (r < self.s.local_cut)
+        if self.s.induction.local_niter > 0:
+            short = within & (r < self.s.induction.local_cut)
             g["short"] = self._short_rows(k, x, g["G1"], g["G2"], short)
         return g
 
@@ -754,33 +1002,33 @@ class PGMForceField:
     # ------------------------------------------------------------------ extended Lagrangian (iEL)
     @property
     def iel(self) -> bool:
-        """Extended-Lagrangian induced dipoles (settings.iel != "none", with induction)."""
-        return self.s.iel != "none" and self.ind
+        """Extended-Lagrangian induced dipoles (settings.induction.iel.scheme != "none", with induction)."""
+        return self.s.induction.iel.scheme != "none" and self.ind
 
     @property
     def shadow(self) -> bool:
         """iEL/0-SCF: the energy and forces are those of the shadow potential U~(R, x) (not the
         converged U*(R)); the barostat then evaluates U* at both volumes."""
-        return self.iel and self.s.iel == "0scf"
+        return self.iel and self.s.induction.iel.scheme == "0scf"
 
     @property
     def xl_coefficients(self):
         """(kappa, a, c_0..c_K) of the auxiliary-dipole recurrence."""
-        kap, a, c = _XL[self.s.iel_order]
-        kap = kap if self.s.iel_kappa is None else float(self.s.iel_kappa)
-        a = a if self.s.iel_alpha is None else float(self.s.iel_alpha)
+        kap, a, c = _XL[self.s.induction.iel.order]
+        kap = kap if self.s.induction.iel.kappa is None else float(self.s.induction.iel.kappa)
+        a = a if self.s.induction.iel.alpha is None else float(self.s.induction.iel.alpha)
         return kap, a, tuple(float(v) for v in c)
 
     @property
     def xl_len(self) -> int:
         """Auxiliary dipoles kept: x_{n+1} and x_n ... x_{n-K} after a step (at least 3)."""
-        return max(len(_XL[self.s.iel_order][2]) + 1, 3)
+        return max(len(_XL[self.s.induction.iel.order][2]) + 1, 3)
 
     @property
     def xl_warmup(self) -> int:
         """Steps solved to dipole_tol at the start (and after an accepted volume move) that fill the
         auxiliary history with converged dipoles."""
-        return max(self.s.iel_order, 2) + 1
+        return max(self.s.induction.iel.order, 2) + 1
 
     BLOCK_MAX = 8  # atoms per molecule in the block preconditioner (larger ones: Jacobi)
 
@@ -847,7 +1095,7 @@ class PGMForceField:
         return jnp.where(L["inb"][:, None], d, alpha[:, None] * r.astype(jnp.float64))
 
     def _solve_iel(self, g, S, Gk, alpha, q, p, ind: InductionState, ext=None):
-        """Extended-Lagrangian dipoles (settings.iel).  x = ind.xl[0] are the auxiliary dipoles of this
+        """Extended-Lagrangian dipoles (settings.induction.iel).  x = ind.xl[0] are the auxiliary dipoles of this
         step (propagated at the last one).  "0scf": mu = x + alpha r(x) with r(x) = field(q, p + x) -
         x / alpha, one field sweep; "scf": iel_iter CG iterations from x (to dipole_tol if 0).  The
         first xl_warmup steps solve to dipole_tol and put the solution in place of x.  Then
@@ -878,11 +1126,11 @@ class PGMForceField:
         def extended(_):
             r0 = add_ext(self._field(g, S, Gk, qc, p + x), x) - _div_alpha(x, a64, self.alpha_mask).astype(cd)
             norm = ind.norm
-            if self.s.iel == "0scf":
+            if self.s.induction.iel.scheme == "0scf":
                 d = a64 * r0.astype(jnp.float64) if self._blocks is None else self._block_solve(g, alpha, r0)
-                d = float(self.s.iel_omega) * d
+                d = float(self.s.induction.iel.omega) * d
                 return x + d, d, jnp.zeros((), jnp.int32), jnp.max(jnp.abs(d)) / norm, norm
-            k = int(self.s.iel_iter)
+            k = int(self.s.induction.iel.iterations)
             mu, it, err = self._cg(
                 g, A, alpha, x, r0, norm, tol=(0.0 if k > 0 else None), max_iter=(k if k > 0 else None)
             )
@@ -900,7 +1148,7 @@ class PGMForceField:
 
     def _extrapolate_ls(self, st: InductionState, new):
         """pmemd-pgm CPU multi-order least-squares extrapolation (dipole_scf_init = 3)."""
-        S, order = self.S, self.s.extrap_order
+        S, order = self.S, self.s.induction.extrap_order
         rec1 = st.rec[0].astype(jnp.float64)
         M = jnp.einsum("snd,tnd->st", rec1, rec1)
         bv = jnp.einsum("snd,nd->s", rec1, new.astype(jnp.float64))
@@ -951,15 +1199,15 @@ class PGMForceField:
     def _cg(self, g, A, alpha, x, r, norm, tol=None, peek=None, max_iter=None):
         """Preconditioned CG from (x0, r0 = b - A x0); returns mu (float64), iterations, residual."""
         cd, s = self.cd, self.s
-        tol = s.dipole_tol if tol is None else tol
-        peek = s.peek if peek is None else peek
-        max_iter = s.max_iter if max_iter is None else int(max_iter)
+        tol = s.induction.tol if tol is None else tol
+        peek = s.induction.peek if peek is None else peek
+        max_iter = s.induction.max_iter if max_iter is None else int(max_iter)
         inv_a = _div_alpha(1.0, alpha, self.alpha_mask).astype(cd)[:, None]
         a_c = alpha.astype(cd)[:, None]
 
         def precond(r):
             z = r * a_c
-            if s.local_niter <= 0:
+            if s.induction.local_niter <= 0:
                 return z
             gs = g["short"]
 
@@ -981,7 +1229,7 @@ class PGMForceField:
                 p = zz + (rz_new / jnp.maximum(rz, 1e-300)).astype(cd) * p
                 return z, rr, p, rz_new
 
-            z, *_ = jax.lax.fori_loop(0, s.local_niter, inner, (z, rr, zz, rz))
+            z, *_ = jax.lax.fori_loop(0, s.induction.local_niter, inner, (z, rr, zz, rz))
             return z
 
         def err_of(r):
@@ -1076,7 +1324,7 @@ class PGMForceField:
         a64 = alpha[:, None]
         qc = q.astype(cd)
         A = self._operator(g, S, Gk, alpha, ext)
-        pred = self.s.predictor
+        pred = self.s.induction.predictor
         zero = jnp.zeros((1, 3), cd)
         add_ext = (lambda b, x: b) if ext is None else (lambda b, x: b + self._ext_at(ext, x)[None, :])
 
@@ -1092,8 +1340,8 @@ class PGMForceField:
             K = len(c)
             have = ind.count >= K
             x0h = sum(ci * ind.hist[j] for j, ci in enumerate(c))
-            if self.s.fused and fused_ok:
-                use_fused = have & (ind.count % self.s.norm_refresh != 0)
+            if self.s.induction.fused and fused_ok:
+                use_fused = have & (ind.count % self.s.induction.norm_refresh != 0)
 
                 def fused(_):
                     r0 = add_ext(self._field(g, S, Gk, qc, p + x0h), x0h) - _div_alpha(
@@ -1129,7 +1377,7 @@ class PGMForceField:
         if delta is not None:
             u_rec = u_rec - self.pme.energy(S, G, jnp.zeros_like(q), delta)
             u_self = u_self + 0.5 * self.c_self * jnp.sum(delta * delta)
-            c = 1.0 - 1.0 / float(self.s.iel_omega)  # damped Jacobi step: - c |delta|^2 / (2 alpha)
+            c = 1.0 - 1.0 / float(self.s.induction.iel.omega)  # damped Jacobi step: - c |delta|^2 / (2 alpha)
             if c != 0.0:
                 u_self = u_self - c * jnp.sum(_div_alpha(delta * delta, 2.0 * P["alpha"][:, None], self.alpha_mask))
         u_bg = -jnp.pi * jnp.sum(q) ** 2 / (2.0 * volume(H) * self.b0**2)
@@ -1174,10 +1422,10 @@ class PGMForceField:
     def _vdw_params(self, P, k):
         """Row pair parameters of the van der Waals form (tuple of (N, C) arrays)."""
         cd = self.cd
-        if self.s.vdw == "lj":
+        if self.s.terms.vdw == "lj":
             rh, se = P["lj_rmin_half"].astype(cd), P["lj_sqrt_eps"].astype(cd)
             return (rh[:, None] + rh[k], se[:, None] * se[k])
-        if self.s.vdw == "gvdw":
+        if self.s.terms.vdw == "gvdw":
             sa, sc, b = (P[n].astype(cd) for n in ("gvdw_sqrt_a", "gvdw_sqrt_c6", "gvdw_b"))
             return (
                 sa[:, None] * sa[k],
@@ -1190,14 +1438,14 @@ class PGMForceField:
     def _vdw_rows(self, r, vp, wv, grad: bool = False):
         """Row pair energies (and (1/r) dU/dr) of the van der Waals form times the pair weights wv
         (0 for excluded pairs and outside the cutoff)."""
-        if self.s.vdw == "lj":
+        if self.s.terms.vdw == "lj":
             rminp, epsp = vp
             s6 = (rminp / r) ** 6
             e = epsp * (s6 * s6 - 2.0 * s6)
             d = epsp * 12.0 * (s6 - s6 * s6) / (r * r)
-        elif self.s.vdw == "gvdw":
+        elif self.s.terms.vdw == "gvdw":
             A, C6, B, a = vp
-            e, d = gvdw_pair(r, a, A, C6, B, self.s.gvdw_rep, grad=True)
+            e, d = gvdw_pair(r, a, A, C6, B, self.s.terms.gvdw_rep, grad=True)
         else:
             e = d = jnp.zeros_like(r)
         on = wv != 0
@@ -1205,10 +1453,10 @@ class PGMForceField:
         return (e, d) if grad else e
 
     def _vdw_tail(self, P, H):
-        if not self.s.lj_lrc or self.s.vdw == "none":
+        if not self.s.terms.lj_lrc or self.s.terms.vdw == "none":
             return 0.0
-        f = lj_long_range if self.s.vdw == "lj" else gvdw_long_range
-        return f(P, volume(H), self.s.cutoff)
+        f = lj_long_range if self.s.terms.vdw == "lj" else gvdw_long_range
+        return f(P, volume(H), self.s.cutoffs.cutoff)
 
     def _pair_sum(self, x, di, dk, qi, qk, a, within, wv, vp):
         """sum over row entries of KE e_elec + e_vdW (each pair twice), float64 (autodiff path).
@@ -1288,7 +1536,7 @@ class PGMForceField:
             Dk = (Dkk[..., 0], Dkk[..., 1], Dkk[..., 2])
             Di = tuple(delta[:, j][:, None] for j in range(3))
             if self._blocks is not None:  # block preconditioner: M / omega holds these pairs
-                w_blk = 1.0 - 1.0 / float(self.s.iel_omega)
+                w_blk = 1.0 - 1.0 / float(self.s.induction.iel.omega)
                 keep = jnp.where(self._block_mask(k), w_blk, 1.0).astype(x[0].dtype)
                 Di = tuple(Di[j] * keep for j in range(3))
             Dix = Di[0] * x[0] + Di[1] * x[1] + Di[2] * x[2]
@@ -1423,7 +1671,7 @@ class PGMForceField:
         M = None if ext is None else self.field_dipole(pos, P["q"], p + mu, ext[1])
         # iEL/0-SCF: U~ = U(mu) - U_es(0, delta) and its exact forces (iel_shadow), in the same passes
         energy, forces = self._energy_forces(
-            pos, H, mu, g, P, pull, ext, M, delta if (self.shadow and self.s.iel_shadow) else None
+            pos, H, mu, g, P, pull, ext, M, delta if (self.shadow and self.s.induction.iel.shadow) else None
         )
         return Result(energy, forces, ind, it, err, g["overflow"], g if keep_geometry else None, M)
 

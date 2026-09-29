@@ -58,7 +58,7 @@ def build(a):
     xyz, vel, box = read_coordinates(crd)
     pos, H = xyz * 0.1, box_from_cell(*box) * 0.1
     elec = "q" if charges == "amber" else a.elec
-    st = MDSettings(
+    st = MDSettings().replace(
         cutoff=0.9,
         skin=0.1,
         ewald_beta=4.0,
@@ -112,7 +112,7 @@ def cmd_run(a):
         fields += [(0.0, 0.0, e), (0.0, 0.0, -e)]
     fields += [(0.0, 0.0, 0.0)] * a.zero
     rep = FieldReplicas(sim, fields, seed=a.seed, log=sys.stdout)
-    extra = {"model": a.model or a.prmtop, "elec": sim.settings.elec, "dt_fs": a.dt, "dipole_tol": a.tol}
+    extra = {"model": a.model or a.prmtop, "elec": sim.settings.terms.elec, "dt_fs": a.dt, "dipole_tol": a.tol}
     if resume:
         rep.load_checkpoint(chk)
         print(f"# continuing from {chk} at {rep.time_ps:.2f} ps", flush=True)

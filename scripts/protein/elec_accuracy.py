@@ -83,7 +83,7 @@ def run(label, **kw):
         precision="double",
         lj_lrc=True,
     )
-    s = MDSettings(**{**base, **kw})
+    s = MDSettings().replace(**{**base, **kw})
     t = time.time()
     ff = PGMForceField(system, H, s, topology=top)
     idx = ff.rows_for(pos, H)

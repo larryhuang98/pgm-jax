@@ -66,7 +66,7 @@ def model(p):
 
 
 def settings(box):
-    return MDSettings(cutoff=0.9, dipole_tol=1e-5, pme_grid=pmemd_grid(box))
+    return MDSettings().replace(cutoff=0.9, dipole_tol=1e-5, pme_grid=pmemd_grid(box))
 
 
 def atoms_of(names):

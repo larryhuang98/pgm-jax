@@ -227,7 +227,6 @@ class PGMEngine:
         stress: str | None = None,
         slots: int = 1,
         r_margin: float = 0.05,
-        neighbor_list: str = "auto",
         jump: float = 0.05,
         restraints=None,
         bead_margin: float = 0.08,
@@ -236,9 +235,9 @@ class PGMEngine:
 
         if VirtualSites.of(sys) is not None:
             raise NotImplementedError("virtual sites are not supported by the external-code interfaces yet")
-        if getattr(settings, "iel", "none") != "none":
+        if settings.induction.iel.scheme != "none":
             raise NotImplementedError(
-                "extended-Lagrangian dipoles (MDSettings.iel) need the native integrator's "
+                "extended-Lagrangian dipoles (MDSettings.induction.iel) need the native integrator's "
                 "sequence of steps; external codes call the engine with SCF dipoles (iel='none')"
             )
         if stress is None:  # rigid-molecule model: molecular virial (as the native pressure)
@@ -304,7 +303,6 @@ class PGMEngine:
         self.initial_positions, self.initial_box = x0, H0  # standard frame (OpenMM's box form)
         self.r_margin = float(r_margin)
         self.r_list = self.topology.group_radius(x0, self.masses) + self.r_margin
-        self._nb_mode = neighbor_list
         self._make_neighbors(H0)
         self._size(x0, H0)
         self.slots = [_Slot() for _ in range(max(1, int(slots)))]
@@ -342,13 +340,15 @@ class PGMEngine:
     # ------------------------------------------------------------------ neighbour lists
     def _make_neighbors(self, H):
         s = self.settings
-        mode = self._nb_mode
+        mode = s.neighbors.mode
         if mode == "auto":
-            mode = "molecule" if MoleculeNeighbors.fits(H, s.pair_cutoff, s.skin, self.r_list) else "atom"
+            mode = "molecule" if MoleculeNeighbors.fits(H, s.pair_cutoff, s.neighbors.skin, self.r_list) else "atom"
         if mode == "molecule":
-            self.nb = MoleculeNeighbors(self.topology.group, self._ngroup, self.r_list, H, s.pair_cutoff, s.skin)
+            self.nb = MoleculeNeighbors(
+                self.topology.group, self._ngroup, self.r_list, H, s.pair_cutoff, s.neighbors.skin
+            )
         else:
-            self.nb = AtomNeighbors(self.n, H, s.pair_cutoff, s.skin)
+            self.nb = AtomNeighbors(self.n, H, s.pair_cutoff, s.neighbors.skin)
         self._nb_volume = float(np.linalg.det(np.asarray(H)))
 
     def _centers(self, x):
@@ -388,7 +388,7 @@ class PGMEngine:
     def _list_fits(self, H) -> bool:
         s = self.settings
         if self.nb.kind == "molecule":
-            return MoleculeNeighbors.fits(H, s.pair_cutoff, s.skin, self.r_list)
+            return MoleculeNeighbors.fits(H, s.pair_cutoff, s.neighbors.skin, self.r_list)
         return self.nb.rlist <= max_cutoff(H)
 
     def _eval(self, x, H, ind, nbr, virial: bool, dipole: bool = True):
@@ -522,7 +522,7 @@ class PGMEngine:
             H, Q, Hd = cache[1:]  # same cell as the last call (NVE / NVT)
         else:
             H, Q = standard_cell(cell)
-            check_box(H, self.settings.pair_cutoff + self.settings.skin)
+            check_box(H, self.settings.pair_cutoff + self.settings.neighbors.skin)
             if abs(float(np.linalg.det(H)) / self._nb_volume - 1.0) > 0.10 or not self._list_fits(H):
                 self._rebuild(x if Q is None else x @ Q, H)
             Hd = jnp.asarray(H)
@@ -708,12 +708,12 @@ class PGMEngine:
         enlarged by bead_margin, stacked dipole histories (the predictor's step counter shared)."""
         s = self.settings
         r = self.r_list + self.bead_margin
-        if MoleculeNeighbors.fits(H, s.pair_cutoff, s.skin, r):
-            self._nbb = MoleculeNeighbors(self.topology.group, self._ngroup, r, H, s.pair_cutoff, s.skin)
+        if MoleculeNeighbors.fits(H, s.pair_cutoff, s.neighbors.skin, r):
+            self._nbb = MoleculeNeighbors(self.topology.group, self._ngroup, r, H, s.pair_cutoff, s.neighbors.skin)
             self._bfar = r  # atom to its centroid group's centre
         else:  # atom list of the centroid: pairs of structure atoms within cutoff + 2 margins
             rc = s.pair_cutoff + 2.0 * self.bead_margin
-            skin = min(s.skin, max_cutoff(H) - rc - 0.002)
+            skin = min(s.neighbors.skin, max_cutoff(H) - rc - 0.002)
             if skin < 0.02:
                 return False
             self._nbb = AtomNeighbors(self.n, H, rc, skin)
@@ -759,7 +759,7 @@ class PGMEngine:
         H, Q = standard_cell(cell)
         if Q is not None:
             X = X @ Q
-        check_box(H, self.settings.pair_cutoff + self.settings.skin)
+        check_box(H, self.settings.pair_cutoff + self.settings.neighbors.skin)
         keys, uniq, where = {}, [], []
         for k in range(B):  # exact duplicates: i-PI's padding
             key = X[k].tobytes()
@@ -889,8 +889,8 @@ class PGMEngine:
         return (
             f"pgm_jax engine: {self.sys.nmol} molecules, {self.n} atoms, "
             f"{'flexible templates' if self.flex is not None else 'rigid-molecule model'}, "
-            f"{s.precision} precision, PME grid {self.ff.pme.K} order {s.pme_order}, {s.describe_cutoffs()}, "
-            f"{self.nb.kind} neighbour list, dipole tol {s.dipole_tol:g}, {len(self.slots)} dipole slot(s), "
+            f"{s.precision} precision, PME grid {self.ff.pme.K} order {s.pme.order}, {s.describe_cutoffs()}, "
+            f"{self.nb.kind} neighbour list, dipole tol {s.induction.tol:g}, {len(self.slots)} dipole slot(s), "
             f"stress {self.stress_mode}, device {jax.devices()[0]}"
         )
 

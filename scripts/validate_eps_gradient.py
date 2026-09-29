@@ -12,7 +12,6 @@ replicas advanced together by jax.vmap (md/remd.MDReplicas, all at T) give ~R ti
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import glob
 import time
 
@@ -44,7 +43,7 @@ def main():
     ew = {k: v for k, v in elec_cutoff_settings(a.cutoff).items() if k != "elec_cutoff"}
     if a.ewald_beta:
         ew["ewald_beta"] = a.ewald_beta
-    st = MDSettings(
+    st = MDSettings().replace(
         cutoff=a.cutoff,
         skin=a.skin,
         pme_order=6,
@@ -67,7 +66,7 @@ def main():
         params=S["space"](jnp.asarray(th)),
         log=None,
     )
-    st = dataclasses.replace(st, pme_grid=tuple(int(k) for k in sim.ff.pme.K))
+    st = st.replace(pme_grid=tuple(int(k) for k in sim.ff.pme.K))
     an = FrameAnalyzer(S["sys"], np.asarray(sim.state.box), st, S["space"], rdf=S["rdf"], tol=a.tol, chunk=a.nrep)
     every = max(1, int(round(a.every / sim.dt)))
     done = sorted(glob.glob(a.out + "_frames*.npz"))

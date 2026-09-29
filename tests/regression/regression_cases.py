@@ -68,7 +68,7 @@ def _put(out: dict, prefix: str, tree):
 def md_settings(**kw):
     from pgm_jax.md.forcefield import MDSettings
 
-    return MDSettings(**kw)
+    return MDSettings().replace(**kw)
 
 
 def tight(**kw):

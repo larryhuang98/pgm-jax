@@ -55,7 +55,7 @@ def tight(**kw):
         precision="double",
     )
     base.update(kw)
-    return MDSettings(**base)
+    return MDSettings().replace(**base)
 
 
 @pytest.fixture(scope="module")
@@ -307,7 +307,7 @@ def test_flux_nve_and_constraints():
     sys_ = System([tpl.pgm] * n)
     # beta 6 / nm: small real-space terms at the cutoff, so the check sees the integration (flux or not,
     # the hard-cutoff noise at the default 4 / nm is 8e-4 kT per degree of freedom here)
-    s = MDSettings(
+    s = MDSettings().replace(
         precision="double", dipole_tol=1e-8, cutoff=0.6, skin=0.05, lj_lrc=False, ewald_beta=6.0, pme_spacing=0.05
     )
     sim = FlexibleSimulation(
