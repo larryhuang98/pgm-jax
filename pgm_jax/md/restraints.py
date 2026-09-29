@@ -1,6 +1,11 @@
-"""Restraints for MD: positional, distance, angle, dihedral and centre-of-mass distance terms
-added to the force field in both MD drivers (`Simulation`: rigid bodies; `FlexibleSimulation`:
-atoms).
+"""Restraints for MD: positional, distance, angle, dihedral and centre-of-mass distance terms.
+
+The terms are added to the force field in both MD drivers (`Simulation`: rigid bodies;
+`FlexibleSimulation`: atoms).  Contents: the base class `Restraint`, the kinds
+`PositionRestraint`, `DistanceRestraint`, `AngleRestraint`, `DihedralRestraint`,
+`COMDistanceRestraint` (the last four share `_NMRRestraint`, Amber's NMR flat-bottom form), the
+container `Restraints`, and the helpers `harmonic`, `nmr_energy`, `dihedral`,
+`dihedral_from_bonds`, `molecular_strain` and `as_restraints`.
 
     from pgm_jax.md.restraints import (Restraints, PositionRestraint, DistanceRestraint,
                                        DihedralRestraint, COMDistanceRestraint, harmonic, KCAL_A2)
@@ -65,13 +70,21 @@ the scaled references): the acceptance is exact for the box-dependent potential.
 Energies are float64 functions of (pos, H), jit-able and differentiable; the drivers take the
 forces by autodiff (for rigid bodies, the atomic restraint forces are mapped to centre forces and
 torques together with the force-field forces).  Parameters are compile-time constants: changing
-them (`Simulation.set_restraints`) recompiles the step.  Units nm, rad, kJ/mol."""
+them (`Simulation.set_restraints`) recompiles the step.  Restraint objects are plain Python
+objects (not pytrees).
+
+Units: nm, rad, kJ/mol.
+"""
 
 from __future__ import annotations
+
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.typing import ArrayLike
 
 from ..units import KCAL
 from .box import centers_of_mass, min_image
@@ -79,46 +92,102 @@ from .box import centers_of_mass, min_image
 KCAL_A2 = 418.4  # kJ/mol/nm^2 per kcal/mol/A^2
 KCAL_RAD2 = KCAL  # kJ/mol/rad^2 per kcal/mol/rad^2
 _HI = jax.lax.Precision.HIGHEST
-_TINY = 1e-60
+_TINY = 1e-60  # floor of |v|^2 in _norm: a finite (zero) gradient at v = 0
 
 
-def harmonic(x0):
-    """Bounds (r1, r2, r3, r4) of a harmonic restraint E = k (x - x0)^2."""
+def harmonic(x0: float) -> tuple[float, float, float, float]:
+    """Return the bounds (r1, r2, r3, r4) = (-inf, x0, x0, inf) of a harmonic restraint E = k (x - x0)^2.
+
+    Examples
+    --------
+    >>> harmonic(0.3)
+    (-inf, 0.3, 0.3, inf)
+    """
     return (-np.inf, x0, x0, np.inf)
 
 
-def _wall(d, w):
-    """0 for d <= 0, d^2 for 0 < d <= w, then linear with a continuous slope, w^2 + 2 w (d - w).
-    Written with a clipped d, so w = inf (no linear part) keeps values and gradients finite."""
+def _wall(d: jax.Array, w: ArrayLike) -> jax.Array:
+    """Return one wall of the flat-bottom form: 0, d^2, then linear with a continuous slope.
+
+    0 for d <= 0, d^2 for 0 < d <= w, w^2 + 2 w (d - w) beyond.  Written with a clipped d, so
+    w = inf (no linear part) keeps values and gradients finite.
+
+    Parameters
+    ----------
+    d : jax.Array
+        Penetration into the wall (nm or rad).
+    w : ArrayLike
+        Width of the quadratic part (inf: no linear part).
+
+    Returns
+    -------
+    jax.Array
+        Wall value (units of d^2), the broadcast shape.
+    """
     c = jnp.clip(d, 0.0, w)
     return c * c + 2.0 * c * (d - c)
 
 
-def nmr_energy(x, r1, r2, r3, r4, k2, k3):
-    """Amber's NMR flat-bottom restraint energy of the coordinate(s) x (see the module docstring)."""
+def nmr_energy(
+    x: jax.Array, r1: ArrayLike, r2: ArrayLike, r3: ArrayLike, r4: ArrayLike, k2: ArrayLike, k3: ArrayLike
+) -> jax.Array:
+    """Return Amber's NMR flat-bottom restraint energy of the coordinate(s) x (module docstring).
+
+    Parameters
+    ----------
+    x : jax.Array (m,)
+        Coordinates [nm or rad].
+    r1, r2, r3, r4 : ArrayLike (m,)
+        Bounds, r1 <= r2 <= r3 <= r4 [nm or rad] (r1 = -inf / r4 = inf: no linear part).
+    k2, k3 : ArrayLike (m,)
+        Force constants of the lower and upper wall [kJ/mol/nm^2 or kJ/mol/rad^2] (E = k x^2).
+
+    Returns
+    -------
+    jax.Array (m,)
+        Energies [kJ/mol].
+    """
     return k2 * _wall(r2 - x, r2 - r1) + k3 * _wall(x - r3, r4 - r3)
 
 
-def _norm(v):
-    """|v| over the last axis with a zero gradient at v = 0 (instead of NaN)."""
+def _norm(v: jax.Array) -> jax.Array:
+    """Return |v| over the last axis with a zero gradient at v = 0 (instead of NaN)."""
     s = jnp.sum(v * v, -1)
     return jnp.sqrt(jnp.maximum(s, _TINY))
 
 
-def dihedral(x0, x1, x2, x3):
-    """Dihedral angle x0-x1-x2-x3 (rad, [-pi, pi]) in the IUPAC sign convention (the formula of
-    pgm_jax.bonded.terms.core._dihedral)."""
+def dihedral(x0: jax.Array, x1: jax.Array, x2: jax.Array, x3: jax.Array) -> jax.Array:
+    """Return the dihedral angle x0-x1-x2-x3 [rad, in [-pi, pi]] in the IUPAC sign convention.
+
+    The formula of pgm_jax.bonded.terms.core._dihedral; no minimum image.
+
+    Parameters
+    ----------
+    x0, x1, x2, x3 : jax.Array (..., 3)
+        Positions [nm].
+
+    Returns
+    -------
+    jax.Array (...,)
+        Dihedral angle [rad].
+    """
     return dihedral_from_bonds(x1 - x0, x2 - x1, x3 - x2)
 
 
-def dihedral_from_bonds(b0, b1, b2):
-    """Dihedral angle from the bond vectors b0 = x1 - x0, b1 = x2 - x1, b2 = x3 - x2."""
+def dihedral_from_bonds(b0: jax.Array, b1: jax.Array, b2: jax.Array) -> jax.Array:
+    """Return the dihedral angle [rad] from the bond vectors b0 = x1 - x0, b1 = x2 - x1, b2 = x3 - x2.
+
+    phi = atan2(-(n1 x b1/|b1|) . n2, n1 . n2) with the plane normals n1 = b0 x b1, n2 = b1 x b2:
+    positive for a clockwise rotation of the front bond looking along b1 (IUPAC).  Inputs (..., 3)
+    [nm], result (...,) in [-pi, pi].
+    """
     n1, n2 = jnp.cross(b0, b1), jnp.cross(b1, b2)
     m1 = jnp.cross(n1, b1 / _norm(b1)[..., None])
     return jnp.arctan2(-jnp.sum(m1 * n2, -1), jnp.sum(n1 * n2, -1))
 
 
-def _per_item(x, m, name):
+def _per_item(x: ArrayLike, m: int, name: str) -> np.ndarray:
+    """Return x broadcast to one float per restraint (m,); ValueError unless scalar or of length m."""
     a = np.asarray(x, float)
     if a.ndim > 1 or (a.ndim == 1 and len(a) != m):
         raise ValueError(f"{name}: a scalar or one value per restraint ({m})")
@@ -127,36 +196,103 @@ def _per_item(x, m, name):
 
 # ----------------------------------------------------------------------------- terms
 class Restraint:
-    """A set of restraints of one kind.  energies(pos, H) -> (m,) kJ/mol, values(pos, H) -> (m,)
-    the restrained coordinate, energy = sum of energies, atoms() every atom index used."""
+    """Base class: a set of m restraints of one kind.
+
+    Subclasses implement `energies` (m,) [kJ/mol], `values` (m,) (the restrained coordinate),
+    `atoms` (every atom index used) and `__len__`; `energy` is the sum of the energies.  Energies
+    and values are float64 JAX functions of (pos, H), traceable and differentiable.
+
+    Attributes
+    ----------
+    kind : str
+        Kind name ("position", "distance", "angle", "dihedral", "com_distance").
+    """
 
     kind = ""
 
-    def energies(self, pos, H):
+    def energies(self, pos: ArrayLike, H: ArrayLike) -> jax.Array:
+        """Return the energy of every restraint (m,) [kJ/mol] at positions pos (N, 3) and box H [nm]."""
         raise NotImplementedError
 
-    def values(self, pos, H):
+    def values(self, pos: ArrayLike, H: ArrayLike) -> jax.Array:
+        """Return the restrained coordinate of every restraint (m,) [nm or rad]."""
         raise NotImplementedError
 
     def atoms(self) -> np.ndarray:
+        """Return every atom index the restraints use (for range checks)."""
         raise NotImplementedError
 
-    def energy(self, pos, H):
+    def energy(self, pos: ArrayLike, H: ArrayLike) -> jax.Array:
+        """Return the total energy of the set [kJ/mol] at positions pos (N, 3) and box H [nm]."""
         return jnp.sum(self.energies(pos, H))
 
     def describe(self) -> str:
+        """Return a short description for the log, e.g. "distance 3"."""
         return f"{self.kind} {len(self)}"
 
 
 class PositionRestraint(Restraint):
-    """E = k (|d| - r0)^2 beyond the flat-bottom radius r0, d the minimum image of r_i - r_ref,i(H).
-    atoms (n,), ref (n, 3) nm at the box `box` (needed unless scaling == "none"); k (kJ/mol/nm^2)
-    and r0 (nm): scalars or per atom; scaling "none" | "fractional" | "com" (module docstring);
-    weights: of the reference centroid for "com" (default equal)."""
+    """Positional restraints: E = k (|d| - r0)^2 beyond the flat-bottom radius r0.
+
+    d is the minimum image of r_i - r_ref,i(H); the reference follows the box according to
+    `scaling` (module docstring).
+
+    Attributes
+    ----------
+    idx : np.ndarray (n,) int
+        Restrained atoms.
+    ref : np.ndarray (n, 3)
+        Reference positions at the reference box [nm].
+    k : np.ndarray (n,)
+        Force constants [kJ/mol/nm^2] (E = k x^2).
+    r0 : np.ndarray (n,)
+        Flat-bottom radii [nm].
+    scaling : {"none", "fractional", "com"}
+        How the reference follows the box.
+    frac : np.ndarray
+        "fractional": fractional reference coordinates (n, 3); "com": the fractional centroid (3,).
+    offset : np.ndarray (n, 3)
+        "com": reference points relative to their centroid [nm].
+    """
 
     kind = "position"
 
-    def __init__(self, atoms, ref, k, r0=0.0, scaling: str = "none", box=None, weights=None):
+    def __init__(
+        self,
+        atoms: ArrayLike,
+        ref: ArrayLike,
+        k: ArrayLike,
+        r0: ArrayLike = 0.0,
+        scaling: Literal["none", "fractional", "com"] = "none",
+        box: ArrayLike | None = None,
+        weights: ArrayLike | None = None,
+    ) -> None:
+        """Set up positional restraints.
+
+        Parameters
+        ----------
+        atoms : ArrayLike (n,) int
+            Restrained atoms.
+        ref : ArrayLike (n, 3)
+            Reference positions at the box `box` [nm].
+        k : ArrayLike
+            Force constant [kJ/mol/nm^2], scalar or per atom (E = k x^2; KCAL_A2 converts
+            Amber's restraint_wt).
+        r0 : ArrayLike
+            Flat-bottom radius [nm], scalar or per atom (0: harmonic).
+        scaling : {"none", "fractional", "com"}
+            How the reference follows the box (module docstring).
+        box : ArrayLike (3, 3), optional
+            Box of the reference [nm] (needed unless scaling == "none").
+        weights : ArrayLike (n,), optional
+            Weights of the reference centroid for "com" (None: equal).
+
+        Raises
+        ------
+        ValueError
+            A wrong shape of ref, negative k or r0, an unknown scaling, a missing box, or
+            invalid weights.
+        """
         self.idx = np.asarray(atoms, int).reshape(-1)
         n = len(self.idx)
         ref = np.asarray(ref, float)
@@ -182,43 +318,91 @@ class PositionRestraint(Restraint):
                 c = (w[:, None] * ref).sum(0) / w.sum()
                 self.offset, self.frac = ref - c, c @ Hinv
 
-    def reference(self, H):
-        """Reference positions (n, 3) nm at the box H."""
+    def reference(self, H: ArrayLike) -> jax.Array:
+        """Return the reference positions (n, 3) [nm] at the box H [nm]."""
         if self.scaling == "none":
             return jnp.asarray(self.ref)
         f = jnp.matmul(jnp.asarray(self.frac), jnp.asarray(H, jnp.float64), precision=_HI)
         return f if self.scaling == "fractional" else jnp.asarray(self.offset) + f
 
-    def displacements(self, pos, H):
+    def displacements(self, pos: ArrayLike, H: ArrayLike) -> jax.Array:
+        """Return d = minimum image of r_i - r_ref,i(H) (n, 3) [nm]."""
         H = jnp.asarray(H, jnp.float64)
         return min_image(jnp.asarray(pos, jnp.float64)[self.idx] - self.reference(H), H)
 
-    def values(self, pos, H):
+    def values(self, pos: ArrayLike, H: ArrayLike) -> jax.Array:
+        """Return |d| (n,) [nm]."""
         return _norm(self.displacements(pos, H))
 
-    def energies(self, pos, H):
+    def energies(self, pos: ArrayLike, H: ArrayLike) -> jax.Array:
+        """Return k (|d| - r0)^2 for |d| > r0, else 0 (n,) [kJ/mol]."""
         return self.k * jnp.maximum(self.values(pos, H) - self.r0, 0.0) ** 2
 
-    def atoms(self):
+    def atoms(self) -> np.ndarray:
+        """Return the restrained atoms."""
         return self.idx
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """Return the number of restrained atoms."""
         return len(self.idx)
 
     def describe(self) -> str:
+        """Return e.g. "position 120 atoms (k 418.4, com)"."""
         k = f"{self.k[0]:g}" if np.all(self.k == self.k[0]) else f"{self.k.min():g}-{self.k.max():g}"
         return f"position {len(self)} atoms (k {k}, {self.scaling})"
 
 
 class _NMRRestraint(Restraint):
     """Restraints of a coordinate of `n_atoms` atoms in Amber's NMR flat-bottom form.
-    idx (m, n_atoms); bounds (r1, r2, r3, r4), each a scalar or one value per restraint; either k
-    (both walls) or k2 (lower) and k3 (upper)."""
+
+    Subclasses set `kind`, `n_atoms`, `periodic` and implement `coordinate`.  For periodic
+    coordinates (dihedrals) the value is taken in [c - pi, c + pi), c = (r2 + r3) / 2.
+
+    Attributes
+    ----------
+    idx : np.ndarray (m, n_atoms) int
+        Atoms of every restraint.
+    r : list of np.ndarray (m,)
+        Bounds r1, r2, r3, r4 [nm or rad].
+    k2, k3 : np.ndarray (m,)
+        Force constants of the lower and upper wall [kJ/mol/nm^2 or kJ/mol/rad^2].
+    n_atoms : int
+        Atoms per restraint (class attribute).
+    periodic : bool
+        The coordinate is an angle modulo 2 pi (class attribute).
+    """
 
     n_atoms = 2
     periodic = False
 
-    def __init__(self, idx, bounds, k=None, k2=None, k3=None):
+    def __init__(
+        self,
+        idx: ArrayLike,
+        bounds: Sequence[ArrayLike],
+        k: ArrayLike | None = None,
+        k2: ArrayLike | None = None,
+        k3: ArrayLike | None = None,
+    ) -> None:
+        """Set up m restraints.
+
+        Parameters
+        ----------
+        idx : ArrayLike (m, n_atoms) or (n_atoms,) int
+            Atoms of every restraint.
+        bounds : Sequence of 4 ArrayLike
+            (r1, r2, r3, r4) [nm or rad], each a scalar or one value per restraint;
+            r1 <= r2 <= r3 <= r4, r2 and r3 finite (`harmonic(x0)` for a harmonic restraint).
+        k : ArrayLike, optional
+            Force constant of both walls [kJ/mol/nm^2 or kJ/mol/rad^2] (E = k x^2).
+        k2, k3 : ArrayLike, optional
+            Force constants of the lower and upper wall (instead of k).
+
+        Raises
+        ------
+        ValueError
+            Wrong atom counts, bounds or force constants, both k and k2/k3 (or neither), or a
+            dihedral window wider than 2 pi.
+        """
         idx = np.asarray(idx, int)
         if idx.ndim == 1:
             idx = idx[None]
@@ -246,10 +430,12 @@ class _NMRRestraint(Restraint):
             raise ValueError("dihedral window r3 - r2 exceeds 2 pi")
         self.r = r
 
-    def coordinate(self, x, H):
+    def coordinate(self, x: Sequence[jax.Array], H: jax.Array) -> jax.Array:
+        """Return the coordinate (m,) of the atom positions x[a] (m, 3) [nm], a = 0 .. n_atoms-1."""
         raise NotImplementedError
 
-    def values(self, pos, H):
+    def values(self, pos: ArrayLike, H: ArrayLike) -> jax.Array:
+        """Return the restrained coordinate (m,) [nm or rad] (periodic ones nearest the window)."""
         H = jnp.asarray(H, jnp.float64)
         x = jnp.asarray(pos, jnp.float64)
         v = self.coordinate([x[self.idx[:, a]] for a in range(self.n_atoms)], H)
@@ -258,13 +444,16 @@ class _NMRRestraint(Restraint):
             v = c + jnp.mod(v - c + jnp.pi, 2 * jnp.pi) - jnp.pi
         return v
 
-    def energies(self, pos, H):
+    def energies(self, pos: ArrayLike, H: ArrayLike) -> jax.Array:
+        """Return the flat-bottom energies (m,) [kJ/mol] (`nmr_energy`)."""
         return nmr_energy(self.values(pos, H), *self.r, self.k2, self.k3)
 
-    def atoms(self):
+    def atoms(self) -> np.ndarray:
+        """Return every atom index used (flattened `idx`)."""
         return self.idx.reshape(-1)
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """Return the number of restraints m."""
         return len(self.idx)
 
 
@@ -274,7 +463,8 @@ class DistanceRestraint(_NMRRestraint):
     kind = "distance"
     n_atoms = 2
 
-    def coordinate(self, x, H):
+    def coordinate(self, x: Sequence[jax.Array], H: jax.Array) -> jax.Array:
+        """Return |r_j - r_i| (minimum image) (m,) [nm]."""
         return _norm(min_image(x[1] - x[0], H))
 
 
@@ -284,7 +474,8 @@ class AngleRestraint(_NMRRestraint):
     kind = "angle"
     n_atoms = 3
 
-    def coordinate(self, x, H):
+    def coordinate(self, x: Sequence[jax.Array], H: jax.Array) -> jax.Array:
+        """Return the angle i-j-k (m,) [rad] = atan2(|u x v|, u . v), u, v the minimum-image bonds."""
         u, v = min_image(x[0] - x[1], H), min_image(x[2] - x[1], H)
         return jnp.arctan2(_norm(jnp.cross(u, v)), jnp.sum(u * v, -1))
 
@@ -296,17 +487,55 @@ class DihedralRestraint(_NMRRestraint):
     n_atoms = 4
     periodic = True
 
-    def coordinate(self, x, H):
+    def coordinate(self, x: Sequence[jax.Array], H: jax.Array) -> jax.Array:
+        """Return the dihedral i-j-k-l (m,) [rad] from the minimum-image bond vectors."""
         return dihedral_from_bonds(min_image(x[1] - x[0], H), min_image(x[2] - x[1], H), min_image(x[3] - x[2], H))
 
 
 class COMDistanceRestraint(_NMRRestraint):
-    """Distance (nm) between the weighted centres of two atom groups (umbrella sampling); weights
-    from `masses` (per-atom masses of the whole system, e.g. System.masses) or equal."""
+    """Distance between the weighted centres of two atom groups (umbrella sampling); one restraint.
+
+    Group centres are weighted means of the minimum-image displacements from the group's first
+    atom (a group must be smaller than half the box height).
+
+    Attributes
+    ----------
+    ga, gb : np.ndarray int
+        Atoms of the two groups.
+    wa, wb : np.ndarray
+        Their weights (masses [amu], or 1).
+    """
 
     kind = "com_distance"
 
-    def __init__(self, group_a, group_b, bounds, k=None, k2=None, k3=None, masses=None):
+    def __init__(
+        self,
+        group_a: ArrayLike,
+        group_b: ArrayLike,
+        bounds: Sequence[ArrayLike],
+        k: ArrayLike | None = None,
+        k2: ArrayLike | None = None,
+        k3: ArrayLike | None = None,
+        masses: ArrayLike | None = None,
+    ) -> None:
+        """Set up the restraint.
+
+        Parameters
+        ----------
+        group_a, group_b : ArrayLike int
+            Atoms of the two groups (non-empty).
+        bounds : Sequence of 4 float
+            (r1, r2, r3, r4) [nm].
+        k, k2, k3 : float, optional
+            Force constants [kJ/mol/nm^2] as in _NMRRestraint.
+        masses : ArrayLike (N,), optional
+            Per-atom masses of the whole system [amu] (e.g. System.masses; None: equal weights).
+
+        Raises
+        ------
+        ValueError
+            An empty group, invalid weights, or invalid bounds / force constants.
+        """
         self.ga, self.gb = (np.asarray(g, int).reshape(-1) for g in (group_a, group_b))
         if not len(self.ga) or not len(self.gb):
             raise ValueError("empty group")
@@ -317,50 +546,67 @@ class COMDistanceRestraint(_NMRRestraint):
             raise ValueError("group weights must be non-negative and not all zero")
 
     @staticmethod
-    def _centre(x, g, w, H):
+    def _centre(x: jax.Array, g: np.ndarray, w: np.ndarray, H: jax.Array) -> jax.Array:
+        """Return the weighted centre (3,) [nm] of group g: x[g0] + sum_a w_a d_a / sum w (d minimum images)."""
         d = min_image(x[g] - x[g[0]], H)
         return x[g[0]] + jnp.sum(jnp.asarray(w)[:, None] * d, 0) / float(np.sum(w))
 
-    def values(self, pos, H):
+    def values(self, pos: ArrayLike, H: ArrayLike) -> jax.Array:
+        """Return the minimum-image distance of the two centres (1,) [nm]."""
         H = jnp.asarray(H, jnp.float64)
         x = jnp.asarray(pos, jnp.float64)
         ca, cb = self._centre(x, self.ga, self.wa, H), self._centre(x, self.gb, self.wb, H)
         return _norm(min_image(cb - ca, H))[None]
 
-    def atoms(self):
+    def atoms(self) -> np.ndarray:
+        """Return the atoms of both groups."""
         return np.concatenate([self.ga, self.gb])
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """Return 1 (one restraint)."""
         return 1
 
     def describe(self) -> str:
+        """Return e.g. "com_distance (12 - 30 atoms)"."""
         return f"com_distance ({len(self.ga)} - {len(self.gb)} atoms)"
 
 
 # ----------------------------------------------------------------------------- container
 class Restraints:
-    """Restraint terms applied together: energy(pos, H) (float64, jit-able), energies(pos, H) by
-    kind, strain_derivative for the pressure.  `terms`: Restraint objects."""
+    """Restraint terms applied together.
 
-    def __init__(self, terms=()):
+    energy(pos, H) (float64, jit-able), energies(pos, H) by kind, forces, and strain_derivative
+    for the pressure.  A mutable container (`add`), iterable over its terms.
+
+    Attributes
+    ----------
+    terms : list of Restraint
+        The terms, in order.
+    """
+
+    def __init__(self, terms: Iterable[Restraint] = ()) -> None:
+        """Set up the container with the given terms (each checked by `add`)."""
         self.terms = []
         for t in terms:
             self.add(t)
 
     def add(self, term: Restraint) -> Restraints:
+        """Append a term and return self; TypeError if it is not a Restraint."""
         if not isinstance(term, Restraint):
             raise TypeError(f"not a restraint: {term!r}")
         self.terms.append(term)
         return self
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """Return the number of terms."""
         return len(self.terms)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Restraint]:
+        """Iterate over the terms."""
         return iter(self.terms)
 
     def check(self, n_atoms: int) -> None:
-        """Every atom index must exist in a system of n_atoms atoms."""
+        """Check that every atom index exists in a system of n_atoms atoms (ValueError if not)."""
         for t in self.terms:
             a = t.atoms()
             if a.size and (a.min() < 0 or a.max() >= n_atoms):
@@ -368,52 +614,107 @@ class Restraints:
 
     @property
     def kinds(self) -> list:
+        """Kinds of the terms, in order of first appearance."""
         return list(dict.fromkeys(t.kind for t in self.terms))
 
-    def energy(self, pos, H):
-        """Total restraint energy (kJ/mol) at positions pos (N, 3) and box H (nm)."""
+    def energy(self, pos: ArrayLike, H: ArrayLike) -> jax.Array:
+        """Return the total restraint energy [kJ/mol] at positions pos (N, 3) and box H [nm]."""
         e = jnp.zeros((), jnp.float64)
         for t in self.terms:
             e = e + t.energy(pos, H)
         return e
 
-    def energies(self, pos, H) -> dict:
-        """Restraint energy by kind (kJ/mol)."""
+    def energies(self, pos: ArrayLike, H: ArrayLike) -> dict:
+        """Return the restraint energy by kind {kind: jax.Array ()} [kJ/mol]."""
         out = {}
         for t in self.terms:
             out[t.kind] = out.get(t.kind, jnp.zeros((), jnp.float64)) + t.energy(pos, H)
         return out
 
-    def forces(self, pos, H):
-        """Atomic restraint forces (N, 3) kJ/mol/nm."""
+    def forces(self, pos: ArrayLike, H: ArrayLike) -> jax.Array:
+        """Return the atomic restraint forces -dE/dpos (N, 3) [kJ/mol/nm]."""
         return -jax.grad(self.energy)(jnp.asarray(pos, jnp.float64), H)
 
-    def strain_derivative(self, pos, H, mol, masses, nmol: int):
-        """dE/d eps (3, 3) under the barostat's molecular scaling: molecular centres of mass
-        (masses, molecule index mol per atom) and the box deformed by (1 + eps), molecules
-        translated rigidly (as PGMForceField.strain_derivative)."""
+    def strain_derivative(
+        self, pos: ArrayLike, H: ArrayLike, mol: ArrayLike, masses: ArrayLike, nmol: int
+    ) -> jax.Array:
+        """Return dE/d eps (3, 3) [kJ/mol] under the barostat's molecular scaling (`molecular_strain`).
+
+        Parameters
+        ----------
+        pos : ArrayLike (N, 3)
+            Positions [nm] (molecules whole).
+        H : ArrayLike (3, 3)
+            Box, lattice vectors as rows [nm].
+        mol : ArrayLike (N,) int
+            Molecule of every atom.
+        masses : ArrayLike (N,)
+            Masses [amu].
+        nmol : int
+            Number of molecules.
+
+        Returns
+        -------
+        jax.Array (3, 3)
+            dE/d eps [kJ/mol], as PGMForceField.strain_derivative.
+        """
         return molecular_strain(self.energy, pos, H, mol, masses, nmol)
 
     def describe(self) -> str:
+        """Return the descriptions of the terms, comma-separated."""
         return ", ".join(t.describe() for t in self.terms)
 
 
-def molecular_strain(energy, pos, H, mol, masses, nmol: int):
-    """dE/d eps (3, 3) of energy(pos, H) under molecular scaling (see Restraints.strain_derivative)."""
+def molecular_strain(
+    energy: Callable[[jax.Array, jax.Array], jax.Array],
+    pos: ArrayLike,
+    H: ArrayLike,
+    mol: ArrayLike,
+    masses: ArrayLike,
+    nmol: int,
+) -> jax.Array:
+    """Return dE/d eps (3, 3) [kJ/mol] of energy(pos, H) under molecular scaling.
+
+    The box is deformed to H (1 + eps)^T and every molecule translated rigidly with its centre of
+    mass R_k -> (1 + eps) R_k; the derivative is taken at eps = 0 by autodiff.
+
+    Parameters
+    ----------
+    energy : Callable[[jax.Array, jax.Array], jax.Array]
+        energy(pos, H) [kJ/mol].
+    pos : ArrayLike (N, 3)
+        Positions [nm] (molecules whole).
+    H : ArrayLike (3, 3)
+        Box, lattice vectors as rows [nm].
+    mol : ArrayLike (N,) int
+        Molecule of every atom.
+    masses : ArrayLike (N,)
+        Masses [amu].
+    nmol : int
+        Number of molecules.
+
+    Returns
+    -------
+    jax.Array (3, 3)
+        dE/d eps [kJ/mol].
+    """
     pos = jnp.asarray(pos, jnp.float64)
     H = jnp.asarray(H, jnp.float64)
     w = jnp.asarray(masses, jnp.float64)
     com = centers_of_mass(pos, w, mol, nmol)
 
-    def e(eps):
+    def e(eps: jax.Array) -> jax.Array:  # energy at strain eps: centres (1 + eps) R, box H (1 + eps)^T
         F = jnp.eye(3) + eps
         return energy(pos + jnp.matmul(com, eps.T, precision=_HI)[mol], jnp.matmul(H, F.T, precision=_HI))
 
     return jax.grad(e)(jnp.zeros((3, 3)))
 
 
-def as_restraints(x) -> Restraints | None:
-    """None, a Restraints container, one Restraint or a sequence of them -> Restraints (or None)."""
+def as_restraints(x: Restraints | Restraint | Iterable[Restraint] | None) -> Restraints | None:
+    """Return a Restraints container from None, a container, one Restraint or a sequence of them.
+
+    None stays None; a container is returned as it is.
+    """
     if x is None or isinstance(x, Restraints):
         return x
     if isinstance(x, Restraint):
