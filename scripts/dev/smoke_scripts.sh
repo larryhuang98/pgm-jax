@@ -37,9 +37,9 @@ run pimd_valid  python scripts/pimd/pimd_validate.py harmonic --beads 4 --time-p
 run pimd_water  python scripts/pimd/pimd_water.py run --beads 2 --time-ps 0.005 --classical-ps 0 --equil-ps 0 \
                   --report-ps 0.0025 -o $O/pimd
 run solvation   python scripts/free_energy/solvation_free_energy.py run --model pgm -o $O/fe --lattice 4 \
-                  --cutoff-nm 0.4 --nfft 16 16 16 --npt-ps 0.002 --time-ns 0.000004 --n-elec 2 --vdw 0.5,0 \
-                  --sample-ps 0.001 --exchange-ps 0.002 --report-ps 0.002 --checkpoint-ps 0.004
+                  --cutoff-nm 0.4 --nfft 16 16 16 --dt-fs 1 --npt-ps 0.004 --time-ns 0.000008 --n-elec 2 --vdw 0.5,0 \
+                  --sample-ps 0.002 --exchange-ps 0.004 --report-ps 0.004 --checkpoint-ps 0.008
 run solv_anal   python scripts/free_energy/solvation_free_energy.py analyze $O/fe_fe.npz --discard-ps 0
-run toy_bias    python scripts/bias/validate_toy.py dw metad --time-ns 0.001 -o $O/toy
+run toy_bias    python scripts/bias/validate_toy.py dw metad --time-ns 0.05 -o $O/toy
 echo "failures: $fails"
 exit $fails
