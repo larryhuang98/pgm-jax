@@ -1,0 +1,8 @@
+# Report-only docstring lint (pydocstyle, numpy convention; docs/dev/style_guide.md).  It is the
+# configuration of pyproject.toml plus the D rules; it does not fail while P8/P9 are in progress:
+#     ruff check --config ruff-docstrings.toml --exit-zero --statistics
+#     ruff check --config ruff-docstrings.toml --exit-zero --output-format concise pgm_jax/md
+extend = "pyproject.toml"
+
+[lint]
+extend-select = ["D"]

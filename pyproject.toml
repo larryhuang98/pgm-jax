@@ -27,8 +27,12 @@ target-version = "py310"
 extend-exclude = ["paper", "runs", ".tools"]
 
 [tool.ruff.lint]
-# docs/api_design.md, decision D11: pycodestyle, pyflakes, isort, pyupgrade, bugbear (subset);
-# pydocstyle (D, numpy convention) is added with the docstring phases (P8, P9)
+# docs/api_design.md, decision D11: pycodestyle, pyflakes, isort, pyupgrade, bugbear (subset).
+# pydocstyle (D, numpy convention below) is enabled in report-only mode until the docstring phases
+# (P8, P9) are done: ruff-docstrings.toml extends this file with D, run it with --exit-zero:
+#     ruff check --config ruff-docstrings.toml --exit-zero --statistics
+# (scripts/dev/check_docstrings.py lists the missing docstrings, private and nested ones included).
+# After P8/P9, "D" moves into `select` here and the report-only file is removed.
 select = ["E", "W", "F", "I", "UP", "B"]
 # E741: l / I / O are physics notation (angular index, identity); B905: zip(strict=) not wanted;
 # B008: defaults are frozen dataclasses (MDSettings()); B023: flagged closures are jitted and

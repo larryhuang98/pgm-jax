@@ -1,5 +1,7 @@
-"""argparse option groups shared by the scripts, so that one option has one name, one unit and one
-help text everywhere (docs/api_design.md, decision D2)."""
+"""Command-line option groups shared by the scripts.
+
+One option has one name, one unit and one help text everywhere (docs/api_design.md, decision D2).
+"""
 
 from __future__ import annotations
 
