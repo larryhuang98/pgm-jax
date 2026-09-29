@@ -1,16 +1,27 @@
-"""Analysis of pgm_jax/fit runs (scripts/fit_multi.py outputs): combine segments, finite-difference
-check of the ensemble gradients, calibration of the parameter uncertainties.
+"""Analysis of liquid-fit runs (scripts/fitting/fit_multi.py outputs; the `pgm-jax analyze-fit` command).
 
-    # observables, Jacobians and jackknife errors from saved frames (segments of one run at fixed theta)
-    python scripts/liquid_fit_tools.py combine runs/fit/c0 --params q --targets density,hvap,eps,liquid_dipole
-    # finite differences between independent runs at theta -/+ delta e_j vs the fluctuation-formula gradient
-    python scripts/liquid_fit_tools.py fd --minus runs/fit/m --center runs/fit/c0 --plus runs/fit/p --delta 0.1 \
-        --param 0 \
-        --params q --targets density,hvap,eps,liquid_dipole
-    # spread of fitted parameters over independent fits vs the predicted sampling errors
-    python scripts/liquid_fit_tools.py calib runs/fit/cal_s*.json
+Subcommands: combine (observables, Jacobians and jackknife errors from the saved frames of the
+segments of one run at fixed theta), fd (finite differences between independent runs at
+theta -/+ delta e_j against the fluctuation-formula gradient, averaged with Simpson's rule over
+the three runs), calib (spread of the fitted parameters over independent fits against the
+predicted sampling errors), calib-rep (the same with independent fits from groups of replicas of
+one batched run).  The same --params / --targets / --model options as fit_multi.py define the
+objective (docs/liquid_fit.md).
 
-The same --params / --targets / --model options as fit_multi.py define the objective."""
+Usage:
+
+    python scripts/fitting/liquid_fit_tools.py combine runs/fit/c0 --params q --targets density,hvap,eps,liquid_dipole
+    python scripts/fitting/liquid_fit_tools.py fd --minus runs/fit/m --center runs/fit/c0 --plus runs/fit/p
+        --param 0 --params q --targets density,hvap,eps,liquid_dipole
+    python scripts/fitting/liquid_fit_tools.py calib runs/fit/cal_s*.json
+    python scripts/fitting/liquid_fit_tools.py calib-rep runs/fit/rep --group 4 --params q --targets ...
+    python scripts/fitting/liquid_fit_tools.py combine --help
+
+Inputs: <prefix>_frames*.npz of the runs (and their JSON files for calib).
+Outputs: printed tables; with --json the rows (combine: <prefix>_combined.json).
+Units: those of pgm_jax.fit (theta: ln scales; observables in the target units).
+Runtime: seconds to minutes (CPU).  Sets jax_enable_x64.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +32,7 @@ import json
 import jax
 import numpy as np
 from fit_multi import add_arguments, setup
+from scipy.stats import chi2
 
 from pgm_jax.fit import LiquidSamples
 
@@ -28,9 +40,30 @@ jax.config.update("jax_enable_x64", True)
 GRAD_KEYS = ("dU", "dM", "dalpha", "dD")
 
 
-def load_frames(prefix, skip: int = 0, select=None):
-    """Concatenate prefix_frames*.npz (segments in order); returns (frames dict, theta).  select:
-    indices of the parameters to keep (the frames of a run carry derivatives for all of its own)."""
+def load_frames(prefix: str, skip: int = 0, select: list[int] | None = None) -> tuple[dict, np.ndarray]:
+    """Return the concatenated frames of prefix_frames*.npz (segments in order) and their theta.
+
+    Parameters
+    ----------
+    prefix : str
+        Output prefix of the run.
+    skip : int
+        Segments dropped at the start.
+    select : list of int, optional
+        Indices of the parameters to keep (the frames of a run carry derivatives for all of its own).
+
+    Returns
+    -------
+    frames : dict
+        Arrays by key, frames concatenated (batched replicas ordered by replica, then time).
+    theta : np.ndarray
+        Parameters of the run.
+
+    Raises
+    ------
+    SystemExit
+        No frames, or segments at different theta.
+    """
     files = sorted(glob.glob(prefix + "_frames*.npz"))[skip:]
     if not files:
         raise SystemExit(f"no frames for {prefix}")
@@ -53,18 +86,21 @@ def load_frames(prefix, skip: int = 0, select=None):
     return out, th
 
 
-def _select(a):
+def _select(a: argparse.Namespace) -> list[int] | None:
+    """Return the parameter indices of --select (None: all)."""
     return None if not getattr(a, "select", "") else [int(x) for x in a.select.split(",")]
 
 
-def estimate(S, a, prefix):
+def estimate(S: dict, a: argparse.Namespace, prefix: str) -> tuple[object, LiquidSamples]:
+    """Return the objective's estimate (observables, Jacobian, errors) of a run and its samples."""
     fr, th = load_frames(prefix, a.skip, _select(a))
     fr.pop("rep", None)
-    s = LiquidSamples(fr, a.T, S["sys"].nmol, float(np.sum(S["sys"].masses)), a.nblocks)
+    s = LiquidSamples(fr, a.temperature_K, S["sys"].nmol, float(np.sum(S["sys"].masses)), a.nblocks)
     return S["obj"].estimate(s, th), s
 
 
-def cmd_combine(S, a):
+def cmd_combine(S: dict, a: argparse.Namespace) -> None:
+    """Print (and with --json write) the estimates of each run (`combine`)."""
     for pre in a.prefixes:
         est, s = estimate(S, a, pre)
         print(f"# {pre}: {s.F} frames, theta {np.round(est.theta, 5).tolist()}")
@@ -74,10 +110,17 @@ def cmd_combine(S, a):
                 + " ".join(f"{j:11.4f} +- {e:8.4f}" for j, e in zip(est.J[i], est.J_err[i]))
             )
         if a.json:
-            json.dump(est.as_dict(), open(pre + "_combined.json", "w"), indent=1)
+            with open(pre + "_combined.json", "w") as fh:
+                json.dump(est.as_dict(), fh, indent=1)
 
 
-def cmd_fd(S, a):
+def cmd_fd(S: dict, a: argparse.Namespace) -> None:
+    """Compare finite differences between the runs at theta -/+ delta with the gradients (`fd`).
+
+    The finite difference (y+ - y-) / (theta+ - theta-) is the mean slope over the interval; it is
+    compared with Simpson's average (g- + 4 g0 + g+) / 6 of the fluctuation-formula gradients of
+    the three runs (exact for cubic y), as z = difference / combined error.
+    """
     em, sm = estimate(S, a, a.minus)
     ec, sc = estimate(S, a, a.center)
     ep, sp = estimate(S, a, a.plus)
@@ -117,10 +160,12 @@ def cmd_fd(S, a):
             f"{simpson_err:9.4f}  z {z:+.2f}"
         )
     if a.json:
-        json.dump(rows, open(a.json, "w"), indent=1, default=float)
+        with open(a.json, "w") as fh:
+            json.dump(rows, fh, indent=1, default=float)
 
 
-def cmd_calib(a):
+def cmd_calib(a: argparse.Namespace) -> None:
+    """Print the spread of the fitted parameters over independent fits against their predicted errors (`calib`)."""
     th, err, errb = [], [], []
     for f in a.files:
         d = json.load(open(f))
@@ -135,8 +180,6 @@ def cmd_calib(a):
     print(f"# {n} independent fits")
     for k, nm in enumerate(names):
         # chi-square interval of the sample standard deviation (95 %)
-        from scipy.stats import chi2
-
         lo, hi = sd[k] * np.sqrt((n - 1) / chi2.ppf(0.975, n - 1)), sd[k] * np.sqrt((n - 1) / chi2.ppf(0.025, n - 1))
         print(
             f"   {nm:12s} mean {th[:, k].mean():+.5f}  spread {sd[k]:.5f} (95 % {lo:.5f}-{hi:.5f})  "
@@ -145,9 +188,12 @@ def cmd_calib(a):
         )
 
 
-def cmd_calib_rep(S, a):
-    """Independent fits from groups of replicas of one run: spread of the fitted parameters and of the
-    observables over the groups vs the predicted (jackknife + propagation, bootstrap) errors."""
+def cmd_calib_rep(S: dict, a: argparse.Namespace) -> None:
+    """Fit groups of replicas of one run independently and compare the spreads with the predicted errors.
+
+    Spread of the fitted parameters and of the observables over the groups against the predicted
+    (jackknife + propagation, bootstrap) errors (`calib-rep`).
+    """
     fr, th = load_frames(a.prefixes[0], a.skip, _select(a))
     rep = fr.pop("rep")
     R = int(rep.max()) + 1
@@ -157,7 +203,11 @@ def cmd_calib_rep(S, a):
     for k in range(R // g):
         sel = (rep >= k * g) & (rep < (k + 1) * g)
         s = LiquidSamples(
-            {key: v[sel] for key, v in fr.items()}, a.T, S["sys"].nmol, float(np.sum(S["sys"].masses)), a.nblocks
+            {key: v[sel] for key, v in fr.items()},
+            a.temperature_K,
+            S["sys"].nmol,
+            float(np.sum(S["sys"].masses)),
+            a.nblocks,
         )
         est = obj.estimate(s, th)
         st = obj.step(est, radius=np.inf)
@@ -170,8 +220,6 @@ def cmd_calib_rep(S, a):
         yerr.append(est.err)
     fits, errs, errb, ys, yerr = map(np.array, (fits, errs, errb, ys, yerr))
     n = len(fits)
-    from scipy.stats import chi2
-
     print(
         f"# {n} independent fits of {g} replicas each ({R} replicas, {len(rep)} frames); targets "
         + ", ".join(f"{t.name}={t.value}" for t in obj.targets if t.fit)
@@ -203,31 +251,38 @@ def cmd_calib_rep(S, a):
         rows.append({"observable": nm, "spread": sd, "spread_95": [lo, hi], "jackknife": pe, "mean": ys[:, i].mean()})
         print(f"   {nm:14s} mean {ys[:, i].mean():10.4f}  spread {sd:.4f} (95 % {lo:.4f}-{hi:.4f})  jackknife {pe:.4f}")
     if a.json:
-        json.dump(rows, open(a.json, "w"), indent=1, default=float)
+        with open(a.json, "w") as fh:
+            json.dump(rows, fh, indent=1, default=float)
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    """Return the argument parser with the subcommands combine, fd, calib and calib-rep."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    c = sub.add_parser("combine")
-    c.add_argument("prefixes", nargs="+")
-    f = sub.add_parser("fd")
-    f.add_argument("--minus", required=True)
-    f.add_argument("--center", required=True)
-    f.add_argument("--plus", required=True)
-    f.add_argument("--param", type=int, default=0)
-    k = sub.add_parser("calib")
-    k.add_argument("files", nargs="+")
-    r = sub.add_parser("calib-rep")
-    r.add_argument("prefixes", nargs=1)
+    c = sub.add_parser("combine", help="estimates from the frames of runs")
+    c.add_argument("prefixes", nargs="+", help="output prefixes of the runs")
+    f = sub.add_parser("fd", help="finite differences between runs vs the gradient")
+    f.add_argument("--minus", required=True, help="prefix of the run at theta - delta e_j")
+    f.add_argument("--center", required=True, help="prefix of the run at theta")
+    f.add_argument("--plus", required=True, help="prefix of the run at theta + delta e_j")
+    f.add_argument("--param", type=int, default=0, help="index j of the varied parameter")
+    k = sub.add_parser("calib", help="spread of independent fits vs predicted errors")
+    k.add_argument("files", nargs="+", help="fit JSON files")
+    r = sub.add_parser("calib-rep", help="independent fits from groups of replicas")
+    r.add_argument("prefixes", nargs=1, help="output prefix of the batched run")
     r.add_argument("--group", type=int, default=1, help="replicas per independent fit")
-    r.add_argument("--nboot", type=int, default=100)
+    r.add_argument("--nboot", type=int, default=100, help="bootstrap samples")
     for p in (c, f, r):
         add_arguments(p)
         p.add_argument("--skip", type=int, default=0, help="segments to drop at the start")
-        p.add_argument("--json", default="")
+        p.add_argument("--json", default="", help="write the results to this JSON file")
         p.add_argument("--select", default="", help="indices of the run's parameters to use (e.g. 0,2)")
-    a = ap.parse_args()
+    return ap
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line and run the subcommand (see the module docstring)."""
+    a = build_parser().parse_args(argv)
     if a.cmd == "calib":
         return cmd_calib(a)
     S = setup(a)

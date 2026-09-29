@@ -1,12 +1,24 @@
-"""Independent-simulation check of the ensemble gradients (pgm_jax/fit): batched NVT replicas of a
-small pGM water box at theta, frames analysed by FrameAnalyzer, saved in the format of
-scripts/fit_multi.py (prefix_frames*.npz, with a replica index), so that
-`scripts/liquid_fit_tools.py fd` compares finite differences between runs at theta -/+ delta with
-the fluctuation-formula gradients.  On CPUs the MD step of a small box is overhead bound, so R
-replicas advanced together by jax.vmap (md/remd.MDReplicas, all at T) give ~R times the sampling.
+"""Independent-simulation check of the ensemble gradients of pgm_jax.fit (docs/liquid_fit.md).
 
-    python scripts/validate_eps_gradient.py -o runs/fit/v_m --coords runs/fit/base64.rst7 --cutoff 0.45 \
-        --skin 0.08 --params q --start=-0.1 --nrep 8 --segments 20 --seg-ps 100
+Batched NVT replicas (Bussi 1 ps) of a small pGM water box at theta; the frames are analysed by
+FrameAnalyzer and saved in the format of scripts/fitting/fit_multi.py (<out>_frames*.npz, with a
+replica index), so that `scripts/fitting/liquid_fit_tools.py fd` compares finite differences
+between runs at theta -/+ delta with the fluctuation-formula gradients.  On CPUs the MD step of a
+small box is overhead bound, so R replicas advanced together by jax.vmap (md/remd.MDReplicas, all
+at T; temperatures differ by 1e-6 K so that the ladder is strictly increasing) give about R times
+the sampling.  Takes the options of fit_multi.py (system, objective, settings) and the ones below.
+Existing segments of --out are kept (the run continues with the next segment).
+
+Usage:
+
+    python scripts/fitting/validate_eps_gradient.py -o runs/fit/v_m --coords runs/fit/base64.rst7 --cutoff-nm 0.45
+        --skin-nm 0.08 --params q --start=-0.1 --nrep 8 --segments 20 --seg-ps 100
+    python scripts/fitting/validate_eps_gradient.py --help
+
+Inputs: as fit_multi.py (--model or --prmtop/--coords).
+Outputs: <out>_frames<seg>.npz per segment; one printed line per segment.
+Units: as fit_multi.py; --seg-ps ps.
+Runtime: CPU (replicas in one vmapped program).  Sets jax_enable_x64.
 """
 
 from __future__ import annotations
@@ -31,25 +43,25 @@ from pgm_jax.units import DEBYE_E_NM
 jax.config.update("jax_enable_x64", True)
 
 
-def main():
-    """Command line: run the batched NVT replicas in segments and save their analysed frames."""
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line, run the batched NVT replicas in segments and save their analysed frames."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_arguments(ap)
-    ap.add_argument("--nrep", type=int, default=8)
-    ap.add_argument("--segments", type=int, default=10)
-    ap.add_argument("--seg-ps", type=float, default=100.0)
-    a = ap.parse_args()
+    ap.add_argument("--nrep", type=int, default=8, help="replicas advanced together")
+    ap.add_argument("--segments", type=int, default=10, help="segments (files) in total")
+    ap.add_argument("--seg-ps", type=float, default=100.0, help="time per segment [ps]")
+    a = ap.parse_args(argv)
     setup_logging()
     S = setup(a)
-    ew = {k: v for k, v in elec_cutoff_settings(a.cutoff).items() if k != "elec_cutoff"}
-    if a.ewald_beta:
-        ew["ewald_beta"] = a.ewald_beta
+    ew = {k: v for k, v in elec_cutoff_settings(a.cutoff_nm).items() if k != "elec_cutoff"}
+    if a.ewald_beta_per_nm:
+        ew["ewald_beta"] = a.ewald_beta_per_nm
     st = MDSettings().replace(
-        cutoff=a.cutoff,
-        skin=a.skin,
+        cutoff=a.cutoff_nm,
+        skin=a.skin_nm,
         pme_order=6,
         lj_lrc=True,
-        dipole_tol=a.md_tol,
+        dipole_tol=a.dipole_tol,
         precision=a.precision,
         pme_grid=(a.nfft,) * 3 if a.nfft else None,
         **ew,
@@ -60,30 +72,30 @@ def main():
         S["pos"],
         S["H"],
         st,
-        dt=a.dt / 1000.0,
+        dt=a.dt_fs / 1000.0,
         thermostat=Bussi(1.0),
-        temperature=a.T,
+        temperature=a.temperature_K,
         seed=a.seed,
         params=S["space"](jnp.asarray(th)),
         log=None,
     )
     st = st.replace(pme_grid=tuple(int(k) for k in sim.ff.pme.K))
     an = FrameAnalyzer(
-        S["sys"], np.asarray(sim.state.box), st, S["space"], rdf=S["rdf"], dipole_tol=a.tol, chunk=a.nrep
+        S["sys"], np.asarray(sim.state.box), st, S["space"], rdf=S["rdf"], dipole_tol=a.analysis_tol, chunk=a.nrep
     )
-    every = max(1, int(round(a.every / sim.dt)))
+    every = max(1, int(round(a.sample_ps / sim.dt)))
     done = sorted(glob.glob(a.out + "_frames*.npz"))
     t0 = time.time()
-    sim.advance(int(round(a.equil / sim.dt)))
-    rep = MDReplicas(sim, a.T + 1e-6 * np.arange(a.nrep), batched=True, seed=a.seed + 7)
-    rep.advance(int(round(a.equil_rep / sim.dt)))
+    sim.advance(int(round(a.equil_ps / sim.dt)))
+    rep = MDReplicas(sim, a.temperature_K + 1e-6 * np.arange(a.nrep), batched=True, seed=a.seed + 7)
+    rep.advance(int(round(a.equil_rep_ps / sim.dt)))
     print(
         f"# {S['sys'].nmol} molecules, NVT, {a.nrep} replicas, theta {th.tolist()}, V "
         f"{float(np.abs(np.linalg.det(np.asarray(sim.state.box)))):.4f} nm^3; "
         f"equilibrated in {time.time() - t0:.0f} s",
         flush=True,
     )
-    nper = int(round(a.seg_ps / a.every))
+    nper = int(round(a.seg_ps / a.sample_ps))
     for seg in range(len(done), a.segments):
         t1 = time.time()
         out, ta = [], 0.0
