@@ -11,11 +11,29 @@ from ..units import E_CHARGE_C, EPS0_SI, KB_SI
 from .stats import block_mean, integrated_correlation_time, jackknife_error
 
 
-def fluctuation_eps(M, V, T, eps_inf: float = 1.0, nblocks: int = 10):
-    """eps = eps_inf + (<M.M> - <M>.<M>) / (3 eps0 V kB T) (tin-foil) and its jackknife error over
-    contiguous blocks; M (F, 3) e nm, V nm^3."""
+def fluctuation_eps(M, V, temperature, eps_inf: float = 1.0, nblocks: int = 10):
+    """Static dielectric constant of one replica from its dipole fluctuations (tin-foil Ewald).
+
+    Parameters
+    ----------
+    M : array (F, 3)
+        Cell dipole series [e nm].
+    V : float
+        Volume [nm^3].
+    temperature : float
+        Temperature [K].
+    eps_inf : float
+        High-frequency dielectric constant.
+    nblocks : int
+        Contiguous blocks of the jackknife.
+
+    Returns
+    -------
+    (float, float)
+        eps = eps_inf + (<M.M> - <M>.<M>) / (3 eps0 V kB T) and its jackknife error.
+    """
     M = np.asarray(M, float)
-    c = (E_CHARGE_C * 1e-9) ** 2 / (3 * EPS0_SI * V * 1e-27 * KB_SI * T)
+    c = (E_CHARGE_C * 1e-9) ** 2 / (3 * EPS0_SI * V * 1e-27 * KB_SI * temperature)
 
     def est(m):
         return eps_inf + c * (np.mean(np.sum(m * m, 1)) - np.sum(np.mean(m, 0) ** 2))
@@ -139,12 +157,41 @@ def saturation_fit(pairs):
     }
 
 
-def predicted_errors(eps: float, eps_inf: float, V: float, T: float, E: float, tau_ps: float, run_ps: float) -> dict:
-    """Statistical errors expected for eps from a +-E pair (each replica run_ps long) and from the
-    fluctuations of a zero-field run of the same total length (2 run_ps), for a Gaussian M with
-    integrated correlation time tau_ps (module docstring), and their cost ratio at equal error."""
-    var_Me = (eps - eps_inf) * EPS0_SI * V * 1e-27 * KB_SI * T / (E_CHARGE_C * 1e-9) ** 2  # (e nm)^2, one component
+def predicted_errors(
+    eps: float, eps_inf: float, V: float, temperature: float, field: float, tau_ps: float, run_ps: float
+) -> dict:
+    """Expected statistical errors of eps from a +-E pair and from zero-field fluctuations.
+
+    Parameters
+    ----------
+    eps, eps_inf : float
+        Static and high-frequency dielectric constants.
+    V : float
+        Volume [nm^3].
+    temperature : float
+        Temperature [K].
+    field : float
+        |E| of the pair [V/nm].
+    tau_ps : float
+        Integrated correlation time of M [ps].
+    run_ps : float
+        Length of each replica [ps] (the zero-field run gets 2 run_ps, the same cost).
+
+    Returns
+    -------
+    dict
+        sigma_ff (the +-E pair), sigma_fluct_same_cost and cost_ratio (fluctuation / finite-field
+        variance at equal cost).
+
+    Notes
+    -----
+    For a Gaussian M (module docstring): var(M_e) = (eps - eps_inf) eps0 V kB T, the error of a
+    mean over a run of length T with correlation time tau is sqrt(var 2 tau / T).
+    """
+    var_Me = (
+        (eps - eps_inf) * EPS0_SI * V * 1e-27 * KB_SI * temperature / (E_CHARGE_C * 1e-9) ** 2
+    )  # (e nm)^2, one component
     s_mean = np.sqrt(var_Me * 2 * tau_ps / run_ps)  # error of <M_e> of one run
-    s_ff = EPS_FACTOR / (V * E) * s_mean / np.sqrt(2)  # the +-E combination
+    s_ff = EPS_FACTOR / (V * field) * s_mean / np.sqrt(2)  # the +-E combination
     s_fl = (eps - eps_inf) * np.sqrt(2 * tau_ps / (3 * 2 * run_ps))
     return {"sigma_ff": float(s_ff), "sigma_fluct_same_cost": float(s_fl), "cost_ratio": float((s_fl / s_ff) ** 2)}

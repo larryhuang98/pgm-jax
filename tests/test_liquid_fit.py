@@ -31,10 +31,24 @@ QTY = ["q", "cov", "alpha", "radius", "lj_r", "lj_eps"]
 
 
 def _analyzer(tol=1e-12, **kw):
+    """A FrameAnalyzer of a small water box (with an O-O RDF) and its inputs.
+
+    Parameters
+    ----------
+    tol : float
+        Dipole tolerance of the analyzer.
+    **kw
+        Further settings() options.
+
+    Returns
+    -------
+    tuple
+        (system, positions [nm], box [nm], space, analyzer).
+    """
     sys, pos, H = small_box(3)
     space = ParameterSpace.scales(sys.table, QTY)
     st = settings(pme_grid=(32, 32, 32), pme_order=6, **kw)
-    an = FrameAnalyzer(sys, H, st, space, rdf=RDFSpec.by_type(sys, "OW", rmax=0.8, nbins=40), tol=tol, chunk=2)
+    an = FrameAnalyzer(sys, H, st, space, rdf=RDFSpec.by_type(sys, "OW", rmax=0.8, nbins=40), dipole_tol=tol, chunk=2)
     return sys, pos, H, space, an
 
 
@@ -134,8 +148,9 @@ def _synthetic_samples(F=400, n=3, seed=0, T=300.0):
 
 
 def test_jacobians_are_the_fluctuation_formulas():
+    """The jax Jacobians of the estimators equal the explicit fluctuation formulas on synthetic frames."""
     fr, s = _synthetic_samples()
-    beta = 1.0 / (KB * s.T)
+    beta = 1.0 / (KB * s.temperature)
     th0 = np.zeros(3)
 
     def gas(th):
@@ -171,7 +186,7 @@ def test_jacobians_are_the_fluctuation_formulas():
     M2 = np.sum(M * M, 1)
     dM2 = 2 * np.einsum("fc,fcn->fn", M, fr["dM"])
     aV = fr["alpha"] / V
-    kT = KB * s.T
+    kT = KB * s.temperature
     c = 4 * np.pi * KE / (3 * kT)
     dM2avg = dM2.mean(0) - beta * cov(M2)
     dMavg = fr["dM"].mean(0) - beta * cov(M)
@@ -335,7 +350,7 @@ def test_one_iteration_of_liquid_fit(tmp_path):
         exact_every=2,
         bootstrap=5,
         log=None,
-        tol=1e-8,
+        dipole_tol=1e-8,
     )
     th = fit.run(np.zeros(2), 1)
     d = json.load(open(tmp_path / "fit.json"))
@@ -382,7 +397,7 @@ def test_nvt_replicas_are_ordered_by_replica(tmp_path):
         prefix=str(tmp_path / "rep"),
         bootstrap=0,
         log=None,
-        tol=1e-8,
+        dipole_tol=1e-8,
         barostat=None,
         replicas=2,
         equil_rep_ps=0.01,
@@ -413,13 +428,14 @@ def test_rdf_histogram_matches_numpy():
 
 
 def test_thermal_expansion_and_compressibility_gradients():
+    """alpha_p and kappa_t and their gradients equal the explicit cumulant formulas."""
     fr, s = _synthetic_samples()
     obj = Objective(
         [Target("alpha_p", None, fit=False), Target("kappa_t", None, fit=False)],
         ParameterSpace(_space_table(), [Param("q"), Param("cov"), Param("alpha")]),
     )
     est = obj.estimate(s, np.zeros(3))
-    beta, kT, p = s.beta, KB * s.T, KJMOL_NM3_PER_BAR
+    beta, kT, p = s.beta, KB * s.temperature, KJMOL_NM3_PER_BAR
     V, U, dU = fr["V"], fr["U"], fr["dU"]
     Hh = U + p * V
 
@@ -429,12 +445,12 @@ def test_thermal_expansion_and_compressibility_gradients():
     def cov(a):
         return m((a - m(a))[:, None] * (dU - m(dU)))
 
-    a_p = (m(V * Hh) - m(V) * m(Hh)) / (KB * s.T**2 * m(V))
+    a_p = (m(V * Hh) - m(V) * m(Hh)) / (KB * s.temperature**2 * m(V))
     k_t = (m(V * V) - m(V) ** 2) / (kT * m(V)) / BAR_PER_KJMOL_NM3
     dVH = m(V[:, None] * dU) - beta * cov(V * Hh)
     dV = -beta * cov(V)
     dH = m(dU) - beta * cov(Hh)
-    da = (dVH - dV * m(Hh) - m(V) * dH) / (KB * s.T**2 * m(V)) - a_p * dV / m(V)
+    da = (dVH - dV * m(Hh) - m(V) * dH) / (KB * s.temperature**2 * m(V)) - a_p * dV / m(V)
     dV2 = -beta * cov(V * V)
     dk = ((dV2 - 2 * m(V) * dV) / (kT * m(V)) - (m(V * V) - m(V) ** 2) / (kT * m(V) ** 2) * dV) / BAR_PER_KJMOL_NM3
     assert np.isclose(est.y[0], a_p) and np.isclose(est.y[1], k_t)

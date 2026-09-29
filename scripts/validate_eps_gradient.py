@@ -32,6 +32,7 @@ jax.config.update("jax_enable_x64", True)
 
 
 def main():
+    """Command line: run the batched NVT replicas in segments and save their analysed frames."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_arguments(ap)
     ap.add_argument("--nrep", type=int, default=8)
@@ -67,7 +68,9 @@ def main():
         log=None,
     )
     st = st.replace(pme_grid=tuple(int(k) for k in sim.ff.pme.K))
-    an = FrameAnalyzer(S["sys"], np.asarray(sim.state.box), st, S["space"], rdf=S["rdf"], tol=a.tol, chunk=a.nrep)
+    an = FrameAnalyzer(
+        S["sys"], np.asarray(sim.state.box), st, S["space"], rdf=S["rdf"], dipole_tol=a.tol, chunk=a.nrep
+    )
     every = max(1, int(round(a.every / sim.dt)))
     done = sorted(glob.glob(a.out + "_frames*.npz"))
     t0 = time.time()

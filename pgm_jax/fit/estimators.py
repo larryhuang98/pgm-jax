@@ -59,9 +59,34 @@ GAS = ("gas_dipole", "gas_polarizability", "gas_energy")
 class LiquidSamples:
     """Per-frame data of one run at theta0: `frames` from FrameAnalyzer.analyze (grad=True)."""
 
-    def __init__(self, frames: dict, T: float, n_mol: int, mass: float, nblocks: int = 10, pressure_bar: float = 1.0):
-        self.T, self.beta, self.N, self.mass = float(T), 1.0 / (KB * float(T)), int(n_mol), float(mass)
-        self.p = float(pressure_bar) / BAR_PER_KJMOL_NM3
+    def __init__(
+        self, frames: dict, temperature: float, n_mol: int, mass: float, nblocks: int = 10, pressure: float = 1.0
+    ):
+        """Reweighting-ready averages of one run.
+
+        Parameters
+        ----------
+        frames : dict
+            Per-frame arrays of FrameAnalyzer.analyze(grad=True): U [kJ/mol], V [nm^3], M [e nm],
+            alpha [nm^3], D, and their theta-derivatives.
+        temperature : float
+            Temperature of the run [K].
+        n_mol : int
+            Number of molecules.
+        mass : float
+            Total mass [amu].
+        nblocks : int
+            Contiguous blocks of the jackknife errors.
+        pressure : float
+            Pressure of the run [bar] (enthalpy H = U + p V).
+        """
+        self.temperature, self.beta, self.N, self.mass = (
+            float(temperature),
+            1.0 / (KB * float(temperature)),
+            int(n_mol),
+            float(mass),
+        )
+        self.p = float(pressure) / BAR_PER_KJMOL_NM3
         f = {k: np.asarray(v) for k, v in frames.items()}
         self.F = len(f["U"])
         V = f["V"]
@@ -135,7 +160,40 @@ class LiquidSamples:
 
     # ------------------------------------------------------------------ observables
     def observable(self, name: str, avg: dict, gas: dict | None = None):
-        kT = KB * self.T
+        """Value of one liquid observable from (reweighted) ensemble averages.
+
+        Parameters
+        ----------
+        name : str
+            "density" [g/cm^3], "volume" [nm^3], "energy" (<U>/N, kJ/mol), "hvap" [kcal/mol],
+            "eps_fluct", "eps_inf", "eps" (dimensionless; tin-foil boundary), "liquid_dipole" [D],
+            "rdf", "alpha_p" [1/K] or "kappa_t" [1/bar] (the last two need an NPT run).
+        avg : dict
+            Ensemble averages of the per-frame quantities (keys "rho", "V", "U", "M", "M2", "aV", "D",
+            "rdf", "VH", "V2", "H"), as returned by averages(); jax arrays, so that the result can be
+            differentiated with respect to the reweighting step.
+        gas : dict, optional
+            Gas-phase values of GasPhase ("gas_energy" [kJ/mol]); needed for "hvap".
+
+        Returns
+        -------
+        jax.Array
+            The observable (a scalar, or the g(r) bins for "rdf").
+
+        Raises
+        ------
+        ValueError
+            "hvap" without `gas`.
+        KeyError
+            Unknown `name`.
+
+        Notes
+        -----
+        eps = 1 + 4 pi <alpha/V> + 4 pi KE (<M.M> - <M>.<M>) / (3 kB T <V>) (Neumann, Mol. Phys. 50, 841
+        (1983)); hvap = u_gas - <U>/N + kB T; alpha_p and kappa_t are the enthalpy-volume and volume
+        fluctuation formulas (Allen and Tildesley, Computer Simulation of Liquids, 2nd ed., sec. 2.5).
+        """
+        kT = KB * self.temperature
         if name == "density":
             return avg["rho"]
         if name == "volume":
@@ -158,7 +216,7 @@ class LiquidSamples:
         if name == "rdf":
             return avg["rdf"]
         if name == "alpha_p":  # thermal expansion (1/K), NPT
-            return (avg["VH"] - avg["V"] * avg["H"]) / (KB * self.T**2 * avg["V"])
+            return (avg["VH"] - avg["V"] * avg["H"]) / (KB * self.temperature**2 * avg["V"])
         if name == "kappa_t":  # isothermal compressibility (1/bar), NPT
             return (avg["V2"] - avg["V"] ** 2) / (kT * avg["V"]) / BAR_PER_KJMOL_NM3
         raise KeyError(f"unknown liquid observable {name!r}")
@@ -181,12 +239,27 @@ class GasPhase:
     no LJ inside a rigid molecule), dipole (D) and isotropic polarizability (A^3), as JAX functions
     of theta."""
 
-    def __init__(self, molecule, pos, table, space, elec: str = "qpi"):
+    def __init__(self, molecule, positions, table, space, elec: str = "qpi"):
+        """The monomer model.
+
+        Parameters
+        ----------
+        molecule : Molecule
+            The rigid molecule.
+        positions : array (n, 3)
+            Its geometry [nm] (centred).
+        table : ParamTable
+            The parameter table of the liquid (so theta means the same).
+        space : ParameterSpace
+            theta -> parameters.
+        elec : str
+            Electrostatics level ("q", "qp", "qi", "qpi").
+        """
         from ..channels import ElecChannel, molecular_polarizability
         from ..system import System
 
         self.sys = System([molecule], table=table)
-        self.pos = jnp.asarray(np.asarray(pos, float) - np.mean(pos, axis=0))
+        self.pos = jnp.asarray(np.asarray(positions, float) - np.mean(positions, axis=0))
         self.space = space
         self.chan = ElecChannel.level(elec)
         self._mp = molecular_polarizability

@@ -57,12 +57,13 @@ class LiquidFit:
 
     def __init__(
         self,
-        sys_,
-        pos,
-        H,
+        system,
+        positions,
+        box,
         space,
         objective,
-        T: float = 298.0,
+        *,
+        temperature: float = 298.0,
         settings: MDSettings = MDSettings(),
         dt: float = 0.002,
         thermostat: Thermostat | str = Bussi(),
@@ -72,7 +73,7 @@ class LiquidFit:
         every_ps: float = 0.5,
         rdf=None,
         chunk: int = 8,
-        tol: float = 1e-6,
+        dipole_tol: float = 1e-6,
         nblocks: int = 10,
         radius: float = 1.0,
         radius_max: float = 4.0,
@@ -90,17 +91,17 @@ class LiquidFit:
 
         Parameters
         ----------
-        sys_ : System
+        system : System
             The liquid (rigid molecules).
-        pos : array (N, 3)
+        positions : array (N, 3)
             Starting positions [nm].
-        H : array (3, 3)
-            Starting box [nm].
+        box : array (3, 3)
+            Starting box [nm], lattice vectors as rows.
         space : ParameterSpace
             Maps the fitted vector theta to force-field parameters.
         objective : Objective
             Targets, weights and priors.
-        T : float
+        temperature : float
             Temperature [K].
         settings : MDSettings
             MD settings (a PME grid is fixed from the starting box when not given, so that all
@@ -117,8 +118,9 @@ class LiquidFit:
             Radial distribution functions (needed by an rdf target).
         chunk : int
             Frames analysed per vmapped chunk.
-        tol : float
-            Dipole tolerance of the frame analysis.
+        dipole_tol : float
+            Tolerance of the dipole and adjoint solves of the frame analysis (pmemd-pgm's
+            criterion, FrameAnalyzer).
         nblocks : int
             Blocks for the jackknife errors.
         radius, radius_max : float
@@ -150,10 +152,10 @@ class LiquidFit:
         if settings.pme.grid is None:
             from ..md.pme import grid_size
 
-            settings = settings.replace(pme_grid=tuple(int(k) for k in grid_size(H, settings.pme.spacing)))
-        self.sys, self.space, self.obj = sys_, space, objective
-        self.pos, self.H, self.vel = np.asarray(pos, float), np.asarray(H, float), None
-        self.T, self.settings, self.dt = float(T), settings, float(dt)
+            settings = settings.replace(pme_grid=tuple(int(k) for k in grid_size(box, settings.pme.spacing)))
+        self.sys, self.space, self.obj = system, space, objective
+        self.pos, self.H, self.vel = np.asarray(positions, float), np.asarray(box, float), None
+        self.temperature, self.settings, self.dt = float(temperature), settings, float(dt)
         if thermostat is None:
             raise ValueError("thermostat: the liquid runs need one (NVT or NPT)")
         self.md_kw = dict(thermostat=thermostat, barostat=barostat)
@@ -167,7 +169,7 @@ class LiquidFit:
         self.replicas, self.equil_rep_ps = int(replicas), float(equil_rep_ps)
         if any(t.name == "rdf" for t in objective.targets) and rdf is None:
             raise ValueError("an rdf target needs the RDFSpec (rdf=)")
-        self.analyzer = FrameAnalyzer(sys_, self.H, settings, space, rdf=rdf, tol=tol, chunk=chunk)
+        self.analyzer = FrameAnalyzer(system, self.H, settings, space, rdf=rdf, dipole_tol=dipole_tol, chunk=chunk)
         self.records, self.pending = [], None
 
     def _print(self, s):
@@ -187,7 +189,7 @@ class LiquidFit:
             self.H,
             self.settings,
             dt=self.dt,
-            temperature=self.T,
+            temperature=self.temperature,
             seed=seed,
             velocities=self.vel,
             params=params,
@@ -244,7 +246,7 @@ class LiquidFit:
         from ..md.remd import MDReplicas
 
         R = self.replicas
-        rep = MDReplicas(sim, self.T + 1e-6 * np.arange(R), batched=True, seed=seed + 7)
+        rep = MDReplicas(sim, self.temperature + 1e-6 * np.arange(R), batched=True, seed=seed + 7)
         rep.advance(int(round(self.equil_rep_ps / self.dt)))
         t1 = time.time()
         n = int(round(prod_ps / self.dt)) // every
@@ -279,13 +281,29 @@ class LiquidFit:
 
     # ------------------------------------------------------------------ one iteration
     def iterate(self, theta, it: int = 0) -> dict:
+        """Run one fit iteration: simulate at theta, estimate the observables and their Jacobians, check
+        the previous prediction, update the trust radius and take a trust-region step.
+
+        Parameters
+        ----------
+        theta : array_like (n,)
+            Parameters of this iteration (in the units of `space`; log scales for scale parameters).
+        it : int
+            Iteration number (seeds, file names).
+
+        Returns
+        -------
+        dict
+            The iteration record (also appended to self.records): "theta", "estimate", "chi2",
+            "chi2_prior", "check" (from the second iteration on), "step", "uq", "next_theta", ...
+        """
         theta = np.asarray(theta, float)
         keep = self.exact_every > 0
         equil = 0.0 if (self.fixed and self.records) else None  # fixed theta: segments continue
         frames, stored, info = self.simulate(theta, seed=self.seed + 1000 * it + 1, keep_frames=keep, equil_ps=equil)
         if self.save_frames:
             np.savez(f"{self.prefix}_frames{it:02d}.npz", theta=theta, **{k: v for k, v in frames.items()})
-        samples = LiquidSamples(frames, self.T, self.sys.nmol, self.analyzer.mass, self.nblocks)
+        samples = LiquidSamples(frames, self.temperature, self.sys.nmol, self.analyzer.mass, self.nblocks)
         est = self.obj.estimate(samples, theta)
         chi2, prior = self.obj.chi2(est.y, est, theta)
         rec = {
@@ -410,9 +428,12 @@ class LiquidFit:
 
     # ------------------------------------------------------------------ driver
     def save(self):
+        """Write the fit state: prefix.json (records, pending prediction, trust radius; written atomically)
+        and prefix_state.npz (last positions [nm], box [nm], velocities [nm/ps]).
+        """
         out = {
             "names": self.space.names,
-            "T": self.T,
+            "temperature": self.temperature,
             "targets": [dataclasses.asdict(t) for t in self.obj.targets],
             "records": self.records,
             "pending": self.pending,
@@ -442,6 +463,24 @@ class LiquidFit:
         return np.asarray(self.records[-1]["next_theta"], float) if self.records else None
 
     def run(self, theta0, iters: int, resume: bool = True, max_seconds: float | None = None):
+        """Run fit iterations, saving after each one.
+
+        Parameters
+        ----------
+        theta0 : array_like (n,)
+            Starting parameters (ignored when resuming).
+        iters : int
+            Total number of iterations (including those already done when resuming).
+        resume : bool
+            Continue from prefix.json / prefix_state.npz if they exist.
+        max_seconds : float, optional
+            Wall-time budget [s]: stop early when the next iteration would not fit.
+
+        Returns
+        -------
+        numpy.ndarray (n,)
+            The parameters proposed for the next iteration.
+        """
         theta = np.asarray(theta0, float)
         start = 0
         if resume:

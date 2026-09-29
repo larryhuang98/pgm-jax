@@ -170,6 +170,7 @@ def setup(a):
 
 
 def main():
+    """Command line: parse the options, set up the fit (setup()) and run or resume it."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_arguments(ap)
     a = ap.parse_args()
@@ -213,7 +214,7 @@ def main():
         H,
         space,
         obj,
-        T=a.T,
+        temperature=a.T,
         settings=st,
         dt=a.dt / 1000.0,
         equil_ps=a.equil,
@@ -221,7 +222,7 @@ def main():
         every_ps=a.every,
         rdf=rdf,
         chunk=a.chunk,
-        tol=a.tol,
+        dipole_tol=a.tol,
         nblocks=a.nblocks,
         radius=a.radius,
         radius_max=a.radius_max,

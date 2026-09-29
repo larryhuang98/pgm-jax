@@ -773,7 +773,7 @@ def fit_frames():
         extrap_order=0,
         precision="double",
     )
-    an = FrameAnalyzer(sys, H, st, space, rdf=RDFSpec.by_type(sys, "OW", rmax=0.8, nbins=40), tol=1e-12, chunk=2)
+    an = FrameAnalyzer(sys, H, st, space, rdf=RDFSpec.by_type(sys, "OW", rmax=0.8, nbins=40), dipole_tol=1e-12, chunk=2)
     th = np.array([0.02, -0.01, 0.03, 0.0, 0.01, -0.02])
     return {f"frame.{k}": np.asarray(v) for k, v in an.frame(th, pos, H).items()}
 

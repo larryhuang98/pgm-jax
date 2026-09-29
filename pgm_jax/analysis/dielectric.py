@@ -44,11 +44,26 @@ def _series(M, V):
     return M, V
 
 
-def fluctuation(M, V, T: float) -> float:
-    """(<M.M> - <M>.<M>) / (3 eps0 <V> kB T) for M (F, 3) in e nm, V in nm^3 (scalar or (F,)), T in K."""
+def fluctuation(M, V, temperature: float) -> float:
+    """Fluctuation term of the static dielectric constant (tin-foil Ewald).
+
+    Parameters
+    ----------
+    M : array (F, 3)
+        Cell dipole series [e nm].
+    V : float or array (F,)
+        Volume [nm^3].
+    temperature : float
+        Temperature [K] (the thermostat's target).
+
+    Returns
+    -------
+    float
+        (<M.M> - <M>.<M>) / (3 eps0 <V> kB T) (dimensionless).
+    """
     M, V = _series(M, V)
     dM2 = np.mean(np.sum(M * M, axis=1)) - np.sum(np.mean(M, axis=0) ** 2)
-    return float(dM2 * E_NM_C_M**2 / (3.0 * EPS0_SI * np.mean(V) * 1e-27 * KB_SI * T))
+    return float(dM2 * E_NM_C_M**2 / (3.0 * EPS0_SI * np.mean(V) * 1e-27 * KB_SI * temperature))
 
 
 def eps_inf(alpha, V) -> tuple[float, float]:
@@ -62,8 +77,30 @@ def eps_inf(alpha, V) -> tuple[float, float]:
     return float(1.0 + x.mean()), float(x.std(ddof=1) / np.sqrt(ok.sum())) if ok.sum() > 1 else float("nan")
 
 
-def jackknife(M, V, T: float, nblocks: int = 10) -> tuple[float, float]:
-    """Fluctuation term and its jackknife standard error over `nblocks` contiguous blocks."""
+def jackknife(M, V, temperature: float, nblocks: int = 10) -> tuple[float, float]:
+    """Fluctuation term (see `fluctuation`) and its jackknife error.
+
+    Parameters
+    ----------
+    M : array (F, 3)
+        Cell dipole series [e nm].
+    V : float or array (F,)
+        Volume [nm^3].
+    temperature : float
+        Temperature [K] (the thermostat's target).
+    nblocks : int
+        Contiguous blocks of the jackknife.
+
+    Returns
+    -------
+    (float, float)
+        The fluctuation term and its standard error.
+
+    Raises
+    ------
+    ValueError
+        Fewer than two blocks or fewer samples than blocks.
+    """
     M, V = _series(M, V)
     if nblocks < 2 or len(M) < nblocks:
         raise ValueError("need at least two blocks with one sample each")
@@ -72,7 +109,7 @@ def jackknife(M, V, T: float, nblocks: int = 10) -> tuple[float, float]:
     s1 = np.array([M[p].sum(0) for p in parts])
     s2 = np.array([np.sum(M[p] * M[p]) for p in parts])
     sv = np.array([V[p].sum() for p in parts])
-    conv = E_NM_C_M**2 / (3.0 * EPS0_SI * 1e-27 * KB_SI * T)
+    conv = E_NM_C_M**2 / (3.0 * EPS0_SI * 1e-27 * KB_SI * temperature)
 
     def f(nn, a1, a2, av):
         nn = np.asarray(nn, float)
@@ -84,9 +121,36 @@ def jackknife(M, V, T: float, nblocks: int = 10) -> tuple[float, float]:
     return float(full), float(err)
 
 
-def static_dielectric(M, V, T: float, alpha=None, eps_inf_value: float | None = None, nblocks: int = 10) -> dict:
-    """eps with its jackknife error.  eps_inf from the alpha_cell samples, or given (eps_inf_value;
-    1.0 for a model without induced dipoles)."""
+def static_dielectric(
+    M, V, temperature: float, alpha=None, eps_inf_value: float | None = None, nblocks: int = 10
+) -> dict:
+    """Static dielectric constant eps = eps_inf + fluctuation term, with its jackknife error.
+
+    Parameters
+    ----------
+    M : array (F, 3)
+        Cell dipole series [e nm].
+    V : float or array (F,)
+        Volume [nm^3].
+    temperature : float
+        Temperature [K] (the thermostat's target).
+    alpha : array (F,), optional
+        Cell polarizability samples [nm^3] (nan where not evaluated), for eps_inf.
+    eps_inf_value : float, optional
+        eps_inf given directly (1.0 for a model without induced dipoles).
+    nblocks : int
+        Contiguous blocks of the jackknife.
+
+    Returns
+    -------
+    dict
+        eps, err, fluct, fluct_err, eps_inf, eps_inf_err, n, mean_M [e nm], rms_M [e nm], V [nm^3].
+
+    Raises
+    ------
+    ValueError
+        Neither alpha nor eps_inf_value.
+    """
     M, V = _series(M, V)
     if eps_inf_value is None:
         if alpha is None:
@@ -94,7 +158,7 @@ def static_dielectric(M, V, T: float, alpha=None, eps_inf_value: float | None = 
         ei, ei_err = eps_inf(alpha, V)
     else:
         ei, ei_err = float(eps_inf_value), 0.0
-    fl, err = jackknife(M, V, T, nblocks)
+    fl, err = jackknife(M, V, temperature, nblocks)
     return {
         "eps": ei + fl,
         "err": float(np.hypot(err, ei_err)),
@@ -109,28 +173,79 @@ def static_dielectric(M, V, T: float, alpha=None, eps_inf_value: float | None = 
     }
 
 
-def block_errors(M, V, T: float, blocks=(4, 5, 8, 10, 16, 20, 32, 50)) -> list[tuple[int, float]]:
-    """(number of blocks, jackknife error of the fluctuation term) for several block counts."""
-    return [(b, jackknife(M, V, T, b)[1]) for b in blocks if len(M) >= 2 * b]
+def block_errors(M, V, temperature: float, blocks=(4, 5, 8, 10, 16, 20, 32, 50)) -> list[tuple[int, float]]:
+    """Jackknife errors of the fluctuation term for several block counts (a plateau check).
+
+    Parameters
+    ----------
+    M : array (F, 3)
+        Cell dipole series [e nm].
+    V : float or array (F,)
+        Volume [nm^3].
+    temperature : float
+        Temperature [K] (the thermostat's target).
+    blocks : iterable of int
+        Block counts (those with at least two samples per block are used).
+
+    Returns
+    -------
+    list of (int, float)
+        (number of blocks, standard error).
+    """
+    return [(b, jackknife(M, V, temperature, b)[1]) for b in blocks if len(M) >= 2 * b]
 
 
-def running(M, V, T: float, fractions=(0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0), nblocks: int = 10):
-    """Fluctuation term and error from the first fraction f of the series: [(f, value, error)]."""
+def running(M, V, temperature: float, fractions=(0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0), nblocks: int = 10):
+    """Fluctuation term and its error from growing leading parts of the series (convergence).
+
+    Parameters
+    ----------
+    M : array (F, 3)
+        Cell dipole series [e nm].
+    V : float or array (F,)
+        Volume [nm^3].
+    temperature : float
+        Temperature [K] (the thermostat's target).
+    fractions : iterable of float
+        Fractions of the series.
+    nblocks : int
+        Contiguous blocks of the jackknife.
+
+    Returns
+    -------
+    list of (float, float, float)
+        (fraction, value, standard error).
+    """
     M, V = _series(M, V)
     out = []
     for f in fractions:
         k = int(round(f * len(M)))
         if k >= 2 * nblocks:
-            out.append((f,) + jackknife(M[:k], V[:k], T, nblocks))
+            out.append((f,) + jackknife(M[:k], V[:k], temperature, nblocks))
     return out
 
 
-def decomposition(parts: dict, V, T: float) -> dict:
-    """Split the fluctuation term of M = sum of `parts` (name -> (F, 3)) into the variance terms
-    <dA.dA> and the cross terms 2 <dA.dB>, in units of eps."""
+def decomposition(parts: dict, V, temperature: float) -> dict:
+    """Split the fluctuation term of M = sum of parts into variance and cross terms.
+
+    Parameters
+    ----------
+    parts : dict
+        name -> dipole series (F, 3) [e nm], e.g. charges, permanent and induced dipoles.
+    V : float or array (F,)
+        Volume [nm^3].
+    temperature : float
+        Temperature [K].
+
+    Returns
+    -------
+    dict
+        The variance terms <dA.dA> (key "A") and cross terms 2 <dA.dB> (key "AxB"), in units of
+        eps.
+    """
     names = list(parts)
     d = {k: np.asarray(v, float) - np.mean(v, axis=0) for k, v in parts.items()}
-    conv = E_NM_C_M**2 / (3.0 * EPS0_SI * float(np.mean(V)) * 1e-27 * KB_SI * T)
+    conv = E_NM_C_M**2 / (3.0 * EPS0_SI * float(np.mean(V)) * 1e-27 * KB_SI * temperature)
     out = {}
     for i, a in enumerate(names):
         out[a] = float(np.mean(np.sum(d[a] * d[a], 1)) * conv)
@@ -151,9 +266,23 @@ def autocorrelation(M, max_lag: int | None = None) -> np.ndarray:
     return c / c[0]
 
 
-def correlation_time(M, dt_ps: float, window=(0.8, 0.2)) -> float:
-    """tau_M (ps) from a fit of ln C(t) over the window where C falls from window[0] to window[1]
-    (Debye-like decay of the collective dipole); nan if C never falls below window[1]."""
+def correlation_time(M, dt: float, window=(0.8, 0.2)) -> float:
+    """Correlation time of the cell dipole from a fit of ln C(t) (Debye-like decay).
+
+    Parameters
+    ----------
+    M : array (F, 3)
+        Cell dipole series [e nm].
+    dt : float
+        Time between samples [ps].
+    window : (float, float)
+        The fit uses C(t) between window[0] and window[1].
+
+    Returns
+    -------
+    float
+        tau_M [ps]; nan if C never falls below window[1].
+    """
     c = autocorrelation(M)
     below = np.nonzero(c < window[1])[0]
     if len(below) == 0:
@@ -162,26 +291,44 @@ def correlation_time(M, dt_ps: float, window=(0.8, 0.2)) -> float:
     sel = np.nonzero((c[:k1] <= window[0]) & (c[:k1] > 0))[0]
     if len(sel) < 3:
         sel = np.arange(1, max(k1, 3))
-    t = sel * dt_ps
+    t = sel * dt
     return float(-1.0 / np.polyfit(t, np.log(c[sel]), 1)[0])
 
 
-def ir_spectrum(M, dt_ps: float, V, T: float, segment_ps: float = 10.0):
-    """Infrared absorption alpha(w) n(w) (cm^-1) against wavenumber (cm^-1) from M(t) (e nm)
-    sampled every dt_ps; Welch periodograms over segments of segment_ps (resolution
-    ~ 1 / (c segment) = 3.3 cm^-1 for 10 ps), Hann windows, half overlap."""
+def ir_spectrum(M, dt: float, V, temperature: float, segment_ps: float = 10.0):
+    """Infrared absorption spectrum from the cell dipole (linear response, classical).
+
+    Parameters
+    ----------
+    M : array (F, 3)
+        Cell dipole series [e nm].
+    dt : float
+        Time between samples [ps].
+    V : float or array (F,)
+        Volume [nm^3].
+    temperature : float
+        Temperature [K].
+    segment_ps : float
+        Length of the Welch segments [ps] (resolution about 1 / (c segment) = 3.3 cm^-1 for
+        10 ps); Hann windows, half overlap.
+
+    Returns
+    -------
+    (np.ndarray, np.ndarray)
+        Wavenumbers [cm^-1] and alpha(w) n(w) [cm^-1].
+    """
     M = np.asarray(M, float).reshape(-1, 3)
-    n = min(len(M), max(8, int(round(segment_ps / dt_ps))))
+    n = min(len(M), max(8, int(round(segment_ps / dt))))
     h = np.hanning(n)
-    dt = dt_ps * 1e-12
+    dt_s = dt * 1e-12
     starts = range(0, len(M) - n + 1, max(1, n // 2))
     d = M - M.mean(0)
     S = np.zeros(n // 2 + 1)
     for s in starts:
         seg = d[s : s + n] - d[s : s + n].mean(0)
         S += np.sum(np.abs(np.fft.rfft(seg * h[:, None], axis=0)) ** 2, axis=1)
-    S *= dt / np.sum(h * h) / len(starts) * E_NM_C_M**2  # C(w), C^2 m^2 s
-    w = 2.0 * np.pi * np.fft.rfftfreq(n, dt)  # rad/s
+    S *= dt_s / np.sum(h * h) / len(starts) * E_NM_C_M**2  # C(w), C^2 m^2 s
+    w = 2.0 * np.pi * np.fft.rfftfreq(n, dt_s)  # rad/s
     V_m3 = float(np.mean(V)) * 1e-27
-    alpha_n = w**2 * S / (6.0 * C_LIGHT_M_S * EPS0_SI * V_m3 * KB_SI * T)  # 1/m
+    alpha_n = w**2 * S / (6.0 * C_LIGHT_M_S * EPS0_SI * V_m3 * KB_SI * temperature)  # 1/m
     return w / (2.0 * np.pi * C_LIGHT_M_S) / 100.0, alpha_n / 100.0

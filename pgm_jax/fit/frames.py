@@ -71,35 +71,74 @@ class RDFSpec:
 
 
 class FrameAnalyzer:
+    """Per-frame energies, cell dipoles, polarizabilities and molecular dipoles of a liquid, with their
+    exact derivatives with respect to the fitting parameters theta (see the module docstring).
+
+        an = FrameAnalyzer(system, box, settings.replace(pme_grid=sim.ff.pme.K), space, rdf=rdf)
+        frames = an.analyze(theta, [(positions, box, dipoles), ...], grad=True)
+
+    Frames are analysed in vmapped chunks on the device; the pair rows of every frame come from a
+    dense cutoff search, so frames may come from any engine or trajectory.
+    """
+
     def __init__(
         self,
-        sys,
-        H,
+        system,
+        box,
         settings: MDSettings,
         space,
         rdf: RDFSpec | None = None,
-        tol: float = 1e-6,
+        dipole_tol: float = 1e-6,
         max_iter: int = 300,
         chunk: int = 8,
         margin: float = 0.02,
         row_block: int = 1024,
     ):
-        """sys, settings: those of the MD (same PME grid: pass settings with pme_grid set, e.g.
-        settings.replace(pme_grid=sim.ff.pme.K)); space: ParameterSpace; tol: CG
-        tolerance of the dipole and adjoint solves (pmemd-pgm's criterion)."""
-        s = settings.replace(differentiable=False, dipole_tol=tol, max_iter=max_iter, peek=0.0, predictor="none")
-        self.ff = PGMForceField(sys, np.asarray(H), s)
-        if self.ff.flux is not None or any(getattr(m, "vsites", None) for m in sys.molecules):
+        """Set up the per-frame analysis.
+
+        Parameters
+        ----------
+        system : System
+            The liquid (as in the MD).
+        box : array (3, 3)
+            A box of the run [nm] (sizes the rows and the PME grid).
+        settings : MDSettings
+            The MD settings; pass them with the run's PME grid set, e.g.
+            settings.replace(pme_grid=sim.ff.pme.K), so that every frame uses the same grid.
+        space : ParameterSpace
+            theta -> parameters.
+        rdf : RDFSpec, optional
+            Radial distribution functions to histogram.
+        dipole_tol : float
+            Tolerance of the dipole and adjoint CG solves (pmemd-pgm's criterion,
+            max |alpha r| / mean |alpha b|).
+        max_iter : int
+            Largest number of CG iterations.
+        chunk : int
+            Frames per vmapped batch.
+        margin : float
+            Extra pair distance [nm] of the frame rows.
+        row_block : int
+            Rows per block of the pair evaluation.
+
+        Raises
+        ------
+        NotImplementedError
+            Charge flux or virtual sites.
+        """
+        s = settings.replace(differentiable=False, dipole_tol=dipole_tol, max_iter=max_iter, peek=0.0, predictor="none")
+        self.ff = PGMForceField(system, np.asarray(box), s)
+        if self.ff.flux is not None or any(getattr(m, "vsites", None) for m in system.molecules):
             raise NotImplementedError("charge flux / virtual sites are not handled by FrameAnalyzer")
-        self.sys, self.space, self.rdf = sys, space, rdf
+        self.sys, self.space, self.rdf = system, space, rdf
         self.cell = CellDipole(self.ff)
-        self.tol, self.chunk = float(tol), int(chunk)
+        self.tol, self.chunk = float(dipole_tol), int(chunk)
         self.rc = float(self.ff.rc_pair) + float(margin)
         self.row_block = int(row_block)
         self.width = None
-        self.mass = float(np.sum(sys.masses))
+        self.mass = float(np.sum(system.masses))
         self._fns = {}
-        if rdf is not None and rdf.rmax > 0.5 * float(np.min(np.diag(np.asarray(H)))):
+        if rdf is not None and rdf.rmax > 0.5 * float(np.min(np.diag(np.asarray(box)))):
             raise ValueError("rdf rmax must be below half the box")
 
     # ------------------------------------------------------------------ candidate rows
