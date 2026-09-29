@@ -1,5 +1,7 @@
-"""i-PI socket client (driver) for pGM: i-PI integrates (PIMD, TRPMD, thermostats, barostats,
-enhanced sampling), pgm_jax computes energies, forces and virials.
+r"""Serve i-PI as a socket client (driver) for pGM: i-PI integrates, pgm_jax computes the forces.
+
+i-PI runs the dynamics (PIMD, TRPMD, thermostats, barostats, enhanced sampling); pgm_jax computes
+energies, forces and virials.  Contents: `IPIClient` and the command line (`main`).
 
 Pure Python sockets; i-PI itself is only needed on the server side.  The client speaks the i-PI
 protocol (12-byte headers STATUS / INIT / POSDATA / GETFORCE / EXIT; atomic units: Bohr, Hartree),
@@ -20,9 +22,15 @@ or from Python:
     client.run()                               # until i-PI sends EXIT
 
 The engine is built on the first structure (i-PI's positions and cell).  Atoms must be in the
-system's order.  Virial: i-PI expects sum_i r_i (x) f_i = -dE/d eps: the engine's atomic virial for flexible templates
-(the default there).  Extras (JSON; i-PI's `dipole` property and <extras> output): the cell dipole M_q + M_perm + M_ind
-(e Bohr) and the CG iterations of the dipole solve."""
+system's order.  Virial: i-PI expects sum_i r_i (x) f_i = -dE/d eps: the engine's atomic virial for
+flexible templates (the default there).  Extras (JSON; i-PI's `dipole` property and <extras>
+output): the cell dipole M_q + M_perm + M_ind (e Bohr) and the CG iterations of the dipole solve.
+
+Units: i-PI's atomic units on the socket (Bohr, hartree; BOHR_NM_CODATA2022), the engine's nm and
+kJ/mol inside.
+
+See also docs/interfaces.md, interfaces/ipi_tools.py (running i-PI).
+"""
 
 from __future__ import annotations
 
@@ -31,15 +39,23 @@ import json
 import socket
 import sys
 import time
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Any, TextIO
 
 import numpy as np
 
 from ..units import BOHR_NM_CODATA2022, HARTREE_KJMOL
 
-HDRLEN = 12
+if TYPE_CHECKING:
+    from numpy.typing import ArrayLike, DTypeLike
+
+    from .engine import EngineResult
+
+HDRLEN = 12  # bytes of an i-PI message header
 
 
 def _msg(s: str) -> bytes:
+    """Return an i-PI header: the upper-case word padded to HDRLEN bytes."""
     return s.upper().ljust(HDRLEN).encode()
 
 
@@ -50,22 +66,66 @@ READY, HAVEDATA, NEEDINIT, FORCEREADY = (_msg(x) for x in ("READY", "HAVEDATA", 
 class IPIClient:
     """i-PI driver around a PGMEngine (or any object with the engine's compute()).
 
-    engine: a PGMEngine, or a factory f(pos_nm, cell_nm) -> engine called on the first structure.
-    address: host name (inet) or socket name (unix: sockets_prefix + address); port for inet."""
+    Attributes
+    ----------
+    address, port, unix, prefix
+        Where i-PI listens (unix socket: prefix + address).
+    virial : bool
+        Send the virial (else zeros).
+    verbose : bool
+        Log the INIT messages.
+    log : text stream or None
+        Log stream.
+    vmap_beads : bool
+        Evaluate batches with one cell in one vmapped call.
+    dipole : bool
+        Send the cell dipole in the extras of every structure.
+    batch : int
+        i-PI's batch size (from INIT).
+    stats : dict
+        Counters: structures, requests, t_engine [s], t_total [s].
+    sock : socket.socket
+        The connection (during `run`).
+    """
 
     def __init__(
         self,
-        engine,
+        engine: Any,
         address: str = "localhost",
         port: int = 31415,
         unix: bool = False,
         sockets_prefix: str = "/tmp/ipi_",
         virial: bool = True,
         verbose: bool = False,
-        log=sys.stdout,
+        log: TextIO | None = sys.stdout,
         vmap_beads: bool = True,
         dipole: bool = True,
-    ):
+    ) -> None:
+        """Set up the client (no connection yet; see `run`).
+
+        Parameters
+        ----------
+        engine : PGMEngine or callable
+            An engine, or a factory f(pos_nm, cell_nm) -> engine called on the first structure.
+        address : str
+            Host name (inet) or socket name (unix: sockets_prefix + address).
+        port : int
+            TCP port (inet).
+        unix : bool
+            Unix-domain socket instead of TCP.
+        sockets_prefix : str
+            Path prefix of i-PI's unix sockets.
+        virial : bool
+            Compute and send the virial.
+        verbose : bool
+            Log the INIT messages.
+        log : text stream, optional
+            Log stream; None: silent.
+        vmap_beads : bool
+            One vmapped call per batch with one cell.
+        dipole : bool
+            Cell dipole in the extras.
+        """
         self._engine = None if callable(engine) and not hasattr(engine, "compute") else engine
         self._factory = engine if self._engine is None else None
         self.address, self.port, self.unix, self.prefix = address, int(port), bool(unix), sockets_prefix
@@ -76,11 +136,19 @@ class IPIClient:
         self.stats = {"structures": 0, "requests": 0, "t_engine": 0.0, "t_total": 0.0}
 
     @property
-    def engine(self):
+    def engine(self) -> Any:
+        """The engine (None until the factory has built it)."""
         return self._engine
 
     # ------------------------------------------------------------------ socket helpers
-    def _connect(self, retries: int = 600, wait: float = 0.5):
+    def _connect(self, retries: int = 600, wait: float = 0.5) -> socket.socket:
+        """Return a socket connected to i-PI, retrying `retries` times every `wait` s while the server starts.
+
+        Raises
+        ------
+        ConnectionError
+            If no connection could be made.
+        """
         for _k in range(retries):
             try:
                 if self.unix:
@@ -97,6 +165,13 @@ class IPIClient:
         raise ConnectionError(f"cannot connect to i-PI at {self.address}")
 
     def _recv(self, n: int) -> bytes:
+        """Return exactly n bytes from the socket.
+
+        Raises
+        ------
+        ConnectionError
+            If i-PI closed the connection.
+        """
         buf = bytearray(n)
         view = memoryview(buf)
         got = 0
@@ -107,18 +182,23 @@ class IPIClient:
             got += k
         return bytes(buf)
 
-    def _recv_array(self, dtype, count: int):
+    def _recv_array(self, dtype: DTypeLike, count: int) -> np.ndarray:
+        """Return `count` values of `dtype` read from the socket (np.ndarray)."""
         dt = np.dtype(dtype)
         return np.frombuffer(self._recv(dt.itemsize * count), dt)
 
-    def _print(self, s):
+    def _print(self, s: str) -> None:
+        """Write a line to the log (if any)."""
         if self.log is not None:
             print(s, file=self.log, flush=True)
 
     # ------------------------------------------------------------------ evaluation
-    def _evaluate(self, h, pos_bohr, slot: int | None):
-        """One structure: h (3, 3) i-PI cell (lattice vectors as columns, Bohr), positions (Bohr).
-        Returns (energy Ha, forces Ha/Bohr (N, 3), virial Ha (3, 3), extras dict)."""
+    def _evaluate(self, h: ArrayLike, pos_bohr: ArrayLike, slot: int | None) -> tuple:
+        """Evaluate one structure and return (energy [Ha], forces (N, 3) [Ha/Bohr], virial (3, 3) [Ha], extras).
+
+        `h` is the i-PI cell (lattice vectors as columns) [Bohr], `pos_bohr` the positions [Bohr];
+        `slot` the dipole history to use (engines with several slots), or None.
+        """
         cell = np.asarray(h, float).T * BOHR_NM_CODATA2022  # rows = lattice vectors, nm
         pos = np.asarray(pos_bohr, float).reshape(-1, 3) * BOHR_NM_CODATA2022
         self._ensure(h, pos_bohr)
@@ -132,8 +212,8 @@ class IPIClient:
         self.stats["structures"] += 1
         return self._convert(res)
 
-    def _ensure(self, h, pos_bohr):
-        """Build the engine from the factory on the first structure."""
+    def _ensure(self, h: ArrayLike, pos_bohr: ArrayLike) -> None:
+        """Build the engine from the factory on the first structure; switch on the in-call cell dipole if wanted."""
         if self._engine is None:
             cell = np.asarray(h, float).T * BOHR_NM_CODATA2022
             self._engine = self._factory(np.asarray(pos_bohr, float).reshape(-1, 3) * BOHR_NM_CODATA2022, cell)
@@ -141,19 +221,29 @@ class IPIClient:
         if self.dipole and hasattr(self._engine, "with_dipole"):
             self._engine.with_dipole = True  # the cell dipole in the same call (extras every step)
 
-    def _convert(self, res):
+    def _convert(self, res: EngineResult) -> tuple[float, np.ndarray, np.ndarray, dict]:
+        """Return an EngineResult in i-PI units: (energy [Ha], forces [Ha/Bohr], virial -dE/d eps [Ha], extras).
+
+        The virial is symmetrised (zeros if not computed); extras hold "cg_iterations" and the cell
+        "dipole" [e Bohr].
+        """
         E = res.energy / HARTREE_KJMOL
         F = res.forces * (BOHR_NM_CODATA2022 / HARTREE_KJMOL)
         W = res.virial if (self.virial and res.virial is not None) else np.zeros((3, 3))
-        vir = -0.5 * (W + W.T) / HARTREE_KJMOL
+        vir = -0.5 * (W + W.T) / HARTREE_KJMOL  # i-PI's virial: -dE/d eps, symmetric, hartree
         extras = {"cg_iterations": int(res.iterations)}
         if self.dipole:
             extras["dipole"] = (res.dipole / BOHR_NM_CODATA2022).tolist()
         return E, np.ascontiguousarray(F, np.float64), np.ascontiguousarray(vir, np.float64), extras
 
-    def _evaluate_batch(self, cells, pos_bohr):
-        """A batch of structures (i-PI batch_size > 1): one vmapped engine call when they share the
-        cell (ring-polymer beads; PGMEngine.compute_batch), else one call per structure."""
+    def _evaluate_batch(self, cells: np.ndarray, pos_bohr: np.ndarray) -> list[tuple]:
+        """Evaluate a batch of structures (i-PI batch_size > 1) and return one result tuple per structure.
+
+        One vmapped engine call when they share the cell (ring-polymer beads;
+        PGMEngine.compute_batch), else one call per structure (with the slots from
+        `PGMEngine.batch_slots` when the cell is shared).  `cells` (B, 3, 3) i-PI cells [Bohr],
+        `pos_bohr` (B, N, 3) [Bohr].
+        """
         same_cell = all(np.array_equal(cells[0], c) for c in cells[1:])
         if self._engine is None or not hasattr(self._engine, "compute_batch") or not self.vmap_beads or not same_cell:
             slots = list(range(len(cells)))
@@ -171,8 +261,17 @@ class IPIClient:
         return [self._convert(r) for r in res]
 
     # ------------------------------------------------------------------ protocol
-    def run(self, max_requests: int | None = None):
-        """Serve i-PI until EXIT (or the connection closes, or max_requests POSDATA messages)."""
+    def run(self, max_requests: int | None = None) -> dict:
+        """Serve i-PI until EXIT (or the connection closes, or `max_requests` POSDATA messages); return the stats.
+
+        Answers STATUS with NEEDINIT / READY / HAVEDATA, reads INIT (batch size), POSDATA (single or
+        batched), and sends the results on GETFORCE.  The socket is closed at the end.
+
+        Raises
+        ------
+        RuntimeError
+            For an unexpected message header.
+        """
         self.sock = self._connect()
         initialised, have = False, False
         results = None
@@ -196,6 +295,7 @@ class IPIClient:
                 elif hdr == POSDATA:
                     if self.batch > 1:
                         nat = int(self._recv_array(np.int32, 1)[0])
+                        # per structure: cell h and its inverse (i-PI: lattice vectors as columns)
                         cells = self._recv_array(np.float64, 18 * self.batch).reshape(self.batch, 2, 3, 3)
                         pos = self._recv_array(np.float64, 3 * nat * self.batch).reshape(self.batch, nat, 3)
                         self._ensure(cells[0, 0], pos[0])
@@ -252,7 +352,12 @@ class IPIClient:
 
 
 # ----------------------------------------------------------------------------- command line
-def _engine_factory(args):
+def _engine_factory(args: argparse.Namespace) -> Callable[[np.ndarray, np.ndarray], Any]:
+    """Return the engine factory of the command line (enables float64 in JAX).
+
+    The factory builds a PGMEngine from --prmtop (rigid-molecule model) or --template / --nmol
+    (copies of one flexible molecule), with MDSettings from --settings / --precision.
+    """
     import jax
 
     jax.config.update("jax_enable_x64", True)
@@ -277,13 +382,15 @@ def _engine_factory(args):
     else:
         sys_ = System.from_prmtop(args.prmtop)
 
-    def make(pos, cell):
+    def make(pos: np.ndarray, cell: np.ndarray) -> Any:
+        """Build the engine at i-PI's first structure (positions and cell in nm)."""
         return PGMEngine(sys_, pos, cell, settings, templates=templates, slots=args.slots, stress=args.stress)
 
     return make
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> None:
+    """Parse the command line and run the i-PI client (see the module docstring); print the stats as JSON."""
     p = argparse.ArgumentParser(description="pGM (pgm_jax) client for i-PI")
     p.add_argument("--prmtop", help="pGM prmtop (rigid-molecule model; atoms in i-PI's order)")
     p.add_argument("--template", help="FlexibleTemplate file: --nmol copies of one flexible molecule")

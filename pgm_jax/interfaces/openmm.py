@@ -1,6 +1,7 @@
-"""OpenMM with pGM forces: an openmm.PythonForce (OpenMM >= 8.4) that calls the device-resident
-pgm_jax engine, so OpenMM's integrators, constraints (SETTLE / SHAKE), barostats and reporters run
-with pGM electrostatics.
+"""Run OpenMM with pGM forces through an openmm.PythonForce (OpenMM >= 8.4) around the pgm_jax engine.
+
+OpenMM's integrators, constraints (SETTLE / SHAKE), barostats and reporters run with pGM
+electrostatics.  Contents: `PGMOpenMM` (System, Topology and the force for a PGMEngine).
 
     from pgm_jax.interfaces.openmm import PGMOpenMM
     om = PGMOpenMM(engine)                                   # PGMEngine (pgm_jax.interfaces.engine)
@@ -22,11 +23,15 @@ trace), and a CustomExternalForce updated step by step (setParameters per atom p
 Energies and forces are exact (the engine's); the MonteCarloBarostat works (it re-evaluates the
 energy at the scaled box and molecular centres; the engine rebuilds its lists when the volume
 changes by more than 10 %).  OpenMM's PythonForce gives no virial, so anisotropic or
-pressure-reporting tools that need one are not available.  Units: nm, ps, kJ/mol (OpenMM's)."""
+pressure-reporting tools that need one are not available.
+
+Units: nm, ps, kJ/mol, amu (OpenMM's, the same as pgm_jax's).
+"""
 
 from __future__ import annotations
 
 import time
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -36,8 +41,12 @@ try:
 except ImportError as err:  # pragma: no cover
     raise ImportError("pgm_jax.interfaces.openmm needs OpenMM >= 8.4 (openmm.PythonForce)") from err
 
+if TYPE_CHECKING:
+    from .engine import PGMEngine
 
-def _element(symbol: str):
+
+def _element(symbol: str) -> app.Element | None:
+    """Return OpenMM's Element for a symbol, or None if OpenMM does not know it."""
     try:
         return app.Element.getBySymbol(symbol)
     except KeyError:
@@ -45,9 +54,26 @@ def _element(symbol: str):
 
 
 class PGMOpenMM:
-    """OpenMM System / Topology / PythonForce for a PGMEngine (the engine's system and model)."""
+    """OpenMM System / Topology / PythonForce for a PGMEngine (the engine's system and model).
 
-    def __init__(self, engine):
+    Attributes
+    ----------
+    engine : PGMEngine
+        The engine.
+    sys : System
+        Its system.
+    stats : dict
+        Counters: calls, t_call [s] (whole force calls), t_convert [s] (reading OpenMM's state).
+    """
+
+    def __init__(self, engine: PGMEngine) -> None:
+        """Set up the wrapper for an engine.
+
+        Raises
+        ------
+        ImportError
+            If this OpenMM has no PythonForce (< 8.4).
+        """
         if not hasattr(openmm, "PythonForce"):
             raise ImportError(f"OpenMM {openmm.__version__} has no PythonForce (needs >= 8.4)")
         self.engine = engine
@@ -55,7 +81,11 @@ class PGMOpenMM:
         self.stats = {"calls": 0, "t_call": 0.0, "t_convert": 0.0}
 
     # ------------------------------------------------------------------ the force
-    def _compute(self, state):
+    def _compute(self, state: openmm.State) -> tuple[float, np.ndarray]:
+        """Return the engine's energy [kJ/mol] and forces (N, 3) [kJ/mol/nm] for an OpenMM State.
+
+        The PythonForce callback.
+        """
         t0 = time.perf_counter()
         pos = state.getPositions(asNumpy=True)._value  # nm (OpenMM default units)
         box = state.getPeriodicBoxVectors(asNumpy=True)._value
@@ -67,19 +97,36 @@ class PGMOpenMM:
         self.stats["t_convert"] += t1 - t0
         return res.energy, res.forces
 
-    def force(self, group: int = 0):
-        """The pGM force (energy and forces of the engine's model, periodic)."""
+    def force(self, group: int = 0) -> openmm.PythonForce:
+        """Return the pGM force: an openmm.PythonForce with periodic boundaries in force group `group`."""
         f = openmm.PythonForce(self._compute)
         f.setUsesPeriodicBoundaryConditions(True)
         f.setForceGroup(int(group))
         return f
 
     # ------------------------------------------------------------------ system and topology
-    def system(self, rigid: bool = True, constraints: str | None = None, hmr: float | None = None, cmm: bool = True):
-        """openmm.System with the engine's masses, box and the pGM force.
-        rigid: hold every molecule of up to three atoms rigid by distance constraints (the
-        rigid-molecule model; OpenMM applies SETTLE to water); constraints="h-bonds": also X-H
-        bonds of larger molecules at their current lengths.  cmm: remove centre-of-mass motion."""
+    def system(
+        self, rigid: bool = True, constraints: str | None = None, hmr: float | None = None, cmm: bool = True
+    ) -> openmm.System:
+        """Return an openmm.System with the engine's masses, box, constraints and the pGM force.
+
+        Parameters
+        ----------
+        rigid : bool
+            Hold every molecule of up to three atoms rigid by distance constraints (the rigid-molecule
+            model; OpenMM applies SETTLE to water).
+        constraints : {"h-bonds"}, optional
+            Also constrain the X-H bonds of larger molecules; None: no other constraints.
+        hmr : float, optional
+            Unused (no hydrogen mass repartitioning is applied).
+        cmm : bool
+            Add a CMMotionRemover (centre-of-mass motion removal).
+
+        Returns
+        -------
+        openmm.System
+            The system; constraint lengths are those of the engine's initial positions [nm].
+        """
         s = openmm.System()
         for m in np.asarray(self.sys.masses, float):
             s.addParticle(float(m))
@@ -93,7 +140,15 @@ class PGMOpenMM:
             s.addForce(openmm.CMMotionRemover())
         return s
 
-    def constraint_pairs(self, rigid: bool = True, constraints: str | None = None):
+    def constraint_pairs(self, rigid: bool = True, constraints: str | None = None) -> list[tuple[int, int]]:
+        """Return the constrained atom pairs (see `system`).
+
+        Raises
+        ------
+        ValueError
+            For a molecule of more than three atoms in the rigid-molecule model with rigid=True and no
+            X-H constraints (distance constraints cannot hold it rigid).
+        """
         pairs = []
         for k, m in enumerate(self.sys.molecules):
             off = int(self.sys.offsets[k])
@@ -109,8 +164,11 @@ class PGMOpenMM:
                 )
         return pairs
 
-    def topology(self):
-        """openmm.app.Topology (one residue per molecule), for reporters (PDB, DCD)."""
+    def topology(self) -> app.Topology:
+        """Return an openmm.app.Topology for reporters (PDB, DCD).
+
+        One residue per molecule; atom names from the atom types.
+        """
         top = app.Topology()
         chain = top.addChain()
         for m in self.sys.molecules:
@@ -122,9 +180,9 @@ class PGMOpenMM:
         return top
 
     def box(self) -> np.ndarray:
-        """The engine's initial box (nm, reduced lower-triangular: OpenMM's form)."""
+        """Return the engine's initial box [nm] (reduced lower-triangular: OpenMM's form)."""
         return np.asarray(self.engine.initial_box, float)
 
     def positions(self) -> np.ndarray:
-        """The engine's initial positions (nm, molecules whole, in the frame of box())."""
+        """Return the engine's initial positions [nm] (molecules whole, in the frame of box())."""
         return np.asarray(self.engine.initial_positions, float)
