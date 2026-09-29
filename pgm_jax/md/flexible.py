@@ -47,7 +47,7 @@ from .box import check_box, inv3, reduce_box, volume
 from .constraints import Constraints, hmr_masses
 from .flux import ChargeFlux
 from .forcefield import MDSettings, PGMForceField
-from .integrate import KB, Dynamics, Integrator, MDState, upgrade_state
+from .integrate import KB, Dynamics, Integrator, MDState, field_state, upgrade_state
 from .thermostats import Bussi
 from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .rigid import _unwrap
@@ -374,12 +374,13 @@ class FlexibleIntegrator(Integrator):
         self.momentum_conserved = self.ensemble == "nve" or isinstance(self.thermostat, Bussi)
         self.dof = 3 * self.n_real - nc - (3 if self.momentum_conserved else 0)
 
-    def _forces(self, pos, box, induction, nbr, force_rebuild=False, lam=None, bias=None):
+    def _forces(self, pos, box, induction, nbr, force_rebuild=False, lam=None, bias=None, field=None):
         centers = self.flex.list_centers(pos)
         nbr = self.nb.update(nbr, pos, centers, box, force_rebuild)
         cand, ovf = self.nb.candidates(nbr, centers, box, pos)
         if self.alchemy is None:
-            res = self.ff.compute(pos, box, cand, induction, self.params, keep_geometry=self.keep_geometry)
+            res = self.ff.compute(pos, box, cand, induction, self.params, keep_geometry=self.keep_geometry,
+                                  efield=field)
         else:                                      # Hamiltonian at the state's coupling lam (alchemy.py)
             res = self.alchemy.compute(self.ff, pos, box, cand, induction, self.params, lam)
         e_in, g_in = jax.value_and_grad(self.flex.energy)(pos)
@@ -432,7 +433,7 @@ class FlexibleIntegrator(Integrator):
                      iters=zi, max_iters=zi, resid=z, step=zi, mc=jnp.zeros(4, jnp.int32),
                      mc_dv=jnp.asarray(0.01 * float(volume(box)), jnp.float64), overflow=jnp.zeros((), bool),
                      aux=aux, heat=z, cg_total=z, bias=self._init_bias(bias))
-        return self.forces(st, False)
+        return self.forces(field_state(st, self.efield), False)
 
     def _scaled(self, dyn: Dynamics):
         """Mass-scaled atomic momenta; the projection keeps them (and the thermostat
@@ -480,7 +481,8 @@ class FlexibleIntegrator(Integrator):
             dyn = self._drift(dyn, dt / 2, project=False)
         if self.vsites is not None:
             dyn = dyn.set(position=self.vsites.place(dyn.position, st.box))
-        F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr, lam=st.lam, bias=st.bias)
+        F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr, lam=st.lam, bias=st.bias,
+                                   field=self.field_at(st, st.step + 1))
         st = self._with_result(st.set(dyn=dyn, aux=aux, heat=heat), F, res, nbr)
         st = st.set(dyn=self._kick(st.dyn, dt / 2), step=st.step + 1)
         if self.ensemble == "npt":
@@ -500,8 +502,9 @@ class FlexibleIntegrator(Integrator):
         c_n = self.flex.list_centers(pos_n)
         nbr_n = self.nb.update(st.nbr, pos_n, c_n, Hn, True)
         cand, ovf0 = self.nb.candidates(nbr_n, c_n, Hn, pos_n)
+        field = self.field_at(st, st.step)
         if self.alchemy is None:
-            e_n, ind_n, _, ovf = self.ff.energy(pos_n, Hn, cand, st.induction, self.params)
+            e_n, ind_n, _, ovf = self.ff.energy(pos_n, Hn, cand, st.induction, self.params, efield=field)
         else:
             e_n, ind_n, _, ovf = self.alchemy.energy(self.ff, pos_n, Hn, cand, st.induction, self.params, st.lam)
         e_n = e_n + self.flex.energy(pos_n) + self._restraint_energy(pos_n, Hn, st.bias)
@@ -513,7 +516,7 @@ class FlexibleIntegrator(Integrator):
 
         def acc(st):
             st = st.set(dyn=st.dyn.set(position=pos_n), box=Hn, induction=ind_n)
-            F, res, nbr = self._forces(pos_n, Hn, ind_n, nbr_n, lam=st.lam, bias=st.bias)
+            F, res, nbr = self._forces(pos_n, Hn, ind_n, nbr_n, lam=st.lam, bias=st.bias, field=field)
             return self._with_result(st, F, res, nbr)
 
         st = jax.lax.cond(accept, acc, lambda s: s, st)
@@ -551,7 +554,8 @@ class FlexibleSimulation(Simulation):
     4.0, "protein": 3.024}) (constraints.hmr_masses); restraints: md/restraints.py; alchemy: an
     alchemical region (md/alchemy.py); mts: multiple time stepping (md/mts.py: MTS settings; dt is
     then the outer step); bias: biases on collective variables (pgm_jax.bias); constraint_options:
-    keywords of md/constraints.Constraints (n_iter, dense_max, tol, bucket)."""
+    keywords of md/constraints.Constraints (n_iter, dense_max, tol, bucket); efield: an external
+    electric field (md/efield.py: ExternalField or three numbers in V/nm)."""
 
     def __init__(self, sys: System, templates, pos_nm, H_nm, settings: MDSettings = MDSettings(),
                  dt: float = 0.0005, ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0,
@@ -559,7 +563,7 @@ class FlexibleSimulation(Simulation):
                  params=None, log=None, neighbor_list: str = "auto", r_margin: float = 0.05,
                  constraints: str = "none", hmr=None, max_single: int | None = None,
                  thermostat="langevin", tau_t: float = 1.0, restraints=None, alchemy=None, mts=None, bias=None,
-                 constraint_options: dict | None = None):
+                 constraint_options: dict | None = None, efield=None):
         H = reduce_box(H_nm)
         check_box(H, settings.pair_cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
@@ -590,7 +594,7 @@ class FlexibleSimulation(Simulation):
                            temperature=temperature, gamma=gamma, pressure=pressure,
                            barostat_interval=barostat_interval, params=params,
                            thermostat=thermostat, tau_t=tau_t, restraints=restraints, alchemy=alchemy, bias=bias,
-                           **extra)
+                           efield=efield, **extra)
         self.dt, self.ensemble, self.T0 = dt, ensemble, temperature
         mom = None if vel_nm_ps is None else self.flex.mass * jnp.asarray(vel_nm_ps)
         self.state = self.integ.init(pos0, H, jax.random.PRNGKey(seed), mom)
@@ -614,6 +618,8 @@ class FlexibleSimulation(Simulation):
         if mts is not None:
             self._print(f"# {self.integ.describe_mts()}")
         self._describe_bias()
+        if self.integ.efield is not None:
+            self._print(f"# {self.integ.efield.describe()}")
 
     def minimize(self, steps: int = 500, max_step: float = 0.01, ftol: float = 50.0, seed: int = 1) -> dict:
         """Steepest descent (adaptive step, at most max_step nm per atom, constraints kept by SHAKE)
@@ -630,7 +636,7 @@ class FlexibleSimulation(Simulation):
             if cons is not None:
                 new = cons.positions(new, pos)
             new = integ.place(new, box)
-            F1, res, nbr1 = integ._forces(new, box, induction, nbr)
+            F1, res, nbr1 = integ._forces(new, box, induction, nbr, field=integ.field_at(st, st.step))
             return new, F1, res, nbr1
 
         pos, F, box = st.dyn.position, st.dyn.force, st.box
@@ -653,6 +659,8 @@ class FlexibleSimulation(Simulation):
         self._size_lists(pos, box)
         self.integ.compile()
         self.state = self.integ.init(pos, box, jax.random.PRNGKey(seed), bias=st.bias)
+        if st.efield is not None:                              # keep a field amplitude set with set_field
+            self.state = self.integ.forces(self.state.set(efield=st.efield), False)
         out = {"steps": it + 1, "accepted": n_acc, "energy": E, "fmax": float(jnp.max(jnp.linalg.norm(F, axis=1)))}
         self._print(f"# minimised: {out}")
         return out
@@ -728,7 +736,8 @@ class FlexibleSimulation(Simulation):
         c = self.flex.list_centers(pos)
         idx = self.nb.candidates(st.nbr, c, st.box, pos)[0]
         if self.integ.alchemy is None:
-            W = self.ff.strain_derivative(pos, st.box, idx, st.induction.mu, self.integ.params)
+            W = self.ff.strain_derivative(pos, st.box, idx, st.induction.mu, self.integ.params,
+                                          efield=self.integ.field_at(st, st.step))
         else:
             W = self.integ.alchemy.strain_derivative(self.ff, pos, st.box, idx, st.induction.mu, self.integ.params, st.lam)
         W = W + self.integ.restraint_strain(pos, st.box, st.bias)
@@ -744,7 +753,8 @@ class FlexibleSimulation(Simulation):
     def load(self, path: str):
         with open(path, "rb") as fh:
             d = pickle.load(fh)
-        st = self._bias_of_checkpoint(upgrade_state(jax.tree_util.tree_map(jnp.asarray, d["state"]), self.state.aux))
+        st = upgrade_state(jax.tree_util.tree_map(jnp.asarray, d["state"]), self.state.aux)
+        st = field_state(self._bias_of_checkpoint(st), self.integ.efield)
         pos = st.dyn.position
         self.state = st.set(nbr=self.nb.allocate(pos, self.flex.list_centers(pos), st.box))
         self.time_ps = d["time_ps"]

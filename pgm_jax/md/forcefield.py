@@ -62,6 +62,14 @@ dE/dtheta by Hellmann-Feynman).  With `differentiable=True`, compute() also retu
 dipoles with exact derivatives: the dipole solve is a jax.custom_vjp whose backward pass solves
 A lam = mu_bar by CG (A symmetric) and pulls lam back through b - A mu at the solution.
 
+External field (`efield=(E, offset)` in compute / energy / energy_fixed_mu / strain_derivative;
+md/efield.py): a uniform field E (V/nm) adds -E . M to the energy, M = sum q r + sum d + offset (e nm;
+offset: the dipole of re-wrapped charged molecules), q_i E to the forces and the torques on the
+covalent dipoles, and E to the right-hand side of the induction equations.  Constant electric
+displacement (`efield=(D, offset, "D")`, D/eps0 in V/nm): the field is F(M) = D - M / (eps0 V) and
+the energy V eps0 |F(M)|^2 / 2; the induction operator gains the all-to-all term (4 pi / V) sum mu
+(md/efield.py).  efield=None is the field-free code path, unchanged.
+
 Precision: 'mixed' evaluates pair kernels, PME and CG vectors in float32 and accumulates energies,
 dot products, positions and forces in float64; 'double' uses float64 throughout.  float32 matrix
 products are requested at full precision (NVIDIA GPUs otherwise use TF32, ~1e-3 relative error).
@@ -221,6 +229,7 @@ class Result(NamedTuple):
     residual: jnp.ndarray    # final max|alpha r| / mean|alpha b| (before the peek step)
     overflow: jnp.ndarray    # row capacity exceeded (results invalid; driver re-sizes and repeats)
     geometry: dict | None = None   # compute(keep_geometry=True): the electrostatic rows (md/mts.py)
+    dipole: jnp.ndarray | None = None   # with an external field: M = sum q r + sum d + offset (e nm)
 
 
 def _zero_cotangent(x):
@@ -637,11 +646,16 @@ class PGMForceField:
         c3 = st.lscount[3] + up3.astype(jnp.int32)
         return st.set(rec=rec, lscount=jnp.stack([st.lscount[0], c1, c2, c3]))
 
-    def _operator(self, g, S, Gk, alpha):
+    def _operator(self, g, S, Gk, alpha, ext=None):
+        """v -> alpha^-1 v - T v (+ kappa sum v for constant displacement, ext[2] = kappa)."""
         cd = self.cd
         inv_a = _div_alpha(1.0, alpha, self.alpha_mask).astype(cd)[:, None]
         zq = jnp.zeros(self.n, cd)
-        return lambda v: v * inv_a - self._field(g, S, Gk, zq, v)
+        if ext is None or ext[2] is None:
+            return lambda v: v * inv_a - self._field(g, S, Gk, zq, v)
+        kappa = ext[2]
+        return lambda v: (v * inv_a - self._field(g, S, Gk, zq, v)
+                          + (kappa * jnp.sum(v.astype(jnp.float64), axis=0)).astype(cd)[None, :])
 
     def _cg(self, g, A, alpha, x, r, norm, tol=None, peek=None):
         """Preconditioned CG from (x0, r0 = b - A x0); returns mu (float64), iterations, residual."""
@@ -698,54 +712,69 @@ class PGMForceField:
             x = x + jnp.asarray(peek, cd) * r * a_c
         return x.astype(jnp.float64), it, err
 
-    def _residual(self, g, S, Gk, alpha, q, p, mu):
-        """b - A mu = field(q, p + mu) - mu / alpha (compute dtype): zero at the induced dipoles."""
-        cd = self.cd
-        return self._field(g, S, Gk, q.astype(cd), p + mu) - _div_alpha(mu, alpha[:, None], self.alpha_mask).astype(cd)
+    def _ext_at(self, ext, x):
+        """The external field (3,) (compute dtype) acting when the induced dipoles are x: F0 for a
+        constant field, F0 - kappa (m0 + sum x) for constant displacement; ext = (F0, m0, kappa)."""
+        F0, m0, kappa = ext
+        if kappa is None:
+            return F0.astype(self.cd)
+        return (F0 - kappa * (m0 + jnp.sum(x.astype(jnp.float64), axis=0))).astype(self.cd)
 
-    def _solve(self, g, S, Gk, P, p, ind: InductionState, fused_ok: bool = True):
+    def _residual(self, g, S, Gk, alpha, q, p, mu, ext=None):
+        """b - A mu = field(q, p + mu) (+ external field) - mu / alpha (compute dtype): zero at the
+        induced dipoles."""
+        cd = self.cd
+        r = self._field(g, S, Gk, q.astype(cd), p + mu) - _div_alpha(mu, alpha[:, None], self.alpha_mask).astype(cd)
+        return r if ext is None else r + self._ext_at(ext, mu)[None, :]
+
+    def _solve(self, g, S, Gk, P, p, ind: InductionState, fused_ok: bool = True, ext=None):
         """Induced dipoles; returns mu, iterations, residual, updated InductionState.  With
         settings.differentiable, mu carries exact derivatives (implicit function theorem):
         A mu = b(theta)  =>  mu_bar . dmu = lam . d(b - A mu)|_mu  with  A lam = mu_bar  (A is
         symmetric, so the adjoint is one more CG with the same operator)."""
         if not self.s.differentiable:
-            return self._solve_core(g, S, Gk, P["alpha"], P["q"], p, ind, fused_ok)
+            return self._solve_core(g, S, Gk, P["alpha"], P["q"], p, ind, fused_ok, ext)
         cd = self.cd
 
         @jax.custom_vjp
-        def run(g, S, Gk, alpha, q, p, ind):
-            return self._solve_core(g, S, Gk, alpha, q, p, ind, fused_ok)
+        def run(g, S, Gk, alpha, q, p, ext, ind):
+            return self._solve_core(g, S, Gk, alpha, q, p, ind, fused_ok, ext)
 
-        def fwd(g, S, Gk, alpha, q, p, ind):
-            out = self._solve_core(g, S, Gk, alpha, q, p, ind, fused_ok)
-            return out, (g, S, Gk, alpha, q, p, out[0], ind)
+        def fwd(g, S, Gk, alpha, q, p, ext, ind):
+            out = self._solve_core(g, S, Gk, alpha, q, p, ind, fused_ok, ext)
+            return out, (g, S, Gk, alpha, q, p, ext, out[0], ind)
 
         def bwd(res, cot):
-            g, S, Gk, alpha, q, p, mu, ind = res
+            g, S, Gk, alpha, q, p, ext, mu, ind = res
             mu_bar = cot[0]
-            A = self._operator(g, S, Gk, alpha)
+            A = self._operator(g, S, Gk, alpha, ext)
             rhs = mu_bar.astype(cd)
             norm = jnp.mean(jnp.abs(alpha[:, None] * mu_bar)) + 1e-300
             lam, _, _ = self._cg(g, A, alpha, jnp.zeros_like(mu_bar), rhs, norm, tol=self.s.adjoint_tol, peek=0.0)
-            _, vjp = jax.vjp(lambda g, S, Gk, alpha, q, p: self._residual(g, S, Gk, alpha, q, p, mu), g, S, Gk, alpha, q, p)
+            _, vjp = jax.vjp(lambda g, S, Gk, alpha, q, p, ext: self._residual(g, S, Gk, alpha, q, p, mu, ext),
+                             g, S, Gk, alpha, q, p, ext)
             return (*vjp(lam.astype(cd)), jax.tree_util.tree_map(_zero_cotangent, ind))
 
         run.defvjp(fwd, bwd)
-        mu, it, err, ind_new = run(g, S, Gk, P["alpha"], P["q"], p, jax.lax.stop_gradient(ind))
+        mu, it, err, ind_new = run(g, S, Gk, P["alpha"], P["q"], p, ext, jax.lax.stop_gradient(ind))
         # derivatives flow through mu only; the predictor history is data for the next step
         return mu, it, err, jax.lax.stop_gradient(ind_new).set(mu=mu)
 
-    def _solve_core(self, g, S, Gk, alpha, q, p, ind: InductionState, fused_ok: bool = True):
+    def _solve_core(self, g, S, Gk, alpha, q, p, ind: InductionState, fused_ok: bool = True, ext=None):
         """Initial guess + residual (fused when possible), CG; returns mu, iterations, residual,
-        updated InductionState."""
+        updated InductionState.  ext: a uniform external field, (F0, m0, kappa) in internal units
+        (_ext_at): F0 added to the permanent field; for constant displacement also -kappa (m0 + sum mu),
+        with the kappa term in the operator."""
         cd = self.cd
         a64 = alpha[:, None]
         qc = q.astype(cd)
-        A = self._operator(g, S, Gk, alpha)
+        A = self._operator(g, S, Gk, alpha, ext)
         pred = self.s.predictor
+        zero = jnp.zeros((1, 3), cd)
+        add_ext = (lambda b, x: b) if ext is None else (lambda b, x: b + self._ext_at(ext, x)[None, :])
 
         def plain(x0_hist, have):
-            b = self._field(g, S, Gk, qc, p)
+            b = add_ext(self._field(g, S, Gk, qc, p), zero)
             ab = a64 * b.astype(jnp.float64)
             x0 = jnp.where(have, x0_hist, ab)
             r0 = b - A(x0.astype(cd))
@@ -760,14 +789,14 @@ class PGMForceField:
                 use_fused = have & (ind.count % self.s.norm_refresh != 0)
 
                 def fused(_):
-                    r0 = self._field(g, S, Gk, qc, p + x0h) - _div_alpha(x0h, a64, self.alpha_mask).astype(cd)
+                    r0 = add_ext(self._field(g, S, Gk, qc, p + x0h), x0h) - _div_alpha(x0h, a64, self.alpha_mask).astype(cd)
                     return x0h, r0, ind.norm
 
                 x0, r0, norm = jax.lax.cond(use_fused, fused, lambda _: plain(x0h, have), None)
             else:
                 x0, r0, norm = plain(x0h, have)
         elif pred == "ls":
-            b = self._field(g, S, Gk, qc, p)
+            b = add_ext(self._field(g, S, Gk, qc, p), zero)
             ab = a64 * b.astype(jnp.float64)
             x0, ind = self._extrapolate_ls(ind, ab)
             r0 = b - A(x0.astype(cd))
@@ -789,6 +818,36 @@ class PGMForceField:
         u_bg = -jnp.pi * jnp.sum(q) ** 2 / (2.0 * volume(H) * self.b0 ** 2)
         u_pol = jnp.sum(_div_alpha(mu * mu, 2.0 * P["alpha"][:, None], self.alpha_mask)) if self.ind else 0.0
         return KE * (u_rec + u_self + u_bg + u_pol)
+
+    @staticmethod
+    def _ext(efield, H):
+        """(F0 internal field (3,), dipole offset (3,) e nm, kappa = 4 pi / V or None) from efield =
+        (E in V/nm, offset) [constant field] or (D/eps0 in V/nm, offset, "D") [constant displacement]."""
+        if efield is None:
+            return None
+        from .efield import internal
+        E, off = efield[0], efield[1]
+        disp = len(efield) > 2 and efield[2] == "D"
+        if len(efield) > 2 and efield[2] not in ("E", "D"):
+            raise ValueError(f"field kind {efield[2]!r}: 'E' (constant field) or 'D' (constant displacement)")
+        return (internal(E), jnp.zeros(3) if off is None else jnp.asarray(off, jnp.float64),
+                4.0 * jnp.pi / volume(H) if disp else None)
+
+    @staticmethod
+    def _ext_terms(ext, M):
+        """External field at the total dipole M (internal units) and its energy (kJ/mol): constant field
+        F0, -KE F0 . M; constant displacement F = F0 - kappa M, KE |F|^2 / (2 kappa) (= V eps0 |E|^2 / 2)."""
+        F0, _, kappa = ext
+        if kappa is None:
+            return F0, -KE * jnp.dot(F0, M)
+        F = F0 - kappa * M
+        return F, KE * jnp.dot(F, F) / (2.0 * kappa)
+
+    @staticmethod
+    def field_dipole(pos, q, d, off=None):
+        """M = sum q r + sum d (+ offset), e nm: the dipole a uniform field acts on (whole molecules)."""
+        M = jnp.sum(q[:, None] * pos + jnp.asarray(d, jnp.float64), axis=0)     # one reduction (GPU: one kernel)
+        return M if off is None else M + off
 
     # ------------------------------------------------------------------ van der Waals rows
     def _vdw_params(self, P, k):
@@ -859,10 +918,10 @@ class PGMForceField:
             vrows = (vrows[1], vrows[2], vrows[3], self._vdw_params(P, vrows[0]))
         return x, di, consts, vrows
 
-    def energy_fixed_mu(self, pos, H, mu, idx, P):
+    def energy_fixed_mu(self, pos, H, mu, idx, P, efield=None):
         """Total energy (kJ/mol, float64) and components with the induced dipoles held at mu;
         differentiable in positions and box (used for virials and Monte Carlo trials).  With charge
-        flux, q and c are taken at pos."""
+        flux, q and c are taken at pos.  efield: (E in V/nm, dipole offset) adds -E . M ("field")."""
         P = self.charges_at(pos, H, P)
         p = self.perm_dipoles(pos, H, P["cov"])
         d = p + mu
@@ -872,7 +931,11 @@ class PGMForceField:
             sl = sl + self._vdw_sum(*vrows)
         e_elec = 0.5 * se + self._nonpair(pos, H, d, mu, P)
         e_lj = 0.5 * sl + self._vdw_tail(P, H)
-        return e_elec + e_lj, {"elec": e_elec, "vdw": e_lj}
+        if efield is None:
+            return e_elec + e_lj, {"elec": e_elec, "vdw": e_lj}
+        ext = self._ext(efield, H)
+        _, e_f = self._ext_terms(ext, self.field_dipole(pos, P["q"], d, ext[1]))
+        return e_elec + e_lj + e_f, {"elec": e_elec, "vdw": e_lj, "field": e_f}
 
     def _row_terms(self, g, q, d):
         """Pair energies (each pair counted in both rows) and the row sums of de_ik/dx_ik, from
@@ -905,26 +968,33 @@ class PGMForceField:
             sl = sl + rowsum(elt)
         return rowsum(e), sl, gx.astype(jnp.float64), glx
 
-    def _energy_forces(self, pos, H, mu, g, P, flux_pull=None):
+    def _energy_forces(self, pos, H, mu, g, P, flux_pull=None, ext=None, M=None):
         """Energy and forces at fixed mu: analytic row forces for the pair terms (no scatter-adds),
         autodiff for PME, one vector-Jacobian product through the covalent-dipole frames.  With
         charge flux (flux_pull: the pull-back of the flux map at pos; P holds q(R), c(R)):
-        _energy_forces_flux."""
+        _energy_forces_flux.  ext (_ext) or None: the field F at M = sum q r + sum d + offset adds its
+        energy (_ext_terms), KE q F to the forces and -KE F to dE/dd (torques)."""
         if flux_pull is not None:
-            return self._energy_forces_flux(pos, H, mu, g, P, flux_pull)
+            return self._energy_forces_flux(pos, H, mu, g, P, flux_pull, ext, M)
         cd = self.cd
         p, vjp_p = jax.vjp(lambda y: self.perm_dipoles(y, H, P["cov"]), pos)
         d = p + mu
         qc, dc = P["q"].astype(cd), d.astype(cd)
         se, sl, gx_el, gx_lj = self._row_terms(g, qc, dc)
         dEdd = KE * self._row_field(g, qc, dc).astype(jnp.float64)
+        if ext is not None:
+            Fx, e_f = self._ext_terms(ext, self.field_dipole(pos, P["q"], d, ext[1]) if M is None else M)
+            dEdd = dEdd - KE * Fx[None, :]
         e_np, (gpos_np, gd_np) = jax.value_and_grad(self._nonpair, argnums=(0, 2))(pos, H, d, mu, P)
         forces = -(KE * gx_el + gx_lj + gpos_np + vjp_p(dEdd + gd_np)[0])
         e_elec = 0.5 * KE * se + e_np
         e_lj = 0.5 * sl + self._vdw_tail(P, H)
-        return {"elec": e_elec, "vdw": e_lj, "total": e_elec + e_lj}, forces
+        if ext is None:
+            return {"elec": e_elec, "vdw": e_lj, "total": e_elec + e_lj}, forces
+        forces = forces + KE * P["q"][:, None] * Fx[None, :]
+        return {"elec": e_elec, "vdw": e_lj, "field": e_f, "total": e_elec + e_lj + e_f}, forces
 
-    def _energy_forces_flux(self, pos, H, mu, g, P, flux_pull):
+    def _energy_forces_flux(self, pos, H, mu, g, P, flux_pull, ext=None, M=None):
         """_energy_forces with charge flux; P holds q(R) and c(R).  F = -dE/dR|_{q,c,mu}
         - phi . dq/dR - (dE/dc) . dc/dR: the potential phi = dE/dq (rows, and PME, self and
         background terms from the autodiff of _nonpair with q among the arguments) and dE/dc (the
@@ -937,13 +1007,20 @@ class PGMForceField:
         se, sl, gx_el, gx_lj = self._row_terms(g, qc, dc)
         dEdd = KE * self._row_field(g, qc, dc).astype(jnp.float64)
         phi = KE * self._row_potential(g, qc, dc).astype(jnp.float64)
+        if ext is not None:                                    # the external potential -F . r at each atom
+            Fx, e_f = self._ext_terms(ext, self.field_dipole(pos, P["q"], d, ext[1]) if M is None else M)
+            dEdd = dEdd - KE * Fx[None, :]
+            phi = phi - KE * (pos @ Fx)
         e_np, (gpos_np, gd_np, gq_np) = jax.value_and_grad(
             lambda y, dd, q: self._nonpair(y, H, dd, mu, dict(P, q=q)), argnums=(0, 1, 2))(pos, d, P["q"])
         gpos_p, gcov = vjp_p(dEdd + gd_np)
         forces = -(KE * gx_el + gx_lj + gpos_np + gpos_p + flux_pull((phi + gq_np, gcov))[0])
         e_elec = 0.5 * KE * se + e_np
         e_lj = 0.5 * sl + self._vdw_tail(P, H)
-        return {"elec": e_elec, "vdw": e_lj, "total": e_elec + e_lj}, forces
+        if ext is None:
+            return {"elec": e_elec, "vdw": e_lj, "total": e_elec + e_lj}, forces
+        forces = forces + KE * P["q"][:, None] * Fx[None, :]
+        return {"elec": e_elec, "vdw": e_lj, "field": e_f, "total": e_elec + e_lj + e_f}, forces
 
     # ------------------------------------------------------------------ public
     def rows_for(self, pos, H):
@@ -953,14 +1030,18 @@ class PGMForceField:
         H = jnp.asarray(H, jnp.float64)
         return AtomNeighbors(self.n, H, self.rc_pair, 0.0).allocate(jnp.asarray(pos, jnp.float64), None, H).idx
 
-    def compute(self, pos, H, idx, ind: InductionState, params=None, keep_geometry: bool = False) -> Result:
+    def compute(self, pos, H, idx, ind: InductionState, params=None, keep_geometry: bool = False,
+                efield=None) -> Result:
         """Solve the induced dipoles (predicted guess), then energy and forces.  idx: candidate
         rows (N, C) from a neighbour list (padding N).  With settings.differentiable, energy,
         forces and Result.induction.mu can be differentiated (jax.grad / vjp) in params, pos, H.
         keep_geometry: also return the row geometry (Result.geometry: partner indices k, displacements
         x, distances r, `within` mask, van der Waals weights wv of the electrostatic rows), from which
-        multiple time stepping builds its short-range pair list (md/mts.py)."""
+        multiple time stepping builds its short-range pair list (md/mts.py).
+        efield: (E (3,) V/nm, dipole offset (3,) e nm or None) or None: a uniform external field
+        (md/efield.py); energy["field"] = -E . M and Result.dipole = M."""
         pos, H = jnp.asarray(pos, jnp.float64), jnp.asarray(H, jnp.float64)
+        ext = self._ext(efield, H)
         P = self._atoms(params)
         pull = None
         if self.flux is not None:                              # q(R), c(R) and the flux map's pull-back
@@ -972,15 +1053,18 @@ class PGMForceField:
         Gk = self.pme.influence(H)
         if self.ind:                                           # the solve sees the electrostatic rows only
             ge = {key: v for key, v in g.items() if key != "vdw_rows"}
-            mu, it, err, ind = self._solve(ge, S, Gk, P, p, ind)
+            ext_s = None if ext is None else (ext[0], self.field_dipole(pos, P["q"], p, ext[1]), ext[2])
+            mu, it, err, ind = self._solve(ge, S, Gk, P, p, ind, ext=ext_s)
         else:                                                  # no induced dipoles ("q", "qp")
             mu, it, err = jnp.zeros((self.n, 3)), jnp.zeros((), jnp.int32), jnp.zeros(())
-        energy, forces = self._energy_forces(pos, H, mu, g, P, pull)
-        return Result(energy, forces, ind, it, err, g["overflow"], g if keep_geometry else None)
+        M = None if ext is None else self.field_dipole(pos, P["q"], p + mu, ext[1])
+        energy, forces = self._energy_forces(pos, H, mu, g, P, pull, ext, M)
+        return Result(energy, forces, ind, it, err, g["overflow"], g if keep_geometry else None, M)
 
-    def energy(self, pos, H, idx, ind: InductionState, params=None):
+    def energy(self, pos, H, idx, ind: InductionState, params=None, efield=None):
         """Energy only (Monte Carlo barostat trials): dipoles solved from the last converged ones
-        (no history update); returns (total, InductionState with mu, iterations, overflow)."""
+        (no history update); returns (total, InductionState with mu, iterations, overflow).
+        efield as in compute."""
         pos, H = jnp.asarray(pos, jnp.float64), jnp.asarray(H, jnp.float64)
         P = self.charges_at(pos, H, self._atoms(params))
         g = self.geometry(pos, H, idx, P)
@@ -991,16 +1075,23 @@ class PGMForceField:
         alpha = P["alpha"]
         if self.ind:
             b = self._field(g, S, Gk, P["q"].astype(cd), p)
-            A = self._operator(g, S, Gk, alpha)
+            ext = None
+            if efield is not None:
+                e = self._ext(efield, H)
+                ext = (e[0], self.field_dipole(pos, P["q"], p, e[1]), e[2])
+                b = b + self._ext_at(ext, jnp.zeros((1, 3)))[None, :]
+            A = self._operator(g, S, Gk, alpha, ext)
             x0 = ind.mu
             mu, it, err = self._cg(g, A, alpha, x0, b - A(x0.astype(cd)), jnp.mean(jnp.abs(alpha[:, None] * b)) + 1e-300)
         else:
             mu, it = jnp.zeros((self.n, 3)), jnp.zeros((), jnp.int32)
-        e, _ = self.energy_fixed_mu(pos, H, mu, idx, P)
+        e, _ = self.energy_fixed_mu(pos, H, mu, idx, P, efield)
         return e, ind.set(mu=mu), it, g["overflow"]
 
-    def strain_derivative(self, pos, H, idx, mu, params=None, molecular: bool = True):
+    def strain_derivative(self, pos, H, idx, mu, params=None, molecular: bool = True, efield=None):
         """dE/d eps (3, 3) at fixed mu, plus the LJ tail impulse term (-E_lrc I) if lj_lrc.
+        efield: the external-field term is included (zero for neutral molecules under molecular
+        scaling; md/efield.py).
         molecular: molecules translated with their centres of mass (virtual sites move with them);
         otherwise every position is scaled affinely, which virtual sites do not follow (refused)."""
         if not molecular and self.has_vsites:
@@ -1015,7 +1106,7 @@ class PGMForceField:
         def e(eps):
             F = jnp.eye(3) + eps
             x = pos + ((com @ eps.T)[self.mol] if molecular else pos @ eps.T)
-            return self.energy_fixed_mu(x, H @ F.T, mu, idx, P)[0]
+            return self.energy_fixed_mu(x, H @ F.T, mu, idx, P, efield)[0]
 
         W = jax.grad(e)(jnp.zeros((3, 3)))
         return W - self._vdw_tail(P, H) * jnp.eye(3)

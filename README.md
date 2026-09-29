@@ -219,6 +219,24 @@ How it works:
   Lennard-Jones gives the same, 34.3 +- 0.6 (pgm_jax 33.9 +- 0.7); the published 84.3 is not
   reproduced by any definition of the dipole, and the published liquid dipole (2.413 D) is TIP3P's
   point charges from the topology's CHARGE section, not the model's (2.12 D): `docs/dielectric.md`.
+- **External electric fields** (`efield=` in `Simulation` / `FlexibleSimulation`, `ElecChannel(efield=)`;
+  `pgm_jax/md/efield.py`, `md/finite_field.py`, `docs/efield.md`; `run_md.py --efield / --efield-freq /
+  --displacement`): a uniform field acting on the Gaussian charges, the covalent dipoles (torques) and
+  the induced dipoles (on the right-hand side of the induction equations), static, oscillating
+  (E0 cos(w t + phi), its work booked so that econs stays conserved) or at constant electric
+  displacement D (Stengel-Spaldin-Vanderbilt / Zhang-Sprik); tin-foil PME makes E the Maxwell
+  field; molecule-consistent M (itinerant dipole of re-wrapped ions), zero virial contribution for
+  neutral molecules. The amplitude is a state variable: `FieldReplicas` runs +-E copies as one
+  vmapped program (`scripts/finite_field.py`), and eps = 1 + <M.e>/(eps0 V E) reproduces the
+  fluctuation results of 512-water boxes: pGM3P-25 33.9 +- 0.5 at +-0.1 V/nm (34.4 +- 0.6
+  extrapolated to E = 0; fluctuations 34.2 +- 0.7), the Amber test pGM water 73.1 +- 0.4 (73.2 +- 0.2),
+  TIP3P 96.8 +- 2.0 (103.8 +- 3.0; pmemd 97.3 +- 0.8; OpenMM gives the same saturated response at 0.1
+  and 0.2 V/nm). At equal error it is 5.6x cheaper than the fluctuation formula for pGM3P-25 at 0.1 V/nm and 2-8x for
+  the higher-eps models, whose response saturates from ~0.05 V/nm (fit eps0 - c E^2 over several |E|).
+  Gas phase: the induced-dipole response equals the molecular polarizability to 1e-14; NVE with
+  static, oscillating (1000 kJ/mol absorbed in 20 ps) and constant-D fields conserves econs.
+  Without a field the code path is unchanged (bitwise identical trajectories); a static field costs
+  0.6 % per step on the GPU (512 waters), constant D 14 % (one more sum per CG iteration).
 - **Virtual sites** (`Molecule.vsites`, `pgm_jax/md/vsites.py`, `docs/virtual_sites.md`): massless
   interaction sites placed from parent atoms of the same molecule (two- and three-particle
   averages, out-of-plane and local-coordinate sites as in OpenMM, Amber's extra-point frames),
@@ -568,6 +586,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/md/flux.py` | charge flux in MD: `ChargeFlux` (per-bond charge and covalent-dipole flux of fitted templates, or built directly; `charges(pos)` -> q(R), c(R)), `molecule_at` (charges frozen at a geometry for rigid molecules); `scripts/validate_flux.py`, `scripts/flux_md.py` (liquid, NVE, speed, gas phase) |
 | `pgm_jax/md/pimd.py` | path-integral MD: `RingPolymer` (normal modes, exact / Cayley free ring polymer, `contraction_matrix`), `PILE` (PILE-L / PILE-G, TRPMD, RPMD), `PIMDIntegrator` (BAOAB, estimators, Monte Carlo NPT), `PotentialEngine` (any potential, optional contracted part), `PGMBeads` (pGM force field on every bead, contraction with the monomer reference), `PIMDSimulation` (driver: logs, trajectories, checkpoints, pressure, dipoles), `flexible_water` (flexible pGM water with the q-TIP4P/F monomer surface); `scripts/pimd_water.py`, `scripts/pimd_validate.py`, `scripts/pimd_openmm.py` |
 | `pgm_jax/md/mts.py` | multiple time stepping (r-RESPA) for both engines: `MTS` settings, force groups (bonded / special pairs / short-range pGM model; slow = full - fast), BAOAB-RESPA step, short-range pair list, anchored dipole predictor, CLI helpers |
+| `pgm_jax/md/efield.py`, `pgm_jax/md/finite_field.py` | external electric fields: `ExternalField` (static, E0 cos(w t + phi), constant D), units and the finite-field eps formulas; `FieldReplicas` (+-E copies batched with `jax.vmap`), `read_series`, `analyse` (per replica, per +-E pair, saturation fit, zero-field fluctuations); `scripts/finite_field.py` (runs and analysis), `scripts/validate_efield.py`, `scripts/openmm_tip3p_field.py` |
 | `pgm_jax/md/remd.py` | temperature replica exchange for both engines: `ReplicaExchange` (exchanges, statistics, round trips, outputs, checkpoints), `MDReplicas` (replicas batched with `jax.vmap`, or sequential), `geometric_ladder`, `read_exchange_log` |
 | `pgm_jax/md/alchemy.py` | alchemical free energies: `Alchemy` (lambda Hamiltonian of one solute: annihilated electrostatics with a polarizability floor, soft-core van der Waals rows), `alchemical_system`, `LambdaWindows` (windows batched with `jax.vmap`), `FreeEnergyRun` (samples of u_k(x_n) and dU/dlambda, Hamiltonian replica exchange, outputs, checkpoints), `GasPhaseLeg`, `standard_schedule` |
 | `pgm_jax/bias/` | enhanced sampling: `cv.py` (collective variables), `core.py` (`StaticBias`, `Harmonic`, walls, `MetaD` + `HillGrid`, `OPES`, `BiasSet`), `walkers.py` (`Walkers`: independent or shared-bias walkers in one vmapped program), `analysis.py` (FES, c(t), weights, histograms, WHAM), `io.py` (COLVAR / HILLS), `toy.py` (Langevin on model potentials); `scripts/bias/` (validations, benchmark) |

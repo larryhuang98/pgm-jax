@@ -1,0 +1,24 @@
+{
+ "E = 0.2 cos(w t) V/nm, 200 cm^-1": {
+  "drift_kT_per_ns_per_dof": -0.0012327604872681822,
+  "econs_std": 0.289825440894147,
+  "etot_range": 1046.9062372259796,
+  "field_energy_mean": 5.972904577946388,
+  "T_mean": 319.6699831427915,
+  "cg_mean": 4.0013,
+  "ns_per_day": 3.1063625424820343,
+  "work_booked": 1061.621903040983,
+  "Emac_z_mean": 0.0
+ },
+ "D/eps0 = 3 V/nm": {
+  "drift_kT_per_ns_per_dof": 0.001482531738706774,
+  "econs_std": 0.2540577151301733,
+  "etot_range": 1.194897202309221,
+  "field_energy_mean": 1.9851191634641236,
+  "T_mean": 302.0487017320692,
+  "cg_mean": 4.00125,
+  "ns_per_day": 3.125836768925045,
+  "work_booked": 0.0,
+  "Emac_z_mean": -0.028733000107932227
+ }
+}

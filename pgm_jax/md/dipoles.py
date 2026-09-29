@@ -175,6 +175,10 @@ class DipoleRecorder:
                 "dt_ps": sim.dt, "interval": self.interval, "n_atoms": sim.sys.n, "n_molecules": sim.sys.nmol,
                 "net_charge": round(float(Qk.sum()), 6), "charged_molecules": int(np.sum(np.abs(Qk) > 1e-6)),
                 "elec": sim.settings.elec, "alpha_every": self.alpha_every}
+        fld = getattr(sim.integ, "efield", None)
+        if fld is not None:                                # external field (md/efield.py): amplitude, omega
+            E = np.asarray(sim.state.efield, float)
+            meta.update(efield_Vnm=" ".join(f"{x:.10g}" for x in E), efield_omega=fld.omega, efield_phase=fld.phase)
         lines = ["pgm_jax cell dipole series (pgm_jax.md.dipoles; scripts/dielectric.py)",
                  "cell dipole M: M_q + M_perm + M_ind in e nm (1 D is 0.020819434 e nm); molecules whole,",
                  "charged molecules about their centre of mass; mol_dipole: mean |dipole| of the molecules (e nm);",
