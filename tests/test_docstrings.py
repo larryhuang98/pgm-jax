@@ -9,6 +9,7 @@ checker script is not in the repository.
 
 import importlib.util
 import os
+import sys
 
 import pytest
 
@@ -32,8 +33,12 @@ def _find_missing(*paths):
     if not os.path.exists(CHECKER):
         pytest.skip("scripts/dev/check_docstrings.py not found")
     spec = importlib.util.spec_from_file_location("check_docstrings", CHECKER)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    mod = sys.modules.get("check_docstrings")
+    if mod is None:
+        mod = importlib.util.module_from_spec(spec)
+        # Registered before execution: dataclasses resolves the module of its classes via sys.modules.
+        sys.modules["check_docstrings"] = mod
+        spec.loader.exec_module(mod)
     return mod.find_missing([os.path.join(ROOT, p) for p in paths])
 
 
@@ -45,7 +50,7 @@ def _report(missing):
     return f"{len(missing)} missing docstrings:\n" + "\n".join(lines)
 
 
-@pytest.mark.xfail(strict=False, reason="documentation phase P8 in progress")
+@pytest.mark.xfail(strict=False, reason="documentation phase P8 being merged")
 def test_library_docstrings_complete():
     """Every module, class, function and method of pgm_jax/ has a docstring."""
     missing = _find_missing("pgm_jax")
