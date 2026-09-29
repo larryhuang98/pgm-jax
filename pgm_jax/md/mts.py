@@ -1,7 +1,11 @@
 """Multiple time stepping (r-RESPA) for pGM MD: force groups integrated with their own time steps.
 
+Contents: the settings `MTS`, the state `MTSState` (part of MDState), the step `_MTSMixin` with
+its two integrators `MTSIntegrator` (rigid bodies) and `MTSFlexibleIntegrator` (atoms), the
+switching function `switch`, and `mts_stats` (diagnostics).
+
 The force is split into groups, F = F_slow + F_fast (+ F_bonded), and the Liouville propagator is
-factorised as in r-RESPA (Tuckerman, Berne & Martyna, JCP 97, 1990 (1992)):
+factorised as in r-RESPA [1]_:
 
     exp(iL dt) ~ B_slow(dt/2) [B_fast(h/2) A(h) B_fast(h/2)]^n B_slow(dt/2),     h = dt / n,
 
@@ -47,7 +51,7 @@ buffer) and rebuilt from the neighbour list if needed (a lax.cond: rare), so no 
 is ever missed.  Displacements are taken in float64 (exact for bonded pairs in mixed precision).
 
 Thermostats (`o_step`): "outer" puts one O step of length dt in the middle of the outer step
-(BAOAB-RESPA of Tinker-HP: Lagardere et al., JPCL 10, 2593 (2019)): for n = 1 this is BAOAB; for n
+(BAOAB-RESPA of Tinker-HP [2]_): for n = 1 this is BAOAB; for n
 even the O step sits between two fast steps, for n odd in the middle of the middle one's drift
 (recursively with three levels).  "inner": BAOAB at the innermost level (an O step of length h in
 every innermost drift).  The heat of every O step is booked, so observables()["econs"] stays the
@@ -71,12 +75,21 @@ not support MTS yet.
                              dt=0.007, mts=MTS(inner=3, split="special"), constraints="h-bonds", hmr=3.024,
                              thermostat="bussi")
 
-Measurements, stability limits and recommended settings: docs/mts.md.  Units: nm, ps, amu,
-kJ/mol, K, e."""
+Measurements, stability limits and recommended settings: docs/mts.md.
+
+Units: nm, ps, amu, kJ/mol, K, e.
+
+References
+----------
+.. [1] M. Tuckerman, B. J. Berne, G. J. Martyna, J. Chem. Phys. 97, 1990 (1992).
+.. [2] L. Lagardere, F. Aviat, J.-P. Piquemal, J. Phys. Chem. Lett. 10, 2593 (2019).
+"""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import jax
 import jax.numpy as jnp
@@ -89,12 +102,47 @@ from .forcefield import _PRED
 from .integrate import Integrator, MDState
 from .kernels import erf_kernels_closed
 
+if TYPE_CHECKING:
+    from jax.typing import ArrayLike
+
+    from .forcefield import Result
+    from .integrate import Dynamics
+
 BETA_R = 2.3268  # erfc(BETA_R) = 1e-3: default beta_short = BETA_R / r_short
 
 
 @dataclass(frozen=True)
 class MTS:
-    """Multiple time stepping settings (the simulation's dt is the outer step)."""
+    """Multiple time stepping settings (the simulation's dt is the outer step).
+
+    Immutable (frozen dataclass); read by the integrator when it builds its step (static).
+
+    Parameters
+    ----------
+    inner : int
+        Fast steps per outer step n.
+    split : {"short", "special", "bonded"}
+        Fast group (module docstring): "short" (short-range pGM model + bonded), "special" (the
+        topologically close pairs + bonded) or "bonded" (bonded terms).
+    r_short : float
+        The fast nonbonded pairs are switched off at r_short [nm].
+    switch_width : float
+        The switch starts at r_short - switch_width [nm].
+    buffer : float
+        The fast pair list holds the pairs closer than r_short + buffer [nm].
+    beta_short : float, optional
+        Screening of the fast electrostatics, erfc(beta_short r) [1/nm] (None: erfc = 1e-3 at
+        r_short, BETA_R / r_short).
+    polarization : {"auto", "mutual", "direct", "none"}
+        Fast induced dipoles ("auto": mutual with induction).
+    bonded : int
+        Bonded (+ restraint) steps per fast step; > 1: a third level.
+    o_step : {"outer", "inner"}
+        Thermostat step: "outer" (BAOAB-RESPA) or "inner" (every innermost step).
+    anchor : bool, optional
+        Predictor on mu - mu_fast (None: when the fast level has induced dipoles and the
+        predictor is mu3 / mu4).
+    """
 
     inner: int = 2  # fast steps per outer step
     split: str = "short"  # fast group: "short" (short-range pGM model + bonded) | "special" (the
@@ -110,7 +158,7 @@ class MTS:
     anchor: bool | None = None  # predictor on mu - mu_fast (None: when the fast level has induced dipoles)
 
     def levels(self) -> list:
-        """(groups, steps per step of the enclosing level), outermost first."""
+        """Return the levels as (groups, steps per step of the enclosing level), outermost first."""
         if self.split == "bonded":
             return [(("slow",), 1), (("bonded",), int(self.inner))]
         if int(self.bonded) > 1:
@@ -118,9 +166,26 @@ class MTS:
         return [(("slow",), 1), ((self.split, "bonded"), int(self.inner))]
 
 
-def switch(r, r_on: float, r_off: float):
-    """S(r) = 1 - t^3 (10 - 15 t + 6 t^2), t = (r - r_on) / (r_off - r_on) in [0, 1] (C2: the force and its
-    derivative are continuous), and S'(r) / r."""
+def switch(r: jax.Array, r_on: float, r_off: float) -> tuple[jax.Array, jax.Array]:
+    """Return the switching function S(r) and S'(r) / r.
+
+    S(r) = 1 - t^3 (10 - 15 t + 6 t^2), t = (r - r_on) / (r_off - r_on) clipped to [0, 1] (C2: the
+    force and its derivative are continuous).
+
+    Parameters
+    ----------
+    r : jax.Array
+        Distances [nm], r > 0.
+    r_on, r_off : float
+        Start and end of the switch [nm].
+
+    Returns
+    -------
+    S : jax.Array
+        Switch (dimensionless), 1 below r_on, 0 above r_off.
+    dS_over_r : jax.Array
+        S'(r) / r [1/nm^2].
+    """
     w = r_off - r_on
     t = jnp.clip((r - r_on) / w, 0.0, 1.0)
     S = 1.0 - t * t * t * (10.0 - 15.0 * t + 6.0 * t * t)
@@ -130,9 +195,33 @@ def switch(r, r_on: float, r_off: float):
 
 @dataclasses.dataclass
 class MTSState:
-    """Multiple-time-stepping part of MDState: the force of every level at the current positions
-    (engine form: atomic forces, or rigid-body forces; outermost = slow first), the fast-level
-    induced dipoles and energy, and the short-range pair list (None for the bonded split)."""
+    """Multiple-time-stepping part of MDState (a JAX-MD dataclass, i.e. a pytree).
+
+    The force of every level at the current positions, the fast-level induced dipoles and energy,
+    and the short-range pair list (None for the "bonded" and "special" splits).
+
+    Parameters
+    ----------
+    forces : tuple
+        Force of every level, outermost (slow) first, in engine form (atomic forces (N, 3) or
+        rigid-body forces) [kJ/mol/nm].
+    mu : jax.Array (N, 3)
+        Fast-level induced dipoles [e nm].
+    efast : jax.Array ()
+        Fast-level nonbonded energy [kJ/mol].
+    ks : jax.Array (N, ms) int
+        Partners in the short-range list (compact rows).
+    ws : jax.Array (N, ms)
+        Van der Waals weights of the entries.
+    within : jax.Array (N, ms) bool
+        Valid entries.
+    ref : jax.Array (N, 3)
+        Atom positions when the list was built [nm].
+    rebuilds : jax.Array () int32
+        Rebuilds of the list at fast steps (list too old).
+    overflow : jax.Array () bool
+        The list exceeded its capacity (block repeated).
+    """
 
     forces: tuple
     mu: jnp.ndarray  # (N, 3) fast-level induced dipoles (e nm)
@@ -145,16 +234,57 @@ class MTSState:
     overflow: jnp.ndarray  # () bool: the list exceeded its capacity (block repeated)
 
 
-def _tree_sub(a, b):
+def _tree_sub(a: Any, b: Any) -> Any:
+    """Return the leafwise difference a - b of two pytrees."""
     return jax.tree_util.tree_map(lambda x, y: x - y, a, b)
 
 
 class _MTSMixin:
-    """r-RESPA step for the rigid-body (Integrator) and the flexible (FlexibleIntegrator) engines."""
+    """r-RESPA step for the rigid-body (Integrator) and the flexible (FlexibleIntegrator) engines.
+
+    Mixed in before the engine's integrator class, which provides the kicks, drifts, O steps and
+    the full force evaluation; the subclasses provide `_atoms`, `_centers` and `_engine_forces`.
+    The state carries MDState.mts (MTSState); `ms`, the capacity of the short-range list, is a
+    static size (a change recompiles).
+
+    Attributes
+    ----------
+    mts : MTS
+        Settings.
+    ms : int or None
+        Capacity of the short-range list (sized in `init`).
+    pol : {"mutual", "direct", "none"}
+        Fast induction model.
+    anchor : bool
+        Anchored predictor.
+    short : bool
+        split == "short".
+    r_on, r_off, r_list : float
+        Switch start, switch end (r_short) and list radius r_short + buffer [nm] ("short").
+    beta_s : float
+        Fast screening parameter [1/nm] ("short").
+    levels : list
+        MTS.levels().
+    nlev : int
+        Number of levels.
+    o_outer : bool
+        o_step == "outer".
+    """
 
     keep_geometry = True  # the full evaluation returns its electrostatic rows (short list)
 
-    def __init__(self, *args, mts: MTS, **kw):
+    def __init__(self, *args: Any, mts: MTS, **kw: Any) -> None:
+        """Set up the engine's integrator (args, kw) with multiple time stepping `mts`.
+
+        Raises
+        ------
+        TypeError
+            mts is not an MTS.
+        NotImplementedError
+            Extended-Lagrangian dipoles, or the combinations refused by `_configure`.
+        ValueError
+            Invalid settings (`_configure`).
+        """
         if not isinstance(mts, MTS):
             raise TypeError("mts must be an MTS instance")
         self.mts = mts
@@ -166,7 +296,18 @@ class _MTSMixin:
         self._configure()
 
     # ------------------------------------------------------------------ settings
-    def _configure(self):
+    def _configure(self) -> None:
+        """Check the settings against the engine and derive the level structure and fast model.
+
+        Raises
+        ------
+        ValueError
+            Invalid inner / bonded / split / o_step / polarization / anchor / switch settings, a
+            split the rigid engine cannot use, or r_short + buffer beyond the cutoffs.
+        NotImplementedError
+            An alchemical region, virtual sites in the flexible engine, charge flux with a pair
+            split, or zero polarizabilities with fast induction.
+        """
         m, ff, s = self.mts, self.ff, self.ff.s
         if int(m.inner) != m.inner or m.inner < 1 or int(m.bonded) != m.bonded or m.bonded < 1:
             raise ValueError(f"MTS inner and bonded must be positive integers (got {m.inner}, {m.bonded})")
@@ -252,7 +393,7 @@ class _MTSMixin:
         self.o_outer = m.o_step == "outer"
 
     def describe_mts(self) -> str:
-        """One line for log headers."""
+        """Return one line for log headers (levels with their steps, fast model, O step, predictor)."""
         m = self.mts
         hs, steps = [], self.dt
         for groups, n in self.levels:
@@ -271,31 +412,32 @@ class _MTSMixin:
         )
 
     # ------------------------------------------------------------------ engine-specific pieces
-    def _atoms(self, x):
-        """Atom positions of the engine's position variable."""
+    def _atoms(self, x: Any) -> jax.Array:
+        """Return the atom positions (N, 3) [nm] of the engine's position variable."""
         raise NotImplementedError
 
-    def _centers(self, x, pos):
-        """Neighbour-list centres."""
+    def _centers(self, x: Any, pos: jax.Array) -> jax.Array:
+        """Return the neighbour-list centres [nm]."""
         raise NotImplementedError
 
-    def _engine_forces(self, x, F):
-        """Atomic forces -> the engine's force variable (linear)."""
+    def _engine_forces(self, x: Any, F: jax.Array) -> Any:
+        """Return atomic forces F (N, 3) mapped to the engine's force variable (linear)."""
         raise NotImplementedError
 
-    def _kick_by(self, dyn, F, h):
-        """p += h F (RATTLE with constraints); dyn.force is kept."""
+    def _kick_by(self, dyn: Dynamics, F: Any, h: float) -> Dynamics:
+        """Return dyn after p += h F (RATTLE with constraints); dyn.force is kept."""
         d = dyn.set(force=F)
         d = self._kick(d, h) if getattr(self, "cons", None) is not None else simulate.momentum_step(d, h)
         return d.set(force=dyn.force)
 
-    def _drift_by(self, dyn, h):
+    def _drift_by(self, dyn: Dynamics, h: float) -> Dynamics:
+        """Return dyn after a drift of h [ps] (SHAKE / RATTLE, or the free rigid-body rotor)."""
         if getattr(self, "cons", None) is not None:
             return self._drift(dyn, h)
         return simulate.position_step(dyn, self.shift, h)
 
-    def _bonded_forces(self, pos, box):
-        """Atomic forces of the bonded group: bonded terms (flexible molecules) and restraints."""
+    def _bonded_forces(self, pos: jax.Array, box: jax.Array) -> jax.Array:
+        """Return the atomic forces (N, 3) [kJ/mol/nm] of the bonded group: bonded terms and restraints."""
         F = jnp.zeros_like(pos)
         flex = getattr(self, "flex", None)
         if flex is not None and flex.groups:
@@ -305,13 +447,51 @@ class _MTSMixin:
         return F
 
     # ------------------------------------------------------------------ fast nonbonded model
-    def _short_nonbonded(self, pos, H, ks, ws, within, special: bool = False, rows=None):
-        """Energy (kJ/mol), atomic forces (kJ/mol/nm) and induced dipoles (e nm) of the fast
-        nonbonded model over the short-range list (module docstring), or with `special` over the
-        special pairs (unswitched, the Gaussian-screened Coulomb without the long-range part removed).
-        Row sums as in the force field: every pair is in both rows, F_i = -sum_k de_ik/dx_ik (+ the
-        covalent-dipole frames).  rows: the atoms of the rows (default all; every partner of a row
-        atom must be a row atom, as within the flexible molecules)."""
+    def _short_nonbonded(
+        self,
+        pos: jax.Array,
+        H: jax.Array,
+        ks: jax.Array,
+        ws: jax.Array,
+        within: jax.Array,
+        special: bool = False,
+        rows: jax.Array | None = None,
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+        """Return the energy, atomic forces and induced dipoles of the fast nonbonded model.
+
+        Over the short-range list (module docstring), or with `special` over the special pairs
+        (unswitched, the Gaussian-screened Coulomb without the long-range part removed).  Row sums
+        as in the force field: every pair is in both rows, F_i = -sum_k de_ik/dx_ik (+ the
+        covalent-dipole frames, by the VJP of the permanent dipoles).  Displacements are float64
+        (sequential minimum image), the pair algebra in the force field's compute dtype.
+
+        Parameters
+        ----------
+        pos : jax.Array (N, 3)
+            Atom positions [nm].
+        H : jax.Array (3, 3)
+            Box [nm].
+        ks : jax.Array (R, m) int
+            Partners of every row atom.
+        ws : jax.Array (R, m)
+            Van der Waals weights.
+        within : jax.Array (R, m) bool
+            Valid entries.
+        special : bool
+            The special-pair model (static).
+        rows : jax.Array (R,) int, optional
+            The atoms of the rows (None: all; every partner of a row atom must be a row atom, as
+            within the flexible molecules).
+
+        Returns
+        -------
+        energy : jax.Array ()
+            Fast nonbonded energy (pairs and induction) [kJ/mol].
+        forces : jax.Array (N, 3)
+            Its exact negative gradient [kJ/mol/nm].
+        mu : jax.Array (N, 3)
+            Fast induced dipoles [e nm] (0 without fast induction).
+        """
         ff = self.ff
         cd = ff.cd
         N = ff.n
@@ -344,7 +524,7 @@ class _MTSMixin:
         pk = [pc[:, c][ks] for c in range(3)]
         pi = [at(pc)[:, c][:, None] for c in range(3)]
 
-        def rowsum(v):
+        def rowsum(v: jax.Array) -> jax.Array:  # sum over each row's partners
             return jnp.sum(v, axis=1)
 
         alpha = at(P["alpha"])[:, None]
@@ -405,9 +585,16 @@ class _MTSMixin:
         energy = 0.5 * jnp.sum(rowsum(S * E).astype(jnp.float64)) + KE * corr
         return energy, forces, full(mu)
 
-    def _vdw_params(self, P, k, at):
-        """Pair parameters of the van der Waals form for rows at(.) and partners k (PGMForceField
-        ._vdw_params with a subset of row atoms)."""
+    def _vdw_params(self, P: dict, k: jax.Array, at: Callable[[jax.Array], jax.Array]) -> tuple:
+        """Return the van der Waals pair parameters for rows at(.) and partners k.
+
+        PGMForceField._vdw_params with a subset of row atoms.
+
+        Raises
+        ------
+        ValueError
+            An unknown van der Waals form.
+        """
         cd, vdw = self.ff.cd, self.ff.s.terms.vdw
         if vdw == "lj":
             rh, se = P["lj_rmin_half"].astype(cd), P["lj_sqrt_eps"].astype(cd)
@@ -425,18 +612,22 @@ class _MTSMixin:
             return ()
         raise ValueError(f"multiple time stepping: unknown van der Waals form {vdw!r}")
 
-    def _special(self):
-        """The special-pair rows of the flexible molecules as a pair list: partners (padding 0), van der
-        Waals weights, valid, and the row atoms.  (The special pairs of rigid molecules only exert
-        internal forces, which their constraints remove.)"""
+    def _special(self) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        """Return the special-pair rows of the flexible molecules as a pair list.
+
+        (partners (padding 0), van der Waals weights, valid mask, row atoms).  The special pairs of
+        rigid molecules only exert internal forces, which their constraints remove.
+        """
         rows = self._flex_rows
         sp = self.ff.special[rows]
         valid = sp < self.ff.n
         return jnp.where(valid, sp, 0), jnp.where(valid, self.ff.special_w[rows], 0.0), valid, rows
 
-    def short_energy(self, pos, H, st: MDState):
-        """Fast nonbonded energy at atom positions pos (the state's short-range list, or the special
-        pairs): for tests, forces = -grad."""
+    def short_energy(self, pos: jax.Array, H: jax.Array, st: MDState) -> jax.Array:
+        """Return the fast nonbonded energy [kJ/mol] at atom positions pos (for tests: forces = -grad).
+
+        Over the state's short-range list, or the special pairs.
+        """
         if self.mts.split == "special":
             ks, ws, valid, rows = self._special()
             return self._short_nonbonded(pos, H, ks, ws, valid, special=True, rows=rows)[0]
@@ -444,9 +635,15 @@ class _MTSMixin:
         return self._short_nonbonded(pos, H, m.ks, m.ws, m.within)[0]
 
     # ------------------------------------------------------------------ short-range list
-    def _compact(self, k, r, within, wv):
-        """Short-range list from rows (k, distances r, valid mask, van der Waals weights): the entries
-        closer than r_short + buffer, compacted in column order to the capacity ms."""
+    def _compact(
+        self, k: jax.Array, r: jax.Array, within: jax.Array, wv: jax.Array
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        """Return the short-range list compacted from force-field rows, and an overflow flag.
+
+        The entries of rows (k, distances r [nm], valid mask, van der Waals weights) closer than
+        r_short + buffer, compacted in column order to the capacity ms: (ks, ws, valid,
+        overflow).
+        """
         N, ms = self.ff.n, self.ms
         m = within & (r < self.r_list)
         slot = jnp.cumsum(m.astype(jnp.int32), axis=1) - 1
@@ -458,9 +655,12 @@ class _MTSMixin:
         valid = jnp.arange(ms)[None, :] < jnp.minimum(count, ms)[:, None]
         return ks, ws, valid, jnp.max(count) > ms
 
-    def _rebuild(self, st, pos, m):
-        """Rebuild the short-range list at a fast step from the neighbour list (whose candidates reach
-        the pair cutoff, far beyond r_short + buffer, so they are still complete)."""
+    def _rebuild(self, st: MDState, pos: jax.Array, m: MTSState) -> MTSState:
+        """Return m with the short-range list rebuilt at a fast step from the neighbour list.
+
+        The list's candidates reach the pair cutoff, far beyond r_short + buffer, so they are
+        still complete.
+        """
         cand, ovf = self.nb.candidates(st.nbr, self._centers(st.dyn.position, pos), st.box, pos)
         k, x, within, wv, ovf2, _ = self.ff._rows(pos, st.box, cand)
         r = jnp.sqrt(jnp.where(within, x[0] * x[0] + x[1] * x[1] + x[2] * x[2], 1.0))
@@ -469,18 +669,24 @@ class _MTSMixin:
             ks=ks, ws=ws, within=valid, ref=pos, rebuilds=m.rebuilds + 1, overflow=m.overflow | ovf | ovf2 | ovf3
         )
 
-    def _fresh(self, st, pos, m):
-        """The list, rebuilt if an atom pair may have come from beyond r_short + buffer to within
-        r_short: when the two largest displacements since the build sum to more than the buffer."""
+    def _fresh(self, st: MDState, pos: jax.Array, m: MTSState) -> MTSState:
+        """Return m with the list rebuilt (lax.cond) if a pair may have moved inside r_short.
+
+        That is when the two largest atomic displacements since the build sum to at least the
+        buffer.
+        """
         d2 = jnp.sum((pos - m.ref) ** 2, axis=1)
         i = jnp.argmax(d2)
         d1 = d2[i]
         stale = jnp.sqrt(d1) + jnp.sqrt(jnp.max(d2.at[i].set(0.0))) >= self.mts.buffer
         return jax.lax.cond(stale, lambda m: self._rebuild(st, pos, m), lambda m: m, m)
 
-    def _size_list(self, x, box):
-        """Host side: capacity of the short-range list from the pair counts at x (head-room as the
-        force-field rows), at most the width of the electrostatic rows it is taken from."""
+    def _size_list(self, x: Any, box: ArrayLike) -> None:
+        """Set the capacity ms of the short-range list from the pair counts at x (host; "short" only).
+
+        10 % + 8 head-room, a multiple of 8, at most the width of the electrostatic rows it is
+        taken from; recompiles when it changes.
+        """
         if not self.short:
             return
         ff = self.ff
@@ -490,7 +696,8 @@ class _MTSMixin:
         nbr = self.nb.allocate(pos, centers, box)
         cand = self.nb.candidates(nbr, centers, box, pos)[0]
 
-        def count(pos, H, cand):
+        def count(pos: jax.Array, H: jax.Array, cand: jax.Array) -> jax.Array:
+            """Return the largest number of partners within r_short + buffer (rows without capacity)."""
             saved = ff.mc
             ff.mc = None
             try:
@@ -510,8 +717,10 @@ class _MTSMixin:
             self.compile()
 
     def check_block(self, st: MDState) -> None:
-        """After a block: a short-range list overflow (the block is then repeated by the driver, since
-        MDState.overflow is set too) grows the list's capacity."""
+        """Grow the short-range list's capacity after a block in which it overflowed (host).
+
+        The driver then repeats the block, since MDState.overflow is set too.
+        """
         m = getattr(st, "mts", None)
         if m is not None and m.overflow is not None and bool(m.overflow):
             width = self.ff.mc_e if self.ff.mc_e is not None else self.ff.mc
@@ -522,7 +731,7 @@ class _MTSMixin:
 
     # ------------------------------------------------------------------ force evaluations
     def _eval_fast(self, st: MDState, j: int) -> MDState:
-        """Forces of level j >= 1 at the current positions (short-range list refreshed if needed)."""
+        """Return the state with the forces of level j >= 1 at its positions (list refreshed if needed)."""
         x = st.dyn.position
         pos = self._atoms(x)
         m = st.mts
@@ -542,10 +751,18 @@ class _MTSMixin:
         forces = m.forces[:j] + (self._engine_forces(x, F),) + m.forces[j + 1 :]
         return st.set(mts=m.set(forces=forces, mu=mu, efast=efast))
 
-    def _with_result(self, st: MDState, F, res, nbr, fast: tuple | None = None) -> MDState:
-        """The base bookkeeping of a full evaluation (dyn.force = the full force), then the MTS state:
-        the short-range list from the evaluation's rows, the fast levels (evaluated here unless given:
-        `fast`, evaluated with the previous list at the same positions), F_slow = F_full - sum(fast)."""
+    def _with_result(self, st: MDState, F: Any, res: Result, nbr: Any, fast: tuple | None = None) -> MDState:
+        """Return the state after a full evaluation, with the MTS state rebuilt.
+
+        The base bookkeeping (dyn.force = the full force), then the short-range list from the
+        evaluation's rows, the fast levels (evaluated here unless given: `fast`, evaluated with
+        the previous list at the same positions), and F_slow = F_full - sum(fast).
+
+        Raises
+        ------
+        ValueError
+            The result has no row geometry (keep_geometry).
+        """
         geo = res.geometry
         st = super()._with_result(st, F, res._replace(geometry=None), nbr)
         x = st.dyn.position
@@ -588,8 +805,11 @@ class _MTSMixin:
         return st.set(mts=m, overflow=st.overflow | m.overflow)
 
     def _eval_outer(self, st: MDState) -> MDState:
-        """Full evaluation at the end of an outer step (the fast levels were just evaluated at the
-        same positions with the previous list); anchored predictor around the solve."""
+        """Return the state after the full evaluation at the end of an outer step.
+
+        The fast levels were just evaluated at the same positions with the previous list; with the
+        anchored predictor mu_fast is added to the history before the solve and removed after.
+        """
         m = st.mts
         ind = st.induction
         if self.anchor:
@@ -604,13 +824,18 @@ class _MTSMixin:
 
     # ------------------------------------------------------------------ the step
     def _o(self, st: MDState, h: float) -> MDState:
+        """Return the state after a thermostat step of length h [ps]."""
         dyn, aux, heat = self._o_step(st.dyn, st.aux, st.heat, h, self.thermostat_kT(st))
         return st.set(dyn=dyn, aux=aux, heat=heat)
 
     def _level(self, st: MDState, j: int, h: float, o_mid: bool) -> MDState:
-        """One step of level j (length h): kick, the sub-steps of level j + 1 (or the drift), the
-        forces of level j at the new positions, kick.  o_mid: the outer O step (length dt) goes in
-        the middle of this step."""
+        """Return the state after one step of level j (length h [ps], j and h static).
+
+        Kick, the sub-steps of level j + 1 (lax.fori_loop) or the innermost drift, the forces of
+        level j at the new positions, kick.  o_mid: the outer O step (length dt) goes in the
+        middle of this step (between the two halves of the sub-steps for even n, recursively in
+        the middle sub-step for odd n).
+        """
         st = st.set(dyn=self._kick_by(st.dyn, st.mts.forces[j], 0.5 * h))
         if j == self.nlev - 1:
             thermo = self.thermostat is not None and (o_mid or not self.o_outer)
@@ -624,7 +849,7 @@ class _MTSMixin:
             n = self.levels[j + 1][1]
             hs = h / n
 
-            def loop(s, count):
+            def loop(s: MDState, count: int) -> MDState:  # `count` sub-steps of level j + 1
                 return (
                     s if count == 0 else jax.lax.fori_loop(0, count, lambda _, c: self._level(c, j + 1, hs, False), s)
                 )
@@ -640,19 +865,25 @@ class _MTSMixin:
         return st.set(dyn=self._kick_by(st.dyn, st.mts.forces[j], 0.5 * h))
 
     def _step(self, st: MDState) -> MDState:
+        """Advance one outer step (and the barostat every `interval` steps)."""
         o_mid = self.thermostat is not None and self.o_outer
         st = self._level(st, 0, self.dt, o_mid).set(step=st.step + 1)
         if self.ensemble == "npt":
             st = jax.lax.cond(st.step % self.interval == 0, self._barostat, lambda s: s, st)
         return st
 
-    def _run(self, st: MDState, n) -> MDState:
+    def _run(self, st: MDState, n: int | jax.Array) -> MDState:
+        """Advance n outer steps; a state without MTS part gets its split forces first.
+
+        E.g. a checkpoint of an ordinary run: the forces are split and the predictor restarted.
+        """
         if st.mts is None:  # e.g. a checkpoint of an ordinary run: split forces, restart the predictor
             s = self._state_forces(st, False)
             st = s.set(induction=s.induction.set(count=jnp.ones_like(s.induction.count)))
         return super()._run(st, n)
 
-    def init(self, x, box, key, momentum=None, bias=None) -> MDState:
+    def init(self, x: Any, box: ArrayLike, key: jax.Array, momentum: Any = None, bias: Any = None) -> MDState:
+        """Return a new state as the engine's init, after sizing the short-range list."""
         self._size_list(x, box)
         return super().init(x, box, key, momentum, bias=bias)
 
@@ -660,33 +891,41 @@ class _MTSMixin:
 class MTSIntegrator(_MTSMixin, Integrator):
     """r-RESPA for rigid molecules (NO_SQUISH rigid bodies): Integrator with `mts=MTS(...)`."""
 
-    def _atoms(self, x):
+    def _atoms(self, x: Any) -> jax.Array:
+        """Return the atom positions of the rigid bodies x."""
         return self.rigid.positions(x)
 
-    def _centers(self, x, pos):
+    def _centers(self, x: Any, pos: jax.Array) -> jax.Array:
+        """Return the centres of mass of the bodies (the list groups)."""
         return x.center
 
-    def _engine_forces(self, x, F):
+    def _engine_forces(self, x: Any, F: jax.Array) -> Any:
+        """Return the body forces of atomic forces F."""
         return self.rigid.forces(x, F)
 
 
 class MTSFlexibleIntegrator(_MTSMixin, FlexibleIntegrator):
-    """r-RESPA for atoms with constraints (g-BAOAB kicks and drifts): FlexibleIntegrator with
-    `mts=MTS(...)`."""
+    """r-RESPA for atoms with constraints (g-BAOAB kicks and drifts): FlexibleIntegrator + `mts`."""
 
-    def _atoms(self, x):
+    def _atoms(self, x: jax.Array) -> jax.Array:
+        """Return x (the positions are the atoms)."""
         return x
 
-    def _centers(self, x, pos):
+    def _centers(self, x: jax.Array, pos: jax.Array) -> jax.Array:
+        """Return the neighbour-list group centres."""
         return self.flex.list_centers(pos)
 
-    def _engine_forces(self, x, F):
+    def _engine_forces(self, x: jax.Array, F: jax.Array) -> jax.Array:
+        """Return F (atomic forces are the engine's)."""
         return F
 
 
-def mts_stats(sim) -> dict:
-    """Diagnostics of a simulation with multiple time stepping: list rebuilds at fast steps, the
-    list capacity and the fast-level energy of the current state."""
+def mts_stats(sim: Any) -> dict:
+    """Return diagnostics of a simulation with multiple time stepping ({} without).
+
+    "list_rebuilds" (at fast steps), "list_capacity" (ms) and "efast" (the fast-level energy of
+    the current state [kJ/mol]).
+    """
     st = sim.state
     m = getattr(st, "mts", None)
     if m is None:
