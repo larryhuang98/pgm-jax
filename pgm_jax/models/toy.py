@@ -1,11 +1,21 @@
-"""Small example molecules and boxes: a pGM-like water, a methanol, a water / methanol / water gas
-cluster, water lattices and a skewed triclinic water / methanol box.  Used by the tests, the
-regression harness, examples and validation scripts (made-up but physically sensible parameters;
-nm, e, e nm, nm^3, sqrt(kJ/mol))."""
+"""Build small example molecules and boxes for tests, the regression harness, examples and validation.
+
+Contents: water and methanol (Molecule templates with made-up but physically sensible
+parameters), water_geometry, cluster (a water / methanol / water gas cluster), water_lattice
+(waters on a cubic lattice), small_box (a skewed triclinic water / methanol box),
+water_cluster_box (eight waters in a large box), METHANOL_BONDS.
+
+The parameters are not fitted to anything: they only need to exercise every term (charges,
+covalent dipoles in both directions, polarizabilities, LJ on some atoms).  Changing them changes
+the golden files of the regression harness.
+
+Units: nm, e, e nm, nm^3, sqrt(kJ/mol).
+"""
 
 from __future__ import annotations
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 from ..md.box import reduce_box
 from ..system import Molecule, System
@@ -13,8 +23,12 @@ from ..system import Molecule, System
 METHANOL_BONDS = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)]
 
 
-def water():
+def water() -> Molecule:
+    """Return a pGM-like water template "WAT" (O, H, H; types OW, HW, HW).
 
+    Charges -0.8/0.4 e, radii 0.06/0.05 nm, polarizabilities 1.0e-3/0.3e-3 nm^3, covalent dipoles
+    O->H (-0.02 e nm) and H->O (0.008 e nm), LJ on O only (R* 0.178 nm, sqrt(eps) 0.80).
+    """
     return Molecule(
         "WAT",
         ["O", "H", "H"],
@@ -29,8 +43,12 @@ def water():
     )
 
 
-def methanol():
+def methanol() -> tuple[Molecule, np.ndarray]:
+    """Return a methanol template "MeOH" (C, O, H, H, H, H; GAFF-like types) and a geometry (6, 3) [nm].
 
+    Covalent dipoles along C-O, O-H and C-H in both directions, LJ on every atom; the geometry is a
+    standard staggered methanol.
+    """
     x = (
         np.array(
             [
@@ -60,18 +78,25 @@ def methanol():
     return m, x
 
 
-def water_geometry(r=0.09572, theta_deg=104.52):
+def water_geometry(r: float = 0.09572, theta_deg: float = 104.52) -> np.ndarray:
+    """Return O, H, H coordinates (3, 3) [nm] of a water, O at the origin, bisector along +y, in the xy plane.
+
+    `r` is the O-H length [nm] and `theta_deg` the H-O-H angle [degrees] (defaults: TIP3P geometry).
+    """
     t = np.radians(theta_deg / 2)
     return np.array([[0, 0, 0], [r * np.sin(t), r * np.cos(t), 0], [-r * np.sin(t), r * np.cos(t), 0]])
 
 
-def _rot(rng):
+def _rot(rng: np.random.Generator) -> np.ndarray:
+    """Return a random orthogonal matrix (3, 3) (QR of a Gaussian matrix; may be improper)."""
     return np.linalg.qr(rng.normal(size=(3, 3)))[0]
 
 
-def cluster(seed=0):
-    """Gas phase: water + methanol + water, ~0.3 nm apart (nm)."""
+def cluster(seed: int = 0) -> tuple[System, np.ndarray]:
+    """Return a gas-phase water + methanol + water cluster: its System and positions (12, 3) [nm].
 
+    The molecules are about 0.3 nm apart, with random orientations from `seed`.
+    """
     rng = np.random.default_rng(seed)
     w = water_geometry()
     m, xm = methanol()
@@ -79,8 +104,31 @@ def cluster(seed=0):
     return System([water(), m, water()]), pos
 
 
-def water_lattice(n_side=4, spacing=0.31, seed=0, geometry=None):
-    """n_side^3 randomly rotated waters on a cubic lattice: positions (nm), cubic box, geometry."""
+def water_lattice(
+    n_side: int = 4, spacing: float = 0.31, seed: int = 0, geometry: ArrayLike | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return n_side^3 randomly rotated waters on a cubic lattice.
+
+    Parameters
+    ----------
+    n_side : int
+        Waters per box edge.
+    spacing : float
+        Lattice spacing [nm].
+    seed : int
+        Seed of the orientations.
+    geometry : ArrayLike (3, 3), optional
+        Water geometry [nm]; None: water_geometry().
+
+    Returns
+    -------
+    positions : np.ndarray (3 n_side^3, 3)
+        [nm], the O of each water at a lattice point (cell centres).
+    box : np.ndarray (3, 3)
+        Cubic box [nm] of edge n_side spacing.
+    geometry : np.ndarray (3, 3)
+        The water geometry used [nm].
+    """
     rng = np.random.default_rng(seed)
     w = water_geometry() if geometry is None else np.asarray(geometry, float)
     pos = []
@@ -92,9 +140,25 @@ def water_lattice(n_side=4, spacing=0.31, seed=0, geometry=None):
     return np.concatenate(pos), np.eye(3) * n_side * spacing, w
 
 
-def small_box(seed=0, nw=30, nm=4):
-    """Waters and methanols on a jittered lattice in a skewed (reduced) triclinic box, nm."""
+def small_box(seed: int = 0, nw: int = 30, nm: int = 4) -> tuple[System, np.ndarray, np.ndarray]:
+    """Return waters and methanols on a jittered lattice in a skewed (reduced) triclinic box.
 
+    Parameters
+    ----------
+    seed : int
+        Seed of the placement and orientations.
+    nw, nm : int
+        Numbers of waters and methanols (nw + nm <= 48 lattice sites).
+
+    Returns
+    -------
+    system : System
+        Methanols first, then waters.
+    positions : np.ndarray (N, 3)
+        [nm], molecules centred on the lattice sites (0.01 nm jitter).
+    box : np.ndarray (3, 3)
+        Triclinic box [nm], lattice vectors as rows.
+    """
     rng = np.random.default_rng(seed)
     H = reduce_box(np.array([[1.75, 0.0, 0.0], [0.45, 1.70, 0.0], [-0.40, 0.50, 1.65]]))
     w = water_geometry()
@@ -116,7 +180,11 @@ def small_box(seed=0, nw=30, nm=4):
     return System(mols), np.concatenate(pos), H
 
 
-def water_cluster_box():
-    """Eight waters in a 3 nm box (cutoff 1.2 nm: no pair crosses the cutoff)."""
+def water_cluster_box() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return eight waters in a 3 nm cubic box: positions (24, 3) [nm], box (3, 3) [nm], water geometry.
+
+    With a 1.2 nm cutoff no pair crosses the cutoff (a periodic model that equals the gas phase
+    up to the Ewald images).
+    """
     pos, _, w = water_lattice(n_side=2, spacing=0.31)
     return pos + 1.2, np.eye(3) * 3.0, w
