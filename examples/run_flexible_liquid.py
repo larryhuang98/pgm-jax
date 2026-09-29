@@ -8,19 +8,16 @@ trajectory) and <prefix>.chk, and prints the mean density of the second half of 
 
 import argparse
 import os
-import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
 import jax
-
-jax.config.update("jax_enable_x64", True)
 import numpy as np
 
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.system import System
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+jax.config.update("jax_enable_x64", True)
 ap = argparse.ArgumentParser()
 ap.add_argument("template")
 ap.add_argument("--n", type=int, default=216, help="molecules")
@@ -31,7 +28,6 @@ ap.add_argument("--ps", type=float, default=100.0, help="NPT length")
 ap.add_argument("--dt", type=float, default=0.5, help="fs")
 ap.add_argument("--prefix", default="")
 a = ap.parse_args()
-
 tpl = FlexibleTemplate.load(a.template)
 prefix = a.prefix or os.path.splitext(a.template)[0] + "_npt"
 pos, H = liquid_box(tpl, a.n, a.density0, seed=1, min_dist=0.18)

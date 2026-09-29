@@ -15,13 +15,13 @@ import sys
 
 import numpy as np
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
-from pgm_jax.bonded.study.molecules import MOLECULES  # noqa: E402
-from pgm_jax.param import PGM_POL_TABLE, molecule_from_pyresp, read_pol_table, save_molecule  # noqa: E402
+from pgm_jax.bonded.study.molecules import MOLECULES
+from pgm_jax.param import PGM_POL_TABLE, molecule_from_pyresp, read_pol_table, save_molecule
+from pgm_jax.paths import resource
 from pgm_jax.units import KCAL
 
-AMBER = os.path.expanduser("~/amber25")
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+AMBER = resource("amberhome")
 ENV = dict(os.environ, AMBERHOME=AMBER, PATH=f"{AMBER}/bin:" + os.environ["PATH"])
 VER = os.environ.get("PGMVER", "")  # "" (single minimum) or "2" (multi-conformer ESP)
 NCONF = 5
@@ -123,7 +123,7 @@ def prep():
 #SBATCH --output={ROOT}/runs/bonded/slurm/esp{VER}_%a.out
 cd {ROOT}
 NAME=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" runs/bonded/pgm{VER}_list.txt)
-export PSI_SCRATCH=/tmp/larry/pgmjax_esp_$SLURM_JOB_ID_$SLURM_ARRAY_TASK_ID; mkdir -p $PSI_SCRATCH
+export PSI_SCRATCH=/tmp/$USER/pgmjax_esp_$SLURM_JOB_ID_$SLURM_ARRAY_TASK_ID; mkdir -p $PSI_SCRATCH
 ~/miniconda3/envs/psi4/bin/python scripts/bonded/qm_esp.py runs/bonded/pgm{VER}/$NAME --threads 16 --memory 32
 rm -rf $PSI_SCRATCH
 """)

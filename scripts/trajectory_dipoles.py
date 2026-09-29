@@ -19,35 +19,28 @@ model's) and their mean molecular dipole.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import time
 
+import jax
+import jax.numpy as jnp
 import numpy as np
+from scipy.io import netcdf_file
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import jax  # noqa: E402
-import jax.numpy as jnp  # noqa: E402
+from pgm_jax.analysis import dielectric as D
+from pgm_jax.md.box import (
+    box_from_cell,
+    reduce_box,
+)
+from pgm_jax.md.dipoles import DIP_COLUMNS, CellDipole
+from pgm_jax.md.forcefield import MDSettings, PGMForceField
+from pgm_jax.md.neighbors import AtomNeighbors, _failed
+from pgm_jax.param import AMBER_CHARGE, read_prmtop_molecules
+from pgm_jax.prmtop import Prmtop
+from pgm_jax.system import System
+from pgm_jax.units import DEBYE_E_NM
 
 jax.config.update("jax_enable_x64", True)
-
-from scipy.io import netcdf_file  # noqa: E402
-
-from pgm_jax.analysis import dielectric as D  # noqa: E402
-from pgm_jax.md.box import (
-    box_from_cell,  # noqa: E402
-    reduce_box,  # noqa: E402
-)
-from pgm_jax.md.dipoles import DIP_COLUMNS, CellDipole  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
-from pgm_jax.md.neighbors import AtomNeighbors, _failed  # noqa: E402
-from pgm_jax.param import read_prmtop_molecules  # noqa: E402
-from pgm_jax.prmtop import Prmtop  # noqa: E402
-from pgm_jax.system import System  # noqa: E402
-from pgm_jax.units import DEBYE_E_NM  # noqa: E402
-
-AMBER_CHARGE = 18.2223
 
 
 def frames(paths):

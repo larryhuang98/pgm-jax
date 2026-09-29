@@ -674,6 +674,19 @@ The `pgmjax` environment was made with `conda create -n pgmjax --clone evoff` pl
 `pip install --no-index --find-links ~/project/pGM-JAX-wheels jax-md==0.2.29` (the GPU nodes have no
 internet; the wheels were downloaded elsewhere). evoff's environment is untouched.
 
+**Installation.** The scripts, examples and tests import `pgm_jax` as a package; they do not edit
+`sys.path`. Install the repository into the environment once (editable, so that changes of the
+source take effect without reinstalling):
+
+```bash
+pip install -e .                 # from the repository root
+```
+
+or, without installing (e.g. in a shared environment), put the repository on the path:
+`PYTHONPATH=/path/to/pGM-JAX python scripts/run_md.py ...` (pytest needs neither: `pyproject.toml`
+sets `pythonpath = ["."]`). External data and programs (Amber builds, the pGM3P-25 files, QM data)
+are found through environment variables with defaults, listed in `pgm_jax/paths.py`.
+
 ## Validation (512 pGM3P-25 waters; same Coulomb constant as Amber)
 
 | Comparison | Result |

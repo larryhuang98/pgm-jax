@@ -10,59 +10,23 @@ with the MACE-OFF frames at the same temperature (298 K test / 500 K training ge
 import argparse
 import json
 import os
-import sys
 import time
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
-import jax  # noqa: E402
-
-jax.config.update("jax_enable_x64", True)
-import jax.numpy as jnp  # noqa: E402
-from experiments import families_of, load, mol_list  # noqa: E402
-
-from pgm_jax.bonded import terms as T  # noqa: E402
-from pgm_jax.bonded.fit import Fitter  # noqa: E402
-from pgm_jax.bonded.model import BondedModel, BondedSettings  # noqa: E402
-from pgm_jax.bonded.study.data import frames  # noqa: E402
+from pgm_jax.bonded import terms as T
+from pgm_jax.bonded.fit import Fitter
+from pgm_jax.bonded.model import BondedModel, BondedSettings
+from pgm_jax.bonded.study.data import frames, load, mol_list
+from pgm_jax.bonded.study.families import families_of
+from pgm_jax.bonded.study.gas_md import langevin
+from pgm_jax.system import MASSES
 from pgm_jax.units import KB, KCAL
 
-MASS = {"H": 1.008, "C": 12.011, "N": 14.007, "O": 15.999, "F": 18.998, "P": 30.974, "S": 32.06, "Cl": 35.45}
-
-
-def langevin(efun, X0, masses, T_K, dt, nsteps, every, nrep, key, gamma=2.0):
-    """BAOAB; returns (nrep, nsteps/every, n, 3) positions and (nrep, nsteps/every) energies."""
-    m = jnp.asarray(masses)[:, None]
-    kT = KB * T_K
-    grad = jax.grad(efun)
-    c1 = jnp.exp(-gamma * dt)
-    c2 = jnp.sqrt((1 - c1**2) * kT / m)
-
-    def step(state, k):
-        X, V, F = state
-        V = V + 0.5 * dt * F / m
-        X = X + 0.5 * dt * V
-        V = c1 * V + c2 * jax.random.normal(k, X.shape)
-        X = X + 0.5 * dt * V
-        F = -grad(X)
-        V = V + 0.5 * dt * F / m
-        return (X, V, F), None
-
-    def block(state, ks):
-        state, _ = jax.lax.scan(step, state, ks)
-        return state, (state[0], efun(state[0]))
-
-    def one(key):
-        k0, k1 = jax.random.split(key)
-        V0 = jax.random.normal(k0, X0.shape) * jnp.sqrt(kT / m)
-        ks = jax.random.split(k1, nsteps).reshape(nsteps // every, every, 2)
-        _, (Xs, Es) = jax.lax.scan(block, (X0, V0, -grad(X0)), ks)
-        return Xs, Es
-
-    return jax.jit(jax.vmap(one))(jax.random.split(key, nrep))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+jax.config.update("jax_enable_x64", True)
 
 
 def internals(top, X):
@@ -101,7 +65,7 @@ def main():
         X0 = jnp.asarray(spec.ref_xyz)
         nsteps = int(round(a.ps / a.dt)) // 100 * 100
         Xs, Es = langevin(
-            efun, X0, [MASS[e] for e in spec.elements], a.T, a.dt, nsteps, 100, a.nrep, jax.random.PRNGKey(i)
+            efun, X0, [MASSES[e] for e in spec.elements], a.T, a.dt, nsteps, 100, a.nrep, jax.random.PRNGKey(i)
         )
         Xs, Es = np.asarray(Xs), np.asarray(Es)
         top = model.mols[0].top

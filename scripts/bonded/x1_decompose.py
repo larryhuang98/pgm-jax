@@ -5,22 +5,18 @@ dipoles from the ESP fit).  -> runs/bonded/results/x1.json"""
 
 import json
 import os
-import sys
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
-import jax  # noqa: E402
-
-jax.config.update("jax_enable_x64", True)
-import jax.numpy as jnp  # noqa: E402
-
-from pgm_jax.bonded.model import BondedModel, BondedSettings  # noqa: E402
-from pgm_jax.bonded.study.data import frames, mol_spec  # noqa: E402
-from pgm_jax.bonded.study.molecules import MOLECULES  # noqa: E402
+from pgm_jax.bonded.model import BondedModel, BondedSettings
+from pgm_jax.bonded.study.data import frames, mol_spec
+from pgm_jax.bonded.study.molecules import MOLECULES
 from pgm_jax.units import DEBYE_E_NM, KCAL
 
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+jax.config.update("jax_enable_x64", True)
 out = {}
 print(
     f"{'molecule':20s} {'sd resid pGM':>12s} {'sd resid cls':>12s} {'sd E_nb pGM':>11s} {'|F_nb| min pGM':>14s} "

@@ -31,27 +31,26 @@ import jax
 import numpy as np
 from scipy.io import netcdf_file
 
-jax.config.update("jax_enable_x64", True)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from pgm_jax.channels import ElecChannel
 from pgm_jax.ewald import PeriodicPGM
 from pgm_jax.lj import LJChannel, PeriodicLJ
 from pgm_jax.md.box import box_from_cell
 from pgm_jax.model import Model
 from pgm_jax.param import read_prmtop_pgm
+from pgm_jax.paths import resource
 from pgm_jax.periodic import strain_derivative
 from pgm_jax.system import System
 from pgm_jax.units import BOHR_NM, KCAL, KE, KE_AMBER_PGM
 
+jax.config.update("jax_enable_x64", True)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REF = os.path.join(ROOT, "validation", "amber_ref")  # Amber runs: inputs + outputs (in git)
 OUT = os.path.join(ROOT, "runs", "validate")  # our own outputs (not in git)
 RESULT = os.path.join(ROOT, "validation", "validate_amber.json")
-TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
-RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
-SANDER = os.path.expanduser("~/ambers/pgm-larry/build/AmberTools/src/sander/sander")
-PMEMD = os.path.expanduser("~/ambers/pgm-vdw/build/src/pmemd-pgm/src/pmemd-pgm")
+TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
+RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
+SANDER = resource("sander_pgm")
+PMEMD = resource("pmemd_pgm_cpu")
 SCALE = KE_AMBER_PGM / KE  # Amber pGM uses Tinker's Coulomb constant
 
 
@@ -269,7 +268,7 @@ def pyresp():
     from pgm_jax.system import Molecule
 
     B = BOHR_NM
-    ex = os.path.expanduser("~/amber25/AmberTools/examples/PyRESP")
+    ex = resource("amberhome", "AmberTools/examples/PyRESP")
     txt = open(os.path.join(ex, "test/water/resp-perm/wat.chg")).read()
 
     def block(flag, ncol):

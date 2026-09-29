@@ -27,6 +27,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from pgm_jax.md.box import box_from_cell
+from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.io import read_coordinates
+from pgm_jax.md.pimd import PIMDSimulation
+from pgm_jax.models.water import flexible_water
+from pgm_jax.param import read_prmtop_pgm
+from pgm_jax.paths import resource
+from pgm_jax.system import System
+
 if os.environ.get("PIMD_WAIT_GPU"):  # a GPU shared with jobs that retry when it is busy: take it as soon as
     import ctypes  # it is released (retain the primary context; JAX then uses it)
 
@@ -43,20 +53,11 @@ if os.environ.get("PIMD_WAIT_GPU"):  # a GPU shared with jobs that retry when it
         sys.exit(75)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
 jax.config.update("jax_enable_x64", True)
 
-from pgm_jax.md.box import box_from_cell  # noqa: E402
-from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.io import read_coordinates  # noqa: E402
-from pgm_jax.md.pimd import PIMDSimulation
-from pgm_jax.models.water import flexible_water  # noqa: E402
-from pgm_jax.param import read_prmtop_pgm  # noqa: E402
-from pgm_jax.system import System  # noqa: E402
 
-TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
-RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
+TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
+RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
 TPL = os.path.join(ROOT, "validation/pimd/pgm_water_flex.flex")
 
 

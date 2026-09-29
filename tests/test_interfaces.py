@@ -6,7 +6,6 @@ PythonForce (if OpenMM >= 8.4 is importable)."""
 
 import os
 import socket
-import sys
 import threading
 
 import jax
@@ -355,7 +354,8 @@ class FakeIPI:
 def test_ipi_client_protocol_and_units(tmp_path):
     import json
 
-    from pgm_jax.interfaces.ipi import BOHR_NM, HARTREE_KJMOL, IPIClient
+    from pgm_jax.interfaces.ipi import IPIClient
+    from pgm_jax.units import BOHR_NM_CODATA2022, HARTREE_KJMOL
 
     sysm, pos, H = water_box(3)
     s = settings()
@@ -367,8 +367,8 @@ def test_ipi_client_protocol_and_units(tmp_path):
     th = threading.Thread(target=client.run, daemon=True)
     th.start()
     srv.accept()
-    h = np.asarray(H).T / BOHR_NM  # i-PI's cell: lattice vectors as columns, Bohr
-    x = pos / BOHR_NM
+    h = np.asarray(H).T / BOHR_NM_CODATA2022  # i-PI's cell: lattice vectors as columns, Bohr
+    x = pos / BOHR_NM_CODATA2022
     assert srv.status() == "NEEDINIT"
     srv.init("")
     assert srv.status() == "READY"
@@ -377,13 +377,15 @@ def test_ipi_client_protocol_and_units(tmp_path):
     ((E, F, vir, ex),) = srv.getforce()
     r = ref.compute(pos, H, virial=True)
     assert abs(E * HARTREE_KJMOL - r.energy) < 1e-9 * abs(r.energy)
-    assert np.abs(F * HARTREE_KJMOL / BOHR_NM - r.forces).max() < 1e-7
+    assert np.abs(F * HARTREE_KJMOL / BOHR_NM_CODATA2022 - r.forces).max() < 1e-7
     assert np.abs(-vir * HARTREE_KJMOL - r.virial).max() < 1e-7
-    assert np.allclose(np.asarray(json.loads(ex)["dipole"]) * BOHR_NM, r.dipole, atol=1e-10)
+    assert np.allclose(np.asarray(json.loads(ex)["dipole"]) * BOHR_NM_CODATA2022, r.dipole, atol=1e-10)
     # batched request (INIT announces batch_size): two structures, one per slot
     srv.init("batch_size:2")
     y = pos + 0.001
-    srv.posdata_batch([np.ascontiguousarray(h)] * 2, [np.ascontiguousarray(x), np.ascontiguousarray(y / BOHR_NM)])
+    srv.posdata_batch(
+        [np.ascontiguousarray(h)] * 2, [np.ascontiguousarray(x), np.ascontiguousarray(y / BOHR_NM_CODATA2022)]
+    )
     assert srv.status() == "HAVEDATA"
     out = srv.getforce(batch=2)
     r2 = ref.compute(y, H)
@@ -395,8 +397,7 @@ def test_ipi_client_protocol_and_units(tmp_path):
 
 def _ipi_available():
     try:
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "interfaces"))
-        import ipi_tools
+        from pgm_jax.interfaces import ipi_tools
 
         ipi_tools.ipi_command()
         return True
@@ -408,9 +409,9 @@ def _ipi_available():
 def test_ipi_real_server_short_nvt(tmp_path):
     """A real i-PI server (classical NVT, then 2 beads batched) driven by the pgm_jax client: the
     step-0 potential is the engine's energy; the conserved quantity is conserved."""
-    import ipi_tools as T
     from test_flexible import _box
 
+    from pgm_jax.interfaces import ipi_tools as T
     from pgm_jax.interfaces.ipi import IPIClient
 
     tpl, sysm, pos, H = _box()

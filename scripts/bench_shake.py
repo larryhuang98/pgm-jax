@@ -8,21 +8,20 @@ cluster, solved iteratively); blocks by cluster size (default) against one padde
 import argparse
 import json
 import os
-import sys
 import time
 
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+from pgm_jax.md.constraints import Constraints, hmr_masses
+from pgm_jax.md.flexible import FlexibleTemplate, liquid_box
+from pgm_jax.md.topology import MDTopology
+from pgm_jax.paths import resource
+from pgm_jax.system import System
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-import jax  # noqa: E402
-
 jax.config.update("jax_enable_x64", True)
-import jax.numpy as jnp  # noqa: E402
-import numpy as np  # noqa: E402
-
-from pgm_jax.md.constraints import Constraints, hmr_masses  # noqa: E402
-from pgm_jax.md.flexible import FlexibleTemplate, liquid_box  # noqa: E402
-from pgm_jax.md.topology import MDTopology  # noqa: E402
-from pgm_jax.system import System  # noqa: E402
 
 
 def timeit(f, *a, reps=200):
@@ -60,7 +59,7 @@ def bench(label, pairs, d0, m, x, res, **kw):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ubq", default=os.path.expanduser("~/project/pGM-JAX/runs/protein/ubq"))
+    ap.add_argument("--ubq", default=resource("ubq_runs"))
     a = ap.parse_args()
     res = {"device": str(jax.devices()[0])}
     # 4,096 waters

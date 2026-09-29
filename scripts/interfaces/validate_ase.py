@@ -13,28 +13,25 @@
 import argparse
 import json
 import os
-import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
 import jax
+import numpy as np
+from ase import units
+from ase.md.langevin import Langevin
+from ase.md.verlet import VelocityVerlet
 
-jax.config.update("jax_enable_x64", True)
-import numpy as np  # noqa: E402
-from ase import units  # noqa: E402
-from ase.md.langevin import Langevin  # noqa: E402
-from ase.md.verlet import VelocityVerlet  # noqa: E402
-
-from pgm_jax.interfaces import PGMEngine  # noqa: E402
-from pgm_jax.interfaces.ase import PGMCalculator, atoms_from_system, rigid_constraints  # noqa: E402
-from pgm_jax.md.box import volume  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.simulation import Simulation  # noqa: E402
+from pgm_jax.interfaces import PGMEngine
+from pgm_jax.interfaces.ase import PGMCalculator, atoms_from_system, rigid_constraints
+from pgm_jax.md.box import volume
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.simulation import Simulation
+from pgm_jax.paths import resource
 from pgm_jax.units import BAR_PER_KJMOL_NM3, KB
 
-TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
-RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
+jax.config.update("jax_enable_x64", True)
+TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
+RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
 KJ = units.kJ / units.mol
 
 

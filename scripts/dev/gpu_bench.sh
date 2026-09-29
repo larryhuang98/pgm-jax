@@ -8,6 +8,7 @@
 C=${1:-$(cd "$(dirname "$0")/../.." && pwd)}
 source ~/miniconda3/etc/profile.d/conda.sh && conda activate pgmjax
 cd "$C" || exit 1
+export PYTHONPATH="$C"  # the package of this tree (docs: README, Installation)
 echo "# $(git rev-parse --short HEAD) $(hostname) $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
 b() { echo "### $*"; python scripts/bench_md.py "$@" 2>&1 | grep -E "ms/step" | sed 's/.*): //'; }
 for r in 1 2; do

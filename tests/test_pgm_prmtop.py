@@ -13,6 +13,7 @@ from pgm_jax.md.constraints import repartition_masses
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.topology import MDTopology
 from pgm_jax.param import read_prmtop_pgm
+from pgm_jax.paths import resource
 from pgm_jax.prmtop import Prmtop
 from pgm_jax.protein import (
     ResidueLibrary,
@@ -26,9 +27,9 @@ from pgm_jax.units import KCAL
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
 PRM, CRD = os.path.join(DATA, "pep_wat.prmtop"), os.path.join(DATA, "pep_wat.inpcrd")  # ACE-ALA-SER-NME, TIP3P, NaCl
-WATER_TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
-WATER_RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
-PMEMD = os.path.expanduser("~/ambers/pgm-larry-install/bin/pmemd.pgm")
+WATER_TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
+WATER_RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
+PMEMD = resource("pmemd_pgm_bin", "pmemd.pgm")
 
 
 def _library():

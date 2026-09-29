@@ -58,12 +58,9 @@ import time
 import jax
 import numpy as np
 
-jax.config.update("jax_enable_x64", True)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from pgm_jax.analysis import free_energy as fe  # noqa: E402
-from pgm_jax.md import fe_grad as fg  # noqa: E402
-from pgm_jax.md.alchemy import (  # noqa: E402
+from pgm_jax.analysis import free_energy as fe
+from pgm_jax.md import fe_grad as fg
+from pgm_jax.md.alchemy import (
     Alchemy,
     FreeEnergyRun,
     GasPhaseLeg,
@@ -72,19 +69,21 @@ from pgm_jax.md.alchemy import (  # noqa: E402
     standard_schedule,
 )
 from pgm_jax.md.box import (
-    box_from_cell,  # noqa: E402
-    volume,  # noqa: E402
+    box_from_cell,
+    volume,
 )
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.io import read_coordinates  # noqa: E402
-from pgm_jax.md.rigid import RigidBody  # noqa: E402
-from pgm_jax.md.simulation import Simulation  # noqa: E402
-from pgm_jax.param import read_prmtop_molecules  # noqa: E402
-from pgm_jax.system import System  # noqa: E402
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.io import read_coordinates
+from pgm_jax.md.rigid import RigidBody
+from pgm_jax.md.simulation import Simulation
+from pgm_jax.param import read_prmtop_molecules
+from pgm_jax.paths import resource
+from pgm_jax.system import System
 from pgm_jax.units import AMU_NM3_TO_G_CM3, KCAL
 
-TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
-RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
+jax.config.update("jax_enable_x64", True)
+TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
+RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
 
 
 def water_model(model: str):

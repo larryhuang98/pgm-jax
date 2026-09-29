@@ -20,6 +20,7 @@ import re
 
 import numpy as np
 
+from .paths import resource
 from .prmtop import Prmtop
 from .system import Molecule
 from .units import ANG_NM, BOHR_NM, KCAL
@@ -286,7 +287,7 @@ def load_molecule(path: str) -> Molecule:
 
 
 # ------------------------------------------------------------------ py_resp / pGM-pol --
-PGM_POL_TABLE = os.path.expanduser("~/amber25/AmberTools/examples/PyRESP/polarizability/pGM-pol-2016-09-01")
+PGM_POL_TABLE = resource("amberhome", "AmberTools/examples/PyRESP/polarizability/pGM-pol-2016-09-01")
 
 
 def read_pol_table(path: str = PGM_POL_TABLE) -> dict[str, tuple[float, float]]:

@@ -23,19 +23,17 @@ import os
 import sys
 
 import jax
+import numpy as np
+
+from pgm_jax.fit import GasPhase, Objective, Param, ParameterSpace, RDFSpec, Target
+from pgm_jax.fit.liquid import LiquidFit
+from pgm_jax.md.box import box_from_cell
+from pgm_jax.md.forcefield import MDSettings, elec_cutoff_settings
+from pgm_jax.md.io import read_coordinates
+from pgm_jax.param import read_prmtop_molecules
+from pgm_jax.system import System
 
 jax.config.update("jax_enable_x64", True)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import numpy as np  # noqa: E402
-
-from pgm_jax.fit import GasPhase, Objective, Param, ParameterSpace, RDFSpec, Target  # noqa: E402
-from pgm_jax.fit.liquid import LiquidFit  # noqa: E402
-from pgm_jax.md.box import box_from_cell  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings, elec_cutoff_settings  # noqa: E402
-from pgm_jax.md.io import read_coordinates  # noqa: E402
-from pgm_jax.param import read_prmtop_molecules  # noqa: E402
-from pgm_jax.system import System  # noqa: E402
-
 MODELS = {
     "base": ("~/project/epsp/base/base_512.prmtop", "~/project/epsp/base/base_512.rst7"),
     "p25": ("~/project/epsp/p25_512.prmtop", "~/project/epsp/p25_512.rst7"),

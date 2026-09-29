@@ -25,15 +25,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-jax.config.update("jax_enable_x64", True)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pgm_jax import System  # noqa: E402
-from pgm_jax.bias import OPES, BiasSet, Harmonic, MetaD, StaticBias, cv  # noqa: E402
-from pgm_jax.md.flexible import FlexibleSimulation  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.protein import amber_template, load_amber  # noqa: E402
+from pgm_jax import System
+from pgm_jax.bias import OPES, BiasSet, Harmonic, MetaD, StaticBias, cv
+from pgm_jax.md.flexible import FlexibleSimulation
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.protein import amber_template, load_amber
 from pgm_jax.units import KB
 
+jax.config.update("jax_enable_x64", True)
 ap = argparse.ArgumentParser()
 ap.add_argument("mode", choices=("metad", "opes", "umbrella", "plain", "remd", "analyze", "bench"))
 ap.add_argument("--replicas", type=int, default=8)
@@ -73,7 +72,6 @@ ap.add_argument("--labels", nargs="+", default=["none", "metad_grid", "metad_hil
 ap.add_argument("--pme-grid", type=int, default=None, help="PME grid points per edge (vacuum default 20)")
 ap.add_argument("--beta", type=float, default=None, help="Ewald coefficient (nm^-1; vacuum default 2.5)")
 a = ap.parse_args()
-
 kT = KB * a.T
 
 

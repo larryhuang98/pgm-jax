@@ -862,3 +862,28 @@ closures are jitted and called inside the same iteration) are not selected; the 
 E741 (ambiguous names `l`, `I`, `O`) is not selected: they are the physics notation (angular
 index, identity matrix). E402 is resolved by removing the `sys.path` edits (P3) and by setting
 `jax_enable_x64` in `tests/conftest.py` instead of in every test module (P1).
+
+### 9.1 Execution notes (P1-P3)
+
+- P1: ruff rules E, W, F, I, UP, B (subset as above) enforced on the whole repository; D (numpy
+  convention) is configured and switched on in P8/P9 together with the docstrings.
+- P2: `pgm_jax/units.py` holds every constant.  Values that differed between modules (Bohr radius of
+  three CODATA releases) are kept under their own names so that no result changes;
+  `KJMOL_NM3_PER_BAR = 1.0 / BAR_PER_KJMOL_NM3` is computed as before (bitwise the same double).
+  `md.box` gained `box_from_cell` / `cell_parameters` / `centers_of_mass`, `md.io`
+  `read_coordinates_nm`, `analysis/stats.py` the time-series statistics; one prmtop parser
+  (`prmtop.Prmtop`); `System.from_prmtop` / `param.read_prmtop_molecules` / `param.share_identical`
+  replace `simulation._dedupe`.  The full test run after P2 found four imports of removed names in
+  tests and scripts (`md.pimd.HBAR`, `interfaces.ipi.BOHR_NM`, `dielectric.E_NM` / `C_LIGHT`,
+  `efield.E_CHARGE`); they are fixed in the P3 commits, and `runs/v/check_imports.py`-style static
+  checks (every imported name and every attribute of an imported module exists) now run with ruff.
+- P3: the location helper of D13 is `pgm_jax/paths.py` (not `pgm_jax/cli/paths.py`): the library
+  itself needs it (the pGM-pol table of `param`).  External data and programs are found through
+  environment variables with the development defaults (`PGM_GVDW_DATA`, `AMBERHOME`,
+  `PGM_PMEMD_BIN`, ...), so no script names a user's home directory any more.  Shared example
+  systems live in `pgm_jax/models/toy.py` (used by the harness, scripts and, from P10, the tests),
+  the bonded-study catalogue and loaders in `pgm_jax/bonded/study/` (`families.py`, `data.py`,
+  `gas_md.py`), the i-PI helpers in `pgm_jax/interfaces/ipi_tools.py`.  No `sys.path` edits remain
+  except in `scripts/efield_identical.py` and the subprocess script of `validate_vsites.py identical`,
+  which load another code tree on purpose.  `bonded/terms/core._N` is a numpy array, so importing
+  `pgm_jax` creates no JAX array and `jax_enable_x64` may be set after the imports.

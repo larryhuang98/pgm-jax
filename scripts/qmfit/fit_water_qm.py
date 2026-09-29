@@ -16,21 +16,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 import time
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
-import jax  # noqa: E402
-
-jax.config.update("jax_enable_x64", True)
-import jax.numpy as jnp  # noqa: E402
-
-from pgm_jax.fit.qm import (  # noqa: E402
-    ANG,
-    DEBYE,
+from pgm_jax.fit.qm import (
     KCAL,
     ClusterModel,
     FitWeights,
@@ -46,12 +38,16 @@ from pgm_jax.fit.qm import (  # noqa: E402
     rigid_water,
     superpose_monomers,
 )
-from pgm_jax.param import read_prmtop_pgm, save_molecule  # noqa: E402
-from pgm_jax.vdw import PGM3P_GVDW, set_gvdw  # noqa: E402
+from pgm_jax.param import read_prmtop_pgm, save_molecule
+from pgm_jax.paths import resource
+from pgm_jax.units import ANG_NM, DEBYE_E_NM
+from pgm_jax.vdw import PGM3P_GVDW, set_gvdw
 
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+jax.config.update("jax_enable_x64", True)
 MODELS = {
-    "p25": ("/home8/larry/project/epsp/p25_512.prmtop", (0.9745, 103.64)),
-    "base": ("/home8/larry/project/epsp/base/base_512.prmtop", (0.9572, 104.49)),
+    "p25": (resource("epsp", "p25_512.prmtop"), (0.9745, 103.64)),
+    "base": (resource("epsp", "base/base_512.prmtop"), (0.9572, 104.49)),
 }
 LIT_DIMER = -5.0  # kcal/mol, CCSD(T)/CBS water dimer minimum (Tschumper et al. JCP 2002: -5.02 +- 0.05; HBB2 -4.98)
 HEXAMERS = [
@@ -82,7 +78,7 @@ def model(name, vdw="lj", mol=None, init=""):
             arr[[k for k, tt in enumerate(mol.types) if tt == t]] = float(v)
             setattr(mol, qn, arr)
     W = rigid_water(*geom)
-    return ClusterModel(mol, vdw=vdw, monomer_xyz_nm=W * ANG), W
+    return ClusterModel(mol, vdw=vdw, monomer_xyz_nm=W * ANG_NM), W
 
 
 def on_geometry(data: QMSet, W, masses):
@@ -191,9 +187,9 @@ def report(cm, W, P, data, name, extra=None):
         out["forces"] = {}
         for n, (ks, F, T) in prep.forces(P).items():
             _, _, Fq, Tq = prep.force_recs[n]
-            dF = np.asarray(F - Fq) / (KCAL / ANG)
+            dF = np.asarray(F - Fq) / (KCAL / ANG_NM)
             dT = np.asarray(T - Tq) / KCAL
-            fq = np.asarray(Fq) / (KCAL / ANG)
+            fq = np.asarray(Fq) / (KCAL / ANG_NM)
             tk = np.repeat(test[ks], n)  # rows are (record, molecule)
             for tag, mk in (("train", ~tk), ("test", tk)):
                 if mk.any():
@@ -207,8 +203,8 @@ def report(cm, W, P, data, name, extra=None):
             "rigid-body forces vs CP MP2/aTZ (kcal/mol/A; torques kcal/mol):",
             {k: {kk: round(vv, 3) for kk, vv in v.items()} for k, v in out["forces"].items()},
         )
-    mu = float(np.linalg.norm(cm.monomer_dipole(P)) / DEBYE)
-    al = float(cm.monomer_polarizability(P) / ANG**3)
+    mu = float(np.linalg.norm(cm.monomer_dipole(P)) / DEBYE_E_NM)
+    al = float(cm.monomer_polarizability(P) / ANG_NM**3)
     out["monomer"] = {
         "dipole_D": mu,
         "polarizability_A3": al,

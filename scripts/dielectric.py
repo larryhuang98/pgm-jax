@@ -15,16 +15,13 @@ the running estimate against the run length show whether they have converged.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from pgm_jax.analysis import dielectric as D  # noqa: E402
-from pgm_jax.md.dipoles import read_dipoles  # noqa: E402
-from pgm_jax.units import DEBYE_E_NM  # noqa: E402
+from pgm_jax.analysis import dielectric as D
+from pgm_jax.md.dipoles import read_dipoles
+from pgm_jax.units import C_LIGHT_M_S, DEBYE_E_NM
 
 
 def main(argv=None):
@@ -112,8 +109,8 @@ def main(argv=None):
         band = (wn > 20) & (wn < 1500)
         pk = wn[band][np.argmax(an[band])] if band.any() else float("nan")
         print(
-            f"# IR spectrum -> {a.ir} (resolution {1e12 / (a.ir_segment * D.C_LIGHT * 100):.1f} cm^-1, Nyquist "
-            f"{0.5e12 / (dt * D.C_LIGHT * 100):.0f} cm^-1); strongest band below 1500 cm^-1 at {pk:.0f} cm^-1"
+            f"# IR spectrum -> {a.ir} (resolution {1e12 / (a.ir_segment * C_LIGHT_M_S * 100):.1f} cm^-1, Nyquist "
+            f"{0.5e12 / (dt * C_LIGHT_M_S * 100):.0f} cm^-1); strongest band below 1500 cm^-1 at {pk:.0f} cm^-1"
         )
     if a.plot:
         import matplotlib

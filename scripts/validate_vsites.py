@@ -32,34 +32,33 @@ import subprocess
 import sys
 import time
 
-_USER_PLATFORMS = os.environ.get("JAX_PLATFORMS")
-if sys.argv[1:2] == ["identical"]:  # the runs compared are subprocesses: keep the (exclusive) GPU free for them
-    os.environ["JAX_PLATFORMS"] = "cpu"
+import jax
+import jax.numpy as jnp
+import numpy as np
 
-import jax  # noqa: E402
-import jax.numpy as jnp  # noqa: E402
-import numpy as np  # noqa: E402
-
-jax.config.update("jax_enable_x64", True)
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-
-from pgm_jax.md.box import box_from_cell  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
-from pgm_jax.md.io import read_coordinates  # noqa: E402
-from pgm_jax.md.simulation import Simulation  # noqa: E402
-from pgm_jax.md.vsites import VirtualSites  # noqa: E402
-from pgm_jax.param import read_prmtop_molecules  # noqa: E402
-from pgm_jax.system import System  # noqa: E402
+from pgm_jax.md.box import box_from_cell
+from pgm_jax.md.forcefield import MDSettings, PGMForceField
+from pgm_jax.md.io import read_coordinates
+from pgm_jax.md.simulation import Simulation
+from pgm_jax.md.vsites import VirtualSites
+from pgm_jax.param import read_prmtop_molecules
+from pgm_jax.paths import resource
+from pgm_jax.system import System
 from pgm_jax.units import (
     KB,
     KCAL,
-    KE,  # noqa: E402
+    KE,
 )
+
+_USER_PLATFORMS = os.environ.get("JAX_PLATFORMS")
+if sys.argv[1:2] == ["identical"]:  # the runs compared are subprocesses: keep the (exclusive) GPU free for them
+    jax.config.update("jax_platforms", "cpu")
+jax.config.update("jax_enable_x64", True)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 OUT = os.path.join(ROOT, "runs", "vsites")
 JSON = os.path.join(ROOT, "validation", "validate_vsites.json")
-AMBERHOME = os.path.expanduser("~/amber25")
+AMBERHOME = resource("amberhome")
 SANDER = os.path.join(AMBERHOME, "bin", "sander")
 TOP = os.path.join(OUT, "tip4pew512.prmtop")
 CRD = os.path.join(OUT, "tip4pew512.inpcrd")
@@ -621,8 +620,8 @@ from pgm_jax.md.simulation import Simulation
 from pgm_jax.param import read_prmtop_pgm
 from pgm_jax.system import System
 import os
-top = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
-rst = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
+top = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
+rst = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
 xyz, vel, box = read_coordinates(rst); H = box_from_cell(*box) * 0.1
 out = {}
 for prec in ("mixed", "double"):

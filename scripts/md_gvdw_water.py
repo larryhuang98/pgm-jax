@@ -7,14 +7,9 @@ gamma 2/ps, MC barostat every 100 steps, dt 1 fs); density to compare with the p
 import argparse
 import json
 import os
-import sys
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
 import jax
-
-jax.config.update("jax_enable_x64", True)
 import numpy as np
 
 from pgm_jax.md.box import box_from_cell
@@ -22,10 +17,13 @@ from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.io import read_coordinates
 from pgm_jax.md.simulation import Simulation
 from pgm_jax.param import read_prmtop_molecules
+from pgm_jax.paths import resource
 from pgm_jax.system import System
 from pgm_jax.vdw import PGM3P_GVDW, set_gvdw
 
-TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+jax.config.update("jax_enable_x64", True)
+TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
 ap = argparse.ArgumentParser()
 ap.add_argument("model", choices=["slater", "gauss", "lj"])
 ap.add_argument("--ps", type=float, default=100.0)

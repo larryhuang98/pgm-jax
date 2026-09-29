@@ -6,7 +6,8 @@ current code against them.
     python tests/regression/regress.py record [--only a,b] [--group a]     # writes golden/<case>.npz
     python tests/regression/regress.py check  [--only ...] [--rtol 0 --atol 0] [--out report.json]
 
-Run on the CPU (JAX_PLATFORMS=cpu) with a fixed thread count; the golden files were recorded with
+pgm_jax must be importable (pip install -e ., or PYTHONPATH=<repository>).  Run on the CPU
+(JAX_PLATFORMS=cpu) with a fixed thread count; the golden files were recorded with
 16 threads (OMP_NUM_THREADS=16) on the cpu-short nodes of rayl8, see golden/meta_<group>.json.
 check compares every array bitwise (NaNs equal) by default; with --rtol / --atol it accepts
 |a - b| <= atol + rtol |b| and reports the largest deviations.  Exit status 1 on any mismatch,
@@ -24,17 +25,15 @@ import sys
 import time
 import traceback
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(os.path.dirname(HERE))
-sys.path[:0] = [HERE, ROOT]
-GOLDEN = os.path.join(HERE, "golden")
-
-import jax  # noqa: E402
+import jax
+import numpy as np
+import regression_cases as C
 
 jax.config.update("jax_enable_x64", True)
 
-import numpy as np  # noqa: E402
-import regression_cases as C  # noqa: E402
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))  # the repository (git commit of the recording)
+GOLDEN = os.path.join(HERE, "golden")
 
 
 def _select(only: str | None, group: str | None) -> list[str]:

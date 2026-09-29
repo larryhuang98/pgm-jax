@@ -48,38 +48,37 @@ import subprocess
 import sys
 import time
 
-if "md-engine" not in sys.argv:
-    os.environ.setdefault("JAX_PLATFORMS", "cpu")  # the GPU is pmemd.pgm.cuda's (exclusive-process)
-import numpy as np  # noqa: E402
+import jax
+import jax.numpy as jnp
+import numpy as np
+from scipy.io import netcdf_file
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
-import jax  # noqa: E402
+from pgm_jax.md.forcefield import MDSettings, PGMForceField
+from pgm_jax.md.topology import MDTopology
+from pgm_jax.paths import resource
+from pgm_jax.prmtop import Prmtop
+from pgm_jax.protein import amber_template, load_amber, pmemd_mdin, write_pgm_prmtop
+from pgm_jax.protein.pmemd import pair_classes, pmemd_grid
+from pgm_jax.units import KCAL, KE, KE_AMBER_PGM
 
+if "md-engine" not in sys.argv and "JAX_PLATFORMS" not in os.environ:
+    jax.config.update("jax_platforms", "cpu")  # the GPU is pmemd.pgm.cuda's (exclusive-process)
 jax.config.update("jax_enable_x64", True)
-import jax.numpy as jnp  # noqa: E402
-from scipy.io import netcdf_file  # noqa: E402
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
-from pgm_jax.md.topology import MDTopology  # noqa: E402
-from pgm_jax.prmtop import Prmtop  # noqa: E402
-from pgm_jax.protein import amber_template, load_amber, pmemd_mdin, write_pgm_prmtop  # noqa: E402
-from pgm_jax.protein.pmemd import pair_classes, pmemd_grid  # noqa: E402
-from pgm_jax.units import KCAL, KE, KE_AMBER_PGM  # noqa: E402
-
-AMBER = os.path.expanduser("~/ambers/pgm-larry-install/bin")
+AMBER = resource("pmemd_pgm_bin")
 EXE = {"cpu": "pmemd.pgm", "gpu_dpfp": "pmemd.pgm.cuda_DPFP", "gpu_spfp": "pmemd.pgm.cuda_SPFP"}
 OUT = os.path.join(ROOT, "runs/check_pgm_prmtop")
 RESULT = os.path.join(ROOT, "validation/check_pgm_prmtop.json")
 SYSTEMS = {
     "water512": (
-        os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop"),
-        os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt"),
+        resource("gvdw_data", "topology/rayl_512_v2.prmtop"),
+        resource("gvdw_data", "inputs/lj/inpcrd.restrt"),
         "prmtop",
     ),
     "water4096": (
-        os.path.expanduser("~/pgm-exp/gpubench/w4096.prmtop"),
-        os.path.expanduser("~/pgm-exp/gpubench/w4096.rst7"),
+        resource("gpubench", "w4096.prmtop"),
+        resource("gpubench", "w4096.rst7"),
         "prmtop",
     ),
     "pep": (

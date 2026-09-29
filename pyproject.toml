@@ -35,11 +35,6 @@ select = ["E", "W", "F", "I", "UP", "B"]
 # called within the same loop iteration
 ignore = ["E741", "B905", "B008", "B023"]
 
-[tool.ruff.lint.per-file-ignores]
-# sys.path edits before the imports: removed in P3
-"scripts/**" = ["E402"]
-"examples/**" = ["E402"]
-
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
 

@@ -14,19 +14,17 @@ against a longer real-space cutoff (1.2 nm or the largest the box allows, order 
 """
 
 import argparse
-import os
-import sys
 import time
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-jax.config.update("jax_enable_x64", True)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pgm_jax.md.box import max_cutoff  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings, PGMForceField, elec_cutoff_settings  # noqa: E402
+from pgm_jax.md.box import max_cutoff
+from pgm_jax.md.forcefield import MDSettings, PGMForceField, elec_cutoff_settings
+from pgm_jax.paths import resource
 
+jax.config.update("jax_enable_x64", True)
 ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 ap.add_argument("prmtop", nargs="?")
 ap.add_argument("inpcrd", nargs="?")
@@ -38,15 +36,14 @@ ap.add_argument("--elec-cut", type=float, nargs="+", default=[0.8, 0.7, 0.6])
 ap.add_argument("--exponents", type=float, nargs="+", default=[1.6, 1.0], help="grid rules of elec_cutoff_settings")
 ap.add_argument("--precision", nargs="+", default=["mixed"])
 a = ap.parse_args()
-
 top = None
 if a.water:
     from pgm_jax.md.box import box_from_cell
     from pgm_jax.md.io import read_coordinates
     from pgm_jax.system import System
 
-    TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
-    RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
+    TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
+    RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
     system = System.from_prmtop(TOP)
     xyz, _, cell = read_coordinates(RST)
     pos, H = xyz * 0.1, box_from_cell(*cell) * 0.1

@@ -2,11 +2,9 @@
 temperature partition, NVE energy conservation at two time steps and two precisions, speed.
 Needs runs/flex/methanol.flex (examples/flex_methanol_check.py or examples/fit_bonded_template.py).
     python paper/scripts/flex_methanol.py            # -> paper/data/flex_methanol.json"""
+
 import json, os, sys, time
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
 import jax
-jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
@@ -14,14 +12,16 @@ from pgm_jax.units import KB
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.system import System
 
+# 1. one molecule in a 4 nm box vs the gas-phase model the bonded terms were fitted with
+# 2. NVT 2 ps -> NPT 100 ps
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+jax.config.update("jax_enable_x64", True)
 OUT = os.path.join(ROOT, "paper/data/flex_methanol.json")
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 tpl = FlexibleTemplate.load(os.path.join(ROOT, "runs/flex/methanol.flex"))
 N, T = 216, 298.0
 out = {"n_mol": N, "n_atoms": N * tpl.n, "T": T, "exp_density": 0.7866, "families": list(tpl.settings["families"]),
        "device": str(jax.devices()[0])}
-
-# 1. one molecule in a 4 nm box vs the gas-phase model the bonded terms were fitted with
 rng = np.random.default_rng(0)
 x = np.asarray(tpl.spec.ref_xyz) + 0.003 * rng.normal(size=(tpl.n, 3))
 s1 = FlexibleSimulation(System([tpl.pgm]), [tpl], x + 2.0, np.eye(3) * 4.0,
@@ -33,8 +33,6 @@ F = np.asarray(s1.state.dyn.force)
 out["single_molecule"] = {"max_abs_diff": float(np.abs(F + g).max()), "rms_force": float(np.sqrt(np.mean(g ** 2))),
                           "units": "kJ/mol/nm"}
 print(out["single_molecule"], flush=True)
-
-# 2. NVT 2 ps -> NPT 100 ps
 st = MDSettings()                                            # 0.9 nm, PME, tol 1e-5, mixed, LJ tail
 pos, H = liquid_box(tpl, N, 0.55, seed=1, min_dist=0.18)
 sys_ = System([tpl.pgm] * N)

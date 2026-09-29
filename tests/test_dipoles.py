@@ -14,7 +14,7 @@ from pgm_jax.channels import molecular_polarizability, perm_dipoles
 from pgm_jax.md.dipoles import DIP_COLUMNS, CellDipole, DipoleRecorder, cell_dipole, read_dipoles
 from pgm_jax.md.forcefield import PGMForceField
 from pgm_jax.md.simulation import Simulation
-from pgm_jax.units import DEBYE_E_NM, KB, KE
+from pgm_jax.units import C_LIGHT_M_S, DEBYE_E_NM, E_NM_C_M, EPS0_SI, KB, KE
 
 
 def _solve(sys, pos, H, **kw):
@@ -123,7 +123,7 @@ def test_dielectric_formula_on_gaussian_series():
     rng = np.random.default_rng(0)
     V, T, sigma, F = 15.0, 298.0, 1.3, 200000
     M = rng.normal(size=(F, 3)) * sigma + np.array([0.4, -0.2, 0.1])
-    expected = 3 * sigma**2 * D.E_NM**2 / (3 * D.EPS0 * V * 1e-27 * D.KB_SI * T)
+    expected = 3 * sigma**2 * E_NM_C_M**2 / (3 * EPS0_SI * V * 1e-27 * D.KB_SI * T)
     fl = D.fluctuation(M, V, T)
     assert abs(fl / expected - 1) < 5 * np.sqrt(2 / (3 * F))
     # the same in the model's units: 4 pi KE <dM^2> / (3 V kB T)
@@ -152,16 +152,16 @@ def test_dielectric_formula_on_gaussian_series():
 def test_ir_spectrum_of_an_oscillating_dipole():
     """Peak at the oscillation frequency and the sum rule int alpha n dw = pi beta <dM/dt^2> / (6 c eps0 V)."""
     dt, nu = 0.002, 500.0  # ps, cm^-1
-    w0 = 2 * np.pi * D.C_LIGHT * 100 * nu * 1e-12  # rad/ps
+    w0 = 2 * np.pi * C_LIGHT_M_S * 100 * nu * 1e-12  # rad/ps
     t = np.arange(200000) * dt
     rng = np.random.default_rng(3)
     A = 0.2
     M = np.stack([A * np.cos(w0 * t + 0.3), A * np.sin(w0 * t + 0.3), 1e-4 * rng.normal(size=len(t))], 1)
     wn, an = D.ir_spectrum(M, dt, 15.0, 298.0, segment_ps=20.0)
     assert abs(wn[np.argmax(an)] - nu) < 2.0
-    integral = np.sum(an * 100) * (wn[1] - wn[0]) * 100 * 2 * np.pi * D.C_LIGHT  # int alpha n dw, 1/m rad/s
-    mdot2 = (A * w0 * 1e12 * D.E_NM) ** 2  # <|dM/dt|^2> of a rotating dipole
-    expected = np.pi * mdot2 / (6 * D.C_LIGHT * D.EPS0 * 15.0e-27 * D.KB_SI * 298.0)
+    integral = np.sum(an * 100) * (wn[1] - wn[0]) * 100 * 2 * np.pi * C_LIGHT_M_S  # int alpha n dw, 1/m rad/s
+    mdot2 = (A * w0 * 1e12 * E_NM_C_M) ** 2  # <|dM/dt|^2> of a rotating dipole
+    expected = np.pi * mdot2 / (6 * C_LIGHT_M_S * EPS0_SI * 15.0e-27 * D.KB_SI * 298.0)
     assert abs(integral / expected - 1) < 0.02, integral / expected
 
 
@@ -232,15 +232,19 @@ def test_recorded_series_match_the_state(tmp_path, monkeypatch, engine):
 def test_trajectory_dipoles_of_an_amber_trajectory(tmp_path):
     """scripts/trajectory_dipoles.py on the Amber NetCDF trajectory of a run (the format pmemd
     writes) re-solves the induced dipoles and reproduces the cell dipoles the run recorded."""
+    import importlib.util
     import os
-    import sys
 
     from test_md import RST, TOP
 
     from pgm_jax.md.forcefield import MDSettings
 
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
-    import trajectory_dipoles
+    spec = importlib.util.spec_from_file_location(
+        "trajectory_dipoles",
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "trajectory_dipoles.py"),
+    )
+    trajectory_dipoles = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(trajectory_dipoles)
 
     s = MDSettings(
         cutoff=0.9,

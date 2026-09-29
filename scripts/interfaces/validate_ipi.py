@@ -15,27 +15,24 @@ ipi_tools.py).  Native PIMD numbers for the comparison come from the PIMD branch
 import argparse
 import json
 import os
-import sys
 import time
 
+import jax
+import numpy as np
+
+from pgm_jax.interfaces import PGMEngine
+from pgm_jax.interfaces import ipi_tools as T
+from pgm_jax.interfaces.ipi import IPIClient
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.paths import resource
+from pgm_jax.system import System
+from pgm_jax.units import BOHR_NM_CODATA2022, KB, KJMOL_TO_MEV
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path[:0] = [ROOT, os.path.dirname(os.path.abspath(__file__))]
 os.environ.setdefault("IPI_ROOT", os.path.join(ROOT, "runs", "pylib"))
-
-import jax  # noqa: E402
-
 jax.config.update("jax_enable_x64", True)
-import ipi_tools as T  # noqa: E402
-import numpy as np  # noqa: E402
-
-from pgm_jax.interfaces import PGMEngine  # noqa: E402
-from pgm_jax.interfaces.ipi import BOHR_NM, IPIClient  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.system import System  # noqa: E402
-from pgm_jax.units import KB
-
-TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
-RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
+TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
+RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
 TPL = os.path.join(ROOT, "validation/interfaces/pgm_water_flex.flex")
 WORK = os.path.join(ROOT, "runs/ipi_val")
 OUT = os.path.join(ROOT, "validation/interfaces/ipi.json")
@@ -176,7 +173,7 @@ def cmd_nve(args):
         ensemble="nve",
         stride=rep,
         address="pgmval_nve",
-        velocities=vel / (BOHR_NM / ATU_PS),
+        velocities=vel / (BOHR_NM_CODATA2022 / ATU_PS),
         velocity_units="atomic_unit",
         pressure_output=not args.no_virial,
     )
@@ -247,7 +244,7 @@ def cmd_nvt(args):
         tau_fs=100.0,
         stride=rep,
         address="pgmval_nvt",
-        velocities=vel / (BOHR_NM / ATU_PS),
+        velocities=vel / (BOHR_NM_CODATA2022 / ATU_PS),
         velocity_units="atomic_unit",
         seed=7,
     )
@@ -317,8 +314,8 @@ def cmd_pimd(args):
     )
     nH, nO = 2 * n, n
     eq = int(round(args.equil_ps / (0.00025 * rep)))
-    keH = props["kinetic_cv(H)"][eq:] / nH * T.KJMOL_MEV
-    keO = props["kinetic_cv(O)"][eq:] / nO * T.KJMOL_MEV
+    keH = props["kinetic_cv(H)"][eq:] / nH * KJMOL_TO_MEV
+    keO = props["kinetic_cv(O)"][eq:] / nO * KJMOL_TO_MEV
     U = props["potential"][eq:]
 
     def be(x):

@@ -10,24 +10,22 @@ compared with the exact F over F < --fmax.
 
 import argparse
 import json
-import os
 import sys
 import time
 
 import jax
 import numpy as np
 
-jax.config.update("jax_enable_x64", True)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pgm_jax import Molecule, System  # noqa: E402
-from pgm_jax.bias import OPES, BiasSet, LowerWall, MetaD, StaticBias, UpperWall, cv  # noqa: E402
-from pgm_jax.bias import analysis as A  # noqa: E402
-from pgm_jax.bias.io import read_table  # noqa: E402
-from pgm_jax.bias.walkers import Walkers  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.simulation import Simulation  # noqa: E402
+from pgm_jax import Molecule, System
+from pgm_jax.bias import OPES, BiasSet, LowerWall, MetaD, StaticBias, UpperWall, cv
+from pgm_jax.bias import analysis as A
+from pgm_jax.bias.io import read_table
+from pgm_jax.bias.walkers import Walkers
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.simulation import Simulation
 from pgm_jax.units import KB
 
+jax.config.update("jax_enable_x64", True)
 ap = argparse.ArgumentParser()
 ap.add_argument("--method", default="metad", choices=("metad", "opes"))
 ap.add_argument("--ns", type=float, default=5.0)

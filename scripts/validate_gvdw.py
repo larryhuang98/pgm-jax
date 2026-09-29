@@ -19,20 +19,17 @@ import sys
 import jax
 import jax.numpy as jnp
 import numpy as np
+from validate_amber import PMEMD, REF, RST, TOP, mdout_step0, read_nc_frames, read_restart
+
+from pgm_jax.lj import PeriodicLJ
+from pgm_jax.md.box import box_from_cell
+from pgm_jax.param import read_prmtop_molecules
+from pgm_jax.system import System
+from pgm_jax.units import KCAL
+from pgm_jax.vdw import PGM3P_GVDW, PeriodicGVDW, set_gvdw
 
 jax.config.update("jax_enable_x64", True)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "scripts"))
-from validate_amber import PMEMD, REF, RST, TOP, mdout_step0, read_nc_frames, read_restart  # noqa: E402
-
-from pgm_jax.lj import PeriodicLJ  # noqa: E402
-from pgm_jax.md.box import box_from_cell  # noqa: E402
-from pgm_jax.param import read_prmtop_molecules  # noqa: E402
-from pgm_jax.system import System  # noqa: E402
-from pgm_jax.units import KCAL
-from pgm_jax.vdw import PGM3P_GVDW, PeriodicGVDW, set_gvdw  # noqa: E402
-
 OUT = os.path.join(ROOT, "runs", "validate_gvdw")
 RESULT = os.path.join(ROOT, "validation", "validate_gvdw.json")
 PMEMD_GVDW = {

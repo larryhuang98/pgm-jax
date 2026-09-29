@@ -17,10 +17,11 @@ from pgm_jax.md.io import NetCDFTrajectory, read_coordinates, write_restart
 from pgm_jax.md.neighbors import AtomNeighbors
 from pgm_jax.md.rigid import RigidMolecules, matrix_to_quaternion
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.paths import resource
 from pgm_jax.units import KB
 
-TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
-RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
+TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
+RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
 W = water()
 need_water_box = pytest.mark.skipif(
     not (os.path.exists(TOP) and os.path.exists(RST)), reason="pGM3P-25 box not available"

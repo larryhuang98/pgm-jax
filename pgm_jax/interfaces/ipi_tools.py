@@ -14,9 +14,7 @@ import time
 
 import numpy as np
 
-from pgm_jax.units import HARTREE_KJMOL
-
-KJMOL_MEV = 10.364269656262175  # meV per kJ/mol
+from ..units import HARTREE_KJMOL
 
 
 def ipi_command():

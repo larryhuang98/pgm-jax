@@ -13,13 +13,11 @@ import argparse
 import glob
 import json
 import os
-import sys
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pgm_jax.bias import analysis as A  # noqa: E402
-from pgm_jax.bias.io import read_table  # noqa: E402
+from pgm_jax.bias import analysis as A
+from pgm_jax.bias.io import read_table
 from pgm_jax.units import KB
 
 ap = argparse.ArgumentParser()

@@ -22,14 +22,9 @@ R*_i -> s_R R*_i, eps_i -> s_eps eps_i; or (--params type) one pair of scales pe
 import argparse
 import json
 import os
-import sys
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
 import jax
-
-jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 
@@ -37,11 +32,14 @@ from pgm_jax.md.box import box_from_cell, volume
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.md.io import read_coordinates
 from pgm_jax.md.simulation import Simulation
+from pgm_jax.paths import resource
 from pgm_jax.system import System
 from pgm_jax.units import AMU_NM3_TO_G_CM3, KB, KCAL
 
-WATER_TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
-WATER_RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+jax.config.update("jax_enable_x64", True)
+WATER_TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
+WATER_RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
 EXP = {
     "water": {"rho": 0.997, "dhvap": 10.518},  # 298 K, 1 bar: g/cm^3, kcal/mol
     "methanol": {"rho": 0.7866, "dhvap": 37.43 / KCAL},
@@ -142,8 +140,8 @@ def gas_energy(sysd, p0, T, settings):
     tpl = sysd["tpl"]
     if len(tpl.lj_pairs()[0]):
         raise NotImplementedError("intramolecular LJ pairs: <U_gas> would depend on the LJ parameters")
-    sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
-    from md_check import MASS, langevin
+    from pgm_jax.bonded.study.gas_md import langevin
+    from pgm_jax.system import MASSES
 
     P = jax.tree_util.tree_map(jnp.asarray, tpl.P)
 
@@ -152,7 +150,9 @@ def gas_energy(sysd, p0, T, settings):
 
     x0 = jnp.asarray(tpl.spec.ref_xyz)
     offset = (e_md(np.asarray(x0)) + tpl.bonded_energy(x0)) - float(efun(x0))
-    Xs, Es = langevin(efun, x0, [MASS[e] for e in tpl.spec.elements], T, 0.0005, 200000, 100, 16, jax.random.PRNGKey(7))
+    Xs, Es = langevin(
+        efun, x0, [MASSES[e] for e in tpl.spec.elements], T, 0.0005, 200000, 100, 16, jax.random.PRNGKey(7)
+    )
     Es = np.asarray(Es)[:, 200:]  # drop 10 ps per replica
     return float(Es.mean()) + float(offset), float(Es.mean(1).std() / np.sqrt(len(Es)))
 

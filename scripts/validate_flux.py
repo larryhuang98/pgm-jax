@@ -17,14 +17,9 @@ and gradients against finite differences, in float64 with the dipoles solved to 
 import os
 import sys
 import time
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-import jax
-
-jax.config.update("jax_enable_x64", True)
 from dataclasses import replace
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -34,6 +29,8 @@ from pgm_jax.md.flux import ChargeFlux, molecule_at
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.system import System
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+jax.config.update("jax_enable_x64", True)
 path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "runs/flux/methanol_flux2.flex")
 tpl = FlexibleTemplate.load(path)
 rng = np.random.default_rng(0)

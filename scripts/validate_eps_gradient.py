@@ -14,24 +14,20 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import glob
-import os
-import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import jax  # noqa: E402
+import jax
+import jax.numpy as jnp
+import numpy as np
+from fit_multi import add_arguments, setup
+
+from pgm_jax.fit import FrameAnalyzer
+from pgm_jax.md.forcefield import MDSettings, elec_cutoff_settings
+from pgm_jax.md.remd import MDReplicas
+from pgm_jax.md.simulation import Simulation
+from pgm_jax.units import DEBYE_E_NM
 
 jax.config.update("jax_enable_x64", True)
-import jax.numpy as jnp  # noqa: E402
-import numpy as np  # noqa: E402
-from fit_multi import add_arguments, setup  # noqa: E402
-
-from pgm_jax.fit import FrameAnalyzer  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings, elec_cutoff_settings  # noqa: E402
-from pgm_jax.md.remd import MDReplicas  # noqa: E402
-from pgm_jax.md.simulation import Simulation  # noqa: E402
-from pgm_jax.units import DEBYE_E_NM
 
 
 def main():

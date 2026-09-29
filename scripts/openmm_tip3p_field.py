@@ -9,7 +9,6 @@ Output: prefix.txt (time_ps, M_z in e nm), prefix.json (eps with a block error, 
 
 import argparse
 import json
-import os
 import time
 
 import numpy as np
@@ -17,9 +16,10 @@ import openmm as mm
 import openmm.app as app
 import openmm.unit as u
 
+from pgm_jax.paths import resource
 from pgm_jax.units import AMU_NM3_TO_G_CM3
 
-EPSP = os.path.expanduser("~/project/epsp/tip3p")
+EPSP = resource("epsp", "tip3p")
 EPS_FACTOR = 18.0951  # e / (eps0 nm): eps - 1 = EPS_FACTOR <M.e> / (V E), M e nm, V nm^3, E V/nm
 FARADAY = 96.48533212  # kJ/mol per (e V)
 

@@ -107,7 +107,6 @@ def run_pgmjax():
     import jax.numpy as jnp
 
     jax.config.update("jax_enable_x64", True)
-    sys.path.insert(0, ROOT)
     from pgm_jax.md.pimd import PIMDIntegrator, PotentialEngine
 
     def vs(x, box):

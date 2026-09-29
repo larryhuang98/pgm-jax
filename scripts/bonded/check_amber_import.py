@@ -8,22 +8,20 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
 import jax
-
-jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
-from experiments import load
 
 from pgm_jax.bonded import terms as T
 from pgm_jax.bonded.amber import init_from_prmtop, with_amber_impropers
 from pgm_jax.bonded.model import BondedModel, BondedSettings
+from pgm_jax.bonded.study.data import load
+from pgm_jax.paths import resource
 from pgm_jax.units import KCAL
 
-CPPTRAJ = os.path.expanduser("~/amber25/bin/cpptraj")
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+jax.config.update("jax_enable_x64", True)
+CPPTRAJ = resource("amberhome", "bin/cpptraj")
 for name in sys.argv[1:]:
     specs, data = load([name], with_scans=False)
     prm = os.path.join(ROOT, "runs/bonded/pgm", name, "gaff.prmtop")

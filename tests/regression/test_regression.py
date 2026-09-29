@@ -13,8 +13,8 @@ import pytest
 if not os.environ.get("PGM_REGRESSION"):
     pytest.skip("regression harness: set PGM_REGRESSION=1", allow_module_level=True)
 
-import regress  # noqa: E402  (sets jax_enable_x64 and the import path)
-import regression_cases as C  # noqa: E402
+import regress  # (sets jax_enable_x64 and the import path)
+import regression_cases as C
 
 
 @pytest.mark.parametrize("name", list(C.CASES))

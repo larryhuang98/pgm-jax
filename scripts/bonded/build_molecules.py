@@ -2,12 +2,10 @@
 
 import json
 import os
-import sys
+
+from pgm_jax.bonded.study.molecules import MOLECULES, build
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
-from pgm_jax.bonded.study.molecules import MOLECULES, build  # noqa: E402
-
 out = os.path.join(ROOT, "data/bonded/molecules")
 os.makedirs(out, exist_ok=True)
 for name in MOLECULES:

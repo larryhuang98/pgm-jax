@@ -31,15 +31,14 @@ import time
 import jax
 import numpy as np
 
-jax.config.update("jax_enable_x64", True)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pgm_jax.fit.reweighting import backbone_torsions  # noqa: E402
-from pgm_jax.md.flexible import FlexibleSimulation  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.io import read_trajectory  # noqa: E402
-from pgm_jax.md.remd import ReplicaExchange, geometric_ladder  # noqa: E402
-from pgm_jax.protein import ResidueLibrary, amber_template, load_amber  # noqa: E402
+from pgm_jax.fit.reweighting import backbone_torsions
+from pgm_jax.md.flexible import FlexibleSimulation
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.io import read_trajectory
+from pgm_jax.md.remd import ReplicaExchange, geometric_ladder
+from pgm_jax.protein import ResidueLibrary, amber_template, load_amber
 
+jax.config.update("jax_enable_x64", True)
 ap = argparse.ArgumentParser()
 ap.add_argument("mode", choices=("remd", "plain", "analyze", "bench"))
 ap.add_argument("prmtop")
@@ -64,7 +63,6 @@ ap.add_argument("--seed", type=int, default=1)
 ap.add_argument("--bench", type=int, nargs="+", default=[1, 2, 4, 8, 16], help="replica counts timed by bench")
 ap.add_argument("--bench-steps", type=int, default=2000)
 a = ap.parse_args()
-
 asys = load_amber(a.prmtop, a.inpcrd, electrostatics=ResidueLibrary.load(a.library) if a.library else "placeholder")
 kp = [k for k, m in enumerate(asys.molecules) if m.kind == "protein"]
 if len(kp) != 1:

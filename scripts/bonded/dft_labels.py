@@ -35,11 +35,11 @@ mol_info = json.load(open(os.path.join(ROOT, "data/bonded/molecules", f"{name}.j
 el, charge = mol_info["elements"], mol_info["charge"]
 
 os.chdir(os.environ.get("PSI_SCRATCH", "/tmp"))  # psi4 leaves psi.<pid>.clean files in the cwd
-import psi4  # noqa: E402
+import psi4  # noqa: E402  (imported after the chdir: psi4 writes psi.<pid>.clean files into the cwd)
 
 psi4.set_memory(f"{a.memory} GB")
 psi4.set_num_threads(a.threads)
-psi4.core.set_output_file(f"/tmp/larry_psi4_{os.getpid()}.out", False)
+psi4.core.set_output_file(os.path.join(os.environ.get("PSI_SCRATCH", "/tmp"), f"psi4_{os.getpid()}.out"), False)
 psi4.set_options(
     {
         "basis": "def2-tzvppd",
@@ -79,5 +79,5 @@ np.savez(
     time_s=np.array(T),
     level="wB97M-D3(BJ)/def2-TZVPPD",
 )
-os.system(f"rm -f /tmp/larry_psi4_{os.getpid()}.out")
+os.remove(os.path.join(os.environ.get("PSI_SCRATCH", "/tmp"), f"psi4_{os.getpid()}.out"))
 print(name, key, lo, hi, "done", len(idx), "frames, mean", np.mean(T) if T else 0, "s", flush=True)

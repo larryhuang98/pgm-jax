@@ -10,12 +10,13 @@ import os
 import numpy as np
 
 from ...param import load_molecule
+from ...paths import repo_path
 from ...units import BOHR_NM, HARTREE_KJMOL
 from ..fit import FrameSet
 from ..model import MolSpec
+from .molecules import MOLECULES
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-DATA = os.path.join(ROOT, "data/bonded")
+DATA = repo_path("data/bonded")
 
 
 def mol_spec(name: str, with_pgm: bool = True) -> MolSpec:
@@ -79,7 +80,7 @@ def scan_keys(name: str) -> list[str]:
 def esp_data(name, n_points=800, seed=0):
     """QM ESP of the pGM parameter fit (runs/bonded/pgm/<name>/esp.dat, B3LYP/aug-cc-pVTZ at the
     MACE-OFF minimum): (atom positions nm, grid nm, potential hartree/e), `n_points` random points."""
-    p = os.path.join(ROOT, "runs/bonded/pgm", name, "esp.dat")
+    p = repo_path("runs/bonded/pgm", name, "esp.dat")
     if not os.path.exists(p):
         return None
     lines = open(p).read().split("\n")
@@ -88,3 +89,35 @@ def esp_data(name, n_points=800, seed=0):
     E = np.array([[float(v) for v in ln.split()[:4]] for ln in lines[1 + na : 1 + na + npt]])
     k = np.random.default_rng(seed).choice(npt, size=min(n_points, npt), replace=False)
     return R, E[k, 1:] * BOHR_NM, E[k, 0]
+
+
+def concat(sets):
+    sets = [s for s in sets if s is not None and len(s)]
+    return FrameSet(
+        np.concatenate([s.X for s in sets]),
+        np.concatenate([s.E for s in sets]),
+        np.concatenate([s.F for s in sets]),
+        np.concatenate([s.mu for s in sets]),
+    )
+
+
+def mol_list(spec):
+    out = []
+    for tok in spec.split(","):
+        out += [n for n, v in MOLECULES.items() if v[2] == tok] if tok in ("A1", "A2", "A3", "A4", "B") else [tok]
+    return out
+
+
+def load(names, with_scans=True):
+    data, specs = {}, []
+    for n in names:
+        tr = frames(n, "train500")
+        te = frames(n, "test298")
+        if tr is None or te is None:
+            print(f"  {n}: no DFT frames yet, skipped", flush=True)
+            continue
+        scans = {k: frames(n, k) for k in scan_keys(n)} if with_scans else {}
+        scans = {k: v for k, v in scans.items() if v is not None and len(v) >= 20}
+        specs.append(mol_spec(n))
+        data[len(specs) - 1] = {"train": concat([tr] + list(scans.values())), "test": te, "scans": scans}
+    return specs, data

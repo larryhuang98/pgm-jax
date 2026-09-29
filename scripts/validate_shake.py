@@ -19,18 +19,16 @@ import os
 import sys
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-import jax  # noqa: E402
+import jax
+import numpy as np
 
-jax.config.update("jax_enable_x64", True)
-import numpy as np  # noqa: E402
-
-from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.system import System  # noqa: E402
+from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.system import System
 from pgm_jax.units import KB
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+jax.config.update("jax_enable_x64", True)
 OUT = os.path.join(ROOT, "runs/shake")
 T0, N = 298.0, 216
 CONFIGS = {

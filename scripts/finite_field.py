@@ -27,14 +27,13 @@ import sys
 import jax
 import numpy as np
 
-jax.config.update("jax_enable_x64", True)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from pgm_jax.analysis.finite_field import analyse, predicted_errors
-from pgm_jax.md.finite_field import FieldReplicas, read_series  # noqa: E402
+from pgm_jax.md.finite_field import FieldReplicas, read_series
+from pgm_jax.paths import resource
 from pgm_jax.units import AMU_NM3_TO_G_CM3
 
-EPSP = os.path.expanduser("~/project/epsp")
+jax.config.update("jax_enable_x64", True)
+EPSP = resource("epsp")
 MODELS = {
     "p25": (f"{EPSP}/p25_512.prmtop", f"{EPSP}/p25_512.rst7", "pgm"),
     "base": (f"{EPSP}/base/base_512.prmtop", f"{EPSP}/base/base_512.rst7", "pgm"),

@@ -17,7 +17,7 @@ from pgm_jax.md import efield as EF
 from pgm_jax.md.dipoles import CellDipole
 from pgm_jax.md.forcefield import PGMForceField
 from pgm_jax.md.simulation import Simulation
-from pgm_jax.units import KB, KE
+from pgm_jax.units import E_CHARGE_C, EPS0_SI, KB, KE
 
 E1 = np.array([0.3, -0.5, 0.8])  # V/nm, deliberately strong and oblique
 
@@ -28,7 +28,7 @@ def test_units():
     M, V, E = 2.7, 15.4, 0.1
     assert abs(EF.finite_field_eps(M, V, E) - 1.0 - 4 * np.pi * M / (V * E * EF.VNM_TO_INTERNAL)) < 1e-6
     assert abs(EF.EPS_FACTOR - 18.0951) < 1e-4
-    assert abs(EF.EPS_FACTOR / (EF.E_CHARGE / (EF.EPS0 * 1e-9)) - 1) < 1e-8  # = e / (eps0 nm), SI
+    assert abs(EF.EPS_FACTOR / (E_CHARGE_C / (EPS0_SI * 1e-9)) - 1) < 1e-8  # = e / (eps0 nm), SI
     f = EF.ExternalField.from_wavenumber((0, 0, 1.0), 1000.0)
     assert abs(2 * np.pi / f.omega - 0.0333564) < 1e-6  # 1000 cm^-1: period 33.36 fs
     assert EF.as_field([0, 0, 1]).E0 == (0.0, 0.0, 1.0) and not EF.as_field([0, 0, 1]).time_dependent

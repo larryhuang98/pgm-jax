@@ -15,21 +15,16 @@ from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.pimd import (
-    HBAR,
-    WATER_FAMILIES,
     PIMDIntegrator,
     PIMDSimulation,
     PotentialEngine,
     RingPolymer,
     contraction_matrix,
-    flexible_water,
-    harmonic_frequencies,
     normal_modes,
-    qtip4pf_intra,
-    water_geometry,
 )
+from pgm_jax.models.water import WATER_FAMILIES, flexible_water, harmonic_frequencies, qtip4pf_intra, water_geometry
 from pgm_jax.system import System
-from pgm_jax.units import KB
+from pgm_jax.units import HBAR_KJMOL_PS, KB
 
 T = 300.0
 
@@ -144,7 +139,7 @@ def test_harmonic_oscillator_estimators(thermostat):
         if P == 1:
             assert np.allclose(X[:, 1:], 0.5 * KB * T)  # both estimators are kT/2 exactly
         del est
-    q = 0.25 * HBAR * w / math.tanh(HBAR * w / (2 * KB * T))
+    q = 0.25 * HBAR_KJMOL_PS * w / math.tanh(HBAR_KJMOL_PS * w / (2 * KB * T))
     assert abs(exact_ho(64, w) - q) < 0.02 * abs(exact_ho(8, w) - q)  # 1/P^2 convergence
 
 

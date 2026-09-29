@@ -13,21 +13,18 @@ import argparse
 import json
 import math
 import os
-import sys
 import time
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-jax.config.update("jax_enable_x64", True)
-
-from pgm_jax.analysis.stats import block_mean  # noqa: E402
-from pgm_jax.md.pimd import PIMDIntegrator, PotentialEngine, RingPolymer  # noqa: E402
+from pgm_jax.analysis.stats import block_mean
+from pgm_jax.md.pimd import PIMDIntegrator, PotentialEngine, RingPolymer
 from pgm_jax.units import HBAR_KJMOL_PS, KB
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+jax.config.update("jax_enable_x64", True)
 OUT = os.path.join(ROOT, "validation/pimd")
 
 

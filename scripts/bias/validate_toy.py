@@ -13,20 +13,18 @@ and .npz (FES arrays)."""
 import argparse
 import json
 import os
-import sys
 import time
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-jax.config.update("jax_enable_x64", True)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pgm_jax.bias import OPES, MetaD, cv  # noqa: E402
-from pgm_jax.bias import analysis as A  # noqa: E402
-from pgm_jax.bias.toy import ToyLangevin, double_well, mueller_brown, ring  # noqa: E402
+from pgm_jax.bias import OPES, MetaD, cv
+from pgm_jax.bias import analysis as A
+from pgm_jax.bias.toy import ToyLangevin, double_well, mueller_brown, ring
 from pgm_jax.units import KB
 
+jax.config.update("jax_enable_x64", True)
 ap = argparse.ArgumentParser()
 ap.add_argument("system", choices=("dw", "ring", "mb"))
 ap.add_argument("method", choices=("metad", "opes"))
@@ -48,7 +46,6 @@ ap.add_argument("--segments", type=int, default=10)
 ap.add_argument("--seed", type=int, default=0)
 ap.add_argument("--out", default="runs/bias/toy")
 a = ap.parse_args()
-
 kT = KB * a.T
 if a.system == "dw":
     U = double_well(barrier=25.0)

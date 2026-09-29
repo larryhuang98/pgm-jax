@@ -127,7 +127,7 @@ def _mask_n(rigid):
     return m
 
 
-_N = jnp.arange(1, 5, dtype=float)
+_N = np.arange(1, 5, dtype=float)  # torsion multiplicities 1..4 (numpy: no JAX array at import time)
 
 
 def _pair_index(pairs):

@@ -14,22 +14,19 @@ MD); --wmu weights the gas-phase dipoles in the loss, which the flux parameters 
 
 import argparse
 import os
-import sys
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
 import jax
-
-jax.config.update("jax_enable_x64", True)
-from experiments import FAMILY_SETS, load
 
 from pgm_jax.bonded import terms as T
 from pgm_jax.bonded.fit import Fitter
 from pgm_jax.bonded.model import BondedModel, BondedSettings
+from pgm_jax.bonded.study.data import load
+from pgm_jax.bonded.study.families import FAMILY_SETS
 from pgm_jax.md.flexible import FlexibleTemplate
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+jax.config.update("jax_enable_x64", True)
 ap = argparse.ArgumentParser()
 ap.add_argument("name")
 ap.add_argument("--families", default="paper", help="a key of FAMILY_SETS or families joined by '+'")
@@ -39,7 +36,6 @@ ap.add_argument("--flux", type=int, default=0, help="1: charge + covalent-dipole
 ap.add_argument("--wmu", type=float, default=0.0, help="weight of the molecular dipoles in the loss")
 ap.add_argument("--out", default="")
 a = ap.parse_args()
-
 fams = FAMILY_SETS.get(a.families, tuple(a.families.split("+")))
 unknown = [f for f in fams if f not in T.REGISTRY]
 if unknown:

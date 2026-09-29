@@ -9,18 +9,15 @@ dipoles times exp(theta)); FreeEnergyTarget checks that it reproduces the sample
 and applies the chain rule, with jackknife errors of the projected gradient.  docs/fe_gradients.md."""
 
 import argparse
-import os
-import sys
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-jax.config.update("jax_enable_x64", True)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from pgm_jax.md import fe_grad as fg  # noqa: E402
+from pgm_jax.md import fe_grad as fg
 from pgm_jax.units import KCAL
+
+jax.config.update("jax_enable_x64", True)
 
 
 def main():

@@ -24,17 +24,13 @@ too hot) and PREFIX.md.in (the run, continuing from the heating restart).
 
 import argparse
 import json
-import os
-import sys
 
 import jax
 
-jax.config.update("jax_enable_x64", True)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pgm_jax.md.flexible import FlexibleTemplate  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.param import load_molecule  # noqa: E402
-from pgm_jax.protein import (  # noqa: E402
+from pgm_jax.md.flexible import FlexibleTemplate
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.param import load_molecule
+from pgm_jax.protein import (
     ResidueLibrary,
     amber_template,
     load_amber,
@@ -43,6 +39,7 @@ from pgm_jax.protein import (  # noqa: E402
     write_pgm_prmtop,
 )
 
+jax.config.update("jax_enable_x64", True)
 ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 ap.add_argument("prmtop")
 ap.add_argument("inpcrd")
@@ -69,7 +66,6 @@ ap.add_argument("--order", type=int, default=6)
 ap.add_argument("--tol", type=float, default=1e-5, help="dipole_scf_tol")
 ap.add_argument("--lrc", type=int, default=1, help="LJ long-range correction (vdwmeth)")
 a = ap.parse_args()
-
 elec = ResidueLibrary.load(a.library) if a.library else ("prmtop" if a.from_prmtop else "placeholder")
 asys = load_amber(a.prmtop, a.inpcrd, electrostatics=elec, water=load_molecule(a.water) if a.water else None)
 flex = [k for k, m in enumerate(asys.molecules) if m.kind not in ("water", "ion")]

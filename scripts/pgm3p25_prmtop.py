@@ -32,23 +32,19 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
-import sys
 import tempfile
 
 import numpy as np
+from water_dielectric import RST, TOP, paper_geometry
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from water_dielectric import RST, TOP, paper_geometry  # noqa: E402
-
-from pgm_jax.md.io import read_coordinates  # noqa: E402
-from pgm_jax.prmtop import Prmtop  # noqa: E402
+from pgm_jax.md.io import read_coordinates
+from pgm_jax.paths import resource
+from pgm_jax.prmtop import Prmtop
 
 L_OH, THETA = 0.9745, 103.64  # A, deg
 LJ_A, LJ_B = 622716.376, 600.412  # kcal A^12/mol, kcal A^6/mol
 AMBER_CHARGE = 18.2223
-CPPTRAJ = os.path.expanduser("~/ambers/pgm-larry-install/bin/cpptraj")
+CPPTRAJ = resource("pmemd_pgm_bin", "cpptraj")
 
 
 def pgm3p25_topology(src: str = TOP) -> Prmtop:

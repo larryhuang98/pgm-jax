@@ -9,21 +9,18 @@ Results: runs/bonded/nnb/<mode>_<ref>.json"""
 import argparse
 import json
 import os
-import sys
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
 import jax
-
-jax.config.update("jax_enable_x64", True)
 import numpy as np
-from experiments import families_of, load
 
 from pgm_jax.bonded.fit import Fitter
 from pgm_jax.bonded.model import BondedModel, BondedSettings
+from pgm_jax.bonded.study.data import load
+from pgm_jax.bonded.study.families import families_of
 
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+jax.config.update("jax_enable_x64", True)
 MOLS = [
     "ethane",
     "methanol",

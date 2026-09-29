@@ -9,104 +9,21 @@ paper's metrics on 298 K frames and force-field-relaxed scans.  Results: runs/bo
 import argparse
 import json
 import os
-import sys
 import time
 
+import jax
 import numpy as np
 
+from pgm_jax.bonded import terms as T
+from pgm_jax.bonded.fit import SCALES, Fitter
+from pgm_jax.bonded.model import BondedModel, BondedSettings
+from pgm_jax.bonded.study.bench import scan_metrics
+from pgm_jax.bonded.study.data import esp_data, load, mol_list
+from pgm_jax.bonded.study.families import families_of
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
-import jax  # noqa: E402
-
 jax.config.update("jax_enable_x64", True)
-
-from pgm_jax.bonded import terms as T  # noqa: E402
-from pgm_jax.bonded.fit import SCALES, Fitter, FrameSet  # noqa: E402
-from pgm_jax.bonded.model import BondedModel, BondedSettings  # noqa: E402
-from pgm_jax.bonded.study.bench import scan_metrics  # noqa: E402
-from pgm_jax.bonded.study.data import esp_data, frames, mol_spec, scan_keys  # noqa: E402
-from pgm_jax.bonded.study.molecules import MOLECULES  # noqa: E402
-
 RES = os.path.join(ROOT, "runs/bonded/results")
-FAMILY_SETS = {
-    "protein": T.PROTEIN,
-    "paper": T.PAPER,
-    "explore": T.PAPER,
-    "amber": T.AMBER,
-    "nn": ("nnb",),
-    "diag": ("bond_morse", "angle_cos", "torsion", "improper"),
-    "diag+p14": ("bond_morse", "angle_cos", "torsion", "improper", "pair14_exp"),
-    "diag+ub": ("bond_morse", "angle_cos", "torsion", "improper", "pair13_harm", "pair14_exp"),
-    "pair": ("bond_morse", "pair13_harm", "pair14_exp", "improper"),
-    "pair+tors": ("bond_morse", "pair13_harm", "pair14_exp", "torsion", "improper"),
-    "pair+ang": ("bond_morse", "angle_cos", "pair13_harm", "pair14_exp", "torsion", "improper"),
-    "paper+pair14": T.PAPER + ("pair14_exp",),
-    "tmod": ("bond_morse", "angle_cos", "bond_bond", "bond_angle", "angle_angle", "torsion_mod", "aat", "improper"),
-    "paper+x": T.PAPER + ("bond_angle_x", "angle_angle_x", "angle_cubic"),
-    "paper+oop": T.PAPER + ("torsion_oop",),
-    "paper+tw": T.PAPER + ("twist",),
-    "diag+tw": ("bond_morse", "angle_cos", "torsion", "improper", "twist"),
-    "diag+oop": ("bond_morse", "angle_cos", "torsion", "improper", "torsion_oop"),
-    "paper-pyr": tuple(f for f in T.PAPER if f != "improper") + ("pyramid",),
-    "all": T.PAPER + ("bond_angle_x", "angle_angle_x", "angle_cubic", "pair13_harm", "pair14_exp"),
-    "all+tw": T.PAPER + ("bond_angle_x", "angle_angle_x", "angle_cubic", "pair13_harm", "pair14_exp", "twist"),
-    "diag+ub+tw": ("bond_morse", "angle_cos", "torsion", "improper", "pair13_harm", "pair14_exp", "twist"),
-    # F12: electronic-structure-inspired families
-    "diag+conj": ("bond_morse", "angle_cos", "torsion", "improper", "conj"),
-    "paper+conj": T.PAPER + ("conj",),
-    "diag+hc": ("bond_morse", "angle_cos", "torsion", "improper", "hc_sigma", "hc_lone"),
-    "diag+vol": ("bond_morse", "angle_cos", "torsion", "volume"),
-    "diag+new": ("bond_morse", "angle_cos", "torsion", "volume", "conj", "hc_sigma", "hc_lone"),
-    "hyb": ("bond_morse", "angle_hyb", "torsion", "improper"),
-    "hybsc": ("bond_morse", "angle_hybsc", "torsion", "improper"),
-    "diag+ovl": ("bond_morse", "angle_cos", "torsion", "improper", "pair13_ovl", "pair14_ovl"),
-    "chem": ("bond_morse", "angle_cos", "volume", "conj", "hc_sigma", "hc_lone", "pair14_exp"),
-    "chem+hyb": ("bond_morse", "angle_hybsc", "volume", "conj", "hc_sigma", "hc_lone", "pair14_exp"),
-    "dist": ("bond_morse", "pair13_tanh", "pair14_tanh", "volume"),
-    "dist+chem": ("bond_morse", "pair13_tanh", "pair14_tanh", "volume", "conj", "hc_sigma", "hc_lone"),
-}
-
-
-def families_of(spec: str) -> tuple:
-    """A FAMILY_SETS name, or families and set names joined by '+' ("amber+cmap", "paper+twist")."""
-    if spec in FAMILY_SETS:
-        return tuple(FAMILY_SETS[spec])
-    out = []
-    for tok in spec.split("+"):
-        out += list(FAMILY_SETS[tok]) if tok in FAMILY_SETS else [tok]
-    return tuple(dict.fromkeys(out))
-
-
-def concat(sets):
-    sets = [s for s in sets if s is not None and len(s)]
-    return FrameSet(
-        np.concatenate([s.X for s in sets]),
-        np.concatenate([s.E for s in sets]),
-        np.concatenate([s.F for s in sets]),
-        np.concatenate([s.mu for s in sets]),
-    )
-
-
-def mol_list(spec):
-    out = []
-    for tok in spec.split(","):
-        out += [n for n, v in MOLECULES.items() if v[2] == tok] if tok in ("A1", "A2", "A3", "A4", "B") else [tok]
-    return out
-
-
-def load(names, with_scans=True):
-    data, specs = {}, []
-    for n in names:
-        tr = frames(n, "train500")
-        te = frames(n, "test298")
-        if tr is None or te is None:
-            print(f"  {n}: no DFT frames yet, skipped", flush=True)
-            continue
-        scans = {k: frames(n, k) for k in scan_keys(n)} if with_scans else {}
-        scans = {k: v for k, v in scans.items() if v is not None and len(v) >= 20}
-        specs.append(mol_spec(n))
-        data[len(specs) - 1] = {"train": concat([tr] + list(scans.values())), "test": te, "scans": scans}
-    return specs, data
 
 
 def run(a):

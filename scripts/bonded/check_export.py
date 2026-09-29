@@ -14,23 +14,19 @@ import json
 import os
 import re
 import subprocess
-import sys
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
-import jax  # noqa: E402
-
-jax.config.update("jax_enable_x64", True)
-import jax.numpy as jnp  # noqa: E402
-
-from pgm_jax.bonded import terms as T  # noqa: E402
-from pgm_jax.bonded.amber import export_bonded, init_from_prmtop, with_amber_impropers  # noqa: E402
-from pgm_jax.bonded.model import BondedSettings, BondedTerms, MolSpec  # noqa: E402
-from pgm_jax.prmtop import Prmtop  # noqa: E402
+from pgm_jax.bonded import terms as T
+from pgm_jax.bonded.amber import export_bonded, init_from_prmtop, read_bonded, with_amber_impropers
+from pgm_jax.bonded.model import BondedSettings, BondedTerms, MolSpec
+from pgm_jax.prmtop import Prmtop
 from pgm_jax.units import KCAL
 
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+jax.config.update("jax_enable_x64", True)
 WD = os.path.join(ROOT, "runs/check_export")
 os.makedirs(WD, exist_ok=True)
 EL = {1: "H", 6: "C", 7: "N", 8: "O", 16: "S"}
@@ -136,8 +132,6 @@ Q["cmap"]["cm"] = Q["cmap"]["cm"] + 1.0 * rng.normal(size=Q["cmap"]["cm"].shape)
 counts = export_bonded(prm, os.path.join(WD, "exported.prmtop"), terms, Q, scnb=2.0)
 res["export"] = {"sander": sander("exported.prmtop", "pert.inpcrd"), "ours": ours(terms, Q, R), "counts": counts}
 # the Fourier maps have no constant term: the imported maps are the grids minus their means
-from pgm_jax.bonded.amber import read_bonded  # noqa: E402
-
 amb = read_bonded(prm)
 const = float(sum(np.mean(amb["cmap_grids"][t]) for *_, t in amb["cmap"]))
 for k in ("import", "import_cmap6"):

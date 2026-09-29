@@ -5,27 +5,22 @@ python scripts/bench.py            # prints device, compile time and steady-stat
 
 from __future__ import annotations
 
-import os
-import sys
 import time
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from validate_amber import RST, TOP, read_restart
+
+from pgm_jax.channels import ElecChannel
+from pgm_jax.ewald import PeriodicPGM
+from pgm_jax.md.box import box_from_cell
+from pgm_jax.model import Model
+from pgm_jax.param import read_prmtop_pgm
+from pgm_jax.periodic import PeriodicModel
+from pgm_jax.system import System
 
 jax.config.update("jax_enable_x64", True)
-
-sys.path.insert(0, os.path.dirname(__file__))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from validate_amber import RST, TOP, read_restart  # noqa: E402
-
-from pgm_jax.channels import ElecChannel  # noqa: E402
-from pgm_jax.ewald import PeriodicPGM  # noqa: E402
-from pgm_jax.md.box import box_from_cell  # noqa: E402
-from pgm_jax.model import Model  # noqa: E402
-from pgm_jax.param import read_prmtop_pgm  # noqa: E402
-from pgm_jax.periodic import PeriodicModel  # noqa: E402
-from pgm_jax.system import System  # noqa: E402
 
 
 def random_clusters(mono, nmol, nconf, seed=0):

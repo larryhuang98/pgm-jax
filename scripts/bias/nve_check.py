@@ -12,38 +12,32 @@ Prints RMS / max deviations for dt = 1.0 and 0.5 fs (a Verlet error falls 4x at 
 import argparse
 import json
 import os
-import sys
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
+from pgm_jax import System
+from pgm_jax.bias import BiasSet, MetaD, UpperWall, cv
+from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.simulation import Simulation
+from pgm_jax.models.toy import water, water_cluster_box
+
+# a singular gradient when H-O...O is collinear
 jax.config.update("jax_enable_x64", True)
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "tests"))
-from test_grad import water  # noqa: E402
-from test_hmr import _cluster  # noqa: E402
-
-from pgm_jax import System  # noqa: E402
-from pgm_jax.bias import BiasSet, MetaD, UpperWall, cv  # noqa: E402
-from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.simulation import Simulation  # noqa: E402
-
 ap = argparse.ArgumentParser()
 ap.add_argument("--ps", type=float, default=2.0)
 ap.add_argument("--out", default="runs/bias/nve.json")
 a = ap.parse_args()
-
-pos, H, w = _cluster()
+pos, H, w = water_cluster_box()
 wat = water()
 sys_ = System([wat] * (len(pos) // 3))
 s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
 d = cv.Distance(0, 9)
 hyd = [i for i in range(len(pos)) if i % 3 and i // 3 != 0]
 phi = cv.Coordination([0], hyd, r0=0.35, name="n_OH")  # smooth; a dihedral through two molecules has
-# a singular gradient when H-O...O is collinear
 out = {}
 for engine in ("rigid", "atoms"):
     for mode in ("none", "static", "growing"):

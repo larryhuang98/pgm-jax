@@ -17,19 +17,14 @@ from __future__ import annotations
 import argparse
 import glob
 import json
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import jax  # noqa: E402
+import jax
+import numpy as np
+from fit_multi import add_arguments, setup
+
+from pgm_jax.fit import LiquidSamples
 
 jax.config.update("jax_enable_x64", True)
-import numpy as np  # noqa: E402
-from fit_multi import add_arguments, setup  # noqa: E402
-
-from pgm_jax.fit import LiquidSamples  # noqa: E402
-
 GRAD_KEYS = ("dU", "dM", "dalpha", "dD")
 
 

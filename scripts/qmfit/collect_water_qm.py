@@ -29,6 +29,8 @@ import os
 
 import numpy as np
 
+from pgm_jax.paths import resource
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 EH = 627.5094740631  # kcal/mol
 BOHR_A = 0.529177210903
@@ -200,6 +202,6 @@ def main(a):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("qmdir", nargs="?", default=os.path.expanduser("~/project/qmdata/water"))
+    ap.add_argument("qmdir", nargs="?", default=resource("qmdata", "water"))
     ap.add_argument("--out", default=os.path.join(ROOT, "data/qm/water_qm.json"))
     main(ap.parse_args())

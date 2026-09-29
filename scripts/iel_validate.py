@@ -21,29 +21,26 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 import time
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-jax.config.update("jax_enable_x64", True)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from pgm_jax.analysis.stats import block_mean  # noqa: E402
-from pgm_jax.cli.args import add_iel_arguments, iel_settings  # noqa: E402
-from pgm_jax.md.box import box_from_cell  # noqa: E402
-from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
-from pgm_jax.md.io import read_coordinates  # noqa: E402
-from pgm_jax.md.simulation import Simulation  # noqa: E402
-from pgm_jax.param import read_prmtop_molecules  # noqa: E402
-from pgm_jax.system import System  # noqa: E402
+from pgm_jax.analysis.stats import block_mean
+from pgm_jax.cli.args import add_iel_arguments, iel_settings
+from pgm_jax.md.box import box_from_cell
+from pgm_jax.md.forcefield import MDSettings, PGMForceField
+from pgm_jax.md.io import read_coordinates
+from pgm_jax.md.simulation import Simulation
+from pgm_jax.param import read_prmtop_molecules
+from pgm_jax.paths import resource
+from pgm_jax.system import System
 from pgm_jax.units import AMU_NM3_TO_G_CM3, DEBYE_E_NM, KB, KCAL
 
-TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
-RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
+jax.config.update("jax_enable_x64", True)
+TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
+RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
 
 
 def min_image(d, H):

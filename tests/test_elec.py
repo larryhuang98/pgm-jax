@@ -9,11 +9,12 @@ from pgm_jax.channels import ElecChannel
 from pgm_jax.lj import LJChannel
 from pgm_jax.model import Model
 from pgm_jax.param import Molecule, read_prmtop_pgm
+from pgm_jax.paths import resource
 from pgm_jax.system import System
 from pgm_jax.units import KCAL
 
-AMBER_TEST = os.path.expanduser("~/amber25/test/pgm_4wat")
-PGM3P25_TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
+AMBER_TEST = resource("amberhome", "test/pgm_4wat")
+PGM3P25_TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
 
 
 def _water_4wat() -> Molecule:

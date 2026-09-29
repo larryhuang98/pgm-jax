@@ -12,22 +12,19 @@ import glob
 import os
 import sys
 
+import jax
+import jax.numpy as jnp
 import numpy as np
+from jax.flatten_util import ravel_pytree
+from scipy.optimize import minimize
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
-import jax  # noqa: E402
-
-jax.config.update("jax_enable_x64", True)
-import jax.numpy as jnp  # noqa: E402
-from jax.flatten_util import ravel_pytree  # noqa: E402
-from scipy.optimize import minimize  # noqa: E402
-
-from pgm_jax.channels import ElecChannel  # noqa: E402
-from pgm_jax.param import load_molecule, save_molecule  # noqa: E402
-from pgm_jax.system import System  # noqa: E402
+from pgm_jax.channels import ElecChannel
+from pgm_jax.param import load_molecule, save_molecule
+from pgm_jax.system import System
 from pgm_jax.units import BOHR_NM
 
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+jax.config.update("jax_enable_x64", True)
 KE_AU = 1.0 / 138.935458  # (e^2 / nm) in kJ/mol -> we work in a.u. below
 
 

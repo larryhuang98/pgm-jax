@@ -14,15 +14,11 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
-import sys
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from pgm_jax.analysis import free_energy as fe  # noqa: E402
-from pgm_jax.md import fe_grad as fg  # noqa: E402
+from pgm_jax.analysis import free_energy as fe
+from pgm_jax.md import fe_grad as fg
 from pgm_jax.units import KCAL
 
 

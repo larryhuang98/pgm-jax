@@ -6,19 +6,16 @@ atom that holds it.  Shows whether the predictor start or the convergence rate i
 """
 
 import argparse
-import os
-import sys
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-jax.config.update("jax_enable_x64", True)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pgm_jax.md.flexible import FlexibleSimulation  # noqa: E402
-from pgm_jax.md.forcefield import _PRED, MDSettings  # noqa: E402
-from pgm_jax.protein import amber_template, load_amber  # noqa: E402
+from pgm_jax.md.flexible import FlexibleSimulation
+from pgm_jax.md.forcefield import _PRED, MDSettings
+from pgm_jax.protein import amber_template, load_amber
 
+jax.config.update("jax_enable_x64", True)
 ap = argparse.ArgumentParser()
 ap.add_argument("prmtop")
 ap.add_argument("inpcrd")
@@ -59,7 +56,6 @@ a = P["alpha"][:, None]
 ab = a * b.astype(jnp.float64)
 norm = float(jnp.mean(jnp.abs(ab)))
 x0 = sum(ci * S0.induction.hist[j] for j, ci in enumerate(_PRED["mu4"]))
-
 sysm = sim.sys
 mol = np.asarray(sysm.mol)
 offs = np.asarray(sysm.offsets)

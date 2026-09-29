@@ -15,25 +15,23 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 import time
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
+from pgm_jax import ElecChannel, Model, System
+from pgm_jax.channels import molecular_polarizability
+from pgm_jax.md import efield as EF
+from pgm_jax.param import read_prmtop_molecules, read_prmtop_pgm
+from pgm_jax.paths import resource
+from pgm_jax.units import AMU_NM3_TO_G_CM3, DEBYE_E_NM, KB, KE
+
 jax.config.update("jax_enable_x64", True)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-
-from pgm_jax import ElecChannel, Model, System  # noqa: E402
-from pgm_jax.channels import molecular_polarizability  # noqa: E402
-from pgm_jax.md import efield as EF  # noqa: E402
-from pgm_jax.param import read_prmtop_molecules, read_prmtop_pgm  # noqa: E402
-from pgm_jax.units import AMU_NM3_TO_G_CM3, DEBYE_E_NM, KB, KE  # noqa: E402
-
-P25 = os.path.expanduser("~/project/epsp/p25_512.prmtop")
-P25_RST = os.path.expanduser("~/project/epsp/p25_512.rst7")
+P25 = resource("epsp", "p25_512.prmtop")
+P25_RST = resource("epsp", "p25_512.rst7")
 
 
 def _save(part, d):
@@ -47,11 +45,10 @@ def _water_and_methanol():
 
     w = read_prmtop_pgm(P25)[0]
     xyz = read_coordinates(P25_RST)[0][:3] * 0.1
-    sys.path.insert(0, os.path.join(ROOT, "tests"))
-    from test_grad import cluster, methanol
+    from pgm_jax.models.toy import cluster, methanol
 
     m, xm = methanol()
-    sc, xc = cluster(np.random.default_rng(0))
+    sc, xc = cluster(0)
     return {
         "pGM3P-25 water": (System([w]), xyz),
         "methanol (test model)": (System([m]), xm),
@@ -153,13 +150,12 @@ def part_box1():
 
 
 def part_nve(ps: float = 20.0, only=None):
+    from finite_field import scale_to
+
     from pgm_jax.md.box import box_from_cell
     from pgm_jax.md.forcefield import MDSettings
     from pgm_jax.md.io import read_coordinates
     from pgm_jax.md.simulation import Simulation
-
-    sys.path.insert(0, os.path.join(ROOT, "scripts"))
-    from finite_field import scale_to
 
     mols = read_prmtop_molecules(P25)
     sys_ = System(mols)
@@ -231,14 +227,13 @@ def part_nve(ps: float = 20.0, only=None):
 def part_speed(nsteps: int = 5000):
     """ms/step of 512 pGM3P-25 waters (rigid, 2 fs, NVT Bussi, mixed) without and with fields, and of
     batched field replicas."""
+    from finite_field import scale_to
+
     from pgm_jax.md.box import box_from_cell
     from pgm_jax.md.finite_field import FieldReplicas
     from pgm_jax.md.forcefield import MDSettings
     from pgm_jax.md.io import read_coordinates
     from pgm_jax.md.simulation import Simulation
-
-    sys.path.insert(0, os.path.join(ROOT, "scripts"))
-    from finite_field import scale_to
 
     mols = read_prmtop_molecules(P25)
     sys_ = System(mols)

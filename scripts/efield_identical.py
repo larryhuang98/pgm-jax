@@ -24,6 +24,8 @@ if a.compare:
         d = np.abs(x[k] - y[k]).max()
         print(f"{k:14s} max |difference| {d:.3e}  {'bitwise identical' if np.array_equal(x[k], y[k]) else ''}")
     sys.exit(0)
+# the code under test is the tree given by --code (e.g. an older commit): its package and tests
+# are put first on the path on purpose, so this script compares two code versions
 sys.path.insert(0, a.code)
 sys.path.insert(0, os.path.join(a.code, "tests"))
 import jax  # noqa: E402

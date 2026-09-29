@@ -28,13 +28,15 @@ import os
 
 import numpy as np
 
+from pgm_jax.paths import resource
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 R_OH, HOH = 0.9745, 103.64  # pGM3P-25 rigid water (p25_512.rst7), Angstrom / degrees
 MASS = np.array([15.999, 1.008, 1.008])
 SNAPSHOTS = {
-    "p25_4096": "/home8/larry/project/epsp/p25_4096.rst7",
-    "p25_512": "/home8/larry/project/epsp/p25_512.rst7",
-    "base_4096": "/home8/larry/project/epsp/base/base_4096.rst7",
+    "p25_4096": resource("epsp", "p25_4096.rst7"),
+    "p25_512": resource("epsp", "p25_512.rst7"),
+    "base_4096": resource("epsp", "base/base_4096.rst7"),
 }
 DIMER_JOBS = ["sapt0", "mp2:aug-cc-pvtz", "mp2:aug-cc-pvqz", "ccsdt:aug-cc-pvtz"]
 
@@ -327,6 +329,6 @@ def main(a):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--smith", default=os.path.expanduser("~/project/qmdata/smith"))
+    ap.add_argument("--smith", default=resource("qmdata", "smith"))
     ap.add_argument("--out", default=os.path.join(ROOT, "data/qm/water_geoms.json"))
     main(ap.parse_args())

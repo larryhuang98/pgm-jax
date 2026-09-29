@@ -30,11 +30,7 @@ import os
 import sys
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
 import jax
-
-jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 
@@ -44,6 +40,8 @@ from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.system import System
 from pgm_jax.units import DEBYE_E_NM, KB, KCAL
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+jax.config.update("jax_enable_x64", True)
 ap = argparse.ArgumentParser()
 ap.add_argument("cmd", choices=("liquid", "nve", "speed", "gas"))
 ap.add_argument("template")
@@ -58,7 +56,6 @@ ap.add_argument("--double_ps", type=float, default=None, help="nve: double-preci
 ap.add_argument("--thermostat", default="langevin", help="speed: langevin (1/ps) | bussi (1 ps)")
 ap.add_argument("--fixed_iter", type=int, default=0, help="speed: exactly this many CG iterations per step")
 a = ap.parse_args()
-
 tpl = FlexibleTemplate.load(a.template)
 stem = os.path.splitext(a.template)[0]
 T, dt = a.temp, 0.0005

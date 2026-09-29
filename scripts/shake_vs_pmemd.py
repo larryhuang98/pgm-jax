@@ -32,22 +32,18 @@ import re
 import sys
 import time
 
+import jax
+import jax.numpy as jnp
+import numpy as np
+from validate_shake import compare_rows, hist_frame, new_acc, save_blocks
+
+from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.protein import amber_template, load_amber, pmemd_mdin, write_pgm_prmtop
+from pgm_jax.protein.pmemd import pmemd_grid
+from pgm_jax.units import KCAL, KE, KE_AMBER_PGM
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "scripts"))
-sys.path.insert(0, os.path.join(ROOT, "scripts/protein"))
-import jax  # noqa: E402
-
 jax.config.update("jax_enable_x64", True)
-import jax.numpy as jnp  # noqa: E402
-import numpy as np  # noqa: E402
-from validate_shake import compare_rows, hist_frame, new_acc, save_blocks  # noqa: E402
-
-from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.protein import amber_template, load_amber, pmemd_mdin, write_pgm_prmtop  # noqa: E402
-from pgm_jax.protein.pmemd import pmemd_grid  # noqa: E402
-from pgm_jax.units import KCAL, KE, KE_AMBER_PGM  # noqa: E402
-
 T0 = 298.0
 
 
