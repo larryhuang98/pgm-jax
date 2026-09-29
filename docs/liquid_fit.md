@@ -46,7 +46,9 @@ gas = GasPhase(sys.molecules[0], pos[sys.atom_slice(0)], sys.table, space)
 obj = Objective(
     [Target("density", 0.997, 0.002), Target("eps", 78.4, 1.5), Target("gas_dipole", 1.855, 0.01), ...], space, gas=gas
 )
-fit = LiquidFit(sys, pos, H, space, obj, settings=MDSettings(pme_grid=(48,) * 3), dt=0.002, prod_ps=2000, prefix="fit")
+fit = LiquidFit(
+    sys, pos, H, space, obj, settings=MDSettings().replace(pme_grid=(48,) * 3), dt=0.002, prod_ps=2000, prefix="fit"
+)
 fit.run(theta0, iters=6)  # prefix.json: every iteration, prediction checks, UQ
 an = FrameAnalyzer(sys, H, settings, space)  # any frames (positions, box, dipole guess), batched
 out = an.analyze(theta, [(pos_k, H_k, mu_k), ...])  # U, dU, M, dM, alpha, dalpha, D, dD, V, rdf

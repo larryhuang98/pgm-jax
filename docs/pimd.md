@@ -376,7 +376,7 @@ step (the batched solve runs until its slowest bead converges). `scripts/pimd_wa
   `models.water.flexible_water`. Rigid-water results of the repository are classical.
 - NVT and isotropic Monte Carlo NPT (molecular centroid scaling). No multiple time stepping,
   restraints, alchemical regions or replica exchange with beads; biases on collective variables
-  (`pgm_jax/bias`), external fields (`efield=`) and extended-Lagrangian dipoles (`MDSettings.iel`)
+  (`pgm_jax/bias`), external fields (`efield=`) and extended-Lagrangian dipoles (`MDSettings.induction.iel`)
   are refused as well (docs/CHANGES_2026-09.md).
 - The dipole predictor is per bead: with the thermostat on the internal modes (and their
   high-frequency motion) the bead evaluations need 8-9 CG iterations per step at tolerance 1e-5

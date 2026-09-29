@@ -28,10 +28,12 @@ tip4pew = Molecule(
     vsites=[VirtualSite.tip4p(3, 0, 1, 2, d_om=0.0125)],
 )  # (1 - 2a, a, a) average
 VirtualSites.of(System([tip4pew] * 512)).place(pos, H)  # positions with every site rebuilt
-sim = Simulation(System([tip4pew] * 512), pos, H, MDSettings(elec="q"), barostat=MonteCarloBarostat(), dt=0.002)
+sim = Simulation(
+    System([tip4pew] * 512), pos, H, MDSettings().replace(elec="q"), barostat=MonteCarloBarostat(), dt=0.002
+)
 
 # or from tleap (source leaprc.water.tip4pew): extra points become "amber" sites
-sim = Simulation.from_amber("tip4pew.prmtop", "tip4pew.rst7", charges="amber", settings=MDSettings(elec="q"))
+sim = Simulation.from_amber("tip4pew.prmtop", "tip4pew.rst7", charges="amber", settings=MDSettings().replace(elec="q"))
 asys = load_amber("protein_opc.prmtop", "protein_opc.inpcrd")  # water with extra points: RigidTemplate + site
 ```
 
@@ -141,7 +143,7 @@ only approximately, up to 0.3 A off for TIP5P's monomer).
 
 - `read_prmtop_pgm(prmtop, charges="amber")` / `Simulation.from_amber(..., charges="amber")` reads a
   classical prmtop: point charges `CHARGE / 18.2223` (Gaussian radius 1e-4 nm), no polarizability,
-  no covalent dipoles; run it with `MDSettings(elec="q")`. The default `charges="pgm"` reads the
+  no covalent dipoles; run it with `MDSettings().replace(elec="q")`. The default `charges="pgm"` reads the
   POL_GAUSS sections of a pGM prmtop (and raises if there are none).
 - `load_amber` recognises water with extra points (TIP4P-Ew, OPC, TIP5P: a water residue with three
   real atoms) and gives it a `RigidTemplate`; the placeholder library gives extra points their Amber

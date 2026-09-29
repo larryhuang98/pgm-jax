@@ -571,13 +571,15 @@ bias classes, `PGMForceField.compute/rows_for/strain_derivative/init_induction`.
 | Old (`MDSettings` flat field) | New |
 |---|---|
 | `elec`, `vdw`, `gvdw_rep`, `lj_lrc` | `terms.elec`, `terms.vdw`, `terms.gvdw_rep`, `terms.lj_lrc` |
-| `cutoff`, `elec_cutoff`, `skin` | `cutoffs.cutoff`, `cutoffs.elec_cutoff`, `cutoffs.skin` |
-| `ewald_beta`, `pme_grid`, `pme_spacing`, `pme_order` | `pme.ewald_beta`, `pme.grid`, `pme.spacing`, `pme.order` |
+| `cutoff`, `elec_cutoff` | `cutoffs.cutoff`, `cutoffs.elec_cutoff` |
+| `skin`; engine keyword `neighbor_list=` of `Simulation`, `FlexibleSimulation`, `PGMEngine` | `neighbors.skin`, `neighbors.mode` (`NeighborList(skin=0.1, mode="auto")`; flat names `skin`, `neighbor_list`) |
+| `ewald_beta`, `pme_grid`, `pme_spacing`, `pme_order` | `pme.ewald_beta`, `pme.grid`, `pme.spacing`, `pme.order` (group class `PMESettings`: `PME` is the solver class of `md/pme.py`) |
 | `dipole_tol`, `max_iter`, `predictor`, `fused`, `norm_refresh`, `local_cut`, `local_niter`, `peek`, `extrap_order`, `extrap_steps` | `induction.tol`, `.max_iter`, `.predictor`, `.fused`, `.norm_refresh`, `.local_cut`, `.local_niter`, `.peek`, `.extrap_order`, `.extrap_steps` |
-| `iel`, `iel_iter`, `iel_order`, `iel_kappa`, `iel_alpha`, `iel_precond`, `iel_omega`, `iel_shadow` | `iel.scheme`, `iel.iterations`, `iel.order`, `iel.kappa`, `iel.alpha`, `iel.precond`, `iel.omega`, `iel.shadow` |
+| `iel`, `iel_iter`, `iel_order`, `iel_kappa`, `iel_alpha`, `iel_precond`, `iel_omega`, `iel_shadow` | `induction.iel.scheme`, `.iterations`, `.order`, `.kappa`, `.alpha`, `.precond`, `.omega`, `.shadow` (`ExtendedLagrangian`, nested in `Induction`) |
+| property `induction` (bool: induced dipoles on) | `has_induction` (the name `induction` is the group) |
 | `precision`, `differentiable`, `adjoint_tol` | unchanged (top level) |
 | `MDSettings(**flat)` in 55 script / 63 test / 31 doc lines | `MDSettings().replace(**flat)` keeps the flat names working for construction; attribute reads (`s.cutoff`) change to the group path (~120 sites in `pgm_jax/`, mostly `md/forcefield.py`, `md/mts.py`, `interfaces/engine.py`) |
-| `PeriodicModel(sys, H, pos_ref, rc, b0, skin, lj, lj_rc, lj_lrc, k_tol, cg_tol, elec, vdw, gvdw_rep)`, `PeriodicPGM(..., b0, rc, k_tol, cg_tol)` | `PeriodicModel(system, box, positions_ref, cutoff, ewald_beta, skin, vdw_cutoff, lj_lrc, k_tol, dipole_tol, elec, vdw, gvdw_rep)` (`lj=False` removed: `vdw="none"`) - S 1/1, T 5/3, D 2 |
+| (deferred to P7 with the other reference / fitting names) `PeriodicModel(sys, H, pos_ref, rc, b0, skin, lj, lj_rc, lj_lrc, k_tol, cg_tol, elec, vdw, gvdw_rep)`, `PeriodicPGM(..., b0, rc, k_tol, cg_tol)` | `PeriodicModel(system, box, positions_ref, cutoff, ewald_beta, skin, vdw_cutoff, lj_lrc, k_tol, dipole_tol, elec, vdw, gvdw_rep)` (`lj=False` removed: `vdw="none"`) - S 1/1, T 5/3, D 2 |
 
 ### 4.3 Fitting, analysis and module moves
 
@@ -891,3 +893,40 @@ index, identity matrix). E402 is resolved by removing the `sys.path` edits (P3) 
   except in `scripts/efield_identical.py` and the subprocess script of `validate_vsites.py identical`,
   which load another code tree on purpose.  `bonded/terms/core._N` is a numpy array, so importing
   `pgm_jax` creates no JAX array and `jax_enable_x64` may be set after the imports.
+
+### 9.2 Execution notes (P4-P6)
+
+- P4 (engine core): `md/driver.py` holds the host-side pieces every driver shares (`block_length`,
+  `retry_block`, `advance_with_rebuilds`, `LogTable`, `Stopwatch`, the checkpoint format) and
+  `md/engine.py` the `MDEngine` base class of `Simulation` and `FlexibleSimulation` (neighbour lists
+  and sizes, blocks with overflow handling, observables, pressure, restraints / biases / fields, the
+  run loop and checkpoints; the two engines keep only their construction and four hooks).
+  `PIMDSimulation`, `MDReplicas` / `ReplicaExchange`, `Walkers` (which lost its copy of the replica
+  resize), `FieldReplicas` and `FreeEnergyRun` use the same retry, tables and checkpoints.  The
+  compiled steps are untouched (harness 35/35 bitwise after every commit; GPU speed as before).
+  Checkpoints: an `.npz` archive with a `__header__` JSON entry `{"format": "pgm_jax checkpoint",
+  "version": 1, "kind": ..., "content": ...}`; state pytrees are stored leaf by leaf and rebuilt on
+  the driver's current state as template (`encode_content` / `decode_content`).  Old pickle
+  checkpoints are recognised and read by every `load_checkpoint`; saving converts them.  Tests:
+  checkpoints of every driver written with the code of `e72c57c` (`tests/data/legacy_checkpoints`,
+  generator included) and one of a real run of the old code (`real_npt.chk`, older than `e72c57c`).
+  Not moved onto the core: `interfaces/engine.PGMEngine` (its per-slot / per-batch retry loops
+  re-point slots, change the bead margin and rebuild batch programs; forcing them into
+  `retry_block` would not remove code).  The progress logs of `Walkers`, `FreeEnergyRun` and
+  `FieldReplicas` are now `LogTable` tables (a format change; nothing in the repository parses them).
+- P5 (engine API): as in table 4.1.  Diagnostics go to Python loggers under `pgm_jax`
+  (`pgm_jax.cli.args.setup_logging()` in the scripts prints them as `# ...` lines); `log=` is the
+  stream that receives the log-table rows (default `None`).  `pgm_jax.cli.args.coupling_from_options`
+  maps the scripts' unchanged `--ensemble/--thermostat/--gamma/--tau/--press` options to the objects
+  (the CLI renames are P9).  `protein/pmemd.pmemd_mdin` writes Amber input and keeps Amber's
+  `ensemble`, `gamma`, `tau_t` names; `interfaces/ipi_tools` (i-PI XML) keeps i-PI's.  `bias.toy.ToyLangevin`
+  (a toy integrator, not an engine thermostat) keeps `gamma`.  `LiquidFit` got the thermostat /
+  barostat objects; its other names (`T`, `tol`, `sys_`, ...) belong to P7.
+- P6 (settings): `MDSettings(terms, cutoffs, neighbors, pme, induction, precision, differentiable,
+  adjoint_tol)` with `Terms`, `Cutoffs`, `NeighborList` (skin and the list kind, which was the
+  engines' `neighbor_list=` keyword), `PMESettings` and `Induction` (with the extended-Lagrangian
+  dipoles nested as `induction.iel`, an `ExtendedLagrangian`); `MDSettings().replace(**flat)` takes
+  the old flat names (`FLAT_SETTINGS`), whole groups and the top-level fields.  The old boolean
+  property `induction` is `has_induction`.  `precision`, `differentiable` and `adjoint_tol` stay top
+  level (one field each would make one-field groups).  `PeriodicModel` / `PeriodicPGM` names are
+  left to P7.

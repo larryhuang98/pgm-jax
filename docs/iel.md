@@ -1,6 +1,6 @@
 # Extended-Lagrangian induced dipoles (iEL/0-SCF, iEL/SCF)
 
-`MDSettings(iel="0scf")` replaces the per-step induced-dipole solve (predictor + conjugate
+`MDSettings().replace(iel="0scf")` replaces the per-step induced-dipole solve (predictor + conjugate
 gradients to `dipole_tol`) by auxiliary dipoles x that are propagated with the atoms, as in the
 inertial extended Lagrangian of Albaugh, Niklasson and Head-Gordon (iEL/0-SCF: J. Phys. Chem. Lett.
 8, 1714 (2017); iEL/SCF: Albaugh, Demerdash & Head-Gordon, J. Chem. Phys. 143, 174104 (2015)) and
@@ -20,8 +20,8 @@ librations (below).
 
 ```python
 from pgm_jax.md.forcefield import MDSettings
-s = MDSettings(iel="0scf")                    # iEL/0-SCF (defaults: block preconditioner, K = 7)
-s = MDSettings(iel="scf", iel_iter=2)         # iEL/SCF-2: two CG iterations from the auxiliary dipoles
+s = MDSettings().replace(iel="0scf")                    # iEL/0-SCF (defaults: block preconditioner, K = 7)
+s = MDSettings().replace(iel="scf", iel_iter=2)         # iEL/SCF-2: two CG iterations from the auxiliary dipoles
 sim = Simulation(sys, pos, H, settings=s, ...)          # rigid bodies, or FlexibleSimulation
 ```
 

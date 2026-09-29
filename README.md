@@ -150,7 +150,7 @@ How it works:
   partners, then its intermolecular neighbours, compacted every step to the pairs inside the
   cutoff and stored as a structure of arrays; per-atom sums, analytic pair forces
   (grad G_n = -G_{n+1} x), no scatter-adds.
-- **Separate electrostatics cutoff** (`MDSettings(cutoff=0.9, **elec_cutoff_settings(0.7))`,
+- **Separate electrostatics cutoff** (`MDSettings().replace(cutoff=0.9, **elec_cutoff_settings(0.7))`,
   pmemd's es_cutoff; `--elec-cut` in the benchmarks, `--es-cut` in `run_md.py`): the real-space
   electrostatics is cut at 0.7 nm with a larger Ewald coefficient (Amber's dsum_tol rule,
   `ewald_beta_for`) and a finer PME grid, while van der Waals keeps its fitted cutoff and tail
@@ -171,7 +171,7 @@ How it works:
   inner-CG preconditioner (`scf_local_niter`) are available; on the GPU a Jacobi iteration is
   cheaper than the iterations they save. Forces are Hellmann-Feynman at the converged dipoles
   (the energy is variational in mu).
-- **Extended-Lagrangian induced dipoles** (`MDSettings(iel="0scf")`, `--iel 0scf`;
+- **Extended-Lagrangian induced dipoles** (`MDSettings().replace(iel="0scf")`, `--iel 0scf`;
   `pgm_jax/md/iel.py`, `docs/iel.md`): iEL/0-SCF (Albaugh, Niklasson & Head-Gordon 2017). Auxiliary
   dipoles follow Niklasson's dissipative time-reversible Verlet, and each step does one field sweep
   and a block-Jacobi update with no CG. Forces are the exact gradient of a shadow energy (computed in

@@ -110,7 +110,7 @@ CG iterations per solve, ubiquitin (tol 1e-5):
 
 The anchor saves 1.2 iterations at 8 fs, and with the history spaced by 6-8 fs the quadratic
 extrapolation beats the cubic one by 0.6-0.7 iterations (the higher order amplifies what is not
-smooth at that spacing): with MTS, `MDSettings(predictor="mu3")` is 2-4 % faster. The solve at 8
+smooth at that spacing): with MTS, `MDSettings().replace(predictor="mu3")` is 2-4 % faster. The solve at 8
 fs then costs what it costs at 4 fs without MTS.
 
 **Other pieces.** The Monte Carlo barostat runs at outer steps (its trial energy is the full
@@ -376,7 +376,7 @@ bonded level (bonded forces, SHAKE and RATTLE) 5 %.
 ## Recommended settings
 
 - **Proteins in water with HMR and X-H constraints:** `MTS(inner=3, split="special")` with dt =
-  7 fs and `MDSettings(predictor="mu3", **elec_cutoff_settings(0.7))` (`--dt 0.007 --mts 3
+  7 fs and `MDSettings().replace(predictor="mu3", **elec_cutoff_settings(0.7))` (`--dt 0.007 --mts 3
   --mts-split special --predictor mu3 --elec-cut 0.7`): the accuracy of the 4 fs single step at
   1.42x its speed. For the accuracy of 2 fs, the same at dt = 6 fs (1.25x). Bussi, with the O
   step at the outer level (the defaults).

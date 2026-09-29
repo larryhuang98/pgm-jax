@@ -47,7 +47,7 @@ from pgm_jax.periodic import PeriodicModel
 pm = PeriodicModel(sys, H, pos, elec="q", vdw="gvdw", gvdw_rep="slater")
 from pgm_jax.md.forcefield import MDSettings
 
-st = MDSettings(elec="qp", vdw="lj")  # no induction solve in MD
+st = MDSettings().replace(elec="qp", vdw="lj")  # no induction solve in MD
 from pgm_jax.bonded.model import BondedSettings
 
 bs = BondedSettings(elec="qi", vdw="gvdw")

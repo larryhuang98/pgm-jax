@@ -64,7 +64,7 @@ sim = FlexibleSimulation(
     asys.templates({k: tpl}),
     asys.system_positions(),
     asys.box,
-    MDSettings(dipole_tol=1e-4),
+    MDSettings().replace(dipole_tol=1e-4),
     dt=0.002,  # 4 fs: see below
     constraints="h-bonds",
     hmr=3.024,  # or asys.hmr({"water": 4.0, "protein": 3.024})
@@ -86,7 +86,7 @@ from pgm_jax.protein import pmemd_grid, pmemd_mdin, write_pgm_prmtop
 
 templates = asys.templates({k: tpl})  # exactly what FlexibleSimulation gets
 write_pgm_prmtop(asys, "ubq_pgm.prmtop", templates, hmr=3.024)
-st = MDSettings(pme_grid=pmemd_grid(asys.box))  # a PME grid both codes accept
+st = MDSettings().replace(pme_grid=pmemd_grid(asys.box))  # a PME grid both codes accept
 open("min.in", "w").write(pmemd_mdin(st, asys.box, maxcyc=500))  # tleap clashes
 open("heat.in", "w").write(pmemd_mdin(st, asys.box, nstlim=4000, dt=0.0005, tempi=0.0))
 open("md.in", "w").write(pmemd_mdin(st, asys.box, nstlim=500000, dt=0.002, irest=1))
@@ -346,7 +346,7 @@ constraints --grid 36`): 12k atoms 2.14 ms/step, 41k 11.9, 98k 35.0, with 6-7 CG
   (LJ included) cut at 0.7 nm, beta 5.14 nm^-1, grid 0.062 nm. This halves the pair rows, so the
   matvec fits in cache again. Ubiquitin: 34 -> 55 ns/day. DHFR (26k atoms): 22.5 -> 28. Trp-cage:
   unchanged (already in cache).
-- **Separate electrostatics cutoff** (`MDSettings(cutoff=0.9, **elec_cutoff_settings(0.7))`,
+- **Separate electrostatics cutoff** (`MDSettings().replace(cutoff=0.9, **elec_cutoff_settings(0.7))`,
   `bench_protein.py --elec-cut 0.7`): the production form of the previous item. The real-space
   electrostatics is cut at 0.7 nm, and LJ keeps its fitted 0.9 nm cutoff and tail correction.
   Each row is split into an electrostatic part (ubiquitin: 200 pairs per atom instead of 392,

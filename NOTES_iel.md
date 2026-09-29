@@ -3,7 +3,7 @@
 Running log so the work can be resumed.
 
 ## Design (done)
-- MDSettings(iel="none"|"0scf"|"scf", iel_iter, iel_order=K, iel_kappa, iel_alpha); engine in
+- MDSettings().replace(iel="none"|"0scf"|"scf", iel_iter, iel_order=K, iel_kappa, iel_alpha); engine in
   pgm_jax/md/forcefield.py (_solve_iel, _dipole_energy_forces), CLI helpers + stability in
   pgm_jax/md/iel.py; --iel options in run_md.py, bench_md.py, water_dielectric.py.
 - Auxiliary dipoles x: InductionState.xl (K1, N, 3) = [x_{n+1}, x_n, ...]; Niklasson dissipative
