@@ -1,15 +1,30 @@
-"""Static dielectric constant (and optionally the infrared spectrum) from cell-dipole series
-written by Simulation.run(dipoles=n) / run_md.py --dipoles n (prefix.dip; pgm_jax/md/dipoles.py).
+"""Static dielectric constant (and optionally the infrared spectrum) from cell-dipole series (`pgm-jax dielectric`).
 
-    python scripts/dielectric.py runs/water.dip [more.dip ...] --skip 500 --blocks 10
-    python scripts/dielectric.py runs/ir.dip --ir runs/ir_spectrum.dat          # M sampled every 1-2 steps
+The series are written by `Simulation.run(dipoles_every=n)` / `scripts/md/run_md.py
+--dipoles-every n` (<prefix>.dip; pgm_jax/md/dipoles.py).  Tin-foil Ewald boundary conditions,
+adiabatic induced dipoles (pgm_jax/analysis/dielectric.py; docs/dielectric.md):
 
-Tin-foil Ewald boundary conditions, adiabatic induced dipoles (pgm_jax/analysis/dielectric.py):
     eps = eps_inf + (<M.M> - <M>.<M>) / (3 eps0 <V> kB T),   eps_inf = 1 + 4 pi <alpha_cell / V>,
-M the total cell dipole (charges + permanent + induced dipoles), alpha_cell recorded in the series.
-Several files are read as consecutive segments of one run (continuations with --checkpoint).
-Error bars: jackknife over contiguous blocks; the table of errors against the number of blocks and
-the running estimate against the run length show whether they have converged.
+
+M the total cell dipole (charges + permanent + induced dipoles), alpha_cell the cell
+polarizability recorded in the series.  Several files are read as consecutive segments of one run
+(continuations from a checkpoint).  Error bars: jackknife over contiguous blocks; the table of
+errors against the number of blocks and the running estimate against the run length show whether
+they have converged.  Also printed: the split of the fluctuation into permanent and induced parts
+and the dipole correlation time with the error it predicts.
+
+Usage:
+
+    python scripts/dielectric/dielectric.py runs/water.dip [more.dip ...] --skip-ps 500 --blocks 10
+    python scripts/dielectric/dielectric.py runs/ir.dip --ir runs/ir_spectrum.dat    # M every 1-2 steps
+    pgm-jax dielectric runs/water.dip --plot runs/water_eps.png
+    python scripts/dielectric/dielectric.py --help
+
+Inputs: .dip files (pgm_jax.md.dipoles.read_dipoles).
+Outputs: printed results and tables; with --ir the spectrum alpha(w) n(w) [cm^-1] against the
+wavenumber [cm^-1]; with --plot a PNG (running estimate, error against block length).
+Units: --skip-ps and --ir-segment-ps ps, --temperature-K K; eps dimensionless; dipoles printed in D.
+Runtime: seconds (CPU).
 """
 
 from __future__ import annotations
@@ -25,22 +40,97 @@ from pgm_jax.md.dipoles import read_dipoles
 from pgm_jax.units import C_LIGHT_M_S, DEBYE_E_NM
 
 
-def main(argv=None):
+def build_parser() -> argparse.ArgumentParser:
+    """Return the argument parser (see the module docstring)."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("files", nargs="+", help=".dip files, in order")
-    ap.add_argument("--skip", type=float, default=0.0, help="ps discarded at the start (equilibration)")
+    ap.add_argument("--skip-ps", type=float, default=0.0, help="time discarded at the start (equilibration) [ps]")
     ap.add_argument("--blocks", type=int, default=10, help="blocks for the jackknife error")
-    ap.add_argument("--temp", type=float, default=None, help="K; default: the thermostat target in the header")
+    ap.add_argument(
+        "--temperature-K",
+        type=float,
+        default=None,
+        help="temperature [K] (default: the thermostat target in the header)",
+    )
     ap.add_argument("--eps-inf", type=float, default=None, help="use this eps_inf instead of the recorded alpha_cell")
     ap.add_argument(
         "--molecular",
         action="store_true",
         help="accept charged molecules: eps from the molecular dipole M_D only (no ionic current)",
     )
-    ap.add_argument("--ir", help="write alpha(w) n(w) (cm^-1) vs wavenumber (cm^-1) to this file")
-    ap.add_argument("--ir-segment", type=float, default=10.0, help="ps per Welch segment (resolution)")
+    ap.add_argument("--ir", help="write alpha(w) n(w) [cm^-1] vs wavenumber [cm^-1] to this file")
+    ap.add_argument("--ir-segment-ps", type=float, default=10.0, help="length of a Welch segment [ps] (resolution)")
     ap.add_argument("--plot", help="PNG with the running estimate and the error against the block count")
-    a = ap.parse_args(argv)
+    return ap
+
+
+def write_ir(path: str, M: np.ndarray, dt: float, V: np.ndarray, temperature: float, segment_ps: float) -> None:
+    """Write the infrared spectrum of the cell-dipole series and print its resolution and main band.
+
+    Parameters
+    ----------
+    path : str
+        Output text file (wavenumber [cm^-1], alpha(w) n(w) [cm^-1]).
+    M : np.ndarray (F, 3)
+        Cell dipoles [e nm], sampled every dt.
+    dt : float
+        Sampling interval [ps].
+    V : np.ndarray (F,)
+        Volumes [nm^3].
+    temperature : float
+        Temperature [K].
+    segment_ps : float
+        Welch segment length [ps].
+    """
+    wn, an = D.ir_spectrum(M, dt, V, temperature, segment_ps)
+    np.savetxt(path, np.c_[wn, an], fmt="%12.4f %14.6e", header="wavenumber_cm-1 alpha_n_cm-1 (alpha(w) n(w))")
+    band = (wn > 20) & (wn < 1500)
+    pk = wn[band][np.argmax(an[band])] if band.any() else float("nan")
+    print(
+        f"# IR spectrum -> {path} (resolution {1e12 / (segment_ps * C_LIGHT_M_S * 100):.1f} cm^-1, Nyquist "
+        f"{0.5e12 / (dt * C_LIGHT_M_S * 100):.0f} cm^-1); strongest band below 1500 cm^-1 at {pk:.0f} cm^-1"
+    )
+
+
+def plot_convergence(path: str, run: list, be: list, eps_inf: float, span: float) -> None:
+    """Save a PNG: running estimate of eps against the run length, and error against block length.
+
+    Parameters
+    ----------
+    path : str
+        PNG file.
+    run : list of (float, float, float)
+        analysis.dielectric.running: (fraction of the series, fluctuation term, error).
+    be : list of (int, float)
+        analysis.dielectric.block_errors: (number of blocks, jackknife error).
+    eps_inf : float
+        Added to the fluctuation term.
+    span : float
+        Length of the analysed series [ps].
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(1, 2, figsize=(9, 3.4))
+    x = np.array([f * span / 1000 for f, _, _ in run])
+    y = np.array([eps_inf + v for _, v, _ in run])
+    e = np.array([e for _, _, e in run])
+    ax[0].errorbar(x, y, e, marker="o", capsize=3)
+    ax[0].set_xlabel("run length (ns)")
+    ax[0].set_ylabel("eps")
+    ax[1].plot([span / b for b, _ in be], [e for _, e in be], marker="o")
+    ax[1].set_xscale("log")
+    ax[1].set_xlabel("block length (ps)")
+    ax[1].set_ylabel("jackknife error")
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line, analyse the dipole series and print the results (see the module docstring)."""
+    a = build_parser().parse_args(argv)
     setup_logging()
 
     meta, d = read_dipoles(a.files)
@@ -49,12 +139,12 @@ def main(argv=None):
             f"{meta['charged_molecules']} charged molecules (net charge {meta['net_charge']} e): M excludes the "
             "ionic current, so its fluctuation is not the full permittivity; rerun with --molecular to accept M_D"
         )
-    T = a.temp if a.temp is not None else float(meta["temperature_K"])
-    if meta["ensemble"] == "nve" and a.temp is None:
+    T = a.temperature_K if a.temperature_K is not None else float(meta["temperature_K"])
+    if meta["ensemble"] == "nve" and a.temperature_K is None:
         T = float(np.mean(d["temp_K"]))
         print(f"# NVE: T from the mean kinetic temperature, {T:.2f} K")
     t = d["time_ps"]
-    sel = t >= t[0] + a.skip if a.skip > 0 else np.ones(len(t), bool)
+    sel = t >= t[0] + a.skip_ps if a.skip_ps > 0 else np.ones(len(t), bool)
     M, V, alpha = d["M"][sel], d["volume_nm3"][sel], d["alpha_nm3"][sel]
     dt = float(np.median(np.diff(t))) if len(t) > 1 else float("nan")
     span = t[sel][-1] - t[sel][0] + dt
@@ -63,7 +153,7 @@ def main(argv=None):
         f"({meta['thermostat']}), elec {meta['elec']}"
     )
     print(
-        f"# samples {len(M)} every {dt:g} ps, {span / 1000:.3f} ns after skipping {a.skip:g} ps; T = {T:g} K "
+        f"# samples {len(M)} every {dt:g} ps, {span / 1000:.3f} ns after skipping {a.skip_ps:g} ps; T = {T:g} K "
         f"(mean kinetic {np.mean(d['temp_K'][sel]):.2f} K); <V> = {np.mean(V):.4f} nm^3"
     )
     print(
@@ -106,33 +196,9 @@ def main(argv=None):
     for f, v, e in run:
         print(f"  {f:6.3f} {f * span / 1000:9.3f} {r['eps_inf'] + v:9.3f} {e:8.3f}")
     if a.ir:
-        wn, an = D.ir_spectrum(M, dt, V, T, a.ir_segment)
-        np.savetxt(a.ir, np.c_[wn, an], fmt="%12.4f %14.6e", header="wavenumber_cm-1 alpha_n_cm-1 (alpha(w) n(w))")
-        band = (wn > 20) & (wn < 1500)
-        pk = wn[band][np.argmax(an[band])] if band.any() else float("nan")
-        print(
-            f"# IR spectrum -> {a.ir} (resolution {1e12 / (a.ir_segment * C_LIGHT_M_S * 100):.1f} cm^-1, Nyquist "
-            f"{0.5e12 / (dt * C_LIGHT_M_S * 100):.0f} cm^-1); strongest band below 1500 cm^-1 at {pk:.0f} cm^-1"
-        )
+        write_ir(a.ir, M, dt, V, T, a.ir_segment_ps)
     if a.plot:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
-        fig, ax = plt.subplots(1, 2, figsize=(9, 3.4))
-        x = np.array([f * span / 1000 for f, _, _ in run])
-        y = np.array([r["eps_inf"] + v for _, v, _ in run])
-        e = np.array([e for _, _, e in run])
-        ax[0].errorbar(x, y, e, marker="o", capsize=3)
-        ax[0].set_xlabel("run length (ns)")
-        ax[0].set_ylabel("eps")
-        ax[1].plot([span / b for b, _ in be], [e for _, e in be], marker="o")
-        ax[1].set_xscale("log")
-        ax[1].set_xlabel("block length (ps)")
-        ax[1].set_ylabel("jackknife error")
-        fig.tight_layout()
-        fig.savefig(a.plot, dpi=150)
+        plot_convergence(a.plot, run, be, r["eps_inf"], span)
 
 
 if __name__ == "__main__":

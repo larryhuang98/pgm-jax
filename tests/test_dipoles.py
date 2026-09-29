@@ -230,7 +230,7 @@ def test_recorded_series_match_the_state(tmp_path, monkeypatch, engine):
 
 @need_water_box
 def test_trajectory_dipoles_of_an_amber_trajectory(tmp_path):
-    """scripts/trajectory_dipoles.py on the Amber NetCDF trajectory of a run (the format pmemd
+    """scripts/dielectric/trajectory_dipoles.py on the Amber NetCDF trajectory of a run (the format pmemd
     writes) re-solves the induced dipoles and reproduces the cell dipoles the run recorded."""
     import importlib.util
     import os
@@ -241,7 +241,12 @@ def test_trajectory_dipoles_of_an_amber_trajectory(tmp_path):
 
     spec = importlib.util.spec_from_file_location(
         "trajectory_dipoles",
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "trajectory_dipoles.py"),
+        os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "scripts",
+            "dielectric",
+            "trajectory_dipoles.py",
+        ),
     )
     trajectory_dipoles = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(trajectory_dipoles)
@@ -271,7 +276,7 @@ def test_trajectory_dipoles_of_an_amber_trajectory(tmp_path):
             "48",
             "48",
             "48",
-            "--tol",
+            "--dipole-tol",
             "1e-10",
             "--precision",
             "double",
