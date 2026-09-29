@@ -59,6 +59,7 @@ site's position and is spread with the other site forces.  The two points must n
 (checked at setup, `VirtualSites.check`).
 
 Units nm; the parameters of each kind are dimensionless except w_x (nm^-1) and p (nm)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -70,9 +71,9 @@ import numpy as np
 from .box import min_image
 
 KINDS = ("average2", "average3", "outofplane", "local", "amber")
-POINT_RADIUS = 1e-4          # nm: Gaussian radius of a point charge (exponent 1/sqrt(2 (R_i^2 + R_j^2)) >= 5000 nm^-1)
+POINT_RADIUS = 1e-4  # nm: Gaussian radius of a point charge (exponent 1/sqrt(2 (R_i^2 + R_j^2)) >= 5000 nm^-1)
 _SUM_TOL = 1e-9
-_DEGENERATE = 1e-6           # nm: smallest frame vector / covalent-dipole distance accepted at setup
+_DEGENERATE = 1e-6  # nm: smallest frame vector / covalent-dipole distance accepted at setup
 
 
 def _tuple(x):
@@ -92,6 +93,7 @@ class VirtualSite:
         local       ((wo_k), (wx_k), (wy_k), (p_x, p_y, p_z))    one weight per parent
         amber       ((wa_k), (wc_k), (p_x, p_y, p_z))            one weight per parent; the host is B
     Use the constructors (average2, average3, out_of_plane, local, amber, tip4p)."""
+
     site: int
     kind: str
     atoms: tuple
@@ -116,15 +118,18 @@ class VirtualSite:
                 raise ValueError(f"{k} site {self.site}: weights {p} must sum to 1 (translation invariance)")
         elif k == "local":
             if len(a) < 2 or len(p) != 4 or any(len(w) != len(a) for w in p[:3]) or len(p[3]) != 3:
-                raise ValueError(f"local site {self.site}: >= 2 parents, params ((wo), (wx), (wy), (px, py, pz)) "
-                                 f"with one weight per parent; got {a}, {p}")
+                raise ValueError(
+                    f"local site {self.site}: >= 2 parents, params ((wo), (wx), (wy), (px, py, pz)) "
+                    f"with one weight per parent; got {a}, {p}"
+                )
             for name, w, target in (("origin", p[0], 1.0), ("x", p[1], 0.0), ("y", p[2], 0.0)):
                 if abs(sum(w) - target) > _SUM_TOL:
                     raise ValueError(f"local site {self.site}: {name} weights {w} must sum to {target:g}")
-        else:                                                        # amber
+        else:  # amber
             if len(a) < 2 or len(p) != 3 or any(len(w) != len(a) for w in p[:2]) or len(p[2]) != 3:
-                raise ValueError(f"amber site {self.site}: >= 2 parents, params ((wa), (wc), (px, py, pz)); "
-                                 f"got {a}, {p}")
+                raise ValueError(
+                    f"amber site {self.site}: >= 2 parents, params ((wa), (wc), (px, py, pz)); got {a}, {p}"
+                )
             for name, w in (("A", p[0]), ("C", p[1])):
                 if abs(sum(w) - 1.0) > _SUM_TOL:
                     raise ValueError(f"amber site {self.site}: weights of {name} {w} must sum to 1")
@@ -156,8 +161,9 @@ class VirtualSite:
         carbonyl carbon, frame type 2), A = (first + middle) / 2, C = (third + middle) / 2."""
         if middle is None:
             return cls(site, "amber", (center, first, third), ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), tuple(p)))
-        return cls(site, "amber", (center, first, middle, third),
-                   ((0.0, 0.5, 0.5, 0.0), (0.0, 0.0, 0.5, 0.5), tuple(p)))
+        return cls(
+            site, "amber", (center, first, middle, third), ((0.0, 0.5, 0.5, 0.0), (0.0, 0.0, 0.5, 0.5), tuple(p))
+        )
 
     @classmethod
     def tip4p(cls, site, o, h1, h2, d_om, r_oh=0.09572, theta_deg=104.52):
@@ -240,8 +246,12 @@ def _frame_norms(pos, H, kind, par, *w):
     else:
         A, C = jnp.einsum("nk,nkc->nc", w[0], d), jnp.einsum("nk,nkc->nc", w[1], d)
         u, v = _unit(A), _unit(C)
-        lengths = [jnp.linalg.norm(A, axis=-1), jnp.linalg.norm(C, axis=-1),
-                   0.05 * jnp.linalg.norm(u + v, axis=-1), 0.05 * jnp.linalg.norm(v - u, axis=-1)]
+        lengths = [
+            jnp.linalg.norm(A, axis=-1),
+            jnp.linalg.norm(C, axis=-1),
+            0.05 * jnp.linalg.norm(u + v, axis=-1),
+            0.05 * jnp.linalg.norm(v - u, axis=-1),
+        ]
     return min(float(jnp.min(jnp.nan_to_num(x))) for x in lengths)
 
 
@@ -259,8 +269,9 @@ class VirtualSites:
                 if not isinstance(vs, VirtualSite):
                     raise TypeError(f"{m.name}: Molecule.vsites holds VirtualSite objects, got {type(vs).__name__}")
                 if not all(0 <= a < m.n for a in (vs.site,) + vs.atoms):
-                    raise ValueError(f"{m.name}: virtual site {vs.site} with parents {vs.atoms} outside the molecule "
-                                     f"({m.n} atoms)")
+                    raise ValueError(
+                        f"{m.name}: virtual site {vs.site} with parents {vs.atoms} outside the molecule ({m.n} atoms)"
+                    )
                 entries.append((m.name, vs.shifted(off)))
         if not entries:
             raise ValueError("the system has no virtual sites (use VirtualSites.of, which returns None)")
@@ -273,12 +284,16 @@ class VirtualSites:
         is_site[site] = True
         for name, vs in entries:
             if masses[vs.site] != 0.0:
-                raise ValueError(f"{name}: virtual site {vs.site} (global index) has mass {masses[vs.site]:g}; "
-                                 "virtual sites are massless")
+                raise ValueError(
+                    f"{name}: virtual site {vs.site} (global index) has mass {masses[vs.site]:g}; "
+                    "virtual sites are massless"
+                )
             bad = [a for a in vs.atoms if is_site[a] or not masses[a] > 0.0]
             if bad:
-                raise ValueError(f"{name}: virtual site {vs.site} has parents {bad} that are virtual sites or massless "
-                                 "(sites are built from real atoms only)")
+                raise ValueError(
+                    f"{name}: virtual site {vs.site} has parents {bad} that are virtual sites or massless "
+                    "(sites are built from real atoms only)"
+                )
         others = np.nonzero(~is_site & ~(masses > 0.0))[0]
         if len(others):
             raise ValueError(f"atoms {others[:10].tolist()} have no mass but are not virtual sites")
@@ -297,13 +312,17 @@ class VirtualSites:
             for vs in lin:
                 a, p = vs.atoms, vs.params
                 if vs.kind == "average2":
-                    par.append((a[0], a[1], a[1])); w.append((p[1], 0.0, 0.0))
+                    par.append((a[0], a[1], a[1]))
+                    w.append((p[1], 0.0, 0.0))
                 elif vs.kind == "average3":
-                    par.append(a); w.append((p[1], p[2], 0.0))
+                    par.append(a)
+                    w.append((p[1], p[2], 0.0))
                 else:
-                    par.append(a); w.append(p)
-            self._kernels.append((_linear, np.array([vs.site for vs in lin], np.int32),
-                                  (np.array(par, np.int32), np.array(w, float))))
+                    par.append(a)
+                    w.append(p)
+            self._kernels.append(
+                (_linear, np.array([vs.site for vs in lin], np.int32), (np.array(par, np.int32), np.array(w, float)))
+            )
         for kind, fn in (("local", _local), ("amber", _amber)):
             group = [vs for vs in self.sites if vs.kind == kind]
             if not group:
@@ -331,8 +350,9 @@ class VirtualSites:
         """(n_sites, 3) site positions in the order of self._order."""
         pos = jnp.asarray(pos)
         Hj = None if H is None else jnp.asarray(H, pos.dtype)
-        return jnp.concatenate([fn(pos[arrs[0]], Hj, *(jnp.asarray(a) for a in arrs[1:]))
-                                for fn, _, arrs in self._kernels])
+        return jnp.concatenate(
+            [fn(pos[arrs[0]], Hj, *(jnp.asarray(a) for a in arrs[1:])) for fn, _, arrs in self._kernels]
+        )
 
     def place(self, pos, H=None):
         """Positions with every site rebuilt from its parents (H: box for the minimum image, or
@@ -383,8 +403,10 @@ class VirtualSites:
                 r = np.linalg.norm(np.asarray(d), axis=-1)
                 if np.any(r < _DEGENERATE):
                     k = int(np.argmin(r))
-                    raise ValueError(f"covalent dipole between atoms {int(ci[touch][k])} and {int(cj[touch][k])} "
-                                     f"(a virtual site) of length {r[k]:.3g} nm has no direction")
+                    raise ValueError(
+                        f"covalent dipole between atoms {int(ci[touch][k])} and {int(cj[touch][k])} "
+                        f"(a virtual site) of length {r[k]:.3g} nm has no direction"
+                    )
 
 
 # ----------------------------------------------------------------------------- Amber extra points
@@ -425,13 +447,16 @@ def amber_extra_points(atom_types, bonds_h, bonds_heavy, bond_req) -> dict:
                 raise ValueError(f"extra points {i + 1} and {j + 1} are bonded to each other")
             eps[c].append((e, float(bond_req[int(t)])))
         else:
-            heavy[i].append(j); heavy[j].append(i)
+            heavy[i].append(j)
+            heavy[j].append(i)
     for i, j, _ in bonds_h:
         i, j = int(i), int(j)
         if is_ep[i] or is_ep[j]:
-            raise ValueError(f"extra point in BONDS_INC_HYDROGEN ({i + 1}-{j + 1}); Amber reads EP bonds from "
-                             "BONDS_WITHOUT_HYDROGEN")
-        hyd[i].append(j); hyd[j].append(i)
+            raise ValueError(
+                f"extra point in BONDS_INC_HYDROGEN ({i + 1}-{j + 1}); Amber reads EP bonds from BONDS_WITHOUT_HYDROGEN"
+            )
+        hyd[i].append(j)
+        hyd[j].append(i)
     out = {}
     s, c60 = np.sin(np.radians(60.0)), 0.5
     for c in range(n):
@@ -443,20 +468,22 @@ def amber_extra_points(atom_types, bonds_h, bonds_heavy, bond_req) -> dict:
             raise ValueError(f"more than two extra points on {where}")
         if nh + nx > 2:
             raise ValueError(f"Amber extra points: too many neighbours of {where}")
-        req = [r * 0.1 for _, r in eps[c]]                               # nm
+        req = [r * 0.1 for _, r in eps[c]]  # nm
         middle = None
-        if nh == 0 and nx == 2:                                        # water (TIP4P, TIP5P)
+        if nh == 0 and nx == 2:  # water (TIP4P, TIP5P)
             first, third = hyd[c][0], hyd[c][1]
             tip4p = ne == 1
         elif nh > 1:
             first, third, tip4p = heavy[c][0], heavy[c][1], False
         elif nh == 1 and nx == 1:
             first, third, tip4p = heavy[c][0], hyd[c][0], False
-        elif nh == 1 and nx == 0:                                      # carbonyl oxygen: frame type 2
+        elif nh == 1 and nx == 0:  # carbonyl oxygen: frame type 2
             m = heavy[c][0]
             if len(heavy[m]) != 3 or len(hyd[m]) > 0:
-                raise ValueError(f"Amber extra points (carbonyl frame): atom {m + 1} bonded to {where} must have "
-                                 f"three heavy neighbours and no hydrogen")
+                raise ValueError(
+                    f"Amber extra points (carbonyl frame): atom {m + 1} bonded to {where} must have "
+                    f"three heavy neighbours and no hydrogen"
+                )
             other = [a for a in heavy[m] if a != c]
             first, third, middle, tip4p = other[0], other[1], m, False
         else:
@@ -467,15 +494,19 @@ def amber_extra_points(atom_types, bonds_h, bonds_heavy, bond_req) -> dict:
             elif types[c] in ("S", "SH"):
                 ps = [(0.0, req[0], 0.0), (0.0, -req[1], 0.0)]
             else:
-                ps = [(0.0, np.sin(_TET) * req[0], np.cos(_TET) * req[0]),
-                      (0.0, -np.sin(_TET) * req[1], np.cos(_TET) * req[1])]
+                ps = [
+                    (0.0, np.sin(_TET) * req[0], np.cos(_TET) * req[0]),
+                    (0.0, -np.sin(_TET) * req[1], np.cos(_TET) * req[1]),
+                ]
         else:
-            ps = ([(0.0, 0.0, req[0])] if ne == 1 else
-                  [(s * req[0], 0.0, c60 * req[0]), (-s * req[1], 0.0, c60 * req[1])])
+            ps = (
+                [(0.0, 0.0, req[0])] if ne == 1 else [(s * req[0], 0.0, c60 * req[0]), (-s * req[1], 0.0, c60 * req[1])]
+            )
         for (e, _), p in zip(eps[c], ps):
             out[e] = VirtualSite.amber(e, c, first, third, p, middle=middle)
     missing = [int(e) + 1 for e in np.nonzero(is_ep)[0] if int(e) not in out]
     if missing:
-        raise ValueError(f"extra points {missing[:10]} are bonded to no atom (Amber defines the frame through "
-                         "that bond)")
+        raise ValueError(
+            f"extra points {missing[:10]} are bonded to no atom (Amber defines the frame through that bond)"
+        )
     return out

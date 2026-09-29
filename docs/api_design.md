@@ -352,14 +352,28 @@ Names:
 
 ```python
 MDSettings(
-    terms=Terms(elec="qpi", vdw="lj", gvdw_rep="gauss", lj_lrc=True),   # not "model": clashes with pgm_jax.Model
+    terms=Terms(elec="qpi", vdw="lj", gvdw_rep="gauss", lj_lrc=True),  # not "model": clashes with pgm_jax.Model
     cutoffs=Cutoffs(cutoff=0.9, elec_cutoff=None, skin=0.1),
     pme=PME(ewald_beta=4.0, grid=None, spacing=0.08, order=6),
-    induction=Induction(tol=1e-5, max_iter=50, predictor="mu4", fused=True, norm_refresh=1000,
-                        peek=0.65, local_cut=0.3, local_niter=0, extrap_order=3, extrap_steps=2),
-    iel=ExtendedLagrangian(scheme="none", iterations=1, order=7, kappa=None, alpha=None,
-                           precond="block", omega=1.0, shadow=True),
-    precision="mixed", differentiable=False, adjoint_tol=1e-6)
+    induction=Induction(
+        tol=1e-5,
+        max_iter=50,
+        predictor="mu4",
+        fused=True,
+        norm_refresh=1000,
+        peek=0.65,
+        local_cut=0.3,
+        local_niter=0,
+        extrap_order=3,
+        extrap_steps=2,
+    ),
+    iel=ExtendedLagrangian(
+        scheme="none", iterations=1, order=7, kappa=None, alpha=None, precond="block", omega=1.0, shadow=True
+    ),
+    precision="mixed",
+    differentiable=False,
+    adjoint_tol=1e-6,
+)
 ```
 
 - All groups are frozen dataclasses with the current defaults, so `MDSettings()` is unchanged and

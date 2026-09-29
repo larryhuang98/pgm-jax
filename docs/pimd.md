@@ -137,14 +137,30 @@ from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate
 from pgm_jax.md.pimd import PIMDSimulation
 
 tpl = FlexibleTemplate.load("validation/pimd/pgm_water_flex.flex")
-sim = FlexibleSimulation(System([tpl.pgm] * n), [tpl] * n, pos, H, MDSettings(), dt=0.00025,
-                         ensemble="nvt", temperature=298.0, thermostat="bussi")
-sim.minimize(200); sim.run(8000)                     # classical flexible equilibration
-pi = PIMDSimulation(sim, beads=32, thermostat="pile-g", tau0=0.1)     # contract=8: contraction
+sim = FlexibleSimulation(
+    System([tpl.pgm] * n),
+    [tpl] * n,
+    pos,
+    H,
+    MDSettings(),
+    dt=0.00025,
+    ensemble="nvt",
+    temperature=298.0,
+    thermostat="bussi",
+)
+sim.minimize(200)
+sim.run(8000)  # classical flexible equilibration
+pi = PIMDSimulation(sim, beads=32, thermostat="pile-g", tau0=0.1)  # contract=8: contraction
 pi.run(40000, report=200, traj=200, beads_traj=0, restart=4000, prefix="qwater", pressure=True)
-pi.set_mode("trpmd"); pi.run(80000, report=200, traj=40, prefix="qwater_trpmd")   # dynamics
-pi.observables()      # temp_K, temp_centroid, epot, ekin_prim, ekin_cv, ke_H_cv_meV, ke_O_cv_meV, dipole_D, cg...
-pi.pressure(); pi.centroid_nm(); pi.beads_nm(); pi.molecular_dipoles(); pi.save("q"); pi.load("q.pimd.chk")
+pi.set_mode("trpmd")
+pi.run(80000, report=200, traj=40, prefix="qwater_trpmd")  # dynamics
+pi.observables()  # temp_K, temp_centroid, epot, ekin_prim, ekin_cv, ke_H_cv_meV, ke_O_cv_meV, dipole_D, cg...
+pi.pressure()
+pi.centroid_nm()
+pi.beads_nm()
+pi.molecular_dipoles()
+pi.save("q")
+pi.load("q.pimd.chk")
 ```
 
 Any potential (model systems, tests): `PIMDIntegrator(PotentialEngine(V), masses, P, T, dt, mode,

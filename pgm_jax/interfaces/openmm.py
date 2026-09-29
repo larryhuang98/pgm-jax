@@ -23,6 +23,7 @@ Energies and forces are exact (the engine's); the MonteCarloBarostat works (it r
 energy at the scaled box and molecular centres; the engine rebuilds its lists when the volume
 changes by more than 10 %).  OpenMM's PythonForce gives no virial, so anisotropic or
 pressure-reporting tools that need one are not available.  Units: nm, ps, kJ/mol (OpenMM's)."""
+
 from __future__ import annotations
 
 import time
@@ -32,7 +33,7 @@ import numpy as np
 try:
     import openmm
     from openmm import app, unit
-except ImportError as err:                                  # pragma: no cover
+except ImportError as err:  # pragma: no cover
     raise ImportError("pgm_jax.interfaces.openmm needs OpenMM >= 8.4 (openmm.PythonForce)") from err
 
 
@@ -56,7 +57,7 @@ class PGMOpenMM:
     # ------------------------------------------------------------------ the force
     def _compute(self, state):
         t0 = time.perf_counter()
-        pos = state.getPositions(asNumpy=True)._value                  # nm (OpenMM default units)
+        pos = state.getPositions(asNumpy=True)._value  # nm (OpenMM default units)
         box = state.getPeriodicBoxVectors(asNumpy=True)._value
         t1 = time.perf_counter()
         res = self.engine.compute(np.asarray(pos, float), np.asarray(box, float))
@@ -103,8 +104,10 @@ class PGMOpenMM:
                 el = list(m.elements)
                 pairs += [(off + i, off + j) for i, j in m.bonds if "H" in (el[i], el[j])]
             elif rigid and m.n > 3 and self.engine.flex is None:
-                raise ValueError(f"molecule {k} ({m.name}, {m.n} atoms) of the rigid-molecule model cannot be held rigid "
-                                 "by distance constraints; use flexible templates")
+                raise ValueError(
+                    f"molecule {k} ({m.name}, {m.n} atoms) of the rigid-molecule model cannot be held rigid "
+                    "by distance constraints; use flexible templates"
+                )
         return pairs
 
     def topology(self):

@@ -29,6 +29,7 @@ minimizes |r|^2 with scipy's trust-region least squares and the exact Jacobian (
 
 Units: model nm, kJ/mol, e; data and reports in Angstrom and kcal/mol.
 """
+
 from __future__ import annotations
 
 import itertools
@@ -44,17 +45,18 @@ from .lj import LJChannel
 from .system import Molecule, ParamTable, System
 from .vdw import GVDWChannel
 
-KCAL = 4.184                     # kJ/mol
-ANG = 0.1                        # nm
-DEBYE = 0.020819434              # e nm
+KCAL = 4.184  # kJ/mol
+ANG = 0.1  # nm
+DEBYE = 0.020819434  # e nm
 
 
 # =================================================================== dataset ==
 @dataclass
 class QMSet:
     """Records (dicts) of clusters with QM labels; see the module docstring for the fields."""
+
     records: list
-    monomer: dict = field(default_factory=dict)       # monomer properties (dipole_D, polarizability_A3, ...)
+    monomer: dict = field(default_factory=dict)  # monomer properties (dipole_D, polarizability_A3, ...)
     about: dict = field(default_factory=dict)
 
     @classmethod
@@ -137,8 +139,9 @@ def rigid_body_forces(g, X, masses, m: int):
 class ClusterModel:
     """pGM (+ LJ or GVDW) predictions for clusters of copies of one rigid molecule."""
 
-    def __init__(self, mol: Molecule, vdw: str = "lj", rep: str = "gauss", table: ParamTable | None = None,
-                 monomer_xyz_nm=None):
+    def __init__(
+        self, mol: Molecule, vdw: str = "lj", rep: str = "gauss", table: ParamTable | None = None, monomer_xyz_nm=None
+    ):
         self.mol = mol
         self.m = mol.n
         self.table = ParamTable([mol]) if table is None else table
@@ -207,10 +210,10 @@ class Prepared:
             pid = {}
             for i, j in itertools.combinations(range(self.n[k]), 2):
                 pid[(i, j)] = len(pairs)
-                pairs.append(np.concatenate([X[k][m * i:m * i + m], X[k][m * j:m * j + m]]))
+                pairs.append(np.concatenate([X[k][m * i : m * i + m], X[k][m * j : m * j + m]]))
                 pair_owner.append(c)
             for i, j, l in itertools.combinations(range(self.n[k]), 3):
-                triples.append(np.concatenate([X[k][m * a:m * a + m] for a in (i, j, l)]))
+                triples.append(np.concatenate([X[k][m * a : m * a + m] for a in (i, j, l)]))
                 tri_owner.append(c)
                 tri_pairs.append([pid[(i, j)], pid[(i, l)], pid[(j, l)]])
         self.clusters = np.array(cl, int)
@@ -223,7 +226,7 @@ class Prepared:
         self.force_recs = {}
         for n in sorted({int(self.n[k]) for k in fk}):
             ks = np.array([k for k in fk if self.n[k] == n], int)
-            G = np.stack([np.asarray(recs[k]["grad_int"], float) for k in ks]) * (KCAL / ANG)      # kJ/mol/nm
+            G = np.stack([np.asarray(recs[k]["grad_int"], float) for k in ks]) * (KCAL / ANG)  # kJ/mol/nm
             Xn = np.stack([X[k] for k in ks])
             F, T = rigid_body_forces(G, Xn, cm.mol.masses, m)
             self.force_recs[n] = (ks, jnp.asarray(Xn), jnp.asarray(F), jnp.asarray(T))
@@ -254,11 +257,30 @@ class Prepared:
 
 
 # ============================================================ parameter map ==
-BOUNDS = {"q": (-np.inf, np.inf), "cov": (-0.2, 0.2), "radius": (0.01, 0.3), "alpha": (1e-6, 1e-2),
-          "lj_rmin_half": (0.0, 0.4), "lj_sqrt_eps": (0.0, 10.0), "gvdw_sqrt_a": (0.0, 1e4),
-          "gvdw_sqrt_c6": (0.0, 10.0), "gvdw_b": (0.05, 20.0), "quad": (-1.0, 1.0)}
-SCALES = {"q": 0.05, "cov": 0.002, "radius": 0.005, "alpha": 1e-4, "lj_rmin_half": 0.01, "lj_sqrt_eps": 0.1,
-          "gvdw_sqrt_a": 5.0, "gvdw_sqrt_c6": 0.005, "gvdw_b": 0.1, "quad": 0.002}
+BOUNDS = {
+    "q": (-np.inf, np.inf),
+    "cov": (-0.2, 0.2),
+    "radius": (0.01, 0.3),
+    "alpha": (1e-6, 1e-2),
+    "lj_rmin_half": (0.0, 0.4),
+    "lj_sqrt_eps": (0.0, 10.0),
+    "gvdw_sqrt_a": (0.0, 1e4),
+    "gvdw_sqrt_c6": (0.0, 10.0),
+    "gvdw_b": (0.05, 20.0),
+    "quad": (-1.0, 1.0),
+}
+SCALES = {
+    "q": 0.05,
+    "cov": 0.002,
+    "radius": 0.005,
+    "alpha": 1e-4,
+    "lj_rmin_half": 0.01,
+    "lj_sqrt_eps": 0.1,
+    "gvdw_sqrt_a": 5.0,
+    "gvdw_sqrt_c6": 0.005,
+    "gvdw_b": 0.1,
+    "quad": 0.002,
+}
 
 
 class ParamMap:
@@ -266,9 +288,17 @@ class ParamMap:
     coordinates in the null space of the neutrality constraints of `molecules` (offsets from the
     starting charges); every other quantity: the values themselves."""
 
-    def __init__(self, table: ParamTable, molecules: list[Molecule], free: dict, P0=None,
-                 bounds: dict | None = None, scales: dict | None = None):
+    def __init__(
+        self,
+        table: ParamTable,
+        molecules: list[Molecule],
+        free: dict,
+        P0=None,
+        bounds: dict | None = None,
+        scales: dict | None = None,
+    ):
         from scipy.linalg import null_space
+
         self.table = table
         self.P0 = {k: jnp.asarray(v) for k, v in (table.initial() if P0 is None else P0).items()}
         bounds, scales = dict(BOUNDS, **(bounds or {})), dict(SCALES, **(scales or {}))
@@ -310,11 +340,11 @@ class ParamMap:
         off = 0
         for qn, idx, N in self.blocks:
             if N is None:
-                P[qn] = P[qn].at[idx].set(theta[off:off + len(idx)])
+                P[qn] = P[qn].at[idx].set(theta[off : off + len(idx)])
                 off += len(idx)
             else:
                 k = N.shape[1]
-                P[qn] = P[qn].at[idx].add(N @ theta[off:off + k])
+                P[qn] = P[qn].at[idx].add(N @ theta[off : off + k])
                 off += k
         return P
 
@@ -326,6 +356,7 @@ class FitWeights:
     Energy residuals are divided by sigma_i = sigma_E sqrt(n_pairs_i) (1 + max(E_ref_i, 0) / e_soft)
     (larger clusters and repulsive geometries count less); SAPT components of a dimer use the same
     sigma_i as its total."""
+
     total: float = 1.0
     elst: float = 0.0
     ind: float = 0.0
@@ -335,13 +366,13 @@ class FitWeights:
     dipole: float = 0.0
     polarizability: float = 0.0
     prior: float = 0.01
-    sigma_E: float = 1.0          # kcal/mol
-    e_soft: float = 5.0           # kcal/mol
-    sigma_nb3: float = 0.3        # kcal/mol (per cluster, times sqrt(n_triples))
-    sigma_F: float = 1.0          # kcal/mol/A (forces), kcal/mol (torques)
-    sigma_dip: float = 0.02       # D
-    sigma_pol: float = 0.02       # A^3
-    ref: str = "E.ref"            # label of the reference total
+    sigma_E: float = 1.0  # kcal/mol
+    e_soft: float = 5.0  # kcal/mol
+    sigma_nb3: float = 0.3  # kcal/mol (per cluster, times sqrt(n_triples))
+    sigma_F: float = 1.0  # kcal/mol/A (forces), kcal/mol (torques)
+    sigma_dip: float = 0.02  # D
+    sigma_pol: float = 0.02  # A^3
+    ref: str = "E.ref"  # label of the reference total
 
 
 class QMFit:
@@ -356,11 +387,17 @@ class QMFit:
         sig = w.sigma_E * np.sqrt(npairs) * (1 + np.maximum(np.nan_to_num(Eref), 0) / w.e_soft) * KCAL
         self.sig = sig
         self.targets = {}
+
         def add(name, weight, vals):
             vals = np.asarray(vals, float)
             ok = np.isfinite(vals)
             if weight > 0 and ok.any():
-                self.targets[name] = (np.nonzero(ok)[0], jnp.asarray(vals[ok] * KCAL), jnp.asarray(sig[ok] / np.sqrt(weight)))
+                self.targets[name] = (
+                    np.nonzero(ok)[0],
+                    jnp.asarray(vals[ok] * KCAL),
+                    jnp.asarray(sig[ok] / np.sqrt(weight)),
+                )
+
         add("total", w.total, Eref)
         add("elst", w.elst, [label(r, "sapt.elst") for r in recs])
         add("ind", w.ind, [label(r, "sapt.ind") for r in recs])
@@ -369,8 +406,10 @@ class QMFit:
         self.nb3 = None
         if w.nb3 > 0 and len(cl):
             ntri = np.array([self.prep.n[k] * (self.prep.n[k] - 1) * (self.prep.n[k] - 2) / 6 for k in cl])
-            self.nb3 = (jnp.asarray([label(recs[k], "nb.nb3") * KCAL for k in cl]),
-                        jnp.asarray(w.sigma_nb3 * KCAL * np.sqrt(ntri) / np.sqrt(w.nb3)))
+            self.nb3 = (
+                jnp.asarray([label(recs[k], "nb.nb3") * KCAL for k in cl]),
+                jnp.asarray(w.sigma_nb3 * KCAL * np.sqrt(ntri) / np.sqrt(w.nb3)),
+            )
         self.mono = data.monomer
 
     def residuals(self, theta):
@@ -393,7 +432,7 @@ class QMFit:
             mu = jnp.linalg.norm(self.cm.monomer_dipole(P)) / DEBYE
             out.append(jnp.atleast_1d((mu - self.mono["dipole_D"]) / w.sigma_dip * np.sqrt(w.dipole)))
         if w.polarizability > 0 and "polarizability_A3" in self.mono:
-            a = self.cm.monomer_polarizability(P) / ANG ** 3
+            a = self.cm.monomer_polarizability(P) / ANG**3
             out.append(jnp.atleast_1d((a - self.mono["polarizability_A3"]) / w.sigma_pol * np.sqrt(w.polarizability)))
         if w.prior > 0:
             out.append(np.sqrt(w.prior) * (theta - self.pmap.theta0) / self.pmap.scale)
@@ -406,12 +445,21 @@ class QMFit:
     def fit(self, theta0=None, max_nfev: int = 200, verbose: int = 0, **kw):
         """scipy.optimize.least_squares (trust-region reflective, bounds) with the exact Jacobian."""
         from scipy.optimize import least_squares
+
         rf = jax.jit(self.residuals)
         jf = jax.jit(jax.jacfwd(self.residuals))
         th0 = self.pmap.theta0 if theta0 is None else np.asarray(theta0, float)
-        res = least_squares(lambda t: np.asarray(rf(jnp.asarray(t))), th0, jac=lambda t: np.asarray(jf(jnp.asarray(t))),
-                            bounds=(self.pmap.lower, self.pmap.upper), x_scale=self.pmap.scale, method="trf",
-                            max_nfev=max_nfev, verbose=verbose, **kw)
+        res = least_squares(
+            lambda t: np.asarray(rf(jnp.asarray(t))),
+            th0,
+            jac=lambda t: np.asarray(jf(jnp.asarray(t))),
+            bounds=(self.pmap.lower, self.pmap.upper),
+            x_scale=self.pmap.scale,
+            method="trf",
+            max_nfev=max_nfev,
+            verbose=verbose,
+            **kw,
+        )
         self.result = res
         return res
 
@@ -423,7 +471,12 @@ def evaluate(cm: ClusterModel, data: QMSet, P, ref: str = "E.ref", prep: Prepare
     prep = prep or Prepared(data, cm)
     pr = {k: np.asarray(v) / KCAL for k, v in prep.predict(P).items()}
     recs = data.records
-    out = {"ids": data.ids, "set": [r["set"] for r in recs], "n": prep.n, "ref": np.array([label(r, ref) for r in recs])}
+    out = {
+        "ids": data.ids,
+        "set": [r["set"] for r in recs],
+        "n": prep.n,
+        "ref": np.array([label(r, ref) for r in recs]),
+    }
     out.update({k: pr[k] for k in ("total", "elst", "ind", "vdw")})
     for c in ("elst", "exch", "ind", "disp", "total"):
         out[f"sapt_{c}"] = np.array([label(r, f"sapt.{c}") for r in recs])
@@ -445,8 +498,17 @@ def error_table(ev: dict, groups: dict | None = None) -> list[dict]:
     def stats(name, what, e):
         e = e[np.isfinite(e)]
         if len(e):
-            rows.append({"group": name, "quantity": what, "N": int(len(e)), "RMSE": float(np.sqrt(np.mean(e ** 2))),
-                         "MAE": float(np.mean(np.abs(e))), "MaxAE": float(np.max(np.abs(e))), "MSE": float(np.mean(e))})
+            rows.append(
+                {
+                    "group": name,
+                    "quantity": what,
+                    "N": int(len(e)),
+                    "RMSE": float(np.sqrt(np.mean(e**2))),
+                    "MAE": float(np.mean(np.abs(e))),
+                    "MaxAE": float(np.max(np.abs(e))),
+                    "MSE": float(np.mean(e)),
+                }
+            )
 
     for name, ss in groups.items():
         mk = np.isin(sets, ss)
@@ -465,7 +527,9 @@ def error_table(ev: dict, groups: dict | None = None) -> list[dict]:
 def format_table(rows: list[dict]) -> str:
     lines = [f"{'group':24s} {'quantity':10s} {'N':>5s} {'RMSE':>7s} {'MAE':>7s} {'MaxAE':>7s} {'MSE':>7s}"]
     for r in rows:
-        lines.append(f"{r['group']:24s} {r['quantity']:10s} {r['N']:5d} {r['RMSE']:7.3f} {r['MAE']:7.3f} {r['MaxAE']:7.3f} {r['MSE']:+7.3f}")
+        lines.append(
+            f"{r['group']:24s} {r['quantity']:10s} {r['N']:5d} {r['RMSE']:7.3f} {r['MAE']:7.3f} {r['MaxAE']:7.3f} {r['MSE']:+7.3f}"
+        )
     return "\n".join(lines)
 
 
@@ -483,6 +547,7 @@ def rigid_minimize(cm: ClusterModel, X_A, P=None, gtol: float = 1e-6, maxiter: i
     """Minimize the model's interaction energy over the rigid-body coordinates of every molecule
     (L-BFGS, exact gradients).  X_A: (n m, 3) Angstrom.  Returns (E_min kcal/mol, X_min Angstrom)."""
     from scipy.optimize import minimize
+
     m = cm.m
     X0 = jnp.asarray(np.asarray(X_A, float) * ANG).reshape(-1, m, 3)
     n = X0.shape[0]
@@ -495,6 +560,11 @@ def rigid_minimize(cm: ClusterModel, X_A, P=None, gtol: float = 1e-6, maxiter: i
         return (jnp.einsum("kab,kib->kia", R, X0 - com) + com + z[:, None, :3]).reshape(-1, 3)
 
     f = jax.jit(jax.value_and_grad(lambda z: cm.components(coords(z), P, n)["total"]))
-    res = minimize(lambda z: tuple(np.asarray(v, float) for v in f(jnp.asarray(z))), np.zeros(6 * n), jac=True,
-                   method="L-BFGS-B", options={"gtol": gtol, "maxiter": maxiter})
+    res = minimize(
+        lambda z: tuple(np.asarray(v, float) for v in f(jnp.asarray(z))),
+        np.zeros(6 * n),
+        jac=True,
+        method="L-BFGS-B",
+        options={"gtol": gtol, "maxiter": maxiter},
+    )
     return float(res.fun) / KCAL, np.asarray(coords(jnp.asarray(res.x))) / ANG

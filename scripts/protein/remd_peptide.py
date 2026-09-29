@@ -20,6 +20,7 @@ each REMD temperature and in the plain run (after --skip ps), with block errors.
 replica engines (batched for each count in --bench, and sequential for the largest) without
 exchanges.  Populations:
     alpha_L: phi > 0;  alpha_R: phi < 0 and -120 <= psi < 50;  otherwise beta (phi < -90) or PPII."""
+
 import argparse
 import json
 import os
@@ -80,7 +81,7 @@ def populations(X):
     aL = phi > 0
     aR = ~aL & (psi >= -120) & (psi < 50)
     ext = ~aL & ~aR
-    return np.stack([aR, ext & (phi < -90), ext & (phi >= -90), aL], -1).astype(float)   # (F, res, 4)
+    return np.stack([aR, ext & (phi < -90), ext & (phi >= -90), aL], -1).astype(float)  # (F, res, 4)
 
 
 def summarize(label, X, nblocks=5):
@@ -90,8 +91,10 @@ def summarize(label, X, nblocks=5):
     m, e = P.mean(0), B.std(0, ddof=1) / np.sqrt(nblocks)
     print(f"{label}: {F} frames")
     for r in range(nres):
-        print(f"   residue {r + 1}: " + "  ".join(f"{name} {m[r, i]:.3f}+-{e[r, i]:.3f}"
-                                               for i, name in enumerate(("aR", "beta", "PPII", "aL"))))
+        print(
+            f"   residue {r + 1}: "
+            + "  ".join(f"{name} {m[r, i]:.3f}+-{e[r, i]:.3f}" for i, name in enumerate(("aR", "beta", "PPII", "aL")))
+        )
     return {"frames": F, "mean": m.tolist(), "err": e.tolist()}
 
 
@@ -114,8 +117,10 @@ def energies(label, log, nblocks=5):
         x = log[c][keep]
         B = np.array([b.mean() for b in np.array_split(x, nblocks)])
         out[c] = (float(x.mean()), float(B.std(ddof=1) / np.sqrt(nblocks)))
-    print(f"{label}: T {out['temp_K'][0]:.2f} +- {out['temp_K'][1]:.2f} K, U {out['epot'][0]:.1f} +- {out['epot'][1]:.1f} "
-          f"kJ/mol ({int(keep.sum())} log lines)")
+    print(
+        f"{label}: T {out['temp_K'][0]:.2f} +- {out['temp_K'][1]:.2f} K, U {out['epot'][0]:.1f} +- {out['epot'][1]:.1f} "
+        f"kJ/mol ({int(keep.sum())} log lines)"
+    )
     return out
 
 
@@ -124,7 +129,9 @@ if a.mode == "analyze":
     js = a.out + "_remd.json"
     if os.path.exists(js):
         d = json.load(open(js))
-        print(f"REMD: {len(d['temperatures_K'])} replicas, {d['time_ps']:.0f} ps per replica, {d['exchanges']} exchange attempts")
+        print(
+            f"REMD: {len(d['temperatures_K'])} replicas, {d['time_ps']:.0f} ps per replica, {d['exchanges']} exchange attempts"
+        )
         print("   T (K):               " + " ".join(f"{t:7.2f}" for t in d["temperatures_K"]))
         print("   neighbour acceptance: " + " ".join(f"{x:.3f}" for x in d["neighbour_acceptance"]))
         print(f"   round trips {d['round_trips_total']} (per replica {d['round_trips']}), transits {d['transits']}")
@@ -145,9 +152,22 @@ if a.mode == "analyze":
 
 tpl = amber_template(prot, a.prmtop)
 st = MDSettings(cutoff=0.9, skin=0.1, dipole_tol=a.tol)
-sim = FlexibleSimulation(asys.system(), asys.templates({kp: tpl}), asys.system_positions(), asys.box, st, dt=a.dt,
-                         ensemble="nvt", temperature=a.tmin, constraints="h-bonds", hmr=3.024, log=sys.stdout,
-                         thermostat="bussi", tau_t=a.tau, seed=a.seed)
+sim = FlexibleSimulation(
+    asys.system(),
+    asys.templates({kp: tpl}),
+    asys.system_positions(),
+    asys.box,
+    st,
+    dt=a.dt,
+    ensemble="nvt",
+    temperature=a.tmin,
+    constraints="h-bonds",
+    hmr=3.024,
+    log=sys.stdout,
+    thermostat="bussi",
+    tau_t=a.tau,
+    seed=a.seed,
+)
 equil = a.out + "_equil"
 if os.path.exists(equil + ".chk"):
     sim.load(equil + ".chk")
@@ -166,22 +186,27 @@ if a.mode == "bench":
     n = a.bench_steps
 
     def timed(label, R, advance, states):
-        advance(500)                                        # compile
+        advance(500)  # compile
         t0 = time.time()
         advance(n)
         el = time.time() - t0
         cg = np.mean([float(st.cg_total) / int(st.step) for st in states()])
-        print(f"{label} R={R:2d}: {el / n * 1e3:.3f} ms/step, {el / n / R * 1e3:.3f} ms per replica-step, "
-              f"{n * a.dt / 1000 / el * 86400:.1f} ns/day per replica, {R * n * a.dt / 1000 / el * 86400:.1f} "
-              f"aggregate; CG {cg:.2f}", flush=True)
+        print(
+            f"{label} R={R:2d}: {el / n * 1e3:.3f} ms/step, {el / n / R * 1e3:.3f} ms per replica-step, "
+            f"{n * a.dt / 1000 / el * 86400:.1f} ns/day per replica, {R * n * a.dt / 1000 / el * 86400:.1f} "
+            f"aggregate; CG {cg:.2f}",
+            flush=True,
+        )
 
     for R in a.bench:
         sim.state = start
-        if R == 1:                                          # plain MD of the same system
+        if R == 1:  # plain MD of the same system
             timed("plain MD  ", 1, sim._advance, lambda: [sim.state])
             continue
         for batched in (True, False) if R == max(a.bench) else (True,):
-            rep = ReplicaExchange(sim, geometric_ladder(a.tmin, a.tmax, R), batched=batched, seed=a.seed, log=None).replicas
+            rep = ReplicaExchange(
+                sim, geometric_ladder(a.tmin, a.tmax, R), batched=batched, seed=a.seed, log=None
+            ).replicas
             timed("batched   " if batched else "sequential", R, rep.advance, lambda: [rep.state(k) for k in range(R)])
     raise SystemExit(0)
 if a.mode == "plain":
@@ -193,5 +218,12 @@ else:
         rex.load(a.out + ".remd.chk")
     left = nsteps - rex.step
     s = rex.run(left, report=report, traj=traj, restart=report * 10, prefix=a.out, append=a.resume)
-    print(json.dumps({k: s[k] for k in ("neighbour_acceptance", "round_trips_total", "ns_per_day_per_replica",
-                                        "ns_per_day_aggregate")}), flush=True)
+    print(
+        json.dumps(
+            {
+                k: s[k]
+                for k in ("neighbour_acceptance", "round_trips_total", "ns_per_day_per_replica", "ns_per_day_aggregate")
+            }
+        ),
+        flush=True,
+    )

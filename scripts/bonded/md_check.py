@@ -6,6 +6,7 @@ with the MACE-OFF frames at the same temperature (298 K test / 500 K training ge
 
     python scripts/bonded/md_check.py NAME --mols A1,A2,A3 --families paper [--elec 3] [--T 298 --ps 20]
 """
+
 import argparse
 import json
 import os
@@ -15,7 +16,8 @@ import time
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
 import jax  # noqa: E402
 
 jax.config.update("jax_enable_x64", True)
@@ -37,7 +39,7 @@ def langevin(efun, X0, masses, T_K, dt, nsteps, every, nrep, key, gamma=2.0):
     kT = KB * T_K
     grad = jax.grad(efun)
     c1 = jnp.exp(-gamma * dt)
-    c2 = jnp.sqrt((1 - c1 ** 2) * kT / m)
+    c2 = jnp.sqrt((1 - c1**2) * kT / m)
 
     def step(state, k):
         X, V, F = state
@@ -85,8 +87,7 @@ def main():
     a = ap.parse_args()
     names = [n for n in mol_list(a.mols) if n != "methanethiol"]
     specs, data = load(names)
-    st = BondedSettings(families=families_of(a.families), elec_exclude=a.elec,
-                        elec14_scale=a.elec14, lj14_scale=a.lj14)
+    st = BondedSettings(families=families_of(a.families), elec_exclude=a.elec, elec14_scale=a.elec14, lj14_scale=a.lj14)
     out = {"name": a.name, "args": vars(a), "molecules": {}}
     for i, spec in enumerate(specs):
         t0 = time.time()
@@ -96,15 +97,16 @@ def main():
         efun = lambda X: model.energy(0, X, P)[0]
         X0 = jnp.asarray(spec.ref_xyz)
         nsteps = int(round(a.ps / a.dt)) // 100 * 100
-        Xs, Es = langevin(efun, X0, [MASS[e] for e in spec.elements], a.T, a.dt, nsteps, 100, a.nrep,
-                          jax.random.PRNGKey(i))
+        Xs, Es = langevin(
+            efun, X0, [MASS[e] for e in spec.elements], a.T, a.dt, nsteps, 100, a.nrep, jax.random.PRNGKey(i)
+        )
         Xs, Es = np.asarray(Xs), np.asarray(Es)
         top = model.mols[0].top
         finite = np.isfinite(Es).all(1) & np.isfinite(Xs).reshape(a.nrep, -1).all(1)
         # reference: the DFT-labelled MACE frames at the nearest temperature (298 K test / 500 K training MD)
         te = data[i]["test"] if a.T < 400 else frames(spec.name, "train500")
         e_te = np.asarray(jax.vmap(efun)(jnp.asarray(te.X)))
-        e_floor = e_te.min() - 20 * KCAL                                # 20 kcal/mol below the lowest test frame
+        e_floor = e_te.min() - 20 * KCAL  # 20 kcal/mol below the lowest test frame
         b_ref, th_ref, phi_ref = internals(top, te.X)
         rec = {"finite": finite.tolist()}
         stable = []
@@ -130,14 +132,19 @@ def main():
             # equipartition: <E_pot> - E(minimum) in units of (3N - 6) kT / 2 (1 for a harmonic system)
             e_min = float(efun(X0))
             half = (3 * len(spec.elements) - 6) * KB * a.T / 2
-            rec["epot_equipartition"] = float((Es[good][:, Es.shape[1] // 5:].mean() - e_min) / half)
+            rec["epot_equipartition"] = float((Es[good][:, Es.shape[1] // 5 :].mean() - e_min) / half)
             rec["epot_equipartition_mace"] = float((e_te.mean() - e_min) / half)
         else:
-            rec["min_E_kcal_below_test"] = float((Es[np.isfinite(Es)].min() - e_te.min()) / KCAL) if np.isfinite(Es).any() else None
+            rec["min_E_kcal_below_test"] = (
+                float((Es[np.isfinite(Es)].min() - e_te.min()) / KCAL) if np.isfinite(Es).any() else None
+            )
         rec["time_s"] = time.time() - t0
         out["molecules"][spec.name] = rec
-        print(f"  {spec.name:20s} stable {sum(stable)}/{a.nrep}  " +
-              "  ".join(f"{k} {v:.2f}" for k, v in rec.items() if isinstance(v, float)), flush=True)
+        print(
+            f"  {spec.name:20s} stable {sum(stable)}/{a.nrep}  "
+            + "  ".join(f"{k} {v:.2f}" for k, v in rec.items() if isinstance(v, float)),
+            flush=True,
+        )
     os.makedirs(os.path.join(ROOT, "runs/bonded/results"), exist_ok=True)
     json.dump(out, open(os.path.join(ROOT, "runs/bonded/results", f"{a.name}.json"), "w"), indent=1)
     n = sum(sum(v["stable"]) for v in out["molecules"].values())

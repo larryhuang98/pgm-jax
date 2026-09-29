@@ -1,4 +1,5 @@
 """Class II couplings (Abdullah et al. 2025) and extended quadratic couplings (F3, F4)."""
+
 from __future__ import annotations
 
 import jax.numpy as jnp
@@ -72,7 +73,9 @@ class TorsionBond(Family):
         for t, bi in top.torsion_bond:
             i, j, k, l = top.propers[t]
             mid = set(top.bonds[bi]) == {j, k}
-            keys.append("tb|" + keyf(top.propers[t], "torsion") + "|" + ("mid" if mid else "end:" + keyf(top.bonds[bi], "bond")))
+            keys.append(
+                "tb|" + keyf(top.propers[t], "torsion") + "|" + ("mid" if mid else "end:" + keyf(top.bonds[bi], "bond"))
+            )
         I = _pair_index(top.torsion_bond)
         I["mask"] = _mask_n(top.rigid_torsion)[I["u"]] if len(top.torsion_bond) else np.zeros((0, 4))
         return I, keys
@@ -89,7 +92,9 @@ class TorsionAngle(Family):
     linear = ("K",)
 
     def index(self, top, keyf):
-        keys = ["ta|" + keyf(top.propers[t], "torsion") + "|" + keyf(top.angles[a], "angle") for t, a in top.torsion_angle]
+        keys = [
+            "ta|" + keyf(top.propers[t], "torsion") + "|" + keyf(top.angles[a], "angle") for t, a in top.torsion_angle
+        ]
         I = _pair_index(top.torsion_angle)
         I["mask"] = _mask_n(top.rigid_torsion)[I["u"]] if len(top.torsion_angle) else np.zeros((0, 4))
         return I, keys
@@ -104,6 +109,7 @@ class TorsionModulated(Family):
     """F3: sum_n K_n (1 + cos n phi) x (1 + l_mid db_mid + l_end (db_end1 + db_end2) + l_ang (dc_1 + dc_2)):
     the torsion-bond and torsion-angle couplings factorised, 3 coupling parameters per torsion
     type shared by all periodicities."""
+
     name = "torsion_mod"
     params = {"K": ((4,), 0.0), "l_mid": ((), 0.0), "l_end": ((), 0.0), "l_ang": ((), 0.0)}
     linear = ("K",)
@@ -112,8 +118,9 @@ class TorsionModulated(Family):
         nt = len(top.propers)
         tb = np.asarray(top.torsion_bond).reshape(nt, 3, 2)[:, :, 1] if nt else np.zeros((0, 3), int)
         ta = np.asarray(top.torsion_angle).reshape(nt, 2, 2)[:, :, 1] if nt else np.zeros((0, 2), int)
-        return {"i": np.arange(nt), "b": tb, "a": ta, "mask": _mask_n(top.rigid_torsion)}, \
-               [keyf(t, "torsion") for t in top.propers]
+        return {"i": np.arange(nt), "b": tb, "a": ta, "mask": _mask_n(top.rigid_torsion)}, [
+            keyf(t, "torsion") for t in top.propers
+        ]
 
     def energy(self, G, dev, I, p):
         phi = G["phi"][I["i"]]
@@ -159,7 +166,9 @@ class BondAngleX(Family):
 
     def index(self, top, keyf):
         ba, _ = _share_sets(top)
-        return _pair_index(ba), ["bax|" + keyf(top.bonds[b], "bond") + "|" + keyf(top.angles[a], "angle") for b, a in ba]
+        return _pair_index(ba), [
+            "bax|" + keyf(top.bonds[b], "bond") + "|" + keyf(top.angles[a], "angle") for b, a in ba
+        ]
 
     def energy(self, G, dev, I, p):
         return jnp.sum(p["K"] * dev["db"][I["u"]] * dev["dc"][I["v"]])

@@ -5,6 +5,7 @@ Nonbonded: pGM all pairs (or a control) + GAFF LJ from 1-5.
 
     python scripts/bonded/x6_dipeptide.py NAME --families paper [--elec 3] ...
 """
+
 import argparse
 import json
 import os
@@ -13,7 +14,8 @@ import sys
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
 import jax  # noqa: E402
 
 jax.config.update("jax_enable_x64", True)
@@ -46,8 +48,9 @@ g_tr, g_te = grid.subset(np.nonzero(train_mask)[0]), grid.subset(np.nonzero(~tra
 md = frames(name, "train500")
 te_md = frames(name, "test298")
 train = concat(([] if a.no_grid else [g_tr]) + ([md] if (md is not None and not a.no_md) else []))
-st = BondedSettings(families=families_of(a.families), elec_exclude=a.elec, ind_exclude=a.ind,
-                    elec14_scale=a.elec14, lj14_scale=a.lj14)
+st = BondedSettings(
+    families=families_of(a.families), elec_exclude=a.elec, ind_exclude=a.ind, elec14_scale=a.elec14, lj14_scale=a.lj14
+)
 model = BondedModel([spec], st)
 data = {0: {"train": train, "test": g_te, "grid": grid}}
 if te_md is not None:
@@ -58,17 +61,42 @@ E = np.asarray(jax.jit(jax.vmap(lambda X: model.energy(0, X, P)[0]))(jnp.asarray
 ref = grid.E
 m_ref = np.argmin(ref)
 d_ref, d_ff = (ref - ref[m_ref]) / KCAL, (E - E[m_ref]) / KCAL
-win = d_ref < 7.0                                                        # the paper contours within 7 kcal/mol
+win = d_ref < 7.0  # the paper contours within 7 kcal/mol
 err = d_ff - d_ref
-out = {"name": a.name, "args": vars(a), "n_params": model.n_params(P),
-       "test_half": {"MAE": float(np.mean(np.abs(err[~train_mask]))), "RMSE": float(np.sqrt(np.mean(err[~train_mask] ** 2))),
-                     "max": float(np.max(np.abs(err[~train_mask]))), "MAE_below7": float(np.mean(np.abs(err[~train_mask & win])))},
-       "all": {"MAE": float(np.mean(np.abs(err))), "RMSE": float(np.sqrt(np.mean(err ** 2))), "max": float(np.max(np.abs(err)))},
-       "angles": ang.tolist(), "ref": d_ref.tolist(), "ff": d_ff.tolist(), "train_mask": train_mask.tolist()}
+out = {
+    "name": a.name,
+    "args": vars(a),
+    "n_params": model.n_params(P),
+    "test_half": {
+        "MAE": float(np.mean(np.abs(err[~train_mask]))),
+        "RMSE": float(np.sqrt(np.mean(err[~train_mask] ** 2))),
+        "max": float(np.max(np.abs(err[~train_mask]))),
+        "MAE_below7": float(np.mean(np.abs(err[~train_mask & win]))),
+    },
+    "all": {
+        "MAE": float(np.mean(np.abs(err))),
+        "RMSE": float(np.sqrt(np.mean(err**2))),
+        "max": float(np.max(np.abs(err))),
+    },
+    "angles": ang.tolist(),
+    "ref": d_ref.tolist(),
+    "ff": d_ff.tolist(),
+    "train_mask": train_mask.tolist(),
+}
 ev = Fitter(model, {0: {"test": te_md}}) if te_md is not None else None
 if ev is not None:
     out["md_test"] = ev.metrics(P, "test")[0]
 os.makedirs(os.path.join(ROOT, "runs/bonded/results"), exist_ok=True)
 json.dump(out, open(os.path.join(ROOT, "runs/bonded/results", f"{a.name}.json"), "w"), indent=1)
-print(a.name, "surface test half:", {k2: round(v, 3) for k2, v in out["test_half"].items()}, "all:",
-      {k2: round(v, 3) for k2, v in out["all"].items()}, "md test:", out.get("md_test"), "params", out["n_params"], flush=True)
+print(
+    a.name,
+    "surface test half:",
+    {k2: round(v, 3) for k2, v in out["test_half"].items()},
+    "all:",
+    {k2: round(v, 3) for k2, v in out["all"].items()},
+    "md test:",
+    out.get("md_test"),
+    "params",
+    out["n_params"],
+    flush=True,
+)

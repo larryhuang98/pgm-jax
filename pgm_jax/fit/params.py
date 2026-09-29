@@ -17,6 +17,7 @@ exp(theta / 2), so that theta is ln s_eps for both LJ quantities (as scripts/fit
     space = ParameterSpace(sys.table, [Param("q", "scale", keys=["WAT:OW"]), ...])   # per key
 
 Units of the table: nm, e, e nm, nm^3, sqrt(kJ/mol)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -25,8 +26,16 @@ import jax.numpy as jnp
 import numpy as np
 
 # short names of the common scale factors -> table quantity
-ALIASES = {"q": "q", "cov": "cov", "alpha": "alpha", "pol": "alpha", "radius": "radius", "rad": "radius",
-           "lj_r": "lj_rmin_half", "lj_eps": "lj_sqrt_eps"}
+ALIASES = {
+    "q": "q",
+    "cov": "cov",
+    "alpha": "alpha",
+    "pol": "alpha",
+    "radius": "radius",
+    "rad": "radius",
+    "lj_r": "lj_rmin_half",
+    "lj_eps": "lj_sqrt_eps",
+}
 LABELS = {"q": "q", "cov": "cov", "alpha": "pol", "radius": "rad", "lj_rmin_half": "R", "lj_sqrt_eps": "eps"}
 
 
@@ -35,11 +44,12 @@ class Param:
     """One fitting parameter: `quantity` of the table, `kind` "scale" (theta = ln s) or "shift"
     (native units), acting on the entries with the given tying keys (None: every entry with a
     nonzero value, for scales; every entry for shifts)."""
+
     quantity: str
     kind: str = "scale"
     keys: list | None = None
     name: str | None = None
-    prior_sigma: float | None = None          # Gaussian prior width on theta (None: the space's default)
+    prior_sigma: float | None = None  # Gaussian prior width on theta (None: the space's default)
     extra: dict = field(default_factory=dict)
 
 

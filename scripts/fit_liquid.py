@@ -18,6 +18,7 @@ R*_i -> s_R R*_i, eps_i -> s_eps eps_i; or (--params type) one pair of scales pe
     python scripts/fit_liquid.py water    --start 0.0296,-0.357 --iters 6    # perturbed start
     python scripts/fit_liquid.py methanol --iters 6                         # from GAFF LJ
 """
+
 import argparse
 import json
 import os
@@ -39,13 +40,15 @@ from pgm_jax.md.simulation import Simulation, _dedupe
 from pgm_jax.param import read_prmtop_pgm
 from pgm_jax.system import System
 
-KB = 0.0083144626181532            # kJ/mol/K
+KB = 0.0083144626181532  # kJ/mol/K
 KCAL = 4.184
-G_CM3 = 1.66053906660e-3           # amu/nm^3 -> g/cm^3
+G_CM3 = 1.66053906660e-3  # amu/nm^3 -> g/cm^3
 WATER_TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
 WATER_RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
-EXP = {"water": {"rho": 0.997, "dhvap": 10.518},      # 298 K, 1 bar: g/cm^3, kcal/mol
-       "methanol": {"rho": 0.7866, "dhvap": 37.43 / KCAL}}
+EXP = {
+    "water": {"rho": 0.997, "dhvap": 10.518},  # 298 K, 1 bar: g/cm^3, kcal/mol
+    "methanol": {"rho": 0.7866, "dhvap": 37.43 / KCAL},
+}
 
 
 class ParamMap:
@@ -70,7 +73,7 @@ class ParamMap:
         v = np.array([float(x) for x in text.split(",")])
         if len(v) == self.n:
             return v
-        if len(v) == 2:                                  # (ln s_R, ln s_eps) for every type
+        if len(v) == 2:  # (ln s_R, ln s_eps) for every type
             return v[self.kind]
         raise SystemExit(f"--start needs 2 or {self.n} values ({', '.join(self.names)})")
 
@@ -93,17 +96,29 @@ def build(name, n_meth=216):
         xyz, _, box = read_coordinates(WATER_RST)
         return {"sys": sys_, "pos": xyz * 0.1, "H": box_from_cell(*box) * 0.1, "tpl": None, "dt": 0.001}
     from pgm_jax.md.flexible import FlexibleTemplate, liquid_box
+
     tpl = FlexibleTemplate.load(os.path.join(ROOT, "runs/flex/methanol.flex"))
     pos, H = liquid_box(tpl, n_meth, 0.55, seed=1, min_dist=0.18)
     return {"sys": System([tpl.pgm] * n_meth), "pos": pos, "H": H, "tpl": tpl, "dt": 0.0005}
 
 
 def make_sim(sysd, params, T, settings, pos, H, vel, seed):
-    common = dict(dt=sysd["dt"], ensemble="npt", temperature=T, gamma=1.0, pressure=1.0, barostat_interval=25,
-                  seed=seed, vel_nm_ps=vel, params=params, log=None)
+    common = dict(
+        dt=sysd["dt"],
+        ensemble="npt",
+        temperature=T,
+        gamma=1.0,
+        pressure=1.0,
+        barostat_interval=25,
+        seed=seed,
+        vel_nm_ps=vel,
+        params=params,
+        log=None,
+    )
     if sysd["tpl"] is None:
         return Simulation(sysd["sys"], pos, H, settings, **common)
     from pgm_jax.md.flexible import FlexibleSimulation
+
     return FlexibleSimulation(sysd["sys"], [sysd["tpl"]] * sysd["sys"].nmol, pos, H, settings, **common)
 
 
@@ -114,6 +129,7 @@ def gas_energy(sysd, p0, T, settings):
     mol = sysd["sys"].molecules[0]
     sl = sysd["sys"].atom_slice(0)
     from pgm_jax.md.rigid import _unwrap
+
     x = _unwrap(np.asarray(sysd["pos"])[sl], np.asarray(sysd["H"]))
     Hb = np.eye(3) * 5.0
     big = MDSettings(precision="double", dipole_tol=1e-9, cutoff=2.2, skin=0.05, lj_lrc=False)
@@ -131,12 +147,13 @@ def gas_energy(sysd, p0, T, settings):
         raise NotImplementedError("intramolecular LJ pairs: <U_gas> would depend on the LJ parameters")
     sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
     from md_check import MASS, langevin
+
     P = jax.tree_util.tree_map(jnp.asarray, tpl.P)
     efun = lambda R: tpl.model.energy(tpl.index, R, P)[0]
     x0 = jnp.asarray(tpl.spec.ref_xyz)
     offset = (e_md(np.asarray(x0)) + tpl.bonded_energy(x0)) - float(efun(x0))
     Xs, Es = langevin(efun, x0, [MASS[e] for e in tpl.spec.elements], T, 0.0005, 200000, 100, 16, jax.random.PRNGKey(7))
-    Es = np.asarray(Es)[:, 200:]                                # drop 10 ps per replica
+    Es = np.asarray(Es)[:, 200:]  # drop 10 ps per replica
     return float(Es.mean()) + float(offset), float(Es.mean(1).std() / np.sqrt(len(Es)))
 
 
@@ -172,7 +189,8 @@ def sample(sim, sysd, theta, p0, T, n_prod, every, to_params):
             c = st.dyn.position.center
         idx = sim.nb.candidates(st.nbr, c, st.box, pos)[0]
         u, g = dU(jnp.asarray(theta), pos, st.box, st.induction.mu, idx)
-        out["U"].append(float(st.epot)); out["U_check"].append(float(u))
+        out["U"].append(float(st.epot))
+        out["U_check"].append(float(u))
         out["rho"].append(M / float(volume(st.box)) * G_CM3)
         out["dU"].append(np.asarray(g))
     return {k: np.asarray(v) for k, v in out.items()}
@@ -187,15 +205,25 @@ def estimates(fr, T, N, u_gas):
     dh = (u_gas - U / N + KB * T) / KCAL
     J = np.stack([d_rho, -d_U / N / KCAL])
     blocks = lambda a: np.array([b.mean() for b in np.array_split(a, 5)]).std(ddof=1) / np.sqrt(5)
-    return {"rho": rho.mean(), "rho_se": blocks(rho), "dhvap": dh.mean(), "dhvap_se": blocks(dh), "J": J,
-            "U_consistency_kJ": float(np.abs(fr["U"] - fr["U_check"]).max())}
+    return {
+        "rho": rho.mean(),
+        "rho_se": blocks(rho),
+        "dhvap": dh.mean(),
+        "dhvap_se": blocks(dh),
+        "J": J,
+        "U_consistency_kJ": float(np.abs(fr["U"] - fr["U_check"]).max()),
+    }
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("system", choices=["water", "methanol"])
-    ap.add_argument("--params", choices=["global", "type"], default="global",
-                    help="global: two scales for all atoms; type: R* and eps scale per LJ atom type")
+    ap.add_argument(
+        "--params",
+        choices=["global", "type"],
+        default="global",
+        help="global: two scales for all atoms; type: R* and eps scale per LJ atom type",
+    )
     ap.add_argument("--start", default="0,0", help="initial ln scales: 2 values, or one per parameter (--params type)")
     ap.add_argument("--iters", type=int, default=6)
     ap.add_argument("--T", type=float, default=298.0)
@@ -205,8 +233,12 @@ def main():
     ap.add_argument("--every", type=float, default=0.2, help="ps between frames")
     ap.add_argument("--sig_rho", type=float, default=0.005)
     ap.add_argument("--sig_dh", type=float, default=0.05)
-    ap.add_argument("--targets", default="", help="rho,dHvap (g/cm^3, kcal/mol) instead of experiment, "
-                    "e.g. the model's own values for a parameter-recovery test")
+    ap.add_argument(
+        "--targets",
+        default="",
+        help="rho,dHvap (g/cm^3, kcal/mol) instead of experiment, "
+        "e.g. the model's own values for a parameter-recovery test",
+    )
     ap.add_argument("--out", default="")
     a = ap.parse_args()
     out = a.out or os.path.join(ROOT, f"runs/liquid/{a.system}.json")
@@ -217,7 +249,10 @@ def main():
     N = sysd["sys"].nmol
     t0 = time.time()
     u_gas, u_gas_se = gas_energy(sysd, p0, a.T, settings)
-    print(f"# {a.system}: {N} molecules, <U_gas> = {u_gas:.3f} +- {u_gas_se:.3f} kJ/mol ({time.time() - t0:.0f} s)", flush=True)
+    print(
+        f"# {a.system}: {N} molecules, <U_gas> = {u_gas:.3f} +- {u_gas_se:.3f} kJ/mol ({time.time() - t0:.0f} s)",
+        flush=True,
+    )
     to_params = ParamMap(sysd["sys"].table, p0, a.params)
     theta = to_params.start(a.start)
     clip = np.where(to_params.kind == 0, 0.02, 0.25)
@@ -242,17 +277,35 @@ def main():
         Js = est["J"] / sig[:, None]
         step = -np.linalg.solve(Js.T @ Js + 1e-3 * np.eye(to_params.n), Js.T @ r)
         step = np.clip(step, -clip, clip)
-        rec = {"iter": it, "theta": theta.tolist(), "names": to_params.names,
-               "s_R": float(np.exp(theta[0])), "s_eps": float(np.exp(theta[-1])),
-               "rho": est["rho"], "rho_se": est["rho_se"], "dhvap": est["dhvap"], "dhvap_se": est["dhvap_se"],
-               "J": est["J"].tolist(), "predicted_from_previous": pred, "step": step.tolist(),
-               "U_consistency_kJ": est["U_consistency_kJ"], "frames": len(fr["U"]), "wall_s": time.time() - t1}
+        rec = {
+            "iter": it,
+            "theta": theta.tolist(),
+            "names": to_params.names,
+            "s_R": float(np.exp(theta[0])),
+            "s_eps": float(np.exp(theta[-1])),
+            "rho": est["rho"],
+            "rho_se": est["rho_se"],
+            "dhvap": est["dhvap"],
+            "dhvap_se": est["dhvap_se"],
+            "J": est["J"].tolist(),
+            "predicted_from_previous": pred,
+            "step": step.tolist(),
+            "U_consistency_kJ": est["U_consistency_kJ"],
+            "frames": len(fr["U"]),
+            "wall_s": time.time() - t1,
+        }
         log["iters"].append(rec)
-        par = (f"s_R {rec['s_R']:.4f} s_eps {rec['s_eps']:.4f}" if a.params == "global"
-               else "scales " + " ".join(f"{v:.4f}" for v in np.exp(theta)))
-        print(f"iter {it}: {par}  rho {est['rho']:.4f} +- {est['rho_se']:.4f}  "
-              f"dHvap {est['dhvap']:.3f} +- {est['dhvap_se']:.3f} kcal/mol  (target {y_exp[0]:.4f}, {y_exp[1]:.3f}); "
-              f"predicted {pred}; J {np.round(est['J'], 4).tolist()}; {time.time() - t1:.0f} s", flush=True)
+        par = (
+            f"s_R {rec['s_R']:.4f} s_eps {rec['s_eps']:.4f}"
+            if a.params == "global"
+            else "scales " + " ".join(f"{v:.4f}" for v in np.exp(theta))
+        )
+        print(
+            f"iter {it}: {par}  rho {est['rho']:.4f} +- {est['rho_se']:.4f}  "
+            f"dHvap {est['dhvap']:.3f} +- {est['dhvap_se']:.3f} kcal/mol  (target {y_exp[0]:.4f}, {y_exp[1]:.3f}); "
+            f"predicted {pred}; J {np.round(est['J'], 4).tolist()}; {time.time() - t1:.0f} s",
+            flush=True,
+        )
         json.dump(log, open(out, "w"), indent=1)
         pred = (y + est["J"] @ step).tolist()
         theta = theta + step

@@ -65,6 +65,7 @@ vmapped beads by default (bead_chunk; twice as fast as one vmap over 32 beads of
 Rigid bodies and constraints are not supported: a rigid-rotor path integral is not a ring polymer
 of atoms.  Quantum water needs flexible molecules (FlexibleTemplate; flexible_water below builds a
 flexible pGM water with the q-TIP4P/F monomer surface; docs/pimd.md).  Units: nm, ps, amu, kJ/mol, K."""
+
 from __future__ import annotations
 
 import math
@@ -84,9 +85,9 @@ from .io import NetCDFTrajectory, write_restart
 from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .thermostats import Bussi
 
-HBAR = 0.0635077993                  # kJ/mol ps  (1.054571817e-34 J s * N_A)
-KJMOL_TO_MEV = 10.364269656262175    # 1 kJ/mol per particle in meV
-BAR = 16.605390671738466             # bar per kJ/mol/nm^3
+HBAR = 0.0635077993  # kJ/mol ps  (1.054571817e-34 J s * N_A)
+KJMOL_TO_MEV = 10.364269656262175  # 1 kJ/mol per particle in meV
+BAR = 16.605390671738466  # bar per kJ/mol/nm^3
 FORMAT = "pgm_jax pimd 1"
 
 
@@ -99,10 +100,13 @@ def normal_modes(P: int):
     j = np.arange(P)
     cols, idx = [np.full(P, 1.0 / math.sqrt(P))], [0]
     for l in range(1, (P - 1) // 2 + 1):
-        cols.append(math.sqrt(2.0 / P) * np.cos(2.0 * math.pi * j * l / P)); idx.append(l)
-        cols.append(math.sqrt(2.0 / P) * np.sin(2.0 * math.pi * j * l / P)); idx.append(l)
+        cols.append(math.sqrt(2.0 / P) * np.cos(2.0 * math.pi * j * l / P))
+        idx.append(l)
+        cols.append(math.sqrt(2.0 / P) * np.sin(2.0 * math.pi * j * l / P))
+        idx.append(l)
     if P % 2 == 0 and P > 1:
-        cols.append((-1.0) ** j / math.sqrt(P)); idx.append(P // 2)
+        cols.append((-1.0) ** j / math.sqrt(P))
+        idx.append(P // 2)
     return np.stack(cols, 1), np.array(idx, int)
 
 
@@ -130,7 +134,7 @@ class RingPolymer:
         self.omega_P = self.P * self.kT / HBAR
         C, idx = normal_modes(self.P)
         self.C = C
-        self.omega = 2.0 * self.omega_P * np.sin(np.pi * idx / self.P)     # (P,) rad/ps
+        self.omega = 2.0 * self.omega_P * np.sin(np.pi * idx / self.P)  # (P,) rad/ps
         self.omega[0] = 0.0
 
     def to_nm(self, x):
@@ -143,7 +147,7 @@ class RingPolymer:
     def spring(self, q, mass):
         """sum_k sum_i m_i omega_P^2 |q_i^k - q_i^(k+1)|^2 / 2 per atom, (N,) kJ/mol."""
         d = q - jnp.roll(q, -1, axis=0)
-        return 0.5 * self.omega_P ** 2 * mass[:, 0] * jnp.sum(d * d, axis=(0, 2))
+        return 0.5 * self.omega_P**2 * mass[:, 0] * jnp.sum(d * d, axis=(0, 2))
 
     def propagator(self, h: float, mass, kind: str = "cayley"):
         """Free ring-polymer step of length h for every mode and atom: p' = a p + b q, q' = c p + d q
@@ -186,8 +190,14 @@ class PILE:
     Bussi rescaling with time constant tau0 ("pile-g"); "trpmd": internal modes only (lam = 1/2
     by default); "rpmd": none."""
 
-    def __init__(self, ring: RingPolymer, mode: str = "pimd", thermostat: str = "pile-l", tau0: float = 0.2,
-                 lam: float | None = None):
+    def __init__(
+        self,
+        ring: RingPolymer,
+        mode: str = "pimd",
+        thermostat: str = "pile-l",
+        tau0: float = 0.2,
+        lam: float | None = None,
+    ):
         mode, thermostat = mode.lower(), thermostat.lower()
         if mode not in ("pimd", "trpmd", "rpmd"):
             raise ValueError("mode: 'pimd' | 'trpmd' | 'rpmd'")
@@ -233,16 +243,16 @@ class PILE:
 # ----------------------------------------------------------------------------- state and integrator
 @dataclasses.dataclass
 class PIMDState:
-    q: jnp.ndarray            # (P, N, 3) bead positions, nm (ring polymers whole)
-    p: jnp.ndarray            # (P, N, 3) bead momenta, amu nm / ps
-    f: jnp.ndarray            # (P, N, 3) forces -dU/dq, kJ/mol/nm
-    upot: jnp.ndarray         # () U = sum_k V(q^k) (with contraction: the contracted U), kJ/mol
-    box: jnp.ndarray          # (3, 3) nm
-    eng: object               # engine state (induced dipoles, neighbour list, ...)
+    q: jnp.ndarray  # (P, N, 3) bead positions, nm (ring polymers whole)
+    p: jnp.ndarray  # (P, N, 3) bead momenta, amu nm / ps
+    f: jnp.ndarray  # (P, N, 3) forces -dU/dq, kJ/mol/nm
+    upot: jnp.ndarray  # () U = sum_k V(q^k) (with contraction: the contracted U), kJ/mol
+    box: jnp.ndarray  # (3, 3) nm
+    eng: object  # engine state (induced dipoles, neighbour list, ...)
     rng: jnp.ndarray
-    heat: jnp.ndarray         # () heat taken up by the thermostat since the start, kJ/mol
+    heat: jnp.ndarray  # () heat taken up by the thermostat since the start, kJ/mol
     step: jnp.ndarray
-    mc: jnp.ndarray = None    # barostat (tries, accepts, window tries, window accepts)
+    mc: jnp.ndarray = None  # barostat (tries, accepts, window tries, window accepts)
     mc_dv: jnp.ndarray = None  # current maximum volume change (nm^3)
 
 
@@ -256,16 +266,28 @@ class PIMDIntegrator:
     terms unchanged; acceptance on (U' - U) / P + p dV - N_mol kT ln(V'/V) (the ring polymer
     isomorphism at beta_P = beta / P), step size adapted to 25-75 % acceptance."""
 
-    def __init__(self, engine, masses, nbeads: int, temperature: float, dt: float, mode: str = "pimd",
-                 thermostat: str = "pile-l", tau0: float = 0.2, lam: float | None = None,
-                 propagator: str = "cayley", ensemble: str = "nvt", pressure: float = 1.0,
-                 barostat_interval: int = 100):
+    def __init__(
+        self,
+        engine,
+        masses,
+        nbeads: int,
+        temperature: float,
+        dt: float,
+        mode: str = "pimd",
+        thermostat: str = "pile-l",
+        tau0: float = 0.2,
+        lam: float | None = None,
+        propagator: str = "cayley",
+        ensemble: str = "nvt",
+        pressure: float = 1.0,
+        barostat_interval: int = 100,
+    ):
         if ensemble not in ("nvt", "npt"):
             raise ValueError("ensemble: 'nvt' | 'npt' (NVE: mode='rpmd')")
         if ensemble == "npt" and not hasattr(engine, "scale"):
             raise ValueError("the barostat needs an engine with molecules (PGMBeads)")
         self.ensemble = ensemble
-        self.pressure = float(pressure) / BAR              # bar -> kJ/mol/nm^3
+        self.pressure = float(pressure) / BAR  # bar -> kJ/mol/nm^3
         self.interval = int(barostat_interval)
         self.engine = engine
         self.mass = jnp.asarray(np.asarray(masses, float).reshape(-1, 1))
@@ -276,8 +298,9 @@ class PIMDIntegrator:
         self.propagator = propagator
         self.set_thermostat(mode, thermostat, tau0, lam)
 
-    def set_thermostat(self, mode: str = "pimd", thermostat: str = "pile-l", tau0: float = 0.2,
-                       lam: float | None = None):
+    def set_thermostat(
+        self, mode: str = "pimd", thermostat: str = "pile-l", tau0: float = 0.2, lam: float | None = None
+    ):
         """(Re)configure the thermostat (e.g. PIMD equilibration, then TRPMD or RPMD) and re-jit."""
         self.thermo = PILE(self.ring, mode, thermostat, tau0, lam)
         self.mode = self.thermo.mode
@@ -309,9 +332,19 @@ class PIMDIntegrator:
         else:
             p = jnp.asarray(momenta, jnp.float64)
         z = jnp.zeros((), jnp.float64)
-        st = PIMDState(q=q, p=p, f=jnp.zeros_like(q), upot=z, box=box, eng=self.engine.init(q, box), rng=k3,
-                       heat=z, step=jnp.zeros((), jnp.int32), mc=jnp.zeros(4, jnp.int32),
-                       mc_dv=jnp.asarray(0.01 * float(volume(box)), jnp.float64))
+        st = PIMDState(
+            q=q,
+            p=p,
+            f=jnp.zeros_like(q),
+            upot=z,
+            box=box,
+            eng=self.engine.init(q, box),
+            rng=k3,
+            heat=z,
+            step=jnp.zeros((), jnp.int32),
+            mc=jnp.zeros(4, jnp.int32),
+            mc_dv=jnp.asarray(0.01 * float(volume(box)), jnp.float64),
+        )
         return self.forces(st)
 
     def _step(self, st: PIMDState) -> PIMDState:
@@ -351,7 +384,9 @@ class PIMDIntegrator:
         mc = st.mc + jnp.array([1, 0, 1, 0], jnp.int32) + accept.astype(jnp.int32) * jnp.array([0, 1, 0, 1], jnp.int32)
         adapt = mc[2] >= 10
         rate = mc[3] / jnp.maximum(mc[2], 1)
-        dv = jnp.where(adapt & (rate < 0.25), st.mc_dv / 1.1, jnp.where(adapt & (rate > 0.75), st.mc_dv * 1.1, st.mc_dv))
+        dv = jnp.where(
+            adapt & (rate < 0.25), st.mc_dv / 1.1, jnp.where(adapt & (rate > 0.75), st.mc_dv * 1.1, st.mc_dv)
+        )
         dv = jnp.minimum(dv, 0.3 * volume(st.box))
         mc = jnp.where(adapt, mc.at[2].set(0).at[3].set(0), mc)
         return st.set(mc=mc, mc_dv=dv)
@@ -374,10 +409,18 @@ class PIMDIntegrator:
         ke = 0.5 * jnp.sum(p * p / m[None])
         pn = ring.to_nm(p)
         t_mode = jnp.sum(pn * pn / m[None], axis=(1, 2)) / (3.0 * self.n * KB * ring.P)
-        return {"prim": prim, "cv": cv, "ke_beads": ke, "spring": jnp.sum(spring_i),
-                "hamiltonian": ke + jnp.sum(spring_i) + st.upot, "econs": ke + jnp.sum(spring_i) + st.upot - st.heat,
-                "t_beads": 2.0 * ke / (3.0 * self.n * ring.P * KB) / ring.P, "t_modes": t_mode,
-                "t_centroid": t_mode[0], "epot": st.upot / ring.P}
+        return {
+            "prim": prim,
+            "cv": cv,
+            "ke_beads": ke,
+            "spring": jnp.sum(spring_i),
+            "hamiltonian": ke + jnp.sum(spring_i) + st.upot,
+            "econs": ke + jnp.sum(spring_i) + st.upot - st.heat,
+            "t_beads": 2.0 * ke / (3.0 * self.n * ring.P * KB) / ring.P,
+            "t_modes": t_mode,
+            "t_centroid": t_mode[0],
+            "epot": st.upot / ring.P,
+        }
 
 
 # ----------------------------------------------------------------------------- engines
@@ -409,14 +452,14 @@ class PotentialEngine:
 
 @dataclasses.dataclass
 class PGMBeadState:
-    induction: object          # InductionState batched over the force beads (count shared)
-    nbr: object                # neighbour list of the centroid (shared by every bead)
-    iters: jnp.ndarray         # CG iterations of the last solve (largest over the beads)
-    max_iters: jnp.ndarray     # largest since the block started
+    induction: object  # InductionState batched over the force beads (count shared)
+    nbr: object  # neighbour list of the centroid (shared by every bead)
+    iters: jnp.ndarray  # CG iterations of the last solve (largest over the beads)
+    max_iters: jnp.ndarray  # largest since the block started
     resid: jnp.ndarray
     overflow: jnp.ndarray
-    cg_total: jnp.ndarray      # CG iterations (largest over the beads) summed over the steps
-    elec: jnp.ndarray          # force-bead averages of the force field's parts (kJ/mol)
+    cg_total: jnp.ndarray  # CG iterations (largest over the beads) summed over the steps
+    elec: jnp.ndarray  # force-bead averages of the force field's parts (kJ/mol)
     vdw: jnp.ndarray
 
 
@@ -434,27 +477,38 @@ class PGMBeads:
     chunk, the chunks run one after the other in a lax.map ("auto": 8 when that divides more than 8
     beads; None: all at once); results are identical."""
 
-    def __init__(self, sim, nbeads: int, contract: int | None = None, bead_margin: float = 0.08,
-                 bead_chunk: int | str | None = "auto"):
+    def __init__(
+        self,
+        sim,
+        nbeads: int,
+        contract: int | None = None,
+        bead_margin: float = 0.08,
+        bead_chunk: int | str | None = "auto",
+    ):
         integ = sim.integ
         if getattr(integ, "cons", None) is not None:
-            raise ValueError("path integrals need flexible molecules without constraints (constraints='none', "
-                             "no RigidTemplate)")
+            raise ValueError(
+                "path integrals need flexible molecules without constraints (constraints='none', no RigidTemplate)"
+            )
         if getattr(integ, "vsites", None) is not None:
             raise NotImplementedError("virtual sites are not supported with path integrals yet")
         if getattr(integ, "mts", None) is not None or integ.alchemy is not None or integ.restraints is not None:
             raise NotImplementedError("path integrals with mts / alchemy / restraints are not supported yet")
         if getattr(sim.ff, "iel", False):
-            raise NotImplementedError("path integrals with extended-Lagrangian dipoles (MDSettings.iel): every bead "
-                                      "would need its own auxiliary dipoles; use iel='none'")
+            raise NotImplementedError(
+                "path integrals with extended-Lagrangian dipoles (MDSettings.iel): every bead "
+                "would need its own auxiliary dipoles; use iel='none'"
+            )
         if getattr(integ, "bias", None) is not None or getattr(integ, "efield", None) is not None:
-            raise NotImplementedError("path integrals with biases on collective variables (bias=) or an external "
-                                      "electric field (efield=) are not supported yet")
+            raise NotImplementedError(
+                "path integrals with biases on collective variables (bias=) or an external "
+                "electric field (efield=) are not supported yet"
+            )
         self.sim, self.ff, self.flex, self.integ = sim, sim.ff, sim.flex, integ
         self.P = int(nbeads)
         self.Pc = None if (contract is None or int(contract) >= self.P) else int(contract)
         self.nf = self.P if self.Pc is None else self.Pc
-        if bead_chunk == "auto":            # 512 waters, P = 32: 15.2 ms/step vmapped at once, 8.0 in chunks of 8
+        if bead_chunk == "auto":  # 512 waters, P = 32: 15.2 ms/step vmapped at once, 8.0 in chunks of 8
             bead_chunk = 8 if (self.nf > 8 and self.nf % 8 == 0) else None
         self.chunk = None if not bead_chunk else int(bead_chunk)
         self.bead_margin = float(bead_margin)
@@ -471,12 +525,14 @@ class PGMBeads:
         for tpl, rows in self.flex.groups:
             model = tpl.model
             P = jax.tree_util.tree_map(jnp.asarray, tpl.P)
-            fn = (lambda R, model=model, P=P, idx=tpl.index: model.nonbonded(idx, R, P)[0])
+            fn = lambda R, model=model, P=P, idx=tpl.index: model.nonbonded(idx, R, P)[0]
             groups.append((fn, rows))
             covered += int(np.size(rows))
         if covered != self.flex.n:
-            raise ValueError("ring-polymer contraction needs every molecule to be a FlexibleTemplate "
-                             "(its gas-phase model is the stiff reference)")
+            raise ValueError(
+                "ring-polymer contraction needs every molecule to be a FlexibleTemplate "
+                "(its gas-phase model is the stiff reference)"
+            )
         return groups
 
     def monomer_nonbonded(self, x):
@@ -503,12 +559,14 @@ class PGMBeads:
             mode = "molecule" if MoleculeNeighbors.fits(H, s.pair_cutoff, s.skin, self.r_list) else "atom"
         if mode == "molecule":
             self.nb = MoleculeNeighbors(sim.topology.group, sim.topology.n_group, self.r_list, H, s.pair_cutoff, s.skin)
-        else:                    # pairs of bead atoms within the cutoff: centroid atoms within cutoff + 2 margins
+        else:  # pairs of bead atoms within the cutoff: centroid atoms within cutoff + 2 margins
             rc = s.pair_cutoff + 2.0 * self.bead_margin
             skin = min(s.skin, max_cutoff(H) - rc - 0.002)
             if skin < 0.02:
-                raise ValueError(f"box too small for the bead margin: cutoff {s.pair_cutoff} + 2 x {self.bead_margin} "
-                                 f"leaves a list skin of {skin:.3f} nm (half the box height {max_cutoff(H):.3f} nm)")
+                raise ValueError(
+                    f"box too small for the bead margin: cutoff {s.pair_cutoff} + 2 x {self.bead_margin} "
+                    f"leaves a list skin of {skin:.3f} nm (half the box height {max_cutoff(H):.3f} nm)"
+                )
             self.nb = AtomNeighbors(sim.sys.n, H, rc, skin)
         self._nb_volume = float(volume(jnp.asarray(H)))
 
@@ -541,8 +599,12 @@ class PGMBeads:
             caps = [self.nb.size(nbr, c, box, x[k], factor) for k in range(x.shape[0])]
             self.nb.cap = max(caps)
         ff = self.ff
-        counts = np.array([np.asarray(jax.jit(ff.pair_counts)(x[k], box, self.nb.candidates(nbr, c, box, x[k])[0]))
-                           for k in range(x.shape[0])])
+        counts = np.array(
+            [
+                np.asarray(jax.jit(ff.pair_counts)(x[k], box, self.nb.candidates(nbr, c, box, x[k])[0]))
+                for k in range(x.shape[0])
+            ]
+        )
         caps = []
         for k in {int(np.argmax(counts[:, 0])), int(np.argmax(counts[:, 1]))}:
             ff.size_rows(x[k], box, self.nb.candidates(nbr, c, box, x[k])[0], factor)
@@ -558,12 +620,20 @@ class PGMBeads:
         qc = jnp.mean(q, 0)
         nbr = self.nb.allocate(qc, self._centers(qc), box)
         z, zi = jnp.zeros((), jnp.float64), jnp.zeros((), jnp.int32)
-        return PGMBeadState(induction=ind, nbr=nbr, iters=zi, max_iters=zi, resid=z, overflow=jnp.zeros((), bool),
-                            cg_total=z, elec=z, vdw=z)
+        return PGMBeadState(
+            induction=ind,
+            nbr=nbr,
+            iters=zi,
+            max_iters=zi,
+            resid=z,
+            overflow=jnp.zeros((), bool),
+            cg_total=z,
+            elec=z,
+            vdw=z,
+        )
 
     def reset_block(self, e: PGMBeadState) -> PGMBeadState:
-        return e.set(max_iters=jnp.zeros((), jnp.int32), resid=jnp.zeros((), jnp.float64),
-                     overflow=jnp.zeros((), bool))
+        return e.set(max_iters=jnp.zeros((), jnp.int32), resid=jnp.zeros((), jnp.float64), overflow=jnp.zeros((), bool))
 
     def _ind_axes(self, ind):
         return jax.tree_util.tree_map(lambda _: 0, _nocount(ind))
@@ -579,7 +649,7 @@ class PGMBeads:
         if c is None or c >= nf or nf % c:
             return jax.vmap(fn, in_axes=(0, ax), out_axes=out_ax)(x, ind)
         count = ind.count
-        split = lambda a: a.reshape((nf // c, c) + a.shape[1:])                     # noqa: E731
+        split = lambda a: a.reshape((nf // c, c) + a.shape[1:])  # noqa: E731
         xs = split(x)
         inds = jax.tree_util.tree_map(split, _nocount(ind))
         vf = jax.vmap(fn, in_axes=(0, ax), out_axes=out_ax)
@@ -588,10 +658,12 @@ class PGMBeads:
             xc, ic = args
             out = vf(xc, ic.set(count=count))
             return tuple(o.set(count=None) if i == k_ind else o for i, o in enumerate(out)), out[k_ind].count
+
         out, counts = jax.lax.map(body, (xs, inds))
-        merge = lambda a: a.reshape((nf,) + a.shape[2:])                            # noqa: E731
-        return tuple(jax.tree_util.tree_map(merge, o).set(count=counts[0]) if i == k_ind else merge(o)
-                     for i, o in enumerate(out))
+        merge = lambda a: a.reshape((nf,) + a.shape[2:])  # noqa: E731
+        return tuple(
+            jax.tree_util.tree_map(merge, o).set(count=counts[0]) if i == k_ind else merge(o) for i, o in enumerate(out)
+        )
 
     def compute(self, q, box, e: PGMBeadState):
         qc = jnp.mean(q, 0)
@@ -603,26 +675,42 @@ class PGMBeads:
         def one(xk, ind):
             cand, ovf = nb.candidates(nbr, c, box, xk)
             res = ff.compute(xk, box, cand, ind, params)
-            return (res.energy["total"], res.energy["elec"], res.energy["vdw"], res.forces, res.induction,
-                    res.iterations, res.residual, res.overflow | ovf)
+            return (
+                res.energy["total"],
+                res.energy["elec"],
+                res.energy["vdw"],
+                res.forces,
+                res.induction,
+                res.iterations,
+                res.residual,
+                res.overflow | ovf,
+            )
 
         E, El, Ev, F, ind, it, err, ovf = self._over_beads(one, x, e.induction, 8, 4)
         ref_vg = jax.vmap(jax.value_and_grad(self.reference))
         if self.Pc is None:
-            eb, gb = ref_vg(q)                                # bonded terms on every bead
+            eb, gb = ref_vg(q)  # bonded terms on every bead
             f = F - gb
             U = jnp.sum(E) + jnp.sum(eb)
         else:
             em, gm = jax.vmap(jax.value_and_grad(self.monomer_nonbonded))(x)
-            dE, dF = E - em, F + gm                           # intermolecular remainder on the contracted beads
-            er, gr = ref_vg(q)                                # stiff reference on every bead
+            dE, dF = E - em, F + gm  # intermolecular remainder on the contracted beads
+            er, gr = ref_vg(q)  # stiff reference on every bead
             scale = self.P / self.Pc
             f = scale * jnp.tensordot(self.T.T, dF, axes=1) - gr
             U = scale * jnp.sum(dE) + jnp.sum(er)
         itm = jnp.max(it)
-        e = e.set(induction=ind, nbr=nbr, iters=itm, max_iters=jnp.maximum(e.max_iters, itm),
-                  resid=jnp.maximum(e.resid, jnp.max(err)), overflow=e.overflow | jnp.any(ovf),
-                  cg_total=e.cg_total + itm, elec=jnp.mean(El), vdw=jnp.mean(Ev))
+        e = e.set(
+            induction=ind,
+            nbr=nbr,
+            iters=itm,
+            max_iters=jnp.maximum(e.max_iters, itm),
+            resid=jnp.maximum(e.resid, jnp.max(err)),
+            overflow=e.overflow | jnp.any(ovf),
+            cg_total=e.cg_total + itm,
+            elec=jnp.mean(El),
+            vdw=jnp.mean(Ev),
+        )
         return f, U, e
 
     # ------------------------------------------------------------------ barostat
@@ -680,6 +768,7 @@ class PGMBeads:
             def en(eps):
                 Fm = jnp.eye(3) + eps
                 return ff.energy_fixed_mu(xk + (com @ eps.T)[flex.mol], box @ Fm.T, muk, cand, P)[0]
+
             return jax.grad(en)(jnp.zeros((3, 3))) - ff._vdw_tail(P, box) * jnp.eye(3)
 
         return jnp.mean(jax.vmap(W)(x, mu), 0)
@@ -700,36 +789,70 @@ class PIMDSimulation:
     ensemble "npt": Monte Carlo barostat at `pressure` (bar) every `barostat_interval` steps.
     bead_chunk: force beads per vmapped chunk ("auto": 8 for more than 8 beads)."""
 
-    def __init__(self, sim, beads: int = 32, mode: str = "pimd", thermostat: str = "pile-l", tau0: float = 0.2,
-                 lam: float | None = None, propagator: str = "cayley", contract: int | None = None,
-                 bead_margin: float = 0.08, seed: int = 0, dt: float | None = None, spread: bool = True,
-                 ensemble: str = "nvt", pressure: float = 1.0, barostat_interval: int = 100,
-                 bead_chunk: int | str | None = "auto", log=sys.stdout):
+    def __init__(
+        self,
+        sim,
+        beads: int = 32,
+        mode: str = "pimd",
+        thermostat: str = "pile-l",
+        tau0: float = 0.2,
+        lam: float | None = None,
+        propagator: str = "cayley",
+        contract: int | None = None,
+        bead_margin: float = 0.08,
+        seed: int = 0,
+        dt: float | None = None,
+        spread: bool = True,
+        ensemble: str = "nvt",
+        pressure: float = 1.0,
+        barostat_interval: int = 100,
+        bead_chunk: int | str | None = "auto",
+        log=sys.stdout,
+    ):
         self.sim, self.log = sim, log
         self.engine = PGMBeads(sim, beads, contract, bead_margin, bead_chunk)
         self.P = int(beads)
         self.dt = float(sim.dt if dt is None else dt)
         self.T0 = float(sim.T0)
-        self.integ = PIMDIntegrator(self.engine, np.asarray(sim.flex.masses), beads, self.T0, self.dt, mode,
-                                    thermostat, tau0, lam, propagator, ensemble, pressure, barostat_interval)
+        self.integ = PIMDIntegrator(
+            self.engine,
+            np.asarray(sim.flex.masses),
+            beads,
+            self.T0,
+            self.dt,
+            mode,
+            thermostat,
+            tau0,
+            lam,
+            propagator,
+            ensemble,
+            pressure,
+            barostat_interval,
+        )
         self.ensemble = ensemble
         self.elements = np.array(sim.sys.elements)
         H = jnp.asarray(sim.state.box)
         pos = sim.state.dyn.position
         key = jax.random.PRNGKey(int(seed))
         k1, k2 = jax.random.split(key)
-        q = self.integ.ring.sample_free(k1, pos, self.integ.mass) if spread else jnp.broadcast_to(pos, (self.P,) + pos.shape)
+        q = (
+            self.integ.ring.sample_free(k1, pos, self.integ.mass)
+            if spread
+            else jnp.broadcast_to(pos, (self.P,) + pos.shape)
+        )
         self._size(q, H)
         self.state = self.integ.init(q, H, k2)
         self.time_ps = 0.0
         e = self.engine
-        self._print(f"# pgm_jax PIMD: {sim.sys.nmol} molecules, {sim.sys.n} atoms, {self.P} beads"
-                    f"{'' if e.Pc is None else f' (intermolecular forces contracted to {e.Pc})'}, "
-                    f"{self.integ.thermo.describe()}, {ensemble.upper()}"
-                    f"{f' ({pressure:g} bar, Monte Carlo every {barostat_interval} steps)' if ensemble == 'npt' else ''}, "
-                    f"T {self.T0:g} K, dt {self.dt * 1000:g} fs, "
-                    f"{propagator} free ring-polymer step, {e.nb.kind} neighbour list of the centroid "
-                    f"(bead margin {e.bead_margin:g} nm), {sim.settings.precision} precision, device {jax.devices()[0]}")
+        self._print(
+            f"# pgm_jax PIMD: {sim.sys.nmol} molecules, {sim.sys.n} atoms, {self.P} beads"
+            f"{'' if e.Pc is None else f' (intermolecular forces contracted to {e.Pc})'}, "
+            f"{self.integ.thermo.describe()}, {ensemble.upper()}"
+            f"{f' ({pressure:g} bar, Monte Carlo every {barostat_interval} steps)' if ensemble == 'npt' else ''}, "
+            f"T {self.T0:g} K, dt {self.dt * 1000:g} fs, "
+            f"{propagator} free ring-polymer step, {e.nb.kind} neighbour list of the centroid "
+            f"(bead margin {e.bead_margin:g} nm), {sim.settings.precision} precision, device {jax.devices()[0]}"
+        )
 
     def _print(self, s):
         if self.log is not None:
@@ -798,17 +921,21 @@ class PIMDSimulation:
                     e.nb.cap = max(e.nb.cap, old[1] + 4)
                 self.integ.run = jax.jit(self.integ._run)
                 self.integ.forces = jax.jit(self.integ._forces)
-            self._print(f"# {'neighbour list' if nb_bad else 'row capacity'} overflow in steps {int(start.step)}-"
-                        f"{int(start.step) + n}: resized, repeating")
+            self._print(
+                f"# {'neighbour list' if nb_bad else 'row capacity'} overflow in steps {int(start.step)}-"
+                f"{int(start.step) + n}: resized, repeating"
+            )
             redo = self.integ.forces(start.set(eng=start.eng.set(nbr=nbr)))
-            start = redo.set(eng=redo.eng.set(induction=start.eng.induction))   # no second history entry
+            start = redo.set(eng=redo.eng.set(induction=start.eng.induction))  # no second history entry
         else:
             raise RuntimeError("neighbour list keeps overflowing")
         new = self._wrap(new)
         ext = float(jax.jit(e.extent)(new.q))
         if ext > e.limit():
-            raise RuntimeError(f"a bead atom is {ext:.3f} nm from its centroid reference, beyond the list margin "
-                               f"{e.limit():.3f} nm; increase bead_margin")
+            raise RuntimeError(
+                f"a bead atom is {ext:.3f} nm from its centroid reference, beyond the list margin "
+                f"{e.limit():.3f} nm; increase bead_margin"
+            )
         if not np.isfinite(float(new.upot)):
             raise FloatingPointError(f"energy is not finite at step {int(new.step)}")
         self.state = new
@@ -823,10 +950,18 @@ class PIMDSimulation:
     def observables(self) -> dict:
         st, eng = self.state, self.state.eng
         est = {k: np.asarray(v) for k, v in self._est().items()}
-        out = {"step": int(st.step), "time_ps": self.time_ps, "temp_K": float(est["t_beads"]),
-               "temp_centroid": float(est["t_centroid"]), "epot": float(est["epot"]),
-               "ekin_prim": float(est["prim"].sum()), "ekin_cv": float(est["cv"].sum()),
-               "econs": float(est["econs"]), "elec": float(eng.elec), "vdw": float(eng.vdw)}
+        out = {
+            "step": int(st.step),
+            "time_ps": self.time_ps,
+            "temp_K": float(est["t_beads"]),
+            "temp_centroid": float(est["t_centroid"]),
+            "epot": float(est["epot"]),
+            "ekin_prim": float(est["prim"].sum()),
+            "ekin_cv": float(est["cv"].sum()),
+            "econs": float(est["econs"]),
+            "elec": float(eng.elec),
+            "vdw": float(eng.vdw),
+        }
         V = float(volume(st.box))
         out["volume_nm3"] = V
         out["density_g_cm3"] = float(np.sum(self.sim.sys.masses)) / V * 1.66053906660e-3
@@ -839,8 +974,14 @@ class PIMDSimulation:
         M, mb = self.molecular_dipoles()
         out["dipole_D"] = float(np.mean(np.linalg.norm(M, axis=-1))) / DEBYE_E_NM
         out["dipole_bead_D"] = mb / DEBYE_E_NM
-        out.update({"cg_iter": int(eng.iters), "cg_iter_max": int(eng.max_iters), "cg_resid_max": float(eng.resid),
-                    "cg_mean": float(eng.cg_total) / max(int(st.step), 1)})
+        out.update(
+            {
+                "cg_iter": int(eng.iters),
+                "cg_iter_max": int(eng.max_iters),
+                "cg_resid_max": float(eng.resid),
+                "cg_mean": float(eng.cg_total) / max(int(st.step), 1),
+            }
+        )
         return out
 
     def pressure(self) -> float:
@@ -857,6 +998,7 @@ class PIMDSimulation:
         charges, covalent and induced dipoles of every force bead (the contracted beads with contraction)."""
         if getattr(self, "_dip_jit", None) is None:
             from .dipoles import CellDipole
+
             cd = CellDipole(self.engine.ff)
             params = self.engine.params
 
@@ -864,6 +1006,7 @@ class PIMDSimulation:
                 x = self.engine.force_positions(q)
                 M = jax.vmap(lambda xk, mk: cd.molecular(xk, box, mk, params))(x, mu)
                 return jnp.mean(M, 0), jnp.mean(jnp.linalg.norm(M, axis=-1))
+
             self._dip_jit = jax.jit(f)
         st = self.state
         M, m = self._dip_jit(st.q, st.box, st.eng.induction.mu)
@@ -876,8 +1019,17 @@ class PIMDSimulation:
         return np.asarray(self.state.q)
 
     # ------------------------------------------------------------------ running
-    def run(self, nsteps: int, report: int = 100, traj: int = 0, beads_traj: int = 0, restart: int = 0,
-            prefix: str = "pimd", append: bool = False, pressure: bool = False):
+    def run(
+        self,
+        nsteps: int,
+        report: int = 100,
+        traj: int = 0,
+        beads_traj: int = 0,
+        restart: int = 0,
+        prefix: str = "pimd",
+        append: bool = False,
+        pressure: bool = False,
+    ):
         """Every `report` steps a log line (prefix.log), `traj` a centroid frame (prefix.nc),
         `beads_traj` a frame of every bead (prefix_beads.nc, P x N atoms, bead-major), `restart` a
         checkpoint (prefix.pimd.chk) and an Amber restart of the centroid."""
@@ -906,7 +1058,9 @@ class PIMDSimulation:
                     if not append or logf.tell() == 0:
                         logf.write(header + "\n")
                     self._print(header)
-                line = "  " + " ".join(f"{obs[c]:14.6f}" if isinstance(obs[c], float) else f"{obs[c]:14d}" for c in cols)
+                line = "  " + " ".join(
+                    f"{obs[c]:14.6f}" if isinstance(obs[c], float) else f"{obs[c]:14d}" for c in cols
+                )
                 logf.write(line + "\n")
                 logf.flush()
                 self._print(line)
@@ -927,8 +1081,14 @@ class PIMDSimulation:
         every bead, random state) and prefix.rst7 (Amber restart of the centroid)."""
         st = self.state
         vc = np.asarray(jnp.mean(st.p, 0) / self.integ.mass)
-        write_restart(prefix + ".rst7", self.centroid_nm() * 10.0, vc * 10.0, np.asarray(st.box) * 10.0, self.time_ps,
-                      title=f"pgm_jax PIMD centroid, {self.P} beads")
+        write_restart(
+            prefix + ".rst7",
+            self.centroid_nm() * 10.0,
+            vc * 10.0,
+            np.asarray(st.box) * 10.0,
+            self.time_ps,
+            title=f"pgm_jax PIMD centroid, {self.P} beads",
+        )
         host = jax.tree_util.tree_map(np.asarray, st.set(eng=st.eng.set(nbr=None)))
         with open(prefix + ".pimd.chk", "wb") as fh:
             pickle.dump({"format": FORMAT, "beads": self.P, "state": host, "time_ps": self.time_ps}, fh)
@@ -966,7 +1126,8 @@ def qtip4pf_intra(R, p: dict = QTIP4PF):
 
     def morse4(r):
         x = a * (r - p["r_eq"])
-        return p["D"] * (x * x - x ** 3 + 7.0 / 12.0 * x ** 4)
+        return p["D"] * (x * x - x**3 + 7.0 / 12.0 * x**4)
+
     return morse4(r1) + morse4(r2) + 0.5 * p["k_theta"] * (th - math.radians(p["theta_eq"])) ** 2
 
 
@@ -984,12 +1145,20 @@ def harmonic_frequencies(energy_fn, R, masses):
     Hs = np.asarray(jax.hessian(lambda x: energy_fn(x.reshape(n, 3)))(R.reshape(-1)))
     m = np.repeat(np.asarray(masses, float), 3)
     w2 = np.linalg.eigvalsh(Hs / np.sqrt(np.outer(m, m)))
-    w = np.sqrt(np.clip(np.sort(w2)[-(3 * n - 6):], 0.0, None))       # rad/ps
-    return w / (2.0 * math.pi * 2.99792458e-2)                           # 1/ps -> cm^-1
+    w = np.sqrt(np.clip(np.sort(w2)[-(3 * n - 6) :], 0.0, None))  # rad/ps
+    return w / (2.0 * math.pi * 2.99792458e-2)  # 1/ps -> cm^-1
 
 
-def flexible_water(molecule, target=qtip4pf_intra, families=WATER_FAMILIES, n_samples: int = 2000,
-                   sigma_r: float = 0.008, sigma_theta: float = 9.0, force_weight: float = 1e-4, seed: int = 0):
+def flexible_water(
+    molecule,
+    target=qtip4pf_intra,
+    families=WATER_FAMILIES,
+    n_samples: int = 2000,
+    sigma_r: float = 0.008,
+    sigma_theta: float = 9.0,
+    force_weight: float = 1e-4,
+    seed: int = 0,
+):
     """FlexibleTemplate of a pGM water whose gas-phase monomer potential (bonded terms + the
     all-pair intramolecular pGM electrostatics and induction of `molecule`) reproduces `target`
     (default: the q-TIP4P/F intramolecular potential).  The bonded families (quartic bonds, harmonic
@@ -1024,7 +1193,8 @@ def flexible_water(molecule, target=qtip4pf_intra, families=WATER_FAMILIES, n_sa
         P = {f: dict(v) for f, v in P0.items()}
         o = 0
         for (f, k), n in zip(lin, sizes):
-            P[f][k] = jnp.reshape(theta[o:o + n], np.shape(P0[f][k])); o += n
+            P[f][k] = jnp.reshape(theta[o : o + n], np.shape(P0[f][k]))
+            o += n
         for (f, k), v in zip(nonlin, nl):
             P[f][k] = jnp.full(np.shape(P0[f][k]), v)
         return P
@@ -1033,7 +1203,7 @@ def flexible_water(molecule, target=qtip4pf_intra, families=WATER_FAMILIES, n_sa
     r = p["r_eq"] + sigma_r * rng.standard_normal((n_samples, 2))
     th = p["theta_eq"] + sigma_theta * rng.standard_normal(n_samples)
     X = jnp.asarray(np.stack([water_geometry(a, b, t) for (a, b), t in zip(r, th)]))
-    enb = lambda R: model.nonbonded(0, R, None)[0]                                        # noqa: E731
+    enb = lambda R: model.nonbonded(0, R, None)[0]  # noqa: E731
     yE = np.asarray(jax.vmap(target)(X) - jax.vmap(enb)(X))
     yF = np.asarray(-jax.vmap(jax.grad(target))(X) + jax.vmap(jax.grad(enb))(X))
     L = sum(sizes)
@@ -1046,7 +1216,8 @@ def flexible_water(molecule, target=qtip4pf_intra, families=WATER_FAMILIES, n_sa
             E = jax.vmap(lambda R: model.bonded_energy(0, R, P))(X)
             F = -jax.vmap(jax.grad(lambda R: model.bonded_energy(0, R, P)))(X)
             return E, F
-        return jax.jacfwd(eb)(jnp.zeros(L))                  # energies are linear in theta: exact
+
+        return jax.jacfwd(eb)(jnp.zeros(L))  # energies are linear in theta: exact
 
     def solve(nl):
         JE, JF = (np.asarray(a) for a in design(jnp.asarray(nl)))
@@ -1058,13 +1229,21 @@ def flexible_water(molecule, target=qtip4pf_intra, families=WATER_FAMILIES, n_sa
 
     t0 = [p["r_eq"], math.radians(p["theta_eq"])] + [float(np.mean(P0[f]["r0"])) for f, _ in nonlin[2:]]
     steps = np.array([0.002, 0.05] + [0.005] * (len(t0) - 2))
-    opt = scipy.optimize.minimize(lambda nl: solve(nl)[1], np.array(t0), method="Nelder-Mead",
-                                  options={"xatol": 1e-9, "fatol": 1e-12, "maxiter": 4000,
-                                           "initial_simplex": np.vstack([t0, np.array(t0) + np.diag(steps)])})
+    opt = scipy.optimize.minimize(
+        lambda nl: solve(nl)[1],
+        np.array(t0),
+        method="Nelder-Mead",
+        options={
+            "xatol": 1e-9,
+            "fatol": 1e-12,
+            "maxiter": 4000,
+            "initial_simplex": np.vstack([t0, np.array(t0) + np.diag(steps)]),
+        },
+    )
     theta, loss = solve(opt.x)
     P = jax.tree_util.tree_map(jnp.asarray, build(jnp.asarray(theta), opt.x))
     tpl = FlexibleTemplate.from_fit(model, P)
-    model_E = lambda R: model.energy(0, R, P)[0]                                          # noqa: E731
+    model_E = lambda R: model.energy(0, R, P)[0]  # noqa: E731
     E = jax.vmap(model_E)(X)
     Et = jax.vmap(target)(X)
     dE = (E - Et) - jnp.mean(E - Et)
@@ -1072,18 +1251,25 @@ def flexible_water(molecule, target=qtip4pf_intra, families=WATER_FAMILIES, n_sa
     m = np.asarray(molecule.masses, float)
     e_fit = jax.jit(model_E)
     g_fit = jax.jit(jax.grad(lambda x: model_E(x.reshape(3, 3))))
-    mn = scipy.optimize.minimize(lambda x: float(e_fit(jnp.asarray(x).reshape(3, 3))), x0.reshape(-1),
-                                 jac=lambda x: np.asarray(g_fit(jnp.asarray(x)), float), method="BFGS",
-                                 options={"gtol": 1e-8})
+    mn = scipy.optimize.minimize(
+        lambda x: float(e_fit(jnp.asarray(x).reshape(3, 3))),
+        x0.reshape(-1),
+        jac=lambda x: np.asarray(g_fit(jnp.asarray(x)), float),
+        method="BFGS",
+        options={"gtol": 1e-8},
+    )
     Rm = mn.x.reshape(3, 3)
     b = np.linalg.norm(Rm[1:] - Rm[0], axis=1)
     ang = math.degrees(math.acos(np.dot(Rm[1] - Rm[0], Rm[2] - Rm[0]) / (b[0] * b[1])))
-    report = {"rms_energy_kJmol": float(jnp.sqrt(jnp.mean(dE ** 2))),
-              "rms_force_kJmol_nm": float(jnp.sqrt(jnp.mean(jnp.sum(dF ** 2, -1)) / 3.0)),
-              "rms_target_force": float(jnp.sqrt(jnp.mean(jnp.sum(jax.vmap(jax.grad(target))(X) ** 2, -1)) / 3.0)),
-              "minimum_bonds_nm": b.tolist(), "minimum_angle_deg": ang,
-              "freq_fit_cm": harmonic_frequencies(model_E, Rm, m).tolist(),
-              "freq_target_cm": harmonic_frequencies(target, x0, m).tolist(),
-              "params": {f: {k: np.asarray(v).tolist() for k, v in d.items()} for f, d in P.items()},
-              "outer": str(opt.message)}
+    report = {
+        "rms_energy_kJmol": float(jnp.sqrt(jnp.mean(dE**2))),
+        "rms_force_kJmol_nm": float(jnp.sqrt(jnp.mean(jnp.sum(dF**2, -1)) / 3.0)),
+        "rms_target_force": float(jnp.sqrt(jnp.mean(jnp.sum(jax.vmap(jax.grad(target))(X) ** 2, -1)) / 3.0)),
+        "minimum_bonds_nm": b.tolist(),
+        "minimum_angle_deg": ang,
+        "freq_fit_cm": harmonic_frequencies(model_E, Rm, m).tolist(),
+        "freq_target_cm": harmonic_frequencies(target, x0, m).tolist(),
+        "params": {f: {k: np.asarray(v).tolist() for k, v in d.items()} for f, d in P.items()},
+        "outer": str(opt.message),
+    }
     return tpl, report

@@ -2,6 +2,7 @@
 iEL/0-SCF (finite differences), second-order shadow energy error, time reversibility of the
 auxiliary-dipole propagation, agreement with converged SCF along a trajectory, energy conservation
 in a tiny box, iEL/SCF, the barostat path and the flexible engine."""
+
 import dataclasses
 
 import jax
@@ -24,8 +25,9 @@ from pgm_jax.md.simulation import Simulation  # noqa: E402
 
 
 def _settings(**kw):
-    base = dict(cutoff=0.55, skin=0.05, pme_grid=(24, 24, 24), pme_order=6, precision="double", dipole_tol=1e-10,
-                max_iter=200)
+    base = dict(
+        cutoff=0.55, skin=0.05, pme_grid=(24, 24, 24), pme_order=6, precision="double", dipole_tol=1e-10, max_iter=200
+    )
     base.update(kw)
     return MDSettings(**base)
 
@@ -44,7 +46,7 @@ def test_niklasson_recurrence_is_stable_on_the_pgm_water_spectrum():
         if K > 0:
             assert max(rho) < 0.9999
     assert spectral_radius(1.0, 5) < 0.92
-    assert spectral_radius(2.2, 5) > 1.0                       # kappa lam beyond the stability limit
+    assert spectral_radius(2.2, 5) > 1.0  # kappa lam beyond the stability limit
 
 
 def _ff_state(settings, seed=1):
@@ -56,15 +58,16 @@ def _ff_state(settings, seed=1):
 
 @pytest.mark.parametrize("omega,precond", [(1.0, "jacobi"), (0.8, "jacobi"), (1.0, "block"), (0.9, "block")])
 def test_shadow_forces_are_exact_and_energy_error_second_order(omega, precond):
-    s = _settings(cutoff=0.6, pme_grid=(48, 48, 48), pme_order=8, ewald_beta=6.0, iel="0scf", iel_omega=omega,
-                  iel_precond=precond)
+    s = _settings(
+        cutoff=0.6, pme_grid=(48, 48, 48), pme_order=8, ewald_beta=6.0, iel="0scf", iel_omega=omega, iel_precond=precond
+    )
     ff, pos, H, idx = _ff_state(s)
     comp = jax.jit(ff.compute)
-    ref = comp(pos, H, idx, ff.init_induction())               # warm-up step: converged dipoles
+    ref = comp(pos, H, idx, ff.init_induction())  # warm-up step: converged dipoles
     mu_star, e_star = ref.induction.mu, float(ref.energy["total"])
     assert int(ref.iterations) > 5
     rng = np.random.default_rng(0)
-    noise = jnp.asarray(rng.normal(size=mu_star.shape)) * float(jnp.sqrt(jnp.mean(mu_star ** 2)))
+    noise = jnp.asarray(rng.normal(size=mu_star.shape)) * float(jnp.sqrt(jnp.mean(mu_star**2)))
 
     def shadow(eps):
         ind = ref.induction.set(count=jnp.asarray(100, jnp.int32), xl=ref.induction.xl.at[0].set(mu_star + eps * noise))
@@ -76,12 +79,12 @@ def test_shadow_forces_are_exact_and_energy_error_second_order(omega, precond):
     P = ff._atoms(None)
     _, F_hf = ff._energy_forces(pos, H, res.induction.mu, ff.geometry(pos, H, idx, P, forces=True), P)
     E = jax.jit(lambda y: ff.compute(y, H, idx, ind).energy["total"])
-    h = 3e-6                                                   # FD error ~ 1e-4 (h^2)
+    h = 3e-6  # FD error ~ 1e-4 (h^2)
     for k in range(3):
         v = jnp.asarray(rng.normal(size=pos.shape))
         fd = (float(E(pos + h * v)) - float(E(pos - h * v))) / (2 * h)
         an = -float(jnp.sum(res.forces * v))
-        hf = -float(jnp.sum(F_hf * v))                         # fixed-dipole forces at mu = x + delta alone
+        hf = -float(jnp.sum(F_hf * v))  # fixed-dipole forces at mu = x + delta alone
         assert abs(fd - an) < 1e-7 * abs(an) + 1e-3, (fd, an)
         assert abs(fd - hf) > 10 * abs(fd - an), (fd, an, hf)
     # U~ - U* is second order in the error of x (and below the fixed-dipole energy at x)
@@ -107,7 +110,7 @@ def test_time_reversibility_without_dissipation(mode):
     sys, pos, H = _water()
     s = _settings(iel=mode, iel_order=0, iel_iter=2)
     sim = Simulation(sys, pos, H, s, dt=0.0005, ensemble="nve", log=None, seed=3)
-    sim._advance(10)                                           # past the warm-up
+    sim._advance(10)  # past the warm-up
     x0 = sim.positions_nm()
     sim._advance(60)
     moved = np.abs(sim.positions_nm() - x0).max()
@@ -131,8 +134,19 @@ def test_dissipation_breaks_reversibility_only_slightly():
 
 def _trajectory(settings, n=8, block=25, dt=0.001, seed=5, ensemble="nve"):
     sys, pos, H = _water()
-    sim = Simulation(sys, pos, H, settings, dt=dt, ensemble=ensemble, log=None, seed=seed, temperature=300.0,
-                     thermostat="bussi", tau_t=0.1)
+    sim = Simulation(
+        sys,
+        pos,
+        H,
+        settings,
+        dt=dt,
+        ensemble=ensemble,
+        log=None,
+        seed=seed,
+        temperature=300.0,
+        thermostat="bussi",
+        tau_t=0.1,
+    )
     return sim
 
 
@@ -151,18 +165,26 @@ def test_dipoles_and_energy_follow_the_converged_solution():
         idx = sim.nb.candidates(st.nbr, st.dyn.position.center, st.box, pos)[0]
         r = solve(pos, st.box, idx)
         mu = st.induction.mu
-        rel.append(float(jnp.sqrt(jnp.mean((mu - r.induction.mu) ** 2) / jnp.mean(r.induction.mu ** 2))))
+        rel.append(float(jnp.sqrt(jnp.mean((mu - r.induction.mu) ** 2) / jnp.mean(r.induction.mu**2))))
         de.append(float(st.epot - r.energy["total"]))
     assert int(sim.state.iters) == 0
     assert max(rel) < 2e-3, rel
-    assert max(abs(x) for x in de) < 0.05, de                   # kJ/mol for 64 waters (|U| ~ 2500)
+    assert max(abs(x) for x in de) < 0.05, de  # kJ/mol for 64 waters (|U| ~ 2500)
 
 
 def _drift_and_noise(settings, dt=0.001, n=12, block=50):
     sim = _trajectory(settings, dt=dt, ensemble="nvt")
-    sim._advance(100)                                          # relax the lattice start (Bussi 0.1 ps)
-    nve = Simulation(sim.sys, sim.positions_nm(), np.asarray(sim.state.box), settings, dt=dt, ensemble="nve",
-                     log=None, vel_nm_ps=sim.velocities_nm_ps())
+    sim._advance(100)  # relax the lattice start (Bussi 0.1 ps)
+    nve = Simulation(
+        sim.sys,
+        sim.positions_nm(),
+        np.asarray(sim.state.box),
+        settings,
+        dt=dt,
+        ensemble="nve",
+        log=None,
+        vel_nm_ps=sim.velocities_nm_ps(),
+    )
     E = []
     nve._advance(20)
     for _ in range(n):
@@ -170,7 +192,7 @@ def _drift_and_noise(settings, dt=0.001, n=12, block=50):
         E.append(nve.observables()["etot"])
     E = np.array(E)
     t = np.arange(n) * block * dt
-    slope = np.polyfit(t, E, 1)[0] * 1000.0 / nve.integ.dof / (KB * 300.0)      # kT / ns / dof
+    slope = np.polyfit(t, E, 1)[0] * 1000.0 / nve.integ.dof / (KB * 300.0)  # kT / ns / dof
     return slope, np.std(E - np.polyval(np.polyfit(t, E, 1), t)) / (0.5 * nve.integ.dof * KB * 300.0)
 
 
@@ -185,7 +207,7 @@ def test_energy_conservation_in_a_tiny_box():
 
 def test_iel_scf_modes():
     base = _settings(dipole_tol=1e-8)
-    sim = _trajectory(dataclasses.replace(base, iel="scf", iel_iter=0))       # CG from x to tolerance
+    sim = _trajectory(dataclasses.replace(base, iel="scf", iel_iter=0))  # CG from x to tolerance
     sim._advance(40)
     it_x = float(sim.state.cg_total) / 40
     ref = _trajectory(base)
@@ -199,10 +221,22 @@ def test_iel_scf_modes():
 
 def test_barostat_and_flexible_engine():
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
+
     sys, pos, H = _water()
     s = _settings(iel="0scf", dipole_tol=1e-8)
-    sim = Simulation(sys, pos, H * 1.02, s, dt=0.001, ensemble="npt", barostat_interval=5, log=None,
-                     thermostat="bussi", tau_t=0.1, seed=2)
+    sim = Simulation(
+        sys,
+        pos,
+        H * 1.02,
+        s,
+        dt=0.001,
+        ensemble="npt",
+        barostat_interval=5,
+        log=None,
+        thermostat="bussi",
+        tau_t=0.1,
+        seed=2,
+    )
     sim._advance(100)
     o = sim.observables()
     assert int(sim.state.mc[0]) == 20 and np.isfinite(o["epot"]) and 0.5 < o["density_g_cm3"] < 1.5
@@ -226,6 +260,7 @@ def test_refuses_unsupported_combinations():
 
 def test_response_spectrum_and_positive_auxiliary_energy():
     from pgm_jax.md.iel import response_spectrum
+
     s = _settings(cutoff=0.6, pme_grid=(48, 48, 48), pme_order=8, ewald_beta=6.0, iel="0scf")
     ff, pos, H, idx = _ff_state(s)
     lo_j, hi_j = response_spectrum(ff, pos, H, idx, precond="jacobi")

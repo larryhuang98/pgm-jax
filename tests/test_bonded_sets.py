@@ -1,5 +1,6 @@
 """The three bonded term sets: Amber forms (typing by atom type, gradients) and the fast neural
 bonded terms (symmetry, rotation invariance, gradients, freezing for MD)."""
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -32,7 +33,7 @@ def test_amber_set_typed_by_atom_type_and_gradients():
     spec, x = _methanol_spec()
     model = BondedModel([spec], BondedSettings(families=T.SETS["amber"], typing="amber", lj14_scale=0.5))
     assert model.keys["bond_harm"] == sorted(set(model.keys["bond_harm"]), key=model.keys["bond_harm"].index)
-    assert "bond:c3-h1" in model.keys["bond_harm"] and len(model.keys["bond_harm"]) == 3      # c3-oh, c3-h1, ho-oh
+    assert "bond:c3-h1" in model.keys["bond_harm"] and len(model.keys["bond_harm"]) == 3  # c3-oh, c3-h1, ho-oh
     P = model.init_params()
     P["torsion_amber"]["K"] = P["torsion_amber"]["K"] + 1.0
     rng = np.random.default_rng(0)
@@ -40,6 +41,7 @@ def test_amber_set_typed_by_atom_type_and_gradients():
     _fd_check(lambda R: model.energy(0, R, P)[0], y, rng)
     el, bonds, orders, xe = ethanal()
     from test_bonded import ethanal as _e  # noqa: F401
+
     m2 = BondedModel([MolSpec("ethanal", el, bonds, orders, 0, xe)], BondedSettings(families=("improper_amber",)))
     P2 = m2.init_params()
     _fd_check(lambda R: m2.bonded_energy(0, R, P2), xe + 0.01 * rng.normal(size=xe.shape), rng)
@@ -62,7 +64,8 @@ def test_nnb_symmetry_invariance_gradients_and_freeze():
     Q = np.linalg.qr(rng.normal(size=(3, 3)))[0]
     assert abs(float(E(y @ Q.T)) - float(E(y))) < 1e-9 * max(1.0, abs(float(E(y))))
     _fd_check(E, np.asarray(y), rng)
-    Pf = dict(P); Pf["nnb"] = model.nnb.freeze(P["nnb"])
+    Pf = dict(P)
+    Pf["nnb"] = model.nnb.freeze(P["nnb"])
     assert abs(float(model.bonded_energy(0, y, Pf)) - float(E(y))) < 1e-10 * max(1.0, abs(float(E(y))))
     # torsions related by the molecule's symmetry get the same parameters
     V = np.asarray(C["torsion"]["K"])
@@ -74,6 +77,7 @@ def test_nnb_template_md_consistency():
     from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate
     from pgm_jax.md.forcefield import MDSettings
     from pgm_jax.system import System
+
     spec, x = _methanol_spec()
     model = BondedModel([spec], BondedSettings(families=T.SETS["nn"]))
     P = model.init_params()
@@ -86,7 +90,7 @@ def test_nnb_template_md_consistency():
     sim = FlexibleSimulation(System([tpl.pgm]), [tpl], y + 2.0, np.eye(3) * 4.0, s, ensemble="nve", log=None)
     F = np.asarray(sim.state.dyn.force)
     g = np.asarray(jax.grad(lambda R: model.energy(0, R, P)[0])(jnp.asarray(y)))
-    assert np.abs(F + g).max() < 1e-3 * np.sqrt(np.mean(g ** 2))
+    assert np.abs(F + g).max() < 1e-3 * np.sqrt(np.mean(g**2))
 
 
 def test_nnb_typed_table_and_residual_penalty():

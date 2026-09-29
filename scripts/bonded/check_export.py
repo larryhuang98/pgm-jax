@@ -9,6 +9,7 @@ Needs AmberTools (tleap, sander).  Writes validation/check_export.json.
 
     python scripts/bonded/check_export.py
 """
+
 import json
 import os
 import re
@@ -40,15 +41,16 @@ def sh(cmd):
 
 def tleap(seq="ACE ALA ALA NME"):
     open(os.path.join(WD, "leap.in"), "w").write(
-        f"source leaprc.protein.ff19SB\nm = sequence {{ {seq} }}\nsaveamberparm m pep.prmtop pep.inpcrd\nquit\n")
+        f"source leaprc.protein.ff19SB\nm = sequence {{ {seq} }}\nsaveamberparm m pep.prmtop pep.inpcrd\nquit\n"
+    )
     sh("tleap -f leap.in")
 
 
 def read_inpcrd(path):
     lines = open(path).read().split("\n")
     n = int(lines[1].split()[0])
-    vals = [float(l[i:i + 12]) for l in lines[2:] for i in range(0, len(l), 12) if l[i:i + 12].strip()]
-    return np.array(vals[:3 * n]).reshape(n, 3)
+    vals = [float(l[i : i + 12]) for l in lines[2:] for i in range(0, len(l), 12) if l[i : i + 12].strip()]
+    return np.array(vals[: 3 * n]).reshape(n, 3)
 
 
 def write_inpcrd(path, X):
@@ -56,14 +58,16 @@ def write_inpcrd(path, X):
         fh.write("perturbed\n%6d\n" % len(X))
         flat = X.ravel()
         for i in range(0, len(flat), 6):
-            fh.write("".join("%12.7f" % v for v in flat[i:i + 6]) + "\n")
+            fh.write("".join("%12.7f" % v for v in flat[i : i + 6]) + "\n")
 
 
 def sander(prmtop, crd):
-    open(os.path.join(WD, "sp.in"), "w").write("single point\n &cntrl\n  imin=1, maxcyc=0, ntb=0, igb=0, cut=999.0, ntpr=1,\n /\n")
+    open(os.path.join(WD, "sp.in"), "w").write(
+        "single point\n &cntrl\n  imin=1, maxcyc=0, ntb=0, igb=0, cut=999.0, ntpr=1,\n /\n"
+    )
     sh(f"sander -O -i sp.in -p {prmtop} -c {crd} -o sp.out")
     txt = open(os.path.join(WD, "sp.out")).read()
-    txt = txt[txt.index("NSTEP       ENERGY"):]
+    txt = txt[txt.index("NSTEP       ENERGY") :]
     get = lambda name: float(re.search(re.escape(name) + r"\s*=\s*(-?[\d.]+)", txt).group(1))
     return {k: get(k) for k in ("BOND", "ANGLE", "DIHED", "CMAP", "1-4 VDW", "1-4 EEL")}
 
@@ -84,13 +88,18 @@ def ours(terms, P, R):
     out = {}
     cf = [f for f in terms.fams if f.startswith("cmap")][0]
     for f, name in (("bond_harm", "BOND"), ("angle_harm", "ANGLE"), (cf, "CMAP")):
-        Q = jax.tree_util.tree_map(jnp.zeros_like, P); Q["ref"] = P["ref"]; Q[f] = P[f]
+        Q = jax.tree_util.tree_map(jnp.zeros_like, P)
+        Q["ref"] = P["ref"]
+        Q[f] = P[f]
         out[name] = float(terms.bonded_energy(0, R, Q)) / KCAL
-    Q = jax.tree_util.tree_map(jnp.zeros_like, P); Q["ref"] = P["ref"]
-    Q["torsion_amber"] = P["torsion_amber"]; Q["improper_amber"] = P["improper_amber"]
+    Q = jax.tree_util.tree_map(jnp.zeros_like, P)
+    Q["ref"] = P["ref"]
+    Q["torsion_amber"] = P["torsion_amber"]
+    Q["improper_amber"] = P["improper_amber"]
     Im = terms.I[0]
-    const = 2 * np.sum(np.abs(np.minimum(np.asarray(P["torsion_amber"]["K"])[Im["torsion_amber"]["k"]], 0))) + \
-        2 * np.sum(np.abs(np.minimum(np.asarray(P["improper_amber"]["K"])[Im["improper_amber"]["k"]], 0)))
+    const = 2 * np.sum(
+        np.abs(np.minimum(np.asarray(P["torsion_amber"]["K"])[Im["torsion_amber"]["k"]], 0))
+    ) + 2 * np.sum(np.abs(np.minimum(np.asarray(P["improper_amber"]["K"])[Im["improper_amber"]["k"]], 0)))
     out["DIHED"] = (float(terms.bonded_energy(0, R, Q)) + const) / KCAL
     return out
 
@@ -107,7 +116,10 @@ R = jnp.asarray(X)
 res = {"import": {"sander": sander("pep.prmtop", "pert.inpcrd"), "ours": ours(terms, P, R)}}
 # ff19SB's maps are rougher than an order-3 series: the order-6 family gets closer
 t6 = BondedTerms([spec], BondedSettings(families=T.AMBER + ("cmap6",), lj14_scale=0.5))
-res["import_cmap6"] = {"sander": res["import"]["sander"], "ours": ours(t6, init_from_prmtop(t6, t6.init_params(), {0: prm}), R)}
+res["import_cmap6"] = {
+    "sander": res["import"]["sander"],
+    "ours": ours(t6, init_from_prmtop(t6, t6.init_params(), {0: prm}), R),
+}
 # random per-instance changes, exported
 Q = jax.tree_util.tree_map(np.asarray, P)
 Q["bond_harm"]["Kb"] = Q["bond_harm"]["Kb"] * (1 + 0.2 * rng.normal(size=Q["bond_harm"]["Kb"].shape))
@@ -131,6 +143,11 @@ for k in ("import", "import_cmap6", "export"):
     s_, o_ = res[k]["sander"], res[k]["ours"]
     res[k]["diff"] = {n: s_[n] - o_[n] for n in o_}
     print(k, {n: (round(s_[n], 4), round(o_[n], 4)) for n in o_})
-print("1-4 VDW / EEL import vs export:", res["import"]["sander"]["1-4 VDW"], res["export"]["sander"]["1-4 VDW"],
-      res["import"]["sander"]["1-4 EEL"], res["export"]["sander"]["1-4 EEL"])
+print(
+    "1-4 VDW / EEL import vs export:",
+    res["import"]["sander"]["1-4 VDW"],
+    res["export"]["sander"]["1-4 VDW"],
+    res["import"]["sander"]["1-4 EEL"],
+    res["export"]["sander"]["1-4 EEL"],
+)
 json.dump(res, open(os.path.join(ROOT, "validation/check_export.json"), "w"), indent=1)

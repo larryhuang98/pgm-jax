@@ -1,4 +1,5 @@
 """Electrostatics channel: parity with sander/pmemd-pgm, forces, many-body structure."""
+
 import os
 
 import jax
@@ -37,7 +38,7 @@ def test_sander_parity_4wat():
     e = Model([lambda s: ElecChannel()]).energy_fn(sys)(pos, None)
     kcal = float(e["total"]) / 4.184
     assert abs(kcal - (-2164.4829)) / 2164.4829 < 1e-4, kcal
-    vdw = float(Model([LJChannel()]).energy_fn(sys)(pos)["total"]) / 4.184      # same run: VDWAALS = 6.7727
+    vdw = float(Model([LJChannel()]).energy_fn(sys)(pos)["total"]) / 4.184  # same run: VDWAALS = 6.7727
     assert abs(vdw - 6.7727) < 1e-4, vdw
 
 
@@ -56,21 +57,34 @@ def test_prmtop_reader_pgm3p25():
 
 
 def _water_generic():
-    return Molecule("WAT", ["O", "H", "H"], ["ow", "hw", "hw"], np.array([-0.8, 0.4, 0.4]),
-                    np.array([0.06, 0.05, 0.05]), np.array([1.0e-3, 0.3e-3, 0.3e-3]),
-                    cov=[(0, 1, -0.02), (0, 2, -0.02), (1, 0, 0.008), (2, 0, 0.008)])
+    return Molecule(
+        "WAT",
+        ["O", "H", "H"],
+        ["ow", "hw", "hw"],
+        np.array([-0.8, 0.4, 0.4]),
+        np.array([0.06, 0.05, 0.05]),
+        np.array([1.0e-3, 0.3e-3, 0.3e-3]),
+        cov=[(0, 1, -0.02), (0, 2, -0.02), (1, 0, 0.008), (2, 0, 0.008)],
+    )
 
 
 def _monomer(shift, rot):
     t = np.radians(104.52 / 2)
-    m = np.array([[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]])
+    m = np.array(
+        [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
+    )
     return m @ rot.T + shift
 
 
 def _trimer(rng):
     R = lambda: np.linalg.qr(rng.normal(size=(3, 3)))[0]
-    return np.concatenate([_monomer(np.zeros(3), np.eye(3)), _monomer(np.array([0.29, 0.05, 0]), R()),
-                           _monomer(np.array([0.1, 0.28, 0.05]), R())])
+    return np.concatenate(
+        [
+            _monomer(np.zeros(3), np.eye(3)),
+            _monomer(np.array([0.29, 0.05, 0]), R()),
+            _monomer(np.array([0.1, 0.28, 0.05]), R()),
+        ]
+    )
 
 
 def test_forces_match_finite_difference():
@@ -81,8 +95,9 @@ def test_forces_match_finite_difference():
     f = model.energy_fn(sys)
     F = np.asarray(model.forces_fn(sys)(pos, None))
     h = 1e-6
-    for (a, k) in [(0, 0), (4, 1), (8, 2)]:
-        d = np.zeros_like(pos); d[a, k] = h
+    for a, k in [(0, 0), (4, 1), (8, 2)]:
+        d = np.zeros_like(pos)
+        d[a, k] = h
         fd = -(float(f(pos + d, None)["total"]) - float(f(pos - d, None)["total"])) / (2 * h)
         assert abs(fd - F[a, k]) < 1e-5 * max(1.0, abs(fd)), (a, k, fd, F[a, k])
 
@@ -118,6 +133,7 @@ def test_ewald_matches_gas_phase_in_a_large_box():
     """Two waters in a 6 nm cubic box: periodic energy -> isolated energy (image dipole terms ~1e-3 kJ/mol);
     and independent of the Ewald splitting parameter."""
     from pgm_jax.ewald import PeriodicPGM
+
     rng = np.random.default_rng(4)
     sys = System([_water_generic()] * 2)
     pos = _trimer(rng)[:6] + 3.0
@@ -132,6 +148,7 @@ def test_ewald_matches_gas_phase_in_a_large_box():
 def test_elec_decomposition():
     """elst + ind = supermolecular interaction; ind <= 0; a monomer's elst/ind are zero."""
     from pgm_jax.channels import elec_decomposition
+
     w = _water_generic()
     rng = np.random.default_rng(3)
     pos = _trimer(rng)

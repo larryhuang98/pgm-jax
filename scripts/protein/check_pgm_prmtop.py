@@ -38,6 +38,7 @@ Writes validation/check_pgm_prmtop.json; run directories under runs/check_pgm_pr
 Run on a GPU node for --gpu / md (the engine stays on the CPU: the GPU is exclusive-process;
 md-engine runs the engine on the GPU).
 """
+
 import argparse
 import json
 import math
@@ -48,7 +49,7 @@ import sys
 import time
 
 if "md-engine" not in sys.argv:
-    os.environ.setdefault("JAX_PLATFORMS", "cpu")     # the GPU is pmemd.pgm.cuda's (exclusive-process)
+    os.environ.setdefault("JAX_PLATFORMS", "cpu")  # the GPU is pmemd.pgm.cuda's (exclusive-process)
 import numpy as np  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -72,17 +73,33 @@ EXE = {"cpu": "pmemd.pgm", "gpu_dpfp": "pmemd.pgm.cuda_DPFP", "gpu_spfp": "pmemd
 OUT = os.path.join(ROOT, "runs/check_pgm_prmtop")
 RESULT = os.path.join(ROOT, "validation/check_pgm_prmtop.json")
 SYSTEMS = {
-    "water512": (os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop"),
-                 os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt"), "prmtop"),
-    "water4096": (os.path.expanduser("~/pgm-exp/gpubench/w4096.prmtop"), os.path.expanduser("~/pgm-exp/gpubench/w4096.rst7"),
-                  "prmtop"),
-    "pep": (os.path.join(ROOT, "tests/data/pep_wat.prmtop"), os.path.join(ROOT, "tests/data/pep_wat.inpcrd"), "placeholder"),
-    "trpcage": (os.path.join(ROOT, "runs/protein/trpcage.prmtop"), os.path.join(ROOT, "runs/protein/trpcage.inpcrd"),
-                "placeholder"),
+    "water512": (
+        os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop"),
+        os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt"),
+        "prmtop",
+    ),
+    "water4096": (
+        os.path.expanduser("~/pgm-exp/gpubench/w4096.prmtop"),
+        os.path.expanduser("~/pgm-exp/gpubench/w4096.rst7"),
+        "prmtop",
+    ),
+    "pep": (
+        os.path.join(ROOT, "tests/data/pep_wat.prmtop"),
+        os.path.join(ROOT, "tests/data/pep_wat.inpcrd"),
+        "placeholder",
+    ),
+    "trpcage": (
+        os.path.join(ROOT, "runs/protein/trpcage.prmtop"),
+        os.path.join(ROOT, "runs/protein/trpcage.inpcrd"),
+        "placeholder",
+    ),
 }
-for _p in ("ubq", "dhfr", "mbp"):                      # MD speed (scripts/protein/build_amber.py, 10 A TIP3P buffer)
-    SYSTEMS[_p] = (os.path.join(ROOT, f"runs/protein/{_p}.prmtop"), os.path.join(ROOT, f"runs/protein/{_p}.inpcrd"),
-                   "placeholder")
+for _p in ("ubq", "dhfr", "mbp"):  # MD speed (scripts/protein/build_amber.py, 10 A TIP3P buffer)
+    SYSTEMS[_p] = (
+        os.path.join(ROOT, f"runs/protein/{_p}.prmtop"),
+        os.path.join(ROOT, f"runs/protein/{_p}.inpcrd"),
+        "placeholder",
+    )
 TERMS = ("BOND", "ANGLE", "DIHED", "CMAP", "1-4 NB", "1-4 EEL", "VDWAALS", "EELEC")
 
 
@@ -95,8 +112,18 @@ def model(name):
 
 
 def settings_for(H, cutoff=0.9, spacing=0.08, order=6, beta=4.0):
-    return MDSettings(cutoff=cutoff, skin=0.1, ewald_beta=beta, pme_grid=pmemd_grid(H, spacing), pme_order=order,
-                      lj_lrc=False, dipole_tol=1e-9, max_iter=500, precision="double", predictor="none")
+    return MDSettings(
+        cutoff=cutoff,
+        skin=0.1,
+        ewald_beta=beta,
+        pme_grid=pmemd_grid(H, spacing),
+        pme_order=order,
+        lj_lrc=False,
+        dipole_tol=1e-9,
+        max_iter=500,
+        precision="double",
+        predictor="none",
+    )
 
 
 def amber_lambda(K, order, kcut=50):
@@ -111,7 +138,7 @@ def amber_lambda(K, order, kcut=50):
             continue
         x = math.pi * m / K
         k = np.arange(1, kcut + 1) * math.pi
-        g = lambda p: 1.0 + np.sum((x / (x + k)) ** p) + np.sum((x / (x - k)) ** p)    # noqa: E731
+        g = lambda p: 1.0 + np.sum((x / (x + k)) ** p) + np.sum((x / (x - k)) ** p)  # noqa: E731
         out[i] = (g(order) / g(2 * order)) ** 2
     return out
 
@@ -119,6 +146,7 @@ def amber_lambda(K, order, kcut=50):
 def use_amber_lambda():
     """Give the engine's PME pmemd's influence function (diagnosis only; see amber_lambda)."""
     import pgm_jax.md.pme as pme
+
     plain = pme.bspline_moduli
     pme.bspline_moduli = lambda K, order: plain(K, order) / amber_lambda(K, order)
 
@@ -126,10 +154,11 @@ def use_amber_lambda():
 # ----------------------------------------------------------------------------- pmemd
 def sp_mdin(st, H):
     """Single point: pmemd_mdin's nonbonded model, no constraints, induction solved tightly."""
-    txt = pmemd_mdin(st, H, nstlim=1, dt=0.00001, ensemble="nve", constraints="none", ntpr=1, ntwf=1, ntwr=1000,
-                     title="single point")
+    txt = pmemd_mdin(
+        st, H, nstlim=1, dt=0.00001, ensemble="nve", constraints="none", ntpr=1, ntwf=1, ntwr=1000, title="single point"
+    )
     txt = txt.replace(" &pol_gauss\n", " &pol_gauss\n   dipole_scf_init=1, scf_solv_opt=1,\n")
-    return txt.replace(" &ewald\n", " &ewald\n   netfrc=0,\n")        # the CPU code removes the net PME force by default
+    return txt.replace(" &ewald\n", " &ewald\n   netfrc=0,\n")  # the CPU code removes the net PME force by default
 
 
 def run_pmemd(kind, wd, prmtop, crd, mdin, env=None):
@@ -140,14 +169,39 @@ def run_pmemd(kind, wd, prmtop, crd, mdin, env=None):
         e["CUDA_VISIBLE_DEVICES"] = "0"
     e.update(env or {})
     t0 = time.time()
-    r = subprocess.run([os.path.join(AMBER, EXE[kind]), "-O", "-i", "mdin", "-p", prmtop, "-c", crd, "-o", "mdout",
-                        "-frc", "mdfrc", "-r", "restrt", "-x", "mdcrd", "-inf", "mdinfo"], cwd=wd, env=e,
-                       capture_output=True, text=True)
+    r = subprocess.run(
+        [
+            os.path.join(AMBER, EXE[kind]),
+            "-O",
+            "-i",
+            "mdin",
+            "-p",
+            prmtop,
+            "-c",
+            crd,
+            "-o",
+            "mdout",
+            "-frc",
+            "mdfrc",
+            "-r",
+            "restrt",
+            "-x",
+            "mdcrd",
+            "-inf",
+            "mdinfo",
+        ],
+        cwd=wd,
+        env=e,
+        capture_output=True,
+        text=True,
+    )
     if r.returncode != 0:
         if "Small box detected" in r.stdout + r.stderr:
             raise SmallBox(f"{EXE[kind]}: box too small for the GPU neighbour list at this cutoff")
-        raise RuntimeError(f"{EXE[kind]} failed in {wd}:\n{r.stdout[-1000:]}{r.stderr[-2000:]}\n"
-                           f"{open(os.path.join(wd, 'mdout')).read()[-3000:]}")
+        raise RuntimeError(
+            f"{EXE[kind]} failed in {wd}:\n{r.stdout[-1000:]}{r.stderr[-2000:]}\n"
+            f"{open(os.path.join(wd, 'mdout')).read()[-3000:]}"
+        )
     return time.time() - t0
 
 
@@ -216,8 +270,12 @@ def engine(asys, templates, st):
     P["q"], P["cov"] = P["q"] * s, P["cov"] * s
     t0 = time.time()
     res = ff.compute(pos, H, ff.rows_for(pos, H), ff.init_induction(), P)
-    out = {"EELEC": float(res.energy["elec"]) / KCAL, "1-4 EEL": 0.0, "cg_iterations": int(res.iterations),
-           "cg_residual": float(res.residual)}
+    out = {
+        "EELEC": float(res.energy["elec"]) / KCAL,
+        "1-4 EEL": 0.0,
+        "cg_iterations": int(res.iterations),
+        "cg_residual": float(res.residual),
+    }
     F = np.asarray(res.forces) / (10.0 * KCAL)
     # 1-4 van der Waals of the flexible molecules
     X = np.asarray(pos)
@@ -238,16 +296,17 @@ def engine(asys, templates, st):
         eps = Pa["lj_sqrt_eps"][p14[:, 0]] * Pa["lj_sqrt_eps"][p14[:, 1]]
         s6 = (rmin / r) ** 6
         e14 += float(rule.lj14_scale * np.sum(eps * (s6 * s6 - 2.0 * s6))) / KCAL
-        R = pos[o:o + m.n]
+        R = pos[o : o + m.n]
         bond["BOND"] += family_energy(tpl, R, ("bond_harm",))
         bond["ANGLE"] += family_energy(tpl, R, ("angle_harm",))
         bond["CMAP"] += family_energy(tpl, R, ("cmap", "cmap6"))
         Im, Pt = tpl.terms.I[tpl.index], tpl.P
-        const = 2 * np.sum(np.abs(np.minimum(np.asarray(Pt["torsion_amber"]["K"])[Im["torsion_amber"]["k"]], 0))) + \
-            2 * np.sum(np.abs(np.minimum(np.asarray(Pt["improper_amber"]["K"])[Im["improper_amber"]["k"]], 0)))
+        const = 2 * np.sum(
+            np.abs(np.minimum(np.asarray(Pt["torsion_amber"]["K"])[Im["torsion_amber"]["k"]], 0))
+        ) + 2 * np.sum(np.abs(np.minimum(np.asarray(Pt["improper_amber"]["K"])[Im["improper_amber"]["k"]], 0)))
         bond["DIHED"] += family_energy(tpl, R, ("torsion_amber", "improper_amber")) + const / KCAL
         g = np.asarray(jax.grad(lambda y: tpl.bonded_energy(y))(R))
-        F[o:o + m.n] -= g / (10.0 * KCAL)
+        F[o : o + m.n] -= g / (10.0 * KCAL)
         P = jax.tree_util.tree_map(jnp.asarray, tpl.P)
         Q = jax.tree_util.tree_map(jnp.zeros_like, P)
         Q["ref"] = P["ref"]
@@ -291,13 +350,22 @@ def single_points(names, gpu, pme=None, tag=""):
         xyz = asys.positions * 10.0
         eng, F_eng = engine(asys, templates, st)
         other = np.setdiff1d(np.arange(len(F_eng)), cmap_atoms(asys, templates))
-        r = {"atoms": int(len(xyz)), "write": {k: v for k, v in info.items() if k != "exported"},
-             "settings": {"cut_A": 10 * st.cutoff, "ew_coeff": st.ewald_beta / 10, "nfft": list(st.pme_grid),
-                          "order": st.pme_order, "dipole_scf_tol": st.dipole_tol},
-             "engine": eng, "rms_force": float(np.sqrt(np.mean(F_eng ** 2)))}
+        r = {
+            "atoms": int(len(xyz)),
+            "write": {k: v for k, v in info.items() if k != "exported"},
+            "settings": {
+                "cut_A": 10 * st.cutoff,
+                "ew_coeff": st.ewald_beta / 10,
+                "nfft": list(st.pme_grid),
+                "order": st.pme_order,
+                "dipole_scf_tol": st.dipole_tol,
+            },
+            "engine": eng,
+            "rms_force": float(np.sqrt(np.mean(F_eng**2))),
+        }
         runs = ["cpu"] + (["gpu_dpfp", "gpu_spfp"] if gpu else [])
         if st.pme_order not in (4, 5, 6):
-            runs = ["cpu"]                               # pmemd.pgm.cuda: PME orders 4, 5, 6 only
+            runs = ["cpu"]  # pmemd.pgm.cuda: PME orders 4, 5, 6 only
         if name.startswith("water"):
             runs.append("cpu_original")
         for kind in runs:
@@ -314,14 +382,28 @@ def single_points(names, gpu, pme=None, tag=""):
             E["BOND"] -= e_rb
             F = F - f_rb
             dF = F - F_eng
-            r[kind] = {"energies": {k: E.get(k, 0.0) for k in TERMS}, "rigid_bond_energy_removed": e_rb,
-                       "diff": {k: E.get(k, 0.0) - eng[k] for k in TERMS},
-                       "force_rms_diff": float(np.sqrt(np.mean(dF ** 2))), "force_max_diff": float(np.abs(dF).max()),
-                       "force_max_diff_without_cmap_atoms": float(np.abs(dF[other]).max()),
-                       "force_rms_diff_without_cmap_atoms": float(np.sqrt(np.mean(dF[other] ** 2))), "seconds": secs}
-            print(name, kind, json.dumps(r[kind]["diff"]), "force rms/max diff", r[kind]["force_rms_diff"],
-                  r[kind]["force_max_diff"], "without CMAP atoms", r[kind]["force_rms_diff_without_cmap_atoms"],
-                  r[kind]["force_max_diff_without_cmap_atoms"], flush=True)
+            r[kind] = {
+                "energies": {k: E.get(k, 0.0) for k in TERMS},
+                "rigid_bond_energy_removed": e_rb,
+                "diff": {k: E.get(k, 0.0) - eng[k] for k in TERMS},
+                "force_rms_diff": float(np.sqrt(np.mean(dF**2))),
+                "force_max_diff": float(np.abs(dF).max()),
+                "force_max_diff_without_cmap_atoms": float(np.abs(dF[other]).max()),
+                "force_rms_diff_without_cmap_atoms": float(np.sqrt(np.mean(dF[other] ** 2))),
+                "seconds": secs,
+            }
+            print(
+                name,
+                kind,
+                json.dumps(r[kind]["diff"]),
+                "force rms/max diff",
+                r[kind]["force_rms_diff"],
+                r[kind]["force_max_diff"],
+                "without CMAP atoms",
+                r[kind]["force_rms_diff_without_cmap_atoms"],
+                r[kind]["force_max_diff_without_cmap_atoms"],
+                flush=True,
+            )
         r["seconds"] = time.time() - t0
         res[name + tag] = r
         json.dump(res, open(RESULT, "w"), indent=1)
@@ -331,7 +413,9 @@ def single_points(names, gpu, pme=None, tag=""):
 def ca_rmsd(asys, frames_prm):
     """CA RMSD (A, after optimal superposition) of the protein molecules along frames (F, N, 3) in
     prmtop order, from the input structure."""
-    ca = np.array([a for m in asys.molecules if m.kind == "protein" for a, nm in zip(m.atoms, m.atom_names) if nm == "CA"])
+    ca = np.array(
+        [a for m in asys.molecules if m.kind == "protein" for a, nm in zip(m.atoms, m.atom_names) if nm == "CA"]
+    )
     ref = asys.positions[ca] * 10.0
     ref = ref - ref.mean(0)
     out = []
@@ -345,9 +429,12 @@ def ca_rmsd(asys, frames_prm):
 
 
 def _rmsd_summary(r):
-    half = r[len(r) // 2:]
-    return {"ca_rmsd_A": [round(x, 3) for x in r], "ca_rmsd_second_half_mean": float(np.mean(half)),
-            "ca_rmsd_max": float(np.max(r))}
+    half = r[len(r) // 2 :]
+    return {
+        "ca_rmsd_A": [round(x, 3) for x in r],
+        "ca_rmsd_second_half_mean": float(np.mean(half)),
+        "ca_rmsd_max": float(np.max(r)),
+    }
 
 
 def md_engine(name, ps, seed):
@@ -355,12 +442,24 @@ def md_engine(name, ps, seed):
     298 K, Langevin 1/ps, dt 2 fs, X-H constraints, rigid water, no HMR; CA RMSD and ns/day."""
     from pgm_jax.md.flexible import FlexibleSimulation
     from pgm_jax.md.io import read_trajectory
+
     asys, templates = model(name)
     wd = os.path.join(OUT, f"engine_md_{name}_s{seed}")
     os.makedirs(wd, exist_ok=True)
     st = MDSettings(cutoff=0.9, dipole_tol=1e-5, pme_grid=pmemd_grid(asys.box))
-    sim = FlexibleSimulation(asys.system(), templates, asys.system_positions(), asys.box, st, dt=0.002, ensemble="nvt",
-                             constraints="h-bonds", temperature=298.0, gamma=1.0, seed=seed)
+    sim = FlexibleSimulation(
+        asys.system(),
+        templates,
+        asys.system_positions(),
+        asys.box,
+        st,
+        dt=0.002,
+        ensemble="nvt",
+        constraints="h-bonds",
+        temperature=298.0,
+        gamma=1.0,
+        seed=seed,
+    )
     sim.minimize(300)
     n = int(round(ps / 0.002))
     t0 = time.time()
@@ -370,8 +469,12 @@ def md_engine(name, ps, seed):
     Xp = np.empty_like(X)
     Xp[:, np.asarray(asys.order)] = X
     res = json.load(open(RESULT)) if os.path.exists(RESULT) else {}
-    res[f"engine_md_{name}_s{seed}"] = {"atoms": int(len(asys.positions)), "ps": ps, "ns_per_day": ps * 1e-3 / (secs / 86400.0),
-                                        **_rmsd_summary(ca_rmsd(asys, Xp))}
+    res[f"engine_md_{name}_s{seed}"] = {
+        "atoms": int(len(asys.positions)),
+        "ps": ps,
+        "ns_per_day": ps * 1e-3 / (secs / 86400.0),
+        **_rmsd_summary(ca_rmsd(asys, Xp)),
+    }
     print(json.dumps(res[f"engine_md_{name}_s{seed}"], indent=1))
     json.dump(res, open(RESULT, "w"), indent=1)
 
@@ -385,30 +488,54 @@ def md(name, ps, hmr, seed=11):
     os.makedirs(wd, exist_ok=True)
     prm = os.path.join(wd, f"{name}_pgm.prmtop")
     write_pgm_prmtop(asys, prm, templates, hmr=hmr)
-    st = MDSettings(cutoff=0.9, dipole_tol=1e-5, pme_grid=pmemd_grid(asys.box))   # docs/protein_ff.md settings
-    run_pmemd("gpu_spfp", os.path.join(wd, "min"), prm, SYSTEMS[name][1], pmemd_mdin(st, asys.box, maxcyc=500, ntpr=100))
+    st = MDSettings(cutoff=0.9, dipole_tol=1e-5, pme_grid=pmemd_grid(asys.box))  # docs/protein_ff.md settings
+    run_pmemd(
+        "gpu_spfp", os.path.join(wd, "min"), prm, SYSTEMS[name][1], pmemd_mdin(st, asys.box, maxcyc=500, ntpr=100)
+    )
     warm = pmemd_mdin(st, asys.box, nstlim=4000, dt=0.0005, temperature=298.0, tempi=0.0, ntpr=500, ntwr=4000, ig=seed)
     run_pmemd("gpu_spfp", os.path.join(wd, "warm"), prm, os.path.join(wd, "min/restrt"), warm)
     n = int(round(ps / 0.002))
-    prod = pmemd_mdin(st, asys.box, nstlim=n, dt=0.002, temperature=298.0, irest=1, ntpr=500, ntwx=5000,
-                      ntwr=n, ig=seed + 1)
+    prod = pmemd_mdin(
+        st, asys.box, nstlim=n, dt=0.002, temperature=298.0, irest=1, ntpr=500, ntwx=5000, ntwr=n, ig=seed + 1
+    )
     secs = run_pmemd("gpu_spfp", os.path.join(wd, "prod"), prm, os.path.join(wd, "warm/restrt"), prod)
     txt = open(os.path.join(wd, "prod/mdout")).read()
-    steps = [(int(a), float(b), float(c), float(d)) for a, b, c, d in
-             re.findall(r"NSTEP =\s+(\d+)\s+TIME\(PS\) =\s+\S+\s+TEMP\(K\) =\s+(\S+).*?Etot\s+=\s+(\S+)\s+EKtot\s+=\s+\S+\s+"
-                        r"EPtot\s+=\s+(\S+)", txt, re.S)][:-2]            # without the averages
+    steps = [
+        (int(a), float(b), float(c), float(d))
+        for a, b, c, d in re.findall(
+            r"NSTEP =\s+(\d+)\s+TIME\(PS\) =\s+\S+\s+TEMP\(K\) =\s+(\S+).*?Etot\s+=\s+(\S+)\s+EKtot\s+=\s+\S+\s+"
+            r"EPtot\s+=\s+(\S+)",
+            txt,
+            re.S,
+        )
+    ][:-2]  # without the averages
     nsday = re.findall(r"ns/day =\s+([\d.]+)", txt)
     T = np.array([s[1] for s in steps])
     from pgm_jax.md.io import read_trajectory
-    rmsd = ca_rmsd(asys, read_trajectory(os.path.join(wd, "prod/mdcrd"))[0]) if any(
-        m.kind == "protein" for m in asys.molecules) and ps >= 20 else None
+
+    rmsd = (
+        ca_rmsd(asys, read_trajectory(os.path.join(wd, "prod/mdcrd"))[0])
+        if any(m.kind == "protein" for m in asys.molecules) and ps >= 20
+        else None
+    )
     res = json.load(open(RESULT)) if os.path.exists(RESULT) else {}
     ms = re.findall(r"Per Step\(ms\) =\s+([\d.]+)", txt)
-    res[tag] = {"atoms": int(len(asys.positions)), "ps": ps, "dt_fs": 2.0, "hmr": hmr, "thermostat": "Langevin 1/ps",
-                         "ms_per_step": float(ms[-1]) if ms else None, "pme_grid": list(st.pme_grid),
-                         "shake": "X-H + rigid water", "temperature_mean": float(T.mean()), "temperature_std": float(T.std()),
-                         "eptot_first_last": [steps[0][3], steps[-1][3]], "ns_per_day": float(nsday[-1]) if nsday else None,
-                         "wall_seconds": secs, **(_rmsd_summary(rmsd) if rmsd else {})}
+    res[tag] = {
+        "atoms": int(len(asys.positions)),
+        "ps": ps,
+        "dt_fs": 2.0,
+        "hmr": hmr,
+        "thermostat": "Langevin 1/ps",
+        "ms_per_step": float(ms[-1]) if ms else None,
+        "pme_grid": list(st.pme_grid),
+        "shake": "X-H + rigid water",
+        "temperature_mean": float(T.mean()),
+        "temperature_std": float(T.std()),
+        "eptot_first_last": [steps[0][3], steps[-1][3]],
+        "ns_per_day": float(nsday[-1]) if nsday else None,
+        "wall_seconds": secs,
+        **(_rmsd_summary(rmsd) if rmsd else {}),
+    }
     print(json.dumps(res[tag], indent=1))
     json.dump(res, open(RESULT, "w"), indent=1)
 
@@ -423,8 +550,11 @@ if __name__ == "__main__":
     ap.add_argument("--hmr", type=float, default=None)
     ap.add_argument("--seed", type=int, default=11, help="md: pmemd ig of the warm-up (production: seed + 1)")
     ap.add_argument("--tight", action="store_true", help="PME spacing 0.04 nm, order 8 (result key <system>_tight)")
-    ap.add_argument("--amber-lambda", action="store_true",
-                    help="engine PME with pmemd's influence-function factor (result key <system>_lambda)")
+    ap.add_argument(
+        "--amber-lambda",
+        action="store_true",
+        help="engine PME with pmemd's influence-function factor (result key <system>_lambda)",
+    )
     a = ap.parse_args()
     if a.mode == "sp":
         pme, tag = ({"spacing": 0.04, "order": 8}, "_tight") if a.tight else (None, "")

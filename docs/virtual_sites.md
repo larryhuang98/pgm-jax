@@ -16,16 +16,23 @@ from pgm_jax.md.vsites import VirtualSite, VirtualSites
 from pgm_jax.system import Molecule, System
 
 # TIP4P-Ew as point charges: O, H1, H2 and the M site (element "EP": massless)
-tip4pew = Molecule("T4E", ["O", "H", "H", "EP"], ["OW", "HW", "HW", "EP"],
-                   q=[0.0, 0.52422, 0.52422, -1.04844], radius=[1e-4] * 4, alpha=[0.0] * 4,
-                   lj_rmin_half=[0.1776, 0, 0, 0], lj_sqrt_eps=[0.8252, 0, 0, 0],   # R* (nm), sqrt(kJ/mol)
-                   vsites=[VirtualSite.tip4p(3, 0, 1, 2, d_om=0.0125)])          # (1 - 2a, a, a) average
-VirtualSites.of(System([tip4pew] * 512)).place(pos, H)      # positions with every site rebuilt
+tip4pew = Molecule(
+    "T4E",
+    ["O", "H", "H", "EP"],
+    ["OW", "HW", "HW", "EP"],
+    q=[0.0, 0.52422, 0.52422, -1.04844],
+    radius=[1e-4] * 4,
+    alpha=[0.0] * 4,
+    lj_rmin_half=[0.1776, 0, 0, 0],
+    lj_sqrt_eps=[0.8252, 0, 0, 0],  # R* (nm), sqrt(kJ/mol)
+    vsites=[VirtualSite.tip4p(3, 0, 1, 2, d_om=0.0125)],
+)  # (1 - 2a, a, a) average
+VirtualSites.of(System([tip4pew] * 512)).place(pos, H)  # positions with every site rebuilt
 sim = Simulation(System([tip4pew] * 512), pos, H, MDSettings(elec="q"), ensemble="npt", dt=0.002)
 
 # or from tleap (source leaprc.water.tip4pew): extra points become "amber" sites
 sim = Simulation.from_amber("tip4pew.prmtop", "tip4pew.rst7", charges="amber", settings=MDSettings(elec="q"))
-asys = load_amber("protein_opc.prmtop", "protein_opc.inpcrd")   # water with extra points: RigidTemplate + site
+asys = load_amber("protein_opc.prmtop", "protein_opc.inpcrd")  # water with extra points: RigidTemplate + site
 ```
 
 | Kind | Constructor | Position (d_k = mi(r_k - r_host), host = first parent) |

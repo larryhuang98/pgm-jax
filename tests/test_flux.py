@@ -3,6 +3,7 @@
 differentiable path against finite differences with the dipoles re-solved; the cell dipole with
 q(R); rigid molecules (constant shift); refusals (pmemd-pgm export, stray flux parameters);
 energy conservation."""
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -43,8 +44,18 @@ def flux_template(order=2, seed=3):
 
 
 def tight(**kw):
-    base = dict(cutoff=0.5, skin=0.05, ewald_beta=6.0, pme_grid=(32, 32, 32), pme_order=8, lj_lrc=False,
-                dipole_tol=1e-12, max_iter=500, peek=0.0, precision="double")
+    base = dict(
+        cutoff=0.5,
+        skin=0.05,
+        ewald_beta=6.0,
+        pme_grid=(32, 32, 32),
+        pme_order=8,
+        lj_lrc=False,
+        dipole_tol=1e-12,
+        max_iter=500,
+        peek=0.0,
+        precision="double",
+    )
     base.update(kw)
     return MDSettings(**base)
 
@@ -101,8 +112,8 @@ def test_flux_equals_bonded_model():
     g = np.asarray(jax.grad(lambda R: model.energy(0, R, P)[0])(jnp.asarray(y)))
     P0 = dict(P, flux={k: 0.0 * v for k, v in P["flux"].items()})
     g0 = np.asarray(jax.grad(lambda R: model.energy(0, R, P0)[0])(jnp.asarray(y)))
-    rms = np.sqrt(np.mean(g ** 2))
-    assert np.abs(g - g0).max() > 0.1 * rms                                      # the flux forces matter
+    rms = np.sqrt(np.mean(g**2))
+    assert np.abs(g - g0).max() > 0.1 * rms  # the flux forces matter
     assert np.abs(F + g).max() < 1e-3 * rms, (np.abs(F + g).max(), rms)
 
 
@@ -119,11 +130,12 @@ def test_flux_forces_and_strain_derivatives(box):
     assert np.allclose(res.forces, F_ad, rtol=0, atol=1e-10 * float(jnp.abs(F_ad).max()))
     plain = PGMForceField(sys_, H, tight(), topology=sim.topology)
     F0 = plain.compute(pos, H, idx, plain.init_induction()).forces
-    assert float(jnp.abs(res.forces - F0).max()) > 0.05 * float(jnp.sqrt(jnp.mean(F0 ** 2)))
+    assert float(jnp.abs(res.forces - F0).max()) > 0.05 * float(jnp.sqrt(jnp.mean(F0**2)))
     e = jax.jit(lambda y, h: ff.energy(y, h, idx, res.induction)[0])
     h = 1e-6
     for a, k in [(0, 0), (1, 1), (5, 2), (40, 0), (77, 1)]:
-        d = np.zeros_like(pos); d[a, k] = h
+        d = np.zeros_like(pos)
+        d[a, k] = h
         fd = -(float(e(pos + d, H)) - float(e(pos - d, H))) / (2 * h)
         assert abs(fd - float(res.forces[a, k])) < 1e-6 * max(1.0, abs(fd)), (a, k, fd, float(res.forces[a, k]))
     m, mol = np.asarray(sys_.masses), np.asarray(sys_.mol)
@@ -132,12 +144,15 @@ def test_flux_forces_and_strain_derivatives(box):
     es = jax.jit(lambda t: ff.energy(pos + (t * com)[mol], H * (1 + t), idx, res.induction)[0])
     fd = (float(es(1e-6)) - float(es(-1e-6))) / 2e-6
     assert abs(fd - float(jnp.trace(W))) < 1e-7 * abs(fd), (fd, float(jnp.trace(W)))
-    Wa = ff.strain_derivative(pos, H, idx, mu, molecular=False)                  # bonds stretch: flux active
+    Wa = ff.strain_derivative(pos, H, idx, mu, molecular=False)  # bonds stretch: flux active
     # the engine assumes a lower-triangular box: strained boxes are rotated back (box.lower_triangular_frame)
     ea = jax.jit(lambda x, h: ff.energy(x, h, idx, res.induction)[0])
-    eas = lambda s: float(ea(*lower_triangular_frame(np.asarray(pos) @ (np.eye(3) + s).T, np.asarray(H) @ (np.eye(3) + s).T)))  # noqa: E731
+    eas = lambda s: float(
+        ea(*lower_triangular_frame(np.asarray(pos) @ (np.eye(3) + s).T, np.asarray(H) @ (np.eye(3) + s).T))
+    )  # noqa: E731
     for a, b in ((0, 0), (2, 1), (1, 2)):
-        E = np.zeros((3, 3)); E[a, b] = 1e-6
+        E = np.zeros((3, 3))
+        E[a, b] = 1e-6
         fd = (eas(E) - eas(-E)) / 2e-6
         assert abs(fd - float(Wa[a, b])) < 1e-6 * max(1.0, abs(fd)), (a, b, fd, float(Wa[a, b]))
 
@@ -159,7 +174,10 @@ def test_flux_differentiable_path(box):
     L = jax.jit(loss)
     g_th, g_x = jax.jit(jax.grad(loss, argnums=(0, 1)))(theta0, jnp.asarray(pos))
     for trial in range(2):
-        v = {k: jnp.asarray(rng.normal(size=a.shape) * np.maximum(np.abs(np.asarray(a)), 1e-2)) for k, a in theta0["flux"].items()}
+        v = {
+            k: jnp.asarray(rng.normal(size=a.shape) * np.maximum(np.abs(np.asarray(a)), 1e-2))
+            for k, a in theta0["flux"].items()
+        }
         h = 1e-6
         plus = {**theta0, "flux": {k: a + h * v[k] for k, a in theta0["flux"].items()}}
         minus = {**theta0, "flux": {k: a - h * v[k] for k, a in theta0["flux"].items()}}
@@ -196,7 +214,7 @@ def test_flux_cell_dipole_and_rigid_molecules(box):
     assert np.allclose(C[0], (np.asarray(P["q"])[:, None] * pos).sum(0), atol=1e-12)
     assert np.allclose(C[1], np.asarray(perm_dipoles(jnp.asarray(pos), sys_, P["cov"])).sum(0), atol=1e-12)
     q0 = np.asarray(sys_.expand()["q"])
-    assert np.abs(C[0] - (q0[:, None] * pos).sum(0)).max() > 1e-4                  # base charges would differ
+    assert np.abs(C[0] - (q0[:, None] * pos).sum(0)).max() > 1e-4  # base charges would differ
     # rigid: each molecule's charges frozen at its own geometry give the same energy
     mols = [molecule_at(tpl, pos[sys_.atom_slice(k)], name=f"m{k}") for k in range(sys_.nmol)]
     ffr = PGMForceField(System(mols), H, tight(), topology=sim.topology)
@@ -208,8 +226,10 @@ def test_flux_cell_dipole_and_rigid_molecules(box):
 
 def _no_flux_fit():
     m, x = methanol()
-    model = BondedModel([MolSpec("methanol", list(m.elements), BONDS, [1] * len(BONDS), 0, x, m)],
-                        BondedSettings(families=T.PAPER, lj14_scale=0.5))
+    model = BondedModel(
+        [MolSpec("methanol", list(m.elements), BONDS, [1] * len(BONDS), 0, x, m)],
+        BondedSettings(families=T.PAPER, lj14_scale=0.5),
+    )
     return model, model.init_params()
 
 
@@ -223,17 +243,21 @@ def test_flux_map_tables():
     fl = ChargeFlux.from_templates(sys_, [tpl, ntpl, tpl])
     rng = np.random.default_rng(4)
     H = jnp.eye(3) * 1.2
-    pos = jnp.asarray(np.concatenate([x + rng.normal(scale=0.004, size=x.shape) + s for s in ([0.0, 0, 0], [0.4, 0, 0], [1.17, 0.5, 0.5])]))
+    pos = jnp.asarray(
+        np.concatenate(
+            [x + rng.normal(scale=0.004, size=x.shape) + s for s in ([0.0, 0, 0], [0.4, 0, 0], [1.17, 0.5, 0.5])]
+        )
+    )
     Q, th = sys_.expand(), fl.theta()
-    f = lambda y: fl.charges(y, H, Q["q"], Q["cov"], th)                   # noqa: E731
+    f = lambda y: fl.charges(y, H, Q["q"], Q["cov"], th)  # noqa: E731
     q, c = f(pos)
     assert np.array_equal(q[6:12], Q["q"][6:12]) and float(jnp.abs(q[12:] - Q["q"][12:]).max()) > 1e-3
     assert np.array_equal(c[10:20], Q["cov"][10:20])
-    y = pos.at[13].add(-H[0])                                                # an atom wrapped by one box vector
+    y = pos.at[13].add(-H[0])  # an atom wrapped by one box vector
     assert np.allclose(f(y)[0], q, rtol=0, atol=1e-14)
     phi, gc = jnp.asarray(rng.normal(size=sys_.n)), jnp.asarray(rng.normal(size=len(sys_.cov_i)))
     g = jax.vjp(f, pos)[1]((phi, gc))[0]
-    L = lambda y: float(jnp.sum(phi * f(y)[0]) + jnp.sum(gc * f(y)[1]))    # noqa: E731
+    L = lambda y: float(jnp.sum(phi * f(y)[0]) + jnp.sum(gc * f(y)[1]))  # noqa: E731
     for a, k in [(0, 0), (1, 2), (5, 1), (13, 0), (17, 2)]:
         d = jnp.zeros_like(pos).at[a, k].set(1e-6)
         fd = (L(pos + d) - L(pos - d)) / 2e-6
@@ -246,8 +270,8 @@ def test_flux_refusals_and_options():
     assert set(fl.params) == {"jb", "jc"}
     ntpl = FlexibleTemplate.from_fit(*_no_flux_fit())
     assert ChargeFlux.from_templates(System([ntpl.pgm] * 2), [ntpl] * 2) is None
-    mixed = ChargeFlux.from_templates(System([tpl.pgm, ntpl.pgm]), [tpl, ntpl])      # one molecule with flux
-    assert mixed.n_bonds == 5 and np.all(mixed.cov_bond[len(tpl.pgm.cov):] == -1)
+    mixed = ChargeFlux.from_templates(System([tpl.pgm, ntpl.pgm]), [tpl, ntpl])  # one molecule with flux
+    assert mixed.n_bonds == 5 and np.all(mixed.cov_bond[len(tpl.pgm.cov) :] == -1)
     with pytest.raises(ValueError, match="pmemd-pgm has no charge flux"):
         write_pgm_prmtop(None, "unused.prmtop", templates=[tpl])
     sys1 = System([ntpl.pgm])
@@ -257,26 +281,43 @@ def test_flux_refusals_and_options():
     with pytest.raises(ValueError, match="shapes"):
         fl.theta({"flux": {"jb": jnp.zeros(2), "jc": jnp.zeros(3)}})
     with pytest.raises(ValueError):
-        ChargeFlux([(0, 1)], [0.1], [0], [2.0], [], {"jb": [1.0], "jc": [0.0]}, 2)       # sign must be -1, 0, 1
+        ChargeFlux([(0, 1)], [0.1], [0], [2.0], [], {"jb": [1.0], "jc": [0.0]}, 2)  # sign must be -1, 0, 1
     with pytest.raises(ValueError):
-        PGMForceField(sys1, np.eye(3) * 3.0, tight(), flux=fl.__class__([(0, 1)], [0.1], [0], [1.0], [], {"jb": [1.0], "jc": [0.0]}, 6))
+        PGMForceField(
+            sys1,
+            np.eye(3) * 3.0,
+            tight(),
+            flux=fl.__class__([(0, 1)], [0.1], [0], [1.0], [], {"jb": [1.0], "jc": [0.0]}, 6),
+        )
 
 
 def test_flux_nve_and_constraints():
     """NVE conservation with flux (double precision, tight dipoles), and X-H constraints at the
     reference lengths leave those bonds without flux."""
     tpl, _ = flux_template()
-    n = 32                                                   # as test_flexible's NVE test (same box and cutoff)
+    n = 32  # as test_flexible's NVE test (same box and cutoff)
     pos, H = liquid_box(tpl, n, 0.55, seed=0, min_dist=0.18)
     sys_ = System([tpl.pgm] * n)
     # beta 6 / nm: small real-space terms at the cutoff, so the check sees the integration (flux or not,
     # the hard-cutoff noise at the default 4 / nm is 8e-4 kT per degree of freedom here)
-    s = MDSettings(precision="double", dipole_tol=1e-8, cutoff=0.6, skin=0.05, lj_lrc=False, ewald_beta=6.0,
-                   pme_spacing=0.05)
-    sim = FlexibleSimulation(sys_, [tpl] * n, pos, H, s, dt=0.0005, ensemble="nvt", temperature=298.0, gamma=10.0, log=None)
+    s = MDSettings(
+        precision="double", dipole_tol=1e-8, cutoff=0.6, skin=0.05, lj_lrc=False, ewald_beta=6.0, pme_spacing=0.05
+    )
+    sim = FlexibleSimulation(
+        sys_, [tpl] * n, pos, H, s, dt=0.0005, ensemble="nvt", temperature=298.0, gamma=10.0, log=None
+    )
     sim._advance(1000)
-    sim2 = FlexibleSimulation(sys_, [tpl] * n, sim.positions_nm(), np.asarray(sim.state.box), s, dt=0.0005,
-                              ensemble="nve", vel_nm_ps=sim.velocities_nm_ps(), log=None)
+    sim2 = FlexibleSimulation(
+        sys_,
+        [tpl] * n,
+        sim.positions_nm(),
+        np.asarray(sim.state.box),
+        s,
+        dt=0.0005,
+        ensemble="nve",
+        vel_nm_ps=sim.velocities_nm_ps(),
+        log=None,
+    )
     E = []
     for _ in range(10):
         sim2._advance(100)
@@ -287,4 +328,4 @@ def test_flux_nve_and_constraints():
     simc._advance(50)
     x = simc.state.dyn.position
     db = np.asarray(simc.ff.flux.deviations(x, simc.state.box)).reshape(n, 5)
-    assert np.abs(db[:, 1:]).max() < 1e-7 and np.abs(db[:, 0]).max() > 1e-4          # C-H, O-H held; C-O free
+    assert np.abs(db[:, 1:]).max() < 1e-7 and np.abs(db[:, 0]).max() > 1e-4  # C-H, O-H held; C-O free

@@ -57,13 +57,18 @@ Dimer and cluster energies (e.g. S66-type data or SAPT components) are fitted wi
 
 ```python
 from pgm_jax import ElecChannel, LJChannel, Model, System
+
 model = Model([ElecChannel(), LJChannel()])
-E = model.energy_fn(System([a, b]))                       # E(pos, P) -> {"perm", "ind", "vdw", "total"}
+E = model.energy_fn(System([a, b]))  # E(pos, P) -> {"perm", "ind", "vdw", "total"}
 Ea, Eb = model.energy_fn(System([a])), model.energy_fn(System([b]))
+
+
 def loss(P):
     e_int = jax.vmap(lambda x: E(x, P)["total"] - Ea(x[:na], P)["total"] - Eb(x[na:], P)["total"])(X)
     return jnp.mean((e_int - E_qm) ** 2)
-g = jax.grad(loss)(P)                                     # same pytree as P: only LJ keys if you mask the rest
+
+
+g = jax.grad(loss)(P)  # same pytree as P: only LJ keys if you mask the rest
 ```
 
 `elec_decomposition` splits the intermolecular pGM energy into electrostatic and induction parts

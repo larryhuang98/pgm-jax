@@ -4,6 +4,7 @@ sampling minimum.  (Merz-Kollman shell code as in evoff/qm/psi4_monomer.py.)
 
     python scripts/bonded/qm_esp.py runs/bonded/pgm/<name> --threads 16
 In:  input.json {name, elements, types, xyz_A, charge}.  Out: esp.dat (py_resp format), qm.json."""
+
 import argparse
 import json
 import os
@@ -19,7 +20,7 @@ Z = {"H": 1, "C": 6, "N": 7, "O": 8, "F": 9, "P": 15, "S": 16, "Cl": 17}
 def fibonacci_sphere(n):
     k = np.arange(n) + 0.5
     phi = np.arccos(1 - 2 * k / n)
-    th = np.pi * (1 + 5 ** 0.5) * k
+    th = np.pi * (1 + 5**0.5) * k
     return np.stack([np.cos(th) * np.sin(phi), np.sin(th) * np.sin(phi), np.cos(phi)], 1)
 
 
@@ -48,13 +49,15 @@ def write_espdat(path, xyz_A, elements, types, pts_A, esp_au, name="MOL"):
 
 if __name__ == "__main__":
     import psi4
+
     ap = argparse.ArgumentParser()
     ap.add_argument("dir")
     ap.add_argument("--threads", type=int, default=16)
     ap.add_argument("--memory", type=float, default=30)
     a = ap.parse_args()
     d = json.load(open(os.path.join(a.dir, "input.json")))
-    psi4.set_memory(f"{a.memory} GB"); psi4.set_num_threads(a.threads)
+    psi4.set_memory(f"{a.memory} GB")
+    psi4.set_num_threads(a.threads)
     psi4.core.set_output_file(os.path.join(a.dir, "psi4.out"), False)
     geoms = [np.array(g) for g in d.get("xyz_A_list", [d["xyz_A"]])]
     psi4.set_options({"basis": "aug-cc-pvtz", "scf_type": "df", "d_convergence": 1e-8})
@@ -66,15 +69,31 @@ if __name__ == "__main__":
         mol = psi4.geometry("\n".join(lines + ["symmetry c1", "no_reorient", "no_com"]))
         e, wfn = psi4.energy("b3lyp", molecule=mol, return_wfn=True)
         psi4.oeprop(wfn, "DIPOLE")
-        dips.append(np.array(wfn.variable("SCF DIPOLE") if wfn.has_variable("SCF DIPOLE") else wfn.variable("CURRENT DIPOLE")).ravel().tolist())
+        dips.append(
+            np.array(wfn.variable("SCF DIPOLE") if wfn.has_variable("SCF DIPOLE") else wfn.variable("CURRENT DIPOLE"))
+            .ravel()
+            .tolist()
+        )
         pts = mk_points(xyz, d["elements"])
         esp = np.array(psi4.core.ESPPropCalc(wfn).compute_esp_over_grid_in_memory(psi4.core.Matrix.from_array(pts)))
         part = os.path.join(a.dir, f"esp_{c}.dat")
         write_espdat(part, xyz, d["elements"], d["types"], pts, esp, d["name"])
-        parts.append(part); npts += len(pts)
-    with open(os.path.join(a.dir, "esp.dat"), "w") as fh:          # py_resp multi-conformer input: blocks in sequence
+        parts.append(part)
+        npts += len(pts)
+    with open(os.path.join(a.dir, "esp.dat"), "w") as fh:  # py_resp multi-conformer input: blocks in sequence
         for p in parts:
             fh.write(open(p).read())
-    json.dump({"name": d["name"], "level": "B3LYP/aug-cc-pVTZ", "n_conf": len(geoms), "dipole_au": dips[0], "dipoles_au": dips,
-               "n_esp_points": int(npts), "time_s": time.time() - t0}, open(os.path.join(a.dir, "qm.json"), "w"), indent=1)
+    json.dump(
+        {
+            "name": d["name"],
+            "level": "B3LYP/aug-cc-pVTZ",
+            "n_conf": len(geoms),
+            "dipole_au": dips[0],
+            "dipoles_au": dips,
+            "n_esp_points": int(npts),
+            "time_s": time.time() - t0,
+        },
+        open(os.path.join(a.dir, "qm.json"), "w"),
+        indent=1,
+    )
     print(d["name"], "done", time.time() - t0)

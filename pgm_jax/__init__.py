@@ -12,6 +12,7 @@ Units: nm, e, e nm, nm^3, kJ/mol (see units.py).  Call
     jax.config.update("jax_enable_x64", True)
 before use; everything is validated in float64.
 """
+
 from .channels import ElecChannel, elec_decomposition, molecular_polarizability, perm_dipoles
 from .ewald import PeriodicPGM, box_matrix, neighbor_list
 from .lj import LJChannel, PeriodicLJ
@@ -21,7 +22,27 @@ from .periodic import PeriodicModel, pressure_bar, strain_derivative
 from .system import Molecule, ParamTable, System
 from .vdw import GVDWChannel, PeriodicGVDW, set_gvdw
 
-__all__ = ["ElecChannel", "elec_decomposition", "molecular_polarizability", "perm_dipoles",
-           "PeriodicPGM", "box_matrix", "neighbor_list", "LJChannel", "PeriodicLJ", "Model",
-           "load_molecule", "read_prmtop_pgm", "save_molecule", "PeriodicModel", "pressure_bar",
-           "strain_derivative", "Molecule", "ParamTable", "System", "GVDWChannel", "PeriodicGVDW", "set_gvdw"]
+__all__ = [
+    "ElecChannel",
+    "elec_decomposition",
+    "molecular_polarizability",
+    "perm_dipoles",
+    "PeriodicPGM",
+    "box_matrix",
+    "neighbor_list",
+    "LJChannel",
+    "PeriodicLJ",
+    "Model",
+    "load_molecule",
+    "read_prmtop_pgm",
+    "save_molecule",
+    "PeriodicModel",
+    "pressure_bar",
+    "strain_derivative",
+    "Molecule",
+    "ParamTable",
+    "System",
+    "GVDWChannel",
+    "PeriodicGVDW",
+    "set_gvdw",
+]

@@ -66,6 +66,7 @@ Energies are float64 functions of (pos, H), jit-able and differentiable; the dri
 forces by autodiff (for rigid bodies, the atomic restraint forces are mapped to centre forces and
 torques together with the force-field forces).  Parameters are compile-time constants: changing
 them (`Simulation.set_restraints`) recompiles the step.  Units nm, rad, kJ/mol."""
+
 from __future__ import annotations
 
 import jax
@@ -74,8 +75,8 @@ import numpy as np
 
 from .box import min_image
 
-KCAL_A2 = 418.4          # kJ/mol/nm^2 per kcal/mol/A^2
-KCAL_RAD2 = 4.184        # kJ/mol/rad^2 per kcal/mol/rad^2
+KCAL_A2 = 418.4  # kJ/mol/nm^2 per kcal/mol/A^2
+KCAL_RAD2 = 4.184  # kJ/mol/rad^2 per kcal/mol/rad^2
 _HI = jax.lax.Precision.HIGHEST
 _TINY = 1e-60
 
@@ -127,6 +128,7 @@ def _per_item(x, m, name):
 class Restraint:
     """A set of restraints of one kind.  energies(pos, H) -> (m,) kJ/mol, values(pos, H) -> (m,)
     the restrained coordinate, energy = sum of energies, atoms() every atom index used."""
+
     kind = ""
 
     def energies(self, pos, H):
@@ -150,6 +152,7 @@ class PositionRestraint(Restraint):
     atoms (n,), ref (n, 3) nm at the box `box` (needed unless scaling == "none"); k (kJ/mol/nm^2)
     and r0 (nm): scalars or per atom; scaling "none" | "fractional" | "com" (module docstring);
     weights: of the reference centroid for "com" (default equal)."""
+
     kind = "position"
 
     def __init__(self, atoms, ref, k, r0=0.0, scaling: str = "none", box=None, weights=None):
@@ -210,6 +213,7 @@ class _NMRRestraint(Restraint):
     """Restraints of a coordinate of `n_atoms` atoms in Amber's NMR flat-bottom form.
     idx (m, n_atoms); bounds (r1, r2, r3, r4), each a scalar or one value per restraint; either k
     (both walls) or k2 (lower) and k3 (upper)."""
+
     n_atoms = 2
     periodic = False
 
@@ -248,7 +252,7 @@ class _NMRRestraint(Restraint):
         H = jnp.asarray(H, jnp.float64)
         x = jnp.asarray(pos, jnp.float64)
         v = self.coordinate([x[self.idx[:, a]] for a in range(self.n_atoms)], H)
-        if self.periodic:                          # the image in [c - pi, c + pi)
+        if self.periodic:  # the image in [c - pi, c + pi)
             c = 0.5 * (self.r[1] + self.r[2])
             v = c + jnp.mod(v - c + jnp.pi, 2 * jnp.pi) - jnp.pi
         return v
@@ -265,6 +269,7 @@ class _NMRRestraint(Restraint):
 
 class DistanceRestraint(_NMRRestraint):
     """Distance |r_j - r_i| (minimum image, nm) of each pair (i, j)."""
+
     kind = "distance"
     n_atoms = 2
 
@@ -274,6 +279,7 @@ class DistanceRestraint(_NMRRestraint):
 
 class AngleRestraint(_NMRRestraint):
     """Angle i-j-k (rad, [0, pi]) of each triple."""
+
     kind = "angle"
     n_atoms = 3
 
@@ -284,6 +290,7 @@ class AngleRestraint(_NMRRestraint):
 
 class DihedralRestraint(_NMRRestraint):
     """Dihedral i-j-k-l (rad, IUPAC sign, periodic about the window centre) of each quadruple."""
+
     kind = "dihedral"
     n_atoms = 4
     periodic = True
@@ -295,6 +302,7 @@ class DihedralRestraint(_NMRRestraint):
 class COMDistanceRestraint(_NMRRestraint):
     """Distance (nm) between the weighted centres of two atom groups (umbrella sampling); weights
     from `masses` (per-atom masses of the whole system, e.g. System.masses) or equal."""
+
     kind = "com_distance"
 
     def __init__(self, group_a, group_b, bounds, k=None, k2=None, k3=None, masses=None):

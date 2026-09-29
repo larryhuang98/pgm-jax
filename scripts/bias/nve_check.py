@@ -8,6 +8,7 @@
 Prints RMS / max deviations for dt = 1.0 and 0.5 fs (a Verlet error falls 4x at half the step).
 
     python scripts/bias/nve_check.py --ps 2 --out runs/bias/nve.json"""
+
 import argparse
 import json
 import os
@@ -41,8 +42,8 @@ sys_ = System([wat] * (len(pos) // 3))
 s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
 d = cv.Distance(0, 9)
 hyd = [i for i in range(len(pos)) if i % 3 and i // 3 != 0]
-phi = cv.Coordination([0], hyd, r0=0.35, name="n_OH")        # smooth; a dihedral through two molecules has
-                                                             # a singular gradient when H-O...O is collinear
+phi = cv.Coordination([0], hyd, r0=0.35, name="n_OH")  # smooth; a dihedral through two molecules has
+# a singular gradient when H-O...O is collinear
 out = {}
 for engine in ("rigid", "atoms"):
     for mode in ("none", "static", "growing"):
@@ -50,8 +51,11 @@ for engine in ("rigid", "atoms"):
             m = MetaD([d, phi], sigma=[0.03, 0.1], height=1.0, pace=200, biasfactor=5.0, temperature=300.0)
             bs = BiasSet([m, UpperWall(d, 0.6, 1000.0)], colvar=0)
             kw = dict(dt=dt, ensemble="nve", bias=None if mode == "none" else bs, log=None, temperature=300.0, seed=3)
-            sim = (Simulation(sys_, pos, H, s, **kw) if engine == "rigid" else
-                   FlexibleSimulation(sys_, [RigidTemplate(wat, w)] * sys_.nmol, pos, H, s, **kw))
+            sim = (
+                Simulation(sys_, pos, H, s, **kw)
+                if engine == "rigid"
+                else FlexibleSimulation(sys_, [RigidTemplate(wat, w)] * sys_.nmol, pos, H, s, **kw)
+            )
             if mode == "static":
                 st = m.init()
                 rng = np.random.default_rng(0)
@@ -72,9 +76,15 @@ for engine in ("rigid", "atoms"):
                 Wk.append(o.get("bias_work", 0.0))
             E, C, B = np.array(E), np.array(C), np.array(B)
             key = f"{engine}_{mode}_dt{dt * 1000:g}fs"
-            out[key] = {"etot_rms": float(E.std()), "etot_maxdev": float(np.abs(E - E[0]).max()),
-                        "econs_rms": float(C.std()), "econs_maxdev": float(np.abs(C - C[0]).max()),
-                        "ebias_range": float(B.max() - B.min()), "work": float(Wk[-1]), "hills": int(o.get("hills", 0))}
+            out[key] = {
+                "etot_rms": float(E.std()),
+                "etot_maxdev": float(np.abs(E - E[0]).max()),
+                "econs_rms": float(C.std()),
+                "econs_maxdev": float(np.abs(C - C[0]).max()),
+                "ebias_range": float(B.max() - B.min()),
+                "work": float(Wk[-1]),
+                "hills": int(o.get("hills", 0)),
+            }
             print(key, out[key], flush=True)
 os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
 json.dump(out, open(a.out, "w"), indent=1)

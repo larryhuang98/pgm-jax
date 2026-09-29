@@ -25,6 +25,7 @@ vmapped chunks (`chunk`), with candidate pair rows built on the device by a dens
 (no neighbour list state needed: frames can come from any engine or from a trajectory).
 
 Units: nm, e, e nm, nm^3, kJ/mol."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -37,12 +38,13 @@ from ..md.box import min_image, volume
 from ..md.dipoles import CellDipole
 from ..md.forcefield import MDSettings, PGMForceField
 
-QUANTITIES = ("U", "M", "alpha", "D")          # rows of the per-frame Jacobian: U, Mx, My, Mz, alpha, D
+QUANTITIES = ("U", "M", "alpha", "D")  # rows of the per-frame Jacobian: U, Mx, My, Mz, alpha, D
 
 
 @dataclasses.dataclass
 class RDFSpec:
     """Pair distribution between two atom selections (indices into the system), r < rmax."""
+
     a: np.ndarray
     b: np.ndarray
     rmax: float = 0.8
@@ -69,13 +71,25 @@ class RDFSpec:
 
 
 class FrameAnalyzer:
-    def __init__(self, sys, H, settings: MDSettings, space, rdf: RDFSpec | None = None, tol: float = 1e-6,
-                 max_iter: int = 300, chunk: int = 8, margin: float = 0.02, row_block: int = 1024):
+    def __init__(
+        self,
+        sys,
+        H,
+        settings: MDSettings,
+        space,
+        rdf: RDFSpec | None = None,
+        tol: float = 1e-6,
+        max_iter: int = 300,
+        chunk: int = 8,
+        margin: float = 0.02,
+        row_block: int = 1024,
+    ):
         """sys, settings: those of the MD (same PME grid: pass settings with pme_grid set, e.g.
         dataclasses.replace(settings, pme_grid=sim.ff.pme.K)); space: ParameterSpace; tol: CG
         tolerance of the dipole and adjoint solves (pmemd-pgm's criterion)."""
-        s = dataclasses.replace(settings, differentiable=False, dipole_tol=tol, max_iter=max_iter, peek=0.0,
-                                predictor="none")
+        s = dataclasses.replace(
+            settings, differentiable=False, dipole_tol=tol, max_iter=max_iter, peek=0.0, predictor="none"
+        )
         self.ff = PGMForceField(sys, np.asarray(H), s)
         if self.ff.flux is not None or any(getattr(m, "vsites", None) for m in sys.molecules):
             raise NotImplementedError("charge flux / virtual sites are not handled by FrameAnalyzer")
@@ -104,7 +118,7 @@ class FrameAnalyzer:
         def block(i0):
             rows = i0 + jnp.arange(B, dtype=jnp.int32)
             d = min_image(p[jnp.minimum(rows, N - 1)][:, None, :] - p[None, :, :], Hc)
-            m = (jnp.sum(d * d, -1) < self.rc ** 2) & (rows[:, None] != cols[None, :]) & (rows[:, None] < N)
+            m = (jnp.sum(d * d, -1) < self.rc**2) & (rows[:, None] != cols[None, :]) & (rows[:, None] < N)
             slot = jnp.cumsum(m, axis=1) - 1
             tgt = jnp.where(m & (slot < width), slot, width)
             r = jnp.broadcast_to(jnp.arange(B)[:, None], m.shape)
@@ -183,8 +197,9 @@ class FrameAnalyzer:
             rhs.append(u[self.cell.mol].astype(cd))
             rhs = jnp.stack(rhs)
             norms = jnp.mean(jnp.abs(alpha[None, :, None] * rhs.astype(jnp.float64)), axis=(1, 2)) + 1e-300
-            lam, lit, lerr = jax.vmap(lambda r, nr: ff._cg(g, A, alpha, jnp.zeros_like(r), r, nr, tol=self.tol,
-                                                         peek=0.0))(rhs, norms)
+            lam, lit, lerr = jax.vmap(
+                lambda r, nr: ff._cg(g, A, alpha, jnp.zeros_like(r), r, nr, tol=self.tol, peek=0.0)
+            )(rhs, norms)
             out["alpha"] = sum(jnp.sum(lam[c][:, c]) for c in range(3)) / 3.0
             out["adj_iters"], out["adj_resid"] = jnp.max(lit), jnp.max(lerr)
         else:
@@ -244,15 +259,17 @@ class FrameAnalyzer:
         res = []
         k = 0
         while k < len(frames):
-            part = frames[k:k + self.chunk]
+            part = frames[k : k + self.chunk]
             m = len(part)
-            part = part + [part[-1]] * (self.chunk - m)             # fixed batch shape
+            part = part + [part[-1]] * (self.chunk - m)  # fixed batch shape
             pos = jnp.stack([jnp.asarray(f[0], jnp.float64) for f in part])
             H = jnp.stack([jnp.asarray(f[1], jnp.float64) for f in part])
-            mu = jnp.stack([jnp.zeros((self.ff.n, 3)) if f[2] is None else jnp.asarray(f[2], jnp.float64) for f in part])
+            mu = jnp.stack(
+                [jnp.zeros((self.ff.n, 3)) if f[2] is None else jnp.asarray(f[2], jnp.float64) for f in part]
+            )
             out = self._fn(grad)(theta, pos, H, mu)
             cmax = int(jnp.max(out["count"]))
-            if cmax > self.width:                                   # rows too narrow: widen, repeat
+            if cmax > self.width:  # rows too narrow: widen, repeat
                 self.width = int(min(self.ff.n, int(np.ceil((cmax * 1.25 + 16) / 8.0) * 8)))
                 continue
             if not keep_mu:

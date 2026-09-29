@@ -14,6 +14,7 @@ prefix.dip, and run(induced=n) writes per-atom induced dipoles to prefix.mu.nc (
 mts=MTS(...) integrates force groups with their own time steps (md/mts.py; dt is the outer step).
 bias=... adds biases on collective variables (pgm_jax.bias: metadynamics, OPES, static biases);
 run() then writes prefix.colvar, prefix.hills and, with the restarts, prefix.bias (bias/io.py)."""
+
 from __future__ import annotations
 
 import pickle
@@ -41,25 +42,56 @@ AMU_NM3_TO_G_CM3 = 1.66053906660e-3
 def _dedupe(mols: list[Molecule]) -> list[Molecule]:
     seen, out = {}, []
     for m in mols:
-        key = (m.name, tuple(m.elements), tuple(m.types), m.q.tobytes(), m.radius.tobytes(), m.alpha.tobytes(),
-               tuple(m.cov), m.lj_rmin_half.tobytes(), m.lj_sqrt_eps.tobytes(), tuple(m.bonds), tuple(m.vsites))
+        key = (
+            m.name,
+            tuple(m.elements),
+            tuple(m.types),
+            m.q.tobytes(),
+            m.radius.tobytes(),
+            m.alpha.tobytes(),
+            tuple(m.cov),
+            m.lj_rmin_half.tobytes(),
+            m.lj_sqrt_eps.tobytes(),
+            tuple(m.bonds),
+            tuple(m.vsites),
+        )
         out.append(seen.setdefault(key, m))
     return out
 
 
 class Simulation:
-    _recorder = None                    # DipoleRecorder while run(dipoles=...) is running
+    _recorder = None  # DipoleRecorder while run(dipoles=...) is running
 
-    def __init__(self, sys: System, pos_nm, H_nm, settings: MDSettings = MDSettings(), dt: float = 0.001,
-                 ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0, pressure: float = 1.0,
-                 barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None, params=None, log=sys.stdout,
-                 neighbor_list: str = "auto", thermostat="langevin", tau_t: float = 1.0, restraints=None,
-                 alchemy=None, mts=None, bias=None, efield=None):
+    def __init__(
+        self,
+        sys: System,
+        pos_nm,
+        H_nm,
+        settings: MDSettings = MDSettings(),
+        dt: float = 0.001,
+        ensemble: str = "nvt",
+        temperature: float = 298.0,
+        gamma: float = 1.0,
+        pressure: float = 1.0,
+        barostat_interval: int = 100,
+        seed: int = 0,
+        vel_nm_ps=None,
+        params=None,
+        log=sys.stdout,
+        neighbor_list: str = "auto",
+        thermostat="langevin",
+        tau_t: float = 1.0,
+        restraints=None,
+        alchemy=None,
+        mts=None,
+        bias=None,
+        efield=None,
+    ):
         H = reduce_box(H_nm)
         check_box(H, settings.pair_cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
         self.vsites = VirtualSites.of(sys)
-        if self.vsites is not None:                     # sites of the rigid templates from their parents
+        if self.vsites is not None:  # sites of the rigid templates from their parents
             pos_nm = np.asarray(self.vsites.place(np.asarray(pos_nm, float), H))
             self.vsites.check(pos_nm, H, (sys.cov_i, sys.cov_j))
         self.rigid = RigidMolecules(sys, pos_nm, H)
@@ -69,12 +101,29 @@ class Simulation:
         self._make_neighbors(H)
         self._size_lists(self.rigid.body0, H)
         integ, extra = Integrator, {}
-        if mts is not None:                                  # multiple time stepping: dt is the outer step
+        if mts is not None:  # multiple time stepping: dt is the outer step
             from .mts import MTSIntegrator
+
             integ, extra = MTSIntegrator, {"mts": mts}
-        self.integ = integ(self.ff, self.rigid, self.nb, dt, ensemble, temperature, gamma, pressure,
-                           barostat_interval, params, thermostat=thermostat, tau_t=tau_t, restraints=restraints,
-                           alchemy=alchemy, bias=bias, efield=efield, **extra)
+        self.integ = integ(
+            self.ff,
+            self.rigid,
+            self.nb,
+            dt,
+            ensemble,
+            temperature,
+            gamma,
+            pressure,
+            barostat_interval,
+            params,
+            thermostat=thermostat,
+            tau_t=tau_t,
+            restraints=restraints,
+            alchemy=alchemy,
+            bias=bias,
+            efield=efield,
+            **extra,
+        )
         self.dt, self.ensemble, self.T0 = dt, ensemble, temperature
         body = self.rigid.body0
         mom = None
@@ -82,13 +131,15 @@ class Simulation:
             mom = self.rigid.momenta_from_velocities(body, self.rigid.positions(body), jnp.asarray(vel_nm_ps))
         self.state = self.integ.init(body, H, jax.random.PRNGKey(seed), mom)
         self.time_ps = 0.0
-        thermo = '' if self.integ.thermostat is None else f" ({self.integ.thermostat.describe()})"
-        self._print(f"# pgm_jax MD: {sys.nmol} rigid molecules, {sys.n} atoms"
-                    f"{'' if self.vsites is None else f' ({self.vsites.n_sites} virtual sites)'}, {ensemble.upper()}{thermo}, "
-                    f"dt {dt * 1000:g} fs, "
-                    f"{settings.precision} precision, PME grid {self.ff.pme.K} order {settings.pme_order}, "
-                    f"{settings.describe_cutoffs()}, {self.nb.kind} neighbour list, {settings.describe_induction()}, "
-                    f"template fit RMSD {self.rigid.fit_rmsd:.2e} nm, device {jax.devices()[0]}")
+        thermo = "" if self.integ.thermostat is None else f" ({self.integ.thermostat.describe()})"
+        self._print(
+            f"# pgm_jax MD: {sys.nmol} rigid molecules, {sys.n} atoms"
+            f"{'' if self.vsites is None else f' ({self.vsites.n_sites} virtual sites)'}, {ensemble.upper()}{thermo}, "
+            f"dt {dt * 1000:g} fs, "
+            f"{settings.precision} precision, PME grid {self.ff.pme.K} order {settings.pme_order}, "
+            f"{settings.describe_cutoffs()}, {self.nb.kind} neighbour list, {settings.describe_induction()}, "
+            f"template fit RMSD {self.rigid.fit_rmsd:.2e} nm, device {jax.devices()[0]}"
+        )
         if self.integ.restraints is not None:
             self._print(f"# restraints: {self.integ.restraints.describe()}")
         if alchemy is not None:
@@ -104,8 +155,9 @@ class Simulation:
             self._print(f"# biases: {self.integ.bias.describe()}")
 
     @classmethod
-    def from_amber(cls, prmtop: str, coords: str, use_velocities: bool = True, charges: str = "pgm",
-                   **kw) -> Simulation:
+    def from_amber(
+        cls, prmtop: str, coords: str, use_velocities: bool = True, charges: str = "pgm", **kw
+    ) -> Simulation:
         """charges: "pgm" (a pGM prmtop) or "amber" (the point charges of a classical prmtop, e.g.
         TIP4P-Ew; with MDSettings(elec="q")); extra points become virtual sites (read_prmtop_pgm)."""
         mols = _dedupe(read_prmtop_pgm(prmtop, first_residue_only=False, charges=charges))
@@ -123,28 +175,45 @@ class Simulation:
         V = float(volume(st.box))
         mass = float(np.sum(self.sys.masses))
         t_tr, t_rot = (float(x) for x in self.integ.temperatures(st))
-        out = {"step": int(st.step), "time_ps": self.time_ps, "temp_K": 2 * ke / (self.integ.dof * KB),
-               "temp_trans": t_tr, "temp_rot": t_rot,
-               "etot": ke + float(st.epot), "ekin": ke, "epot": float(st.epot), "elec": float(st.elec),
-               "econs": ke + float(st.epot) + 0.5 * float(jnp.sum(st.aux * st.aux)) - float(st.heat),
-               "vdw": float(st.vdw), "volume_nm3": V, "density_g_cm3": mass / V * AMU_NM3_TO_G_CM3,
-               "cg_iter": int(st.iters), "cg_iter_max": int(st.max_iters), "cg_resid_max": float(st.resid),
-               "cg_mean": float(st.cg_total) / max(int(st.step), 1)}
-        if self.integ.restraints is not None:             # part of epot
+        out = {
+            "step": int(st.step),
+            "time_ps": self.time_ps,
+            "temp_K": 2 * ke / (self.integ.dof * KB),
+            "temp_trans": t_tr,
+            "temp_rot": t_rot,
+            "etot": ke + float(st.epot),
+            "ekin": ke,
+            "epot": float(st.epot),
+            "elec": float(st.elec),
+            "econs": ke + float(st.epot) + 0.5 * float(jnp.sum(st.aux * st.aux)) - float(st.heat),
+            "vdw": float(st.vdw),
+            "volume_nm3": V,
+            "density_g_cm3": mass / V * AMU_NM3_TO_G_CM3,
+            "cg_iter": int(st.iters),
+            "cg_iter_max": int(st.max_iters),
+            "cg_resid_max": float(st.resid),
+            "cg_mean": float(st.cg_total) / max(int(st.step), 1),
+        }
+        if self.integ.restraints is not None:  # part of epot
             out["erestraint"] = float(sum(self.restraint_energies().values()))
-        if self.integ.bias is not None and st.bias is not None:       # part of epot
+        if self.integ.bias is not None and st.bias is not None:  # part of epot
             out["ebias"] = float(np.sum(self.bias_energies()))
             out["bias_work"] = float(st.bias.work)
             out.update(self.integ.bias.info(st.bias))
         if self.ensemble == "npt":
             tries, acc = int(st.mc[0]), int(st.mc[1])
             out["mc_accept"] = acc / max(tries, 1)
-        if self.integ.efield is not None:                  # the field (V/nm) and the dipole it acts on (e nm)
+        if self.integ.efield is not None:  # the field (V/nm) and the dipole it acts on (e nm)
             fld = self.integ.efield
             E = self.integ.field_at(st, st.step)[0]
             Emac = np.asarray(fld.macroscopic(E, st.fdip, V))
-            out.update(efield=float(np.linalg.norm(np.asarray(E))), field_energy=float(fld.energy(E, st.fdip, V)),
-                       Mx=float(st.fdip[0]), My=float(st.fdip[1]), Mz=float(st.fdip[2]))
+            out.update(
+                efield=float(np.linalg.norm(np.asarray(E))),
+                field_energy=float(fld.energy(E, st.fdip, V)),
+                Mx=float(st.fdip[0]),
+                My=float(st.fdip[1]),
+                Mz=float(st.fdip[2]),
+            )
             if fld.kind == "D":
                 out.update(Emac_x=float(Emac[0]), Emac_y=float(Emac[1]), Emac_z=float(Emac[2]))
         return out
@@ -205,6 +274,7 @@ class Simulation:
         restraints in stages: recompiles the step and recomputes the forces of the current state.
         epot and econs jump by the change of the restraint energy (the work of the switch)."""
         from .restraints import as_restraints
+
         r = as_restraints(restraints)
         if r is not None:
             r.check(self.sys.n)
@@ -219,10 +289,13 @@ class Simulation:
         pos = self.rigid.positions(st.dyn.position)
         idx = self.nb.candidates(st.nbr, st.dyn.position.center, st.box, pos)[0]
         if self.integ.alchemy is None:
-            W = self.ff.strain_derivative(pos, st.box, idx, st.induction.mu, self.integ.params,
-                                          efield=self.integ.field_at(st, st.step))
+            W = self.ff.strain_derivative(
+                pos, st.box, idx, st.induction.mu, self.integ.params, efield=self.integ.field_at(st, st.step)
+            )
         else:
-            W = self.integ.alchemy.strain_derivative(self.ff, pos, st.box, idx, st.induction.mu, self.integ.params, st.lam)
+            W = self.integ.alchemy.strain_derivative(
+                self.ff, pos, st.box, idx, st.induction.mu, self.integ.params, st.lam
+            )
         W = W + self.integ.restraint_strain(pos, st.box, st.bias)
         ke_t = self.integ.kinetic(st)[1]
         return (2.0 * ke_t - jnp.trace(W)) / (3.0 * volume(st.box)) * 16.605390671738466
@@ -300,7 +373,7 @@ class Simulation:
     def _advance_block(self, n: int):
         start = self.state
         bias = self.integ.bias
-        if bias is not None and start.bias is not None:            # room for the block's hills and COLVAR rows
+        if bias is not None and start.bias is not None:  # room for the block's hills and COLVAR rows
             start = start.set(bias=bias.reserve(start.bias, n))
         for attempt in range(6):
             new = self.integ.run(start, n) if self._recorder is None else self._recorder.run(start, n)
@@ -312,20 +385,22 @@ class Simulation:
             body = start.dyn.position
             old = (self.ff.capacity, getattr(self.nb, "cap", None))
             nbr = self._size_lists(body, start.box, 1.3, None if nb_bad else start.nbr)
-            if row_bad:                                          # never shrink below what overflowed
+            if row_bad:  # never shrink below what overflowed
                 self.ff.grow_rows(old[0])
                 if getattr(self.nb, "cap", None) is not None and old[1] is not None:
                     self.nb.cap = max(self.nb.cap, old[1] + 4)
             self.integ.compile()
-            self._print(f"# {'neighbour list' if nb_bad else 'row capacity'} overflow in steps {int(start.step)}-"
-                        f"{int(start.step) + n}: resized (rows {self.ff.mc or self.nb.cap}, list {nbr.idx.shape[1]}), repeating")
+            self._print(
+                f"# {'neighbour list' if nb_bad else 'row capacity'} overflow in steps {int(start.step)}-"
+                f"{int(start.step) + n}: resized (rows {self.ff.mc or self.nb.cap}, list {nbr.idx.shape[1]}), repeating"
+            )
             start = self.integ.forces(start.set(nbr=nbr), False).set(induction=start.induction)
         else:
             raise RuntimeError("neighbour list keeps overflowing")
         if self._recorder is not None:
             self._recorder.keep()
         body = self.rigid.wrap(new.dyn.position, new.box)
-        if self.integ.efield is not None and self.integ.field_charged:   # itinerant dipole of re-wrapped ions
+        if self.integ.efield is not None and self.integ.field_charged:  # itinerant dipole of re-wrapped ions
             q = self.ff._atoms(self.integ.params)["q"]
             shift = jnp.sum(q[:, None] * (self.rigid.positions(new.dyn.position) - self.rigid.positions(body)), axis=0)
             new = new.set(fshift=new.fshift + shift)
@@ -339,8 +414,18 @@ class Simulation:
         if not np.isfinite(float(new.epot)):
             raise FloatingPointError(f"energy is not finite at step {int(new.step)}")
 
-    def run(self, nsteps: int, report: int = 1000, traj: int = 0, restart: int = 0, prefix: str = "md",
-            pressure_every_report: bool = False, append: bool = False, dipoles: int = 0, induced: int = 0):
+    def run(
+        self,
+        nsteps: int,
+        report: int = 1000,
+        traj: int = 0,
+        restart: int = 0,
+        prefix: str = "md",
+        pressure_every_report: bool = False,
+        append: bool = False,
+        dipoles: int = 0,
+        induced: int = 0,
+    ):
         """Every `report` steps a log line, `traj` a trajectory frame (prefix.nc), `restart` a
         restart + checkpoint; `dipoles`: cell dipole sampled every `dipoles` steps into prefix.dip
         (does not shorten the blocks); `induced`: per-atom induced dipoles into prefix.mu.nc."""
@@ -353,7 +438,8 @@ class Simulation:
         bout = None
         if self.integ.bias is not None:
             from ..bias.io import BiasOutput
-            self.bias_rows()                                            # rows of earlier _advance calls
+
+            self.bias_rows()  # rows of earlier _advance calls
             bout = BiasOutput(self.integ.bias, prefix, self.dt, self.T0, append=append, state=self.state.bias)
         logf = open(prefix + ".log", "a" if append else "w")
         cols = None
@@ -381,7 +467,9 @@ class Simulation:
                     header = "# " + " ".join(f"{c:>14s}" for c in cols)
                     logf.write(header + "\n")
                     self._print(header)
-                line = "  " + " ".join(f"{obs[c]:14.6f}" if isinstance(obs[c], float) else f"{obs[c]:14d}" for c in cols)
+                line = "  " + " ".join(
+                    f"{obs[c]:14.6f}" if isinstance(obs[c], float) else f"{obs[c]:14d}" for c in cols
+                )
                 logf.write(line + "\n")
                 logf.flush()
                 self._print(line)
@@ -400,8 +488,13 @@ class Simulation:
         rigid-body coordinates and momenta, forces, box, dipoles and extrapolation history, random
         state, barostat state.  Continuing from it reproduces the run up to floating-point summation
         order (GPU atomics in PME spreading make runs non-bitwise-reproducible anyway)."""
-        write_restart(prefix + ".rst7", self.positions_nm() * 10.0, self.velocities_nm_ps() * 10.0,
-                      np.asarray(self.state.box) * 10.0, self.time_ps)
+        write_restart(
+            prefix + ".rst7",
+            self.positions_nm() * 10.0,
+            self.velocities_nm_ps() * 10.0,
+            np.asarray(self.state.box) * 10.0,
+            self.time_ps,
+        )
         host = jax.tree_util.tree_map(np.asarray, self.state.set(nbr=None))
         with open(prefix + ".chk", "wb") as fh:
             pickle.dump({"state": host, "time_ps": self.time_ps}, fh)
@@ -421,9 +514,9 @@ class Simulation:
         with open(path, "rb") as fh:
             d = pickle.load(fh)
         st = jax.tree_util.tree_map(jnp.asarray, d["state"])
-        st = upgrade_state(st, self.state.aux)          # checkpoints from before the thermostat fields
+        st = upgrade_state(st, self.state.aux)  # checkpoints from before the thermostat fields
         st = self._bias_of_checkpoint(st)
-        st = field_state(st, self.integ.efield)        # the checkpoint's field amplitude, or the integrator's
+        st = field_state(st, self.integ.efield)  # the checkpoint's field amplitude, or the integrator's
         nbr = self.nb.allocate(self.rigid.positions(st.dyn.position), st.dyn.position.center, st.box)
-        self.state = st.set(nbr=nbr)                   # forces, dipoles and history are part of the state
+        self.state = st.set(nbr=nbr)  # forces, dipoles and history are part of the state
         self.time_ps = d["time_ps"]

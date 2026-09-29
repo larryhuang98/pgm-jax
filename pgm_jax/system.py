@@ -47,6 +47,7 @@ gets mass 0) whose positions are functions of other atoms, listed in `Molecule.v
 parameters like any atom.  Gas-phase and Ewald models take their positions as given; the MD
 engines place them and spread their forces.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -57,36 +58,59 @@ import jax.numpy as jnp
 import numpy as np
 
 ATOM_QUANTITIES = ("q", "radius", "alpha", "lj_rmin_half", "lj_sqrt_eps", "gvdw_sqrt_a", "gvdw_sqrt_c6", "gvdw_b")
-TERM_QUANTITIES = ("cov", "quad")                                   # one value per covalent dipole / quadrupole term
+TERM_QUANTITIES = ("cov", "quad")  # one value per covalent dipole / quadrupole term
 QUANTITIES = ATOM_QUANTITIES + TERM_QUANTITIES
-BY_TYPE = ("radius", "alpha", "lj_rmin_half", "lj_sqrt_eps", "gvdw_sqrt_a", "gvdw_sqrt_c6", "gvdw_b")   # default: tied by atom type
-BY_MOLECULE = ("q",)                                                 # default: per molecule, symmetry-tied
+BY_TYPE = (
+    "radius",
+    "alpha",
+    "lj_rmin_half",
+    "lj_sqrt_eps",
+    "gvdw_sqrt_a",
+    "gvdw_sqrt_c6",
+    "gvdw_b",
+)  # default: tied by atom type
+BY_MOLECULE = ("q",)  # default: per molecule, symmetry-tied
 
-MASSES = {"H": 1.008, "Li": 6.94, "C": 12.011, "N": 14.007, "O": 15.999, "F": 18.998, "Na": 22.990,
-          "P": 30.974, "S": 32.06, "Cl": 35.45, "K": 39.098, "Br": 79.904, "Rb": 85.468, "I": 126.90,
-          "Cs": 132.91, "EP": 0.0}                                   # EP: extra point (virtual site), massless
+MASSES = {
+    "H": 1.008,
+    "Li": 6.94,
+    "C": 12.011,
+    "N": 14.007,
+    "O": 15.999,
+    "F": 18.998,
+    "Na": 22.990,
+    "P": 30.974,
+    "S": 32.06,
+    "Cl": 35.45,
+    "K": 39.098,
+    "Br": 79.904,
+    "Rb": 85.468,
+    "I": 126.90,
+    "Cs": 132.91,
+    "EP": 0.0,
+}  # EP: extra point (virtual site), massless
 
 
 @dataclass
 class Molecule:
     name: str
-    elements: list[str]                       # e.g. ["O", "H", "H"]
-    types: list[str]                          # atom types, e.g. ["OW", "HW", "HW"]
-    q: np.ndarray                             # (m,) e                      initial values
-    radius: np.ndarray                        # (m,) nm
-    alpha: np.ndarray                         # (m,) nm^3
-    cov: list[tuple[int, int, float]] = field(default_factory=list)    # (i, j, c) local indices, c in e nm
-    lj_rmin_half: np.ndarray | None = None    # (m,) nm              None -> 0 (no LJ)
-    lj_sqrt_eps: np.ndarray | None = None     # (m,) sqrt(kJ/mol)    None -> 0
+    elements: list[str]  # e.g. ["O", "H", "H"]
+    types: list[str]  # atom types, e.g. ["OW", "HW", "HW"]
+    q: np.ndarray  # (m,) e                      initial values
+    radius: np.ndarray  # (m,) nm
+    alpha: np.ndarray  # (m,) nm^3
+    cov: list[tuple[int, int, float]] = field(default_factory=list)  # (i, j, c) local indices, c in e nm
+    lj_rmin_half: np.ndarray | None = None  # (m,) nm              None -> 0 (no LJ)
+    lj_sqrt_eps: np.ndarray | None = None  # (m,) sqrt(kJ/mol)    None -> 0
     bonds: list[tuple[int, int]] = field(default_factory=list)
-    gvdw_sqrt_a: np.ndarray | None = None     # (m,) sqrt(kJ/mol)          None -> 0 (no GVDW)
-    gvdw_sqrt_c6: np.ndarray | None = None    # (m,) sqrt(kJ/mol nm^6)     None -> 0
-    gvdw_b: np.ndarray | None = None          # (m,) dimensionless          None -> 1
-    quad: list[tuple[int, int, int, float]] = field(default_factory=list)   # (i, j, k, t), t in e nm^2
-    masses: np.ndarray | None = None          # (m,) amu             None -> element masses
-    keys: dict[str, list[str]] = field(default_factory=dict)          # tying-key overrides per quantity
+    gvdw_sqrt_a: np.ndarray | None = None  # (m,) sqrt(kJ/mol)          None -> 0 (no GVDW)
+    gvdw_sqrt_c6: np.ndarray | None = None  # (m,) sqrt(kJ/mol nm^6)     None -> 0
+    gvdw_b: np.ndarray | None = None  # (m,) dimensionless          None -> 1
+    quad: list[tuple[int, int, int, float]] = field(default_factory=list)  # (i, j, k, t), t in e nm^2
+    masses: np.ndarray | None = None  # (m,) amu             None -> element masses
+    keys: dict[str, list[str]] = field(default_factory=dict)  # tying-key overrides per quantity
     extra: dict = field(default_factory=dict)  # per-atom arrays for later channels
-    vsites: list = field(default_factory=list) # virtual sites (md/vsites.py VirtualSite, local indices)
+    vsites: list = field(default_factory=list)  # virtual sites (md/vsites.py VirtualSite, local indices)
 
     def __post_init__(self):
         m = len(self.elements)
@@ -94,14 +118,21 @@ class Molecule:
         self.q = np.asarray(self.q, float).reshape(m)
         self.radius = np.asarray(self.radius, float).reshape(m)
         self.alpha = np.asarray(self.alpha, float).reshape(m)
-        self.lj_rmin_half = np.zeros(m) if self.lj_rmin_half is None else np.asarray(self.lj_rmin_half, float).reshape(m)
+        self.lj_rmin_half = (
+            np.zeros(m) if self.lj_rmin_half is None else np.asarray(self.lj_rmin_half, float).reshape(m)
+        )
         self.lj_sqrt_eps = np.zeros(m) if self.lj_sqrt_eps is None else np.asarray(self.lj_sqrt_eps, float).reshape(m)
         self.gvdw_sqrt_a = np.zeros(m) if self.gvdw_sqrt_a is None else np.asarray(self.gvdw_sqrt_a, float).reshape(m)
-        self.gvdw_sqrt_c6 = np.zeros(m) if self.gvdw_sqrt_c6 is None else np.asarray(self.gvdw_sqrt_c6, float).reshape(m)
+        self.gvdw_sqrt_c6 = (
+            np.zeros(m) if self.gvdw_sqrt_c6 is None else np.asarray(self.gvdw_sqrt_c6, float).reshape(m)
+        )
         self.gvdw_b = np.ones(m) if self.gvdw_b is None else np.asarray(self.gvdw_b, float).reshape(m)
         self.quad = [(int(i), int(j), int(k), float(t)) for i, j, k, t in self.quad]
-        self.masses = (np.array([MASSES[e] for e in self.elements]) if self.masses is None
-                       else np.asarray(self.masses, float).reshape(m))
+        self.masses = (
+            np.array([MASSES[e] for e in self.elements])
+            if self.masses is None
+            else np.asarray(self.masses, float).reshape(m)
+        )
         self.cov = [(int(i), int(j), float(c)) for i, j, c in self.cov]
         self.bonds = [(int(i), int(j)) for i, j in self.bonds]
         self.vsites = list(self.vsites or [])
@@ -141,7 +172,7 @@ class Molecule:
     def symmetry_classes(self) -> np.ndarray:
         """Canonical class id per atom (colour refinement; independent of the atom order)."""
         adj = [set() for _ in range(self.n)]
-        site_edges = [(vs.site, a) for vs in self.vsites for a in vs.atoms]      # a virtual site and its parents
+        site_edges = [(vs.site, a) for vs in self.vsites for a in vs.atoms]  # a virtual site and its parents
         for i, j in list(self.bonds) + [(i, j) for i, j, _ in self.cov] + site_edges:
             if i != j:
                 adj[i].add(j)
@@ -162,7 +193,7 @@ class Molecule:
         """Key per atom (per covalent dipole for 'cov') for every quantity."""
         cls = self.symmetry_classes()
         label = {}
-        for t in set(self.types):                         # classes of one type, in canonical order
+        for t in set(self.types):  # classes of one type, in canonical order
             cs = sorted({int(c) for c, tt in zip(cls, self.types) if tt == t})
             for k, c in enumerate(cs):
                 label[c] = t if len(cs) == 1 else f"{t}.{k}"
@@ -170,8 +201,12 @@ class Molecule:
         keys = {qn: list(self.types) for qn in BY_TYPE}
         keys.update({qn: [f"{self.name}:{a}" for a in atom] for qn in BY_MOLECULE})
         keys["cov"] = [f"{self.name}:{atom[i]}>{atom[j]}" for i, j, _ in self.cov]
-        keys["quad"] = [f"{self.name}:Q:{atom[i]}>{atom[j]}" if j == k else
-                        f"{self.name}:Q:{atom[i]}>" + "|".join(sorted((atom[j], atom[k]))) for i, j, k, _ in self.quad]
+        keys["quad"] = [
+            f"{self.name}:Q:{atom[i]}>{atom[j]}"
+            if j == k
+            else f"{self.name}:Q:{atom[i]}>" + "|".join(sorted((atom[j], atom[k])))
+            for i, j, k, _ in self.quad
+        ]
         for qn, ks in self.keys.items():
             if qn not in QUANTITIES:
                 raise KeyError(f"unknown quantity {qn!r}")
@@ -200,10 +235,16 @@ class ParamTable:
         self._pos = {qn: {k: i for i, k in enumerate(self.keys[qn])} for qn in QUANTITIES}
         self.values0 = {qn: np.array([np.mean(members[qn][k]) for k in self.keys[qn]], float) for qn in QUANTITIES}
         self.spread = {qn: np.array([np.ptp(members[qn][k]) for k in self.keys[qn]], float) for qn in QUANTITIES}
-        bad = [(qn, k, s) for qn in QUANTITIES for k, s, v in zip(self.keys[qn], self.spread[qn], self.values0[qn])
-               if s > tol * max(1.0, abs(v))]
+        bad = [
+            (qn, k, s)
+            for qn in QUANTITIES
+            for k, s, v in zip(self.keys[qn], self.spread[qn], self.values0[qn])
+            if s > tol * max(1.0, abs(v))
+        ]
         if bad:
-            warnings.warn("tied values differ (quantity, key, spread): " + ", ".join(f"{a} {b} {c:.3g}" for a, b, c in bad[:10]))
+            warnings.warn(
+                "tied values differ (quantity, key, spread): " + ", ".join(f"{a} {b} {c:.3g}" for a, b, c in bad[:10])
+            )
 
     def initial(self) -> dict[str, jnp.ndarray]:
         return {qn: jnp.asarray(v) for qn, v in self.values0.items()}
@@ -245,11 +286,13 @@ class System:
         self.types = [t for m in molecules for t in m.types]
         self.masses = np.concatenate([m.masses for m in molecules])
         keys = {}
-        for m in molecules:                                  # tying keys are computed once per template
+        for m in molecules:  # tying keys are computed once per template
             if id(m) not in keys:
                 keys[id(m)] = m.tying_keys()
-        self.idx = {qn: np.concatenate([self.table.index(qn, keys[id(m)][qn]) for m in molecules]).astype(np.int32)
-                    for qn in QUANTITIES}
+        self.idx = {
+            qn: np.concatenate([self.table.index(qn, keys[id(m)][qn]) for m in molecules]).astype(np.int32)
+            for qn in QUANTITIES
+        }
         ci, cj = [], []
         for k, m in enumerate(molecules):
             for i, j, _ in m.cov:
@@ -259,10 +302,13 @@ class System:
         self.cov_j = np.array(cj, dtype=np.int32)
         qt = [(offs[k] + i, offs[k] + j, offs[k] + l) for k, m in enumerate(molecules) for i, j, l, _ in m.quad]
         self.quad_ijk = np.array(qt, dtype=np.int32).reshape(-1, 3)
-        self._pairs = None                                    # all pairs: built on first use (gas phase)
+        self._pairs = None  # all pairs: built on first use (gas phase)
         extra_keys = set().union(*[m.extra.keys() for m in molecules]) if molecules else set()
-        self.extra = {k: np.concatenate([np.asarray(m.extra[k], float) for m in molecules]) for k in extra_keys
-                      if all(k in m.extra for m in molecules)}
+        self.extra = {
+            k: np.concatenate([np.asarray(m.extra[k], float) for m in molecules])
+            for k in extra_keys
+            if all(k in m.extra for m in molecules)
+        }
         self.params0 = self.table.initial()
 
     # ------------------------------------------------------------------ all pairs (gas-phase models)

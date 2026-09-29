@@ -17,14 +17,24 @@ systems) for the usual clusters and iteratively (matrix-free) for large ones.
 
 ```python
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
+
 tpl = FlexibleTemplate.load("runs/flex/methanol.flex")
 pos, H = liquid_box(tpl, 216, density=0.75)
-sim = FlexibleSimulation(System([tpl.pgm] * 216), [tpl] * 216, pos, H, MDSettings(), dt=0.002,
-                         ensemble="npt", thermostat="bussi", constraints="h-bonds")          # 2 fs
-sim = FlexibleSimulation(..., dt=0.004, constraints="h-bonds", hmr=3.024)                    # 4 fs
-sim = FlexibleSimulation(..., dt=0.002, constraints="all-bonds")                             # every bond
-sim.observables()   # ... "shake_err" (largest relative length error), "rattle_err" (largest
-                    # |r^ . (v_a - v_b)| over the RMS relative speed of the constrained pairs)
+sim = FlexibleSimulation(
+    System([tpl.pgm] * 216),
+    [tpl] * 216,
+    pos,
+    H,
+    MDSettings(),
+    dt=0.002,
+    ensemble="npt",
+    thermostat="bussi",
+    constraints="h-bonds",
+)  # 2 fs
+sim = FlexibleSimulation(..., dt=0.004, constraints="h-bonds", hmr=3.024)  # 4 fs
+sim = FlexibleSimulation(..., dt=0.002, constraints="all-bonds")  # every bond
+sim.observables()  # ... "shake_err" (largest relative length error), "rattle_err" (largest
+# |r^ . (v_a - v_b)| over the RMS relative speed of the constrained pairs)
 ```
 
 - `constraints="none"` (default for flexible templates: every bond flexible, dt 0.5 fs),

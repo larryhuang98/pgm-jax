@@ -30,9 +30,9 @@ average.
 ## Using it
 
 ```python
-tpl = FlexibleTemplate.from_fit(model, P)           # a BondedModel with BondedSettings(flux=1 or 2)
+tpl = FlexibleTemplate.from_fit(model, P)  # a BondedModel with BondedSettings(flux=1 or 2)
 sim = FlexibleSimulation(System([tpl.pgm] * 216), [tpl] * 216, pos, H, MDSettings(), dt=0.0005)
-sim.ff.flux                                         # ChargeFlux: bonds, b0, keys, signs, cov_bond, params
+sim.ff.flux  # ChargeFlux: bonds, b0, keys, signs, cov_bond, params
 ```
 
 `examples/fit_bonded_template.py methanol --flux 1 --wmu 1` fits one (`--wmu` puts the gas-phase

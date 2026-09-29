@@ -1,4 +1,5 @@
 """Per-molecule and mean test errors of several result files (molecules common to all)."""
+
 import json
 import os
 import sys
@@ -17,12 +18,18 @@ for key in ("E_MAE", "F_MAE"):
     for n in names:
         v = [D[n][m]["test"][key] for m in common]
         print(f"{n:{w}s} " + " ".join(f"{x:10.3f}" for x in v) + f"  {np.mean(v):8.3f}")
+
+
 def smax(v):
     xs = []
     for x in v["scans"].values():
         if "error" in x:
             continue
-        xs.append(x["relaxed_max"] if "relaxed_max" in x else (np.inf if x.get("relax_ok") is False else x.get("sp_max", np.nan)))
+        xs.append(
+            x["relaxed_max"]
+            if "relaxed_max" in x
+            else (np.inf if x.get("relax_ok") is False else x.get("sp_max", np.nan))
+        )
     return max(xs) if xs else np.nan
 
 
@@ -31,7 +38,11 @@ if any(D[n][m]["scans"] for n in names for m in common):
     for n in names:
         v = [smax(D[n][m]) for m in common]
         fin = [x for x in v if np.isfinite(x)]
-        print(f"{n:{w}s} " + " ".join(f"{x:10.2f}" for x in v) + f"  {np.mean(fin) if fin else np.nan:8.2f}  fails {sum(1 for x in v if np.isinf(x))}")
+        print(
+            f"{n:{w}s} "
+            + " ".join(f"{x:10.2f}" for x in v)
+            + f"  {np.mean(fin) if fin else np.nan:8.2f}  fails {sum(1 for x in v if np.isinf(x))}"
+        )
 print("-- parameters (per group)")
 for n in names:
     print(f"{n:{w}s} " + " ".join(f"{D[n][m]['n_params_group']:10d}" for m in common))

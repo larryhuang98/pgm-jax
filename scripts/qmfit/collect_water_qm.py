@@ -19,6 +19,7 @@ monomer: CCSD/aug-cc-pVTZ dipole (D) and static isotropic polarizability (A^3) a
 
     python scripts/qmfit/collect_water_qm.py [~/project/qmdata/water] [--out data/qm/water_qm.json]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -29,12 +30,22 @@ import os
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-EH = 627.5094740631          # kcal/mol
+EH = 627.5094740631  # kcal/mol
 BOHR_A = 0.529177210903
 DEBYE_AU = 2.541746473
-AU_A3 = BOHR_A ** 3
-WATER27_LIT = {"H2O2": 4.974, "H2O3": 15.708, "H2O4": 27.353, "H2O5": 35.879, "H2O6": 45.988, "H2O6c": 45.733,
-               "H2O6b": 45.292, "H2O6c2": 44.296, "H2O8d2d": 72.490, "H2O8s4": 72.454}
+AU_A3 = BOHR_A**3
+WATER27_LIT = {
+    "H2O2": 4.974,
+    "H2O3": 15.708,
+    "H2O4": 27.353,
+    "H2O5": 35.879,
+    "H2O6": 45.988,
+    "H2O6c": 45.733,
+    "H2O6b": 45.292,
+    "H2O6c2": 44.296,
+    "H2O8d2d": 72.490,
+    "H2O8s4": 72.454,
+}
 
 
 def e_int(res, key, n=2):
@@ -57,23 +68,32 @@ def main(a):
     for g in geoms["records"]:
         for j in g["jobs"]:
             if (g["id"], j) in R:
-                cost[j.split(":")[0]] = cost.get(j.split(":")[0], 0.0) + R[(g["id"], j)]["sec"] * R[(g["id"], j)]["threads"]
+                cost[j.split(":")[0]] = (
+                    cost.get(j.split(":")[0], 0.0) + R[(g["id"], j)]["sec"] * R[(g["id"], j)]["threads"]
+                )
             else:
                 missing.append((g["id"], j))
     byid = {}
     for g in geoms["records"]:
         r = {k: g[k] for k in ("id", "set", "n", "xyz_A", "meta")}
-        get = lambda j: R.get((g["id"], j), {}).get("res")          # noqa: E731
+        get = lambda j: R.get((g["id"], j), {}).get("res")  # noqa: E731
         if g["set"] == "monomer":
             p = get("props:ccsd:aug-cc-pvtz")
             if p:
                 dip = next((v for k, v in p.items() if "CCSD DIPOLE" == k), None)
                 pol = next((v for k, v in p.items() if "POLARIZABILITY" in k and "CCSD" in k), None)
-                monomer = {"level": "CCSD/aug-cc-pVTZ (frozen core), rigid pGM3P-25 geometry",
-                           "dipole_D": float(np.linalg.norm(dip)) * DEBYE_AU if dip is not None else None,
-                           "polarizability_A3": (float(np.trace(np.asarray(pol).reshape(3, 3)) / 3) if np.size(pol) == 9
-                                                 else float(pol)) * AU_A3 if pol is not None else None,
-                           "xyz_A": g["xyz_A"], "raw_keys": sorted(p)}
+                monomer = {
+                    "level": "CCSD/aug-cc-pVTZ (frozen core), rigid pGM3P-25 geometry",
+                    "dipole_D": float(np.linalg.norm(dip)) * DEBYE_AU if dip is not None else None,
+                    "polarizability_A3": (
+                        float(np.trace(np.asarray(pol).reshape(3, 3)) / 3) if np.size(pol) == 9 else float(pol)
+                    )
+                    * AU_A3
+                    if pol is not None
+                    else None,
+                    "xyz_A": g["xyz_A"],
+                    "raw_keys": sorted(p),
+                }
             continue
         E, sapt, nb = {}, {}, {}
         if g["n"] == 2:
@@ -92,10 +112,18 @@ def main(a):
             if "mp2_cbs" in E and "dccsdt_atz" in E:
                 E["ref"] = E["mp2_cbs"] + E["dccsdt_atz"]
             if s:
-                for k, name in (("SAPT ELST ENERGY", "elst"), ("SAPT EXCH ENERGY", "exch"), ("SAPT IND ENERGY", "ind"),
-                                ("SAPT DISP ENERGY", "disp"), ("SAPT0 TOTAL ENERGY", "total"), ("SSAPT0 EXCH ENERGY", "ssapt0_exch"),
-                                ("SSAPT0 IND ENERGY", "ssapt0_ind"), ("SSAPT0 DISP ENERGY", "ssapt0_disp"),
-                                ("SSAPT0 TOTAL ENERGY", "ssapt0_total"), ("SAPT CT ENERGY", "ct")):
+                for k, name in (
+                    ("SAPT ELST ENERGY", "elst"),
+                    ("SAPT EXCH ENERGY", "exch"),
+                    ("SAPT IND ENERGY", "ind"),
+                    ("SAPT DISP ENERGY", "disp"),
+                    ("SAPT0 TOTAL ENERGY", "total"),
+                    ("SSAPT0 EXCH ENERGY", "ssapt0_exch"),
+                    ("SSAPT0 IND ENERGY", "ssapt0_ind"),
+                    ("SSAPT0 DISP ENERGY", "ssapt0_disp"),
+                    ("SSAPT0 TOTAL ENERGY", "ssapt0_total"),
+                    ("SAPT CT ENERGY", "ct"),
+                ):
                     if k in s:
                         sapt[name] = s[k] * EH
             gr = get("mp2grad:aug-cc-pvtz")
@@ -107,7 +135,7 @@ def main(a):
             m = get("mbe:mp2:aug-cc-pvtz:3") or get("mbe:mp2:aug-cc-pvtz:1")
             n = g["n"]
             if m:
-                Ek = lambda S: m[",".join(map(str, S))]["mp2"]            # noqa: E731
+                Ek = lambda S: m[",".join(map(str, S))]["mp2"]  # noqa: E731
                 nb["int_mp2_atz"] = (Ek(range(n)) - sum(Ek([i]) for i in range(n))) * EH
                 if "0,1" in m:
                     e2 = {(i, j): (Ek([i, j]) - Ek([i]) - Ek([j])) * EH for i, j in itertools.combinations(range(n), 2)}
@@ -137,19 +165,26 @@ def main(a):
             if ok:
                 r["E"]["d2b"] = corr
                 r["E"]["ref"] = r["E"]["mp2_atz"] + corr
-    out = {"about": "water clusters of rigid pGM3P-25 monomers (r_OH 0.9745 A, HOH 103.64 deg); coordinates Angstrom "
-                    "(O,H,H per molecule); energies kcal/mol, gradients kcal/mol/A; psi4 1.11; "
-                    "scripts/qmfit/{build_water_clusters,psi4_clusters,collect_water_qm}.py",
-           "levels": {"E.ref": "CCSD(T)/CBS estimate: CP MP2/CBS(aTZ,aQZ; HF aQZ) + CP [CCSD(T)-MP2]/aug-cc-pVTZ (dimers); "
-                               "clusters: CP MP2/aTZ (cluster basis) + sum of pair corrections [E.ref - MP2/aTZ]",
-                      "sapt": "SAPT0/jun-cc-pVDZ (psi4, DF); ind includes dHF",
-                      "nb": "CP MP2/aug-cc-pVTZ many-body expansion in the cluster basis",
-                      "grad_int": "gradient of the CP MP2/aug-cc-pVTZ interaction energy",
-                      "monomer": "CCSD/aug-cc-pVTZ dipole and static polarizability"},
-           "cost_core_hours": {k: round(v / 3600, 2) for k, v in cost.items()},
-           "missing": len(missing), "monomer": monomer, "records": recs}
+    out = {
+        "about": "water clusters of rigid pGM3P-25 monomers (r_OH 0.9745 A, HOH 103.64 deg); coordinates Angstrom "
+        "(O,H,H per molecule); energies kcal/mol, gradients kcal/mol/A; psi4 1.11; "
+        "scripts/qmfit/{build_water_clusters,psi4_clusters,collect_water_qm}.py",
+        "levels": {
+            "E.ref": "CCSD(T)/CBS estimate: CP MP2/CBS(aTZ,aQZ; HF aQZ) + CP [CCSD(T)-MP2]/aug-cc-pVTZ (dimers); "
+            "clusters: CP MP2/aTZ (cluster basis) + sum of pair corrections [E.ref - MP2/aTZ]",
+            "sapt": "SAPT0/jun-cc-pVDZ (psi4, DF); ind includes dHF",
+            "nb": "CP MP2/aug-cc-pVTZ many-body expansion in the cluster basis",
+            "grad_int": "gradient of the CP MP2/aug-cc-pVTZ interaction energy",
+            "monomer": "CCSD/aug-cc-pVTZ dipole and static polarizability",
+        },
+        "cost_core_hours": {k: round(v / 3600, 2) for k, v in cost.items()},
+        "missing": len(missing),
+        "monomer": monomer,
+        "records": recs,
+    }
     json.dump(out, open(a.out, "w"), separators=(",", ":"))
     from collections import Counter
+
     print("records", len(recs), Counter(r["set"] for r in recs))
     print("with E.ref", sum("ref" in r["E"] for r in recs), "missing tasks", len(missing), missing[:5])
     print("core hours", out["cost_core_hours"], "total", round(sum(cost.values()) / 3600, 1))

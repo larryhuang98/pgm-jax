@@ -62,6 +62,7 @@ What a prmtop cannot carry, measured by scripts/protein/check_pgm_prmtop.py (doc
     digits, CMAP grids to 1e-5 kcal/mol).
 Everything else agrees to pmemd's print precision (1e-4 kcal/mol) and the forces to 2e-5 kcal/mol/A.
 """
+
 from __future__ import annotations
 
 import os
@@ -74,16 +75,32 @@ from ..md.constraints import repartition_masses
 from ..md.topology import MoleculeRule
 from ..prmtop import Prmtop
 
-AMBER_CHARGE = 18.2223                 # e -> Amber's charge unit (sqrt(kcal/mol A))
+AMBER_CHARGE = 18.2223  # e -> Amber's charge unit (sqrt(kcal/mol A))
 KCAL = 4.184
 CHARMM_TAG = "CHARMM-form 1-4 LJ tables only (pgm_jax pGM, lj14_scale {:g})"
-CHARMM_SECTIONS = ("FORCE_FIELD_TYPE", "LENNARD_JONES_14_ACOEF", "LENNARD_JONES_14_BCOEF",
-                   "CHARMM_UREY_BRADLEY_COUNT", "CHARMM_UREY_BRADLEY", "CHARMM_UREY_BRADLEY_FORCE_CONSTANT",
-                   "CHARMM_UREY_BRADLEY_EQUIL_VALUE", "CHARMM_NUM_IMPROPERS", "CHARMM_IMPROPERS",
-                   "CHARMM_NUM_IMPR_TYPES", "CHARMM_IMPROPER_FORCE_CONSTANT", "CHARMM_IMPROPER_PHASE")
-POL_GAUSS = ("POL_GAUSS_FORCEFIELD", "POL_GAUSS_COVALENT_POINTERS_LIST", "POL_GAUSS_COVALENT_ATOMS_LIST",
-             "POL_GAUSS_COVALENT_DIPOLES_LIST", "POL_GAUSS_MONOPOLES_LIST", "POL_GAUSS_RADII_LIST",
-             "POL_GAUSS_POLARIZABILITY_LIST")
+CHARMM_SECTIONS = (
+    "FORCE_FIELD_TYPE",
+    "LENNARD_JONES_14_ACOEF",
+    "LENNARD_JONES_14_BCOEF",
+    "CHARMM_UREY_BRADLEY_COUNT",
+    "CHARMM_UREY_BRADLEY",
+    "CHARMM_UREY_BRADLEY_FORCE_CONSTANT",
+    "CHARMM_UREY_BRADLEY_EQUIL_VALUE",
+    "CHARMM_NUM_IMPROPERS",
+    "CHARMM_IMPROPERS",
+    "CHARMM_NUM_IMPR_TYPES",
+    "CHARMM_IMPROPER_FORCE_CONSTANT",
+    "CHARMM_IMPROPER_PHASE",
+)
+POL_GAUSS = (
+    "POL_GAUSS_FORCEFIELD",
+    "POL_GAUSS_COVALENT_POINTERS_LIST",
+    "POL_GAUSS_COVALENT_ATOMS_LIST",
+    "POL_GAUSS_COVALENT_DIPOLES_LIST",
+    "POL_GAUSS_MONOPOLES_LIST",
+    "POL_GAUSS_RADII_LIST",
+    "POL_GAUSS_POLARIZABILITY_LIST",
+)
 
 
 def molecule_rules(asys, templates=None, lj14_scale: float = 0.5, lj_min_sep: int = 4) -> list:
@@ -99,8 +116,11 @@ def molecule_rules(asys, templates=None, lj14_scale: float = 0.5, lj_min_sep: in
         if m.kind in ("water", "ion"):
             out.append(MoleculeRule(bonds=[], vdw="none"))
         else:
-            out.append(MoleculeRule(bonds=list(m.molecule.bonds), vdw="graph", lj_min_sep=int(lj_min_sep),
-                                    lj14_scale=float(lj14_scale)))
+            out.append(
+                MoleculeRule(
+                    bonds=list(m.molecule.bonds), vdw="graph", lj_min_sep=int(lj_min_sep), lj14_scale=float(lj14_scale)
+                )
+            )
     return out
 
 
@@ -112,7 +132,8 @@ def pair_classes(n: int, rule: MoleculeRule):
         raise ValueError(f"unknown van der Waals rule {rule.vdw!r}")
     nbr = [[] for _ in range(n)]
     for i, j in rule.bonds:
-        nbr[i].append(j); nbr[j].append(i)
+        nbr[i].append(j)
+        nbr[j].append(i)
     near = near_pairs(nbr, max(3, int(rule.lj_min_sep) - 1))
     excl = sorted(p for p, d in near.items() if d < rule.lj_min_sep)
     return excl, sorted(p for p, d in near.items() if d == 3)
@@ -124,7 +145,7 @@ def _lj_tables(rh_nm, se):
     for key in zip(np.asarray(rh_nm, float).tolist(), np.asarray(se, float).tolist()):
         ti.append(types.setdefault(key, len(types)) + 1)
     nt = len(types)
-    R = np.array([k[0] for k in types]) * 10.0                     # A
+    R = np.array([k[0] for k in types]) * 10.0  # A
     E = np.array([k[1] for k in types])
     ico = np.zeros((nt, nt), int)
     A, B = [], []
@@ -132,8 +153,8 @@ def _lj_tables(rh_nm, se):
         for i in range(j + 1):
             eps = E[i] * E[j] / KCAL
             rmin = R[i] + R[j]
-            A.append(eps * rmin ** 12)
-            B.append(2.0 * eps * rmin ** 6)
+            A.append(eps * rmin**12)
+            B.append(2.0 * eps * rmin**6)
             ico[i, j] = ico[j, i] = len(A)
     return ti, nt, ico.ravel(), np.array(A), np.array(B)
 
@@ -158,18 +179,20 @@ def _set_14_flags(pt, pairs14: set, isH) -> int:
         if want:
             done.add(pair)
             c = abs(c)
-        elif c == 0 and not improper:                    # atom 0 third: -0 does not exist, reverse
+        elif c == 0 and not improper:  # atom 0 third: -0 does not exist, reverse
             a, b, c, d = d, c, b, a
             c = -abs(c)
         else:
-            c = -abs(c)                                  # (pmemd never takes 1-4 pairs from impropers)
+            c = -abs(c)  # (pmemd never takes 1-4 pairs from impropers)
         row = (a, b, c, d, t)
         (rows_h if any(isH[abs(x) // 3] for x in row[:4]) else rows_n).extend(row)
     missing = pairs14 - done
     if missing:
         i, j = sorted(missing)[0]
-        raise ValueError(f"{len(missing)} pairs 3 bonds apart (e.g. atoms {i + 1}, {j + 1}) have no proper "
-                         "dihedral with a nonzero periodicity to carry their 1-4 interaction")
+        raise ValueError(
+            f"{len(missing)} pairs 3 bonds apart (e.g. atoms {i + 1}, {j + 1}) have no proper "
+            "dihedral with a nonzero periodicity to carry their 1-4 interaction"
+        )
     pt.set("DIHEDRALS_INC_HYDROGEN", rows_h)
     pt.set("DIHEDRALS_WITHOUT_HYDROGEN", rows_n)
     return len(done)
@@ -202,8 +225,10 @@ def _rigid_bonds(pt, asys, templates, isH) -> float:
         for i, j, d0 in tpl.md_rule("none").constraints:
             pair = tuple(sorted((int(m.atoms[i]), int(m.atoms[j]))))
             if pair not in params:
-                raise ValueError(f"rigid molecule at atom {m.atoms[0] + 1}: no prmtop bond between atoms "
-                                 f"{pair[0] + 1} and {pair[1] + 1} (pmemd would not hold it rigid)")
+                raise ValueError(
+                    f"rigid molecule at atom {m.atoms[0] + 1}: no prmtop bond between atoms "
+                    f"{pair[0] + 1} and {pair[1] + 1} (pmemd would not hold it rigid)"
+                )
             change = max(change, abs(params[pair][1] - 10.0 * d0))
             params[pair][1] = 10.0 * d0
     table, rows_h, rows_n = {}, [], []
@@ -218,8 +243,16 @@ def _rigid_bonds(pt, asys, templates, isH) -> float:
     return change
 
 
-def write_pgm_prmtop(asys, out: str, templates=None, params=None, system=None, lj14_scale: float | None = None,
-                     lj_min_sep: int | None = None, hmr: float | None = None) -> dict:
+def write_pgm_prmtop(
+    asys,
+    out: str,
+    templates=None,
+    params=None,
+    system=None,
+    lj14_scale: float | None = None,
+    lj_min_sep: int | None = None,
+    hmr: float | None = None,
+) -> dict:
     """Write `out`: asys.prmtop (the tleap topology load_amber read) with the pGM model of the MD engine.
 
     asys       AmberSystem (protein.load_amber): molecules, their prmtop atoms and pGM parameters
@@ -235,10 +268,13 @@ def write_pgm_prmtop(asys, out: str, templates=None, params=None, system=None, l
     Returns a summary (counts, 1-4 mode, bonded export counts)."""
     from ..bonded.amber import export_bonded
     from ..md.flux import template_flux_order
+
     flux = [t.name for t in (templates or []) if t is not None and template_flux_order(t)]
     if flux or (isinstance(params, dict) and "flux" in params):
-        raise ValueError(f"charge flux ({', '.join(flux) or 'flux parameters'}): pmemd-pgm has no charge flux, so the "
-                         "model cannot be written as a pmemd-pgm prmtop")
+        raise ValueError(
+            f"charge flux ({', '.join(flux) or 'flux parameters'}): pmemd-pgm has no charge flux, so the "
+            "model cannot be written as a pmemd-pgm prmtop"
+        )
     pt0 = Prmtop.read(asys.prmtop)
     if "CTITLE" in pt0 or ("CHARMM_UREY_BRADLEY_COUNT" in pt0 and np.any(pt0.get("CHARMM_UREY_BRADLEY_COUNT"))):
         raise ValueError(f"{asys.prmtop} is a CHARMM (chamber) topology; only Amber topologies are converted")
@@ -246,8 +282,10 @@ def write_pgm_prmtop(asys, out: str, templates=None, params=None, system=None, l
         # pmemd.pgm (CPU) spreads extra-point forces in its pGM branch (pme_force.F90: orient_frc), but
         # pmemd.pgm.cuda's pGM force path (cuda/pgm_gpu.cpp) never calls kOrientForces: on the GPU the
         # forces on extra points would not reach their frames, so this topology would not run the model
-        raise NotImplementedError("write_pgm_prmtop: systems with virtual sites (Amber extra points) are not "
-                                  "supported: pmemd.pgm.cuda's pGM force path does not spread extra-point forces")
+        raise NotImplementedError(
+            "write_pgm_prmtop: systems with virtual sites (Amber extra points) are not "
+            "supported: pmemd.pgm.cuda's pGM force path does not spread extra-point forces"
+        )
     n = int(pt0.pointers["NATOM"])
     order = np.asarray(asys.order)
     if len(order) != n or sorted(order.tolist()) != list(range(n)):
@@ -308,21 +346,46 @@ def write_pgm_prmtop(asys, out: str, templates=None, params=None, system=None, l
         pt.remove(name)
     if "IPOL" not in pt:
         pt.set("IPOL", [0], fmt="1I8")
-    pt.set("POL_GAUSS_FORCEFIELD", [1], fmt="i5", after="IPOL",
-           comments=["This indicates that this parm file is specific to pGM force field",
-                     "This must be present if ipgm (in mdin) is 1", "This must NOT be present if ipgm is 0",
-                     "written by pgm_jax.protein.pmemd.write_pgm_prmtop"])
-    pt.set("POL_GAUSS_COVALENT_POINTERS_LIST", [len(c) for c in cov], fmt="10I8", after="POL_GAUSS_FORCEFIELD",
-           comments=["number of covalent dipoles per atom", f"  dimension = {n}"])
+    pt.set(
+        "POL_GAUSS_FORCEFIELD",
+        [1],
+        fmt="i5",
+        after="IPOL",
+        comments=[
+            "This indicates that this parm file is specific to pGM force field",
+            "This must be present if ipgm (in mdin) is 1",
+            "This must NOT be present if ipgm is 0",
+            "written by pgm_jax.protein.pmemd.write_pgm_prmtop",
+        ],
+    )
+    pt.set(
+        "POL_GAUSS_COVALENT_POINTERS_LIST",
+        [len(c) for c in cov],
+        fmt="10I8",
+        after="POL_GAUSS_FORCEFIELD",
+        comments=["number of covalent dipoles per atom", f"  dimension = {n}"],
+    )
     ncov = sum(len(c) for c in cov)
-    pt.set("POL_GAUSS_COVALENT_ATOMS_LIST", [j + 1 for c in cov for j, _ in c], fmt="10I8",
-           after="POL_GAUSS_COVALENT_POINTERS_LIST", comments=[f"  dimension = {ncov}"])
-    pt.set("POL_GAUSS_COVALENT_DIPOLES_LIST", [x for c in cov for _, x in c], fmt="5E16.8",
-           after="POL_GAUSS_COVALENT_ATOMS_LIST", comments=["  unit: e-Angstrom", f"  dimension = {ncov}"])
+    pt.set(
+        "POL_GAUSS_COVALENT_ATOMS_LIST",
+        [j + 1 for c in cov for j, _ in c],
+        fmt="10I8",
+        after="POL_GAUSS_COVALENT_POINTERS_LIST",
+        comments=[f"  dimension = {ncov}"],
+    )
+    pt.set(
+        "POL_GAUSS_COVALENT_DIPOLES_LIST",
+        [x for c in cov for _, x in c],
+        fmt="5E16.8",
+        after="POL_GAUSS_COVALENT_ATOMS_LIST",
+        comments=["  unit: e-Angstrom", f"  dimension = {ncov}"],
+    )
     after = "POL_GAUSS_COVALENT_DIPOLES_LIST"
-    for name, v, unit in (("POL_GAUSS_MONOPOLES_LIST", per_atom["q"], "e"),
-                          ("POL_GAUSS_RADII_LIST", per_atom["radius"] * 10.0, "Angstrom"),
-                          ("POL_GAUSS_POLARIZABILITY_LIST", per_atom["alpha"] * 1e3, "Angstrom**3")):
+    for name, v, unit in (
+        ("POL_GAUSS_MONOPOLES_LIST", per_atom["q"], "e"),
+        ("POL_GAUSS_RADII_LIST", per_atom["radius"] * 10.0, "Angstrom"),
+        ("POL_GAUSS_POLARIZABILITY_LIST", per_atom["alpha"] * 1e3, "Angstrom**3"),
+    ):
         pt.set(name, v, fmt="5E16.8", after=after, comments=[f"  unit: {unit}", f"  dimension = {n}"])
         after = name
 
@@ -365,29 +428,53 @@ def write_pgm_prmtop(asys, out: str, templates=None, params=None, system=None, l
 
     # ---------------------------------------------------------------- masses
     if hmr is not None:
-        bonds = np.concatenate([pt.get("BONDS_INC_HYDROGEN"),
-                                pt.get("BONDS_WITHOUT_HYDROGEN")]).reshape(-1, 3)[:, :2] // 3
+        bonds = (
+            np.concatenate([pt.get("BONDS_INC_HYDROGEN"), pt.get("BONDS_WITHOUT_HYDROGEN")]).reshape(-1, 3)[:, :2] // 3
+        )
         pt.set("MASS", repartition_masses(pt.get("MASS"), list(el_prm), bonds, hmr))
     pt.write(out)
-    return {"atoms": n, "lj_types": nt, "excluded_pairs": int(sum(len(e) for e in excl)), "pairs_14": len(pairs14),
-            "dihedrals_14": n14, "lj14_scale": s14, "lj14_mode": "SCNB 1" if s14 == 1.0 else "CHARMM 1-4 tables",
-            "covalent_dipoles": ncov, "exported": exported, "rigid_length_change_A": rigid_change, "hmr": hmr}
+    return {
+        "atoms": n,
+        "lj_types": nt,
+        "excluded_pairs": int(sum(len(e) for e in excl)),
+        "pairs_14": len(pairs14),
+        "dihedrals_14": n14,
+        "lj14_scale": s14,
+        "lj14_mode": "SCNB 1" if s14 == 1.0 else "CHARMM 1-4 tables",
+        "covalent_dipoles": ncov,
+        "exported": exported,
+        "rigid_length_change_A": rigid_change,
+        "hmr": hmr,
+    }
 
 
 def _charmm_14(pt, scale: float, A, B):
     """1-4 LJ = scale x LJ through the CHARMM 1-4 tables (see the module docstring)."""
     after = "LENNARD_JONES_BCOEF"
-    pt.set("FORCE_FIELD_TYPE", [f"{1:2d}{CHARMM_TAG.format(scale):<78.78s}"], fmt="i2,a78", after="POINTERS",
-           comments=["pmemd reads LENNARD_JONES_14_* when this names CHARMM: pmemd-pgm fixes SCNB at 1"])
-    for name, v in (("LENNARD_JONES_14_ACOEF", scale * np.asarray(A)),
-                    ("LENNARD_JONES_14_BCOEF", scale * np.asarray(B))):
+    pt.set(
+        "FORCE_FIELD_TYPE",
+        [f"{1:2d}{CHARMM_TAG.format(scale):<78.78s}"],
+        fmt="i2,a78",
+        after="POINTERS",
+        comments=["pmemd reads LENNARD_JONES_14_* when this names CHARMM: pmemd-pgm fixes SCNB at 1"],
+    )
+    for name, v in (
+        ("LENNARD_JONES_14_ACOEF", scale * np.asarray(A)),
+        ("LENNARD_JONES_14_BCOEF", scale * np.asarray(B)),
+    ):
         pt.set(name, v, fmt="5E16.8", after=after, comments=[f"{scale:g} x LENNARD_JONES_*COEF (pgm_jax lj14_scale)"])
         after = name
-    for name, fmt, v in (("CHARMM_UREY_BRADLEY_COUNT", "2I8", [0, 0]), ("CHARMM_UREY_BRADLEY", "10I8", []),
-                         ("CHARMM_UREY_BRADLEY_FORCE_CONSTANT", "5E16.8", []),
-                         ("CHARMM_UREY_BRADLEY_EQUIL_VALUE", "5E16.8", []), ("CHARMM_NUM_IMPROPERS", "10I8", [0]),
-                         ("CHARMM_IMPROPERS", "10I8", []), ("CHARMM_NUM_IMPR_TYPES", "1I8", [0]),
-                         ("CHARMM_IMPROPER_FORCE_CONSTANT", "5E16.8", []), ("CHARMM_IMPROPER_PHASE", "5E16.8", [])):
+    for name, fmt, v in (
+        ("CHARMM_UREY_BRADLEY_COUNT", "2I8", [0, 0]),
+        ("CHARMM_UREY_BRADLEY", "10I8", []),
+        ("CHARMM_UREY_BRADLEY_FORCE_CONSTANT", "5E16.8", []),
+        ("CHARMM_UREY_BRADLEY_EQUIL_VALUE", "5E16.8", []),
+        ("CHARMM_NUM_IMPROPERS", "10I8", [0]),
+        ("CHARMM_IMPROPERS", "10I8", []),
+        ("CHARMM_NUM_IMPR_TYPES", "1I8", [0]),
+        ("CHARMM_IMPROPER_FORCE_CONSTANT", "5E16.8", []),
+        ("CHARMM_IMPROPER_PHASE", "5E16.8", []),
+    ):
         pt.set(name, v, fmt=fmt, after=after)
         after = name
 
@@ -418,11 +505,28 @@ def pmemd_grid(H_nm, spacing: float = 0.08) -> tuple:
     return tuple(out)
 
 
-def pmemd_mdin(settings, H_nm, nstlim: int = 0, dt: float = 0.002, ensemble: str = "nvt", temperature: float = 298.0,
-               thermostat: str = "langevin", gamma: float = 1.0, tau_t: float = 1.0, pressure: float = 1.0,
-               constraints: str = "h-bonds", irest: int = 0, ntpr: int = 1000, ntwx: int = 0, ntwr: int = 0,
-               ntwf: int = 0, ig: int = -1, maxcyc: int = 0, tempi: float | None = None,
-               title: str = "pgm_jax model") -> str:
+def pmemd_mdin(
+    settings,
+    H_nm,
+    nstlim: int = 0,
+    dt: float = 0.002,
+    ensemble: str = "nvt",
+    temperature: float = 298.0,
+    thermostat: str = "langevin",
+    gamma: float = 1.0,
+    tau_t: float = 1.0,
+    pressure: float = 1.0,
+    constraints: str = "h-bonds",
+    irest: int = 0,
+    ntpr: int = 1000,
+    ntwx: int = 0,
+    ntwr: int = 0,
+    ntwf: int = 0,
+    ig: int = -1,
+    maxcyc: int = 0,
+    tempi: float | None = None,
+    title: str = "pgm_jax model",
+) -> str:
     """pmemd-pgm mdin with the nonbonded model of MDSettings: cut = ee_dsum_cut = cutoff (one
     cutoff for LJ and the pGM direct sum), ew_coeff = ewald_beta, the PME grid (pme_grid, or from
     pme_spacing and the box H_nm; pmemd needs pmemd_grid's sizes) and order, vdwmeth =
@@ -441,12 +545,15 @@ def pmemd_mdin(settings, H_nm, nstlim: int = 0, dt: float = 0.002, ensemble: str
     induced-dipole solver is left at pmemd-pgm's defaults (its PCG with local preconditioner); the
     GPU predictor is set by the environment (PGM_GPU_PRED)."""
     from ..md.pme import grid_size
+
     H = np.asarray(H_nm, float)
     grid = tuple(settings.pme_grid) if settings.pme_grid is not None else tuple(grid_size(H, settings.pme_spacing))
     if not all(_pmemd_fft_ok(int(k)) for k in grid):
-        raise ValueError(f"PME grid {grid}: pmemd.pgm(.cuda) needs multiples of 4 with prime factors 2, 3, 5; run "
-                         f"the engine with MDSettings(pme_grid=pmemd_grid(H, spacing)), e.g. "
-                         f"{pmemd_grid(H, settings.pme_spacing)}")
+        raise ValueError(
+            f"PME grid {grid}: pmemd.pgm(.cuda) needs multiples of 4 with prime factors 2, 3, 5; run "
+            f"the engine with MDSettings(pme_grid=pmemd_grid(H, spacing)), e.g. "
+            f"{pmemd_grid(H, settings.pme_spacing)}"
+        )
     cut = 10.0 * settings.cutoff
     if settings.vdw != "lj" or settings.elec != "qpi":
         raise ValueError("pmemd_mdin writes LJ + full pGM (vdw='lj', elec='qpi')")
@@ -467,13 +574,17 @@ def pmemd_mdin(settings, H_nm, nstlim: int = 0, dt: float = 0.002, ensemble: str
     else:
         raise ValueError(f"thermostat {thermostat!r}: pmemd_mdin writes langevin | bussi")
     if maxcyc <= 0:
-        head = (f"   imin=0, nstlim={nstlim}, dt={dt:g}, irest={irest}, ntx={5 if irest else 1}, ipgm=1,\n"
-                f"   ntb={ntb}, {extra}{ntt}\n")
-    return (f" {title}\n &cntrl\n{head}"
-            f"   ntc={ntc}, ntf={ntf}, tol=0.0000001, cut={cut:g},\n"
-            f"   ntpr={ntpr}, ntwx={ntwx}, ntwr={ntwr}, ntwf={ntwf}, ioutfm=1,\n /\n"
-            f" &ewald\n   nfft1={grid[0]}, nfft2={grid[1]}, nfft3={grid[2]}, order={settings.pme_order},"
-            f" ew_coeff={settings.ewald_beta / 10.0:g},\n   skinnb={10.0 * settings.skin:g},"
-            f" vdwmeth={1 if settings.lj_lrc else 0},\n /\n"
-            f" &pol_gauss\n   ee_dsum_cut={cut:g}, dipole_scf_tol={settings.dipole_tol:g},"
-            f" scf_cg_niter={settings.max_iter},\n /\n")
+        head = (
+            f"   imin=0, nstlim={nstlim}, dt={dt:g}, irest={irest}, ntx={5 if irest else 1}, ipgm=1,\n"
+            f"   ntb={ntb}, {extra}{ntt}\n"
+        )
+    return (
+        f" {title}\n &cntrl\n{head}"
+        f"   ntc={ntc}, ntf={ntf}, tol=0.0000001, cut={cut:g},\n"
+        f"   ntpr={ntpr}, ntwx={ntwx}, ntwr={ntwr}, ntwf={ntwf}, ioutfm=1,\n /\n"
+        f" &ewald\n   nfft1={grid[0]}, nfft2={grid[1]}, nfft3={grid[2]}, order={settings.pme_order},"
+        f" ew_coeff={settings.ewald_beta / 10.0:g},\n   skinnb={10.0 * settings.skin:g},"
+        f" vdwmeth={1 if settings.lj_lrc else 0},\n /\n"
+        f" &pol_gauss\n   ee_dsum_cut={cut:g}, dipole_scf_tol={settings.dipole_tol:g},"
+        f" scf_cg_niter={settings.max_iter},\n /\n"
+    )

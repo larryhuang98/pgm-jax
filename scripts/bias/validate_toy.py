@@ -9,6 +9,7 @@ At the end, for every run: the FES from the bias (-f V) and the reweighted histo
 for metadynamics, exp(V/kT) for OPES; frames after --skip of the run), each compared with the exact
 FES over the region F_exact < --fmax after the best constant shift (RMSD, max).  Writes OUT_SYSTEM_METHOD.json
 and .npz (FES arrays)."""
+
 import argparse
 import json
 import os
@@ -85,8 +86,18 @@ if a.method == "metad":
     bias = MetaD(cvs, sigma=sigma, height=a.height, pace=a.pace, biasfactor=a.biasfactor, grid=grid)
 else:
     bias = OPES(cvs, sigma=sigma, pace=a.pace, barrier=a.barrier)
-sim = ToyLangevin(U, x0, mass=a.mass, temperature=a.T, dt=a.dt, gamma=a.gamma, bias=bias, walkers=a.walkers,
-                  shared=a.shared, seed=a.seed)
+sim = ToyLangevin(
+    U,
+    x0,
+    mass=a.mass,
+    temperature=a.T,
+    dt=a.dt,
+    gamma=a.gamma,
+    bias=bias,
+    walkers=a.walkers,
+    shared=a.shared,
+    seed=a.seed,
+)
 nsteps = int(round(a.ns * 1000 / a.dt))
 seg = nsteps // a.segments
 seg -= seg % a.sample
@@ -98,14 +109,33 @@ for k in range(a.segments):
 wall = time.time() - t0
 out = {key: np.concatenate([o[key] for o in outs]) for key in ("step", "cv", "bias")}
 W = a.walkers
-bstates = [sim.state.bias.parts[0]] if a.shared else [jax.tree_util.tree_map(lambda x: x[w], sim.state.bias.parts[0]) for w in range(W)]
+bstates = (
+    [sim.state.bias.parts[0]]
+    if a.shared
+    else [jax.tree_util.tree_map(lambda x: x[w], sim.state.bias.parts[0]) for w in range(W)]
+)
 kT = KB * a.T
-res = {"args": vars(a), "fmax": fmax, "wall_s": wall, "steps": nsteps,
-       "us_per_step": wall / nsteps * 1e6, "bias": bias.describe(), "runs": []}
+res = {
+    "args": vars(a),
+    "fmax": fmax,
+    "wall_s": wall,
+    "steps": nsteps,
+    "us_per_step": wall / nsteps * 1e6,
+    "bias": bias.describe(),
+    "runs": [],
+}
 F_bias, F_rw = [], []
 keep = out["step"] > a.skip * nsteps
-fine = A.mesh(*[np.linspace(ax[0] - 1.0, ax[-1] + 1.0, 400) if p == 0 else A.periodic_axis(360) for ax, p in zip(axes, periods)])[0] \
-    if len(axes) == 1 else A.mesh(np.linspace(-1.8, 1.3, 156), np.linspace(-0.6, 2.4, 151))[0]
+fine = (
+    A.mesh(
+        *[
+            np.linspace(ax[0] - 1.0, ax[-1] + 1.0, 400) if p == 0 else A.periodic_axis(360)
+            for ax, p in zip(axes, periods)
+        ]
+    )[0]
+    if len(axes) == 1
+    else A.mesh(np.linspace(-1.8, 1.3, 156), np.linspace(-0.6, 2.4, 151))[0]
+)
 for r, st in enumerate(bstates):
     Fb = A.fes_from_bias(bias, st, pts).reshape(shape)
     if a.shared:
@@ -114,7 +144,7 @@ for r, st in enumerate(bstates):
         s, v, steps = out["cv"][:, r], out["bias"][:, r, 0], out["step"]
     if a.method == "metad":
         hs, ct = A.metad_ct(bias.hills(st), a.biasfactor, kT, periods, fine)
-        if a.shared:        # the hills of one deposition step come from all walkers: c(t) after the last of them
+        if a.shared:  # the hills of one deposition step come from all walkers: c(t) after the last of them
             last = np.append(hs[1:] != hs[:-1], True)
             hs, ct = hs[last], ct[last]
         lw = A.ct_weights(steps, v, hs, ct, kT)
@@ -126,22 +156,40 @@ for r, st in enumerate(bstates):
     rh, mh, _ = A.align_rmsd(Fh, Fex, mask)
     x = s[:, 0]
     info = bias.info(st)
-    res["runs"].append({"rmsd_bias": rb, "max_bias": mb, "rmsd_reweight": rh, "max_reweight": mh,
-                        **{kk: float(vv) for kk, vv in info.items()}})
+    res["runs"].append(
+        {
+            "rmsd_bias": rb,
+            "max_bias": mb,
+            "rmsd_reweight": rh,
+            "max_reweight": mh,
+            **{kk: float(vv) for kk, vv in info.items()},
+        }
+    )
     F_bias.append(Fb)
     F_rw.append(Fh)
-    print(f"run {r}: FES from the bias RMSD {rb:.3f} (max {mb:.2f}) kJ/mol, reweighted RMSD {rh:.3f} (max {mh:.2f}); {info}")
+    print(
+        f"run {r}: FES from the bias RMSD {rb:.3f} (max {mb:.2f}) kJ/mol, reweighted RMSD {rh:.3f} (max {mh:.2f}); {info}"
+    )
 for name, Fs in (("bias", F_bias), ("reweight", F_rw)):
     R = np.array([rr[f"rmsd_{name}"] for rr in res["runs"]])
     Fs = np.array([A.align_rmsd(F, Fex, mask)[2] for F in Fs])
     Fm = Fs.mean(0)
     err = Fs.std(0, ddof=1) / np.sqrt(len(Fs)) if len(Fs) > 1 else np.zeros_like(Fm)
     rm, mm, _ = A.align_rmsd(Fm, Fex, mask)
-    res[name] = {"rmsd_mean": float(R.mean()), "rmsd_sem": float(R.std(ddof=1) / np.sqrt(len(R))) if len(R) > 1 else 0.0,
-                 "rmsd_of_average": rm, "max_of_average": mm, "mean_pointwise_sem": float(err[mask].mean()),
-                 "chi2_per_point": float(np.mean(((Fm - Fex)[mask] / np.maximum(err[mask], 1e-9)) ** 2)) if len(Fs) > 1 else None}
-    print(f"{name}: RMSD per run {R.mean():.3f} +- {res[name]['rmsd_sem']:.3f} kJ/mol; average of {len(Fs)} runs: RMSD "
-          f"{rm:.3f}, max {mm:.2f}, mean error bar {res[name]['mean_pointwise_sem']:.3f}")
+    res[name] = {
+        "rmsd_mean": float(R.mean()),
+        "rmsd_sem": float(R.std(ddof=1) / np.sqrt(len(R))) if len(R) > 1 else 0.0,
+        "rmsd_of_average": rm,
+        "max_of_average": mm,
+        "mean_pointwise_sem": float(err[mask].mean()),
+        "chi2_per_point": float(np.mean(((Fm - Fex)[mask] / np.maximum(err[mask], 1e-9)) ** 2))
+        if len(Fs) > 1
+        else None,
+    }
+    print(
+        f"{name}: RMSD per run {R.mean():.3f} +- {res[name]['rmsd_sem']:.3f} kJ/mol; average of {len(Fs)} runs: RMSD "
+        f"{rm:.3f}, max {mm:.2f}, mean error bar {res[name]['mean_pointwise_sem']:.3f}"
+    )
 print(f"{nsteps} steps x {W} walkers in {wall:.0f} s ({res['us_per_step']:.1f} us per step)")
 os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
 tag = f"{a.out}_{a.system}_{a.method}{'_shared' if a.shared else ''}"

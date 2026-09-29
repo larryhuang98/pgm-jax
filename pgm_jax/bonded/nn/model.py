@@ -12,6 +12,7 @@ are built for any molecule against a frozen vocabulary (`prepare`).
     net, P = NNBonded.load("nnb.pkl")
     C = net.coefficients(P, net.prepare(protein_spec))    # frozen per-instance parameters
 """
+
 from __future__ import annotations
 
 import pickle
@@ -30,33 +31,44 @@ from .layers import embeddings, init_message_passing, init_mlp, mlp
 
 @dataclass(frozen=True)
 class NNBConfig:
-    width: int = 32                   # embedding width W
-    layers: int = 3                   # message-passing layers
-    ref: str = "geometry"             # reference values: "geometry" (minimum + learned shift) | "predicted"
-    basis: tuple = T.PAPER            # families whose per-instance parameters the network predicts
-    b_span: float = 0.01              # largest learned shift of bond reference values (nm)
-    th_span: float = 0.35             # ... of angle reference values (rad)
-    out_scale: float = 2.0            # head output -> parameter change, in units of fit.SCALES
-    pgm_features: bool = True         # atom features include the pGM q, alpha, radius, |covalent dipoles|
-    table_depth: int | None = None    # typed table (atom environments to this depth; 0 = elements) + residual
-    resid_l2: float = 0.0             # shrinkage of the residual towards the typed table (training loss)
-    context: bool = True              # sequence context (residues i-1, i, i+1) for CONTEXT_ATOMS families
+    width: int = 32  # embedding width W
+    layers: int = 3  # message-passing layers
+    ref: str = "geometry"  # reference values: "geometry" (minimum + learned shift) | "predicted"
+    basis: tuple = T.PAPER  # families whose per-instance parameters the network predicts
+    b_span: float = 0.01  # largest learned shift of bond reference values (nm)
+    th_span: float = 0.35  # ... of angle reference values (rad)
+    out_scale: float = 2.0  # head output -> parameter change, in units of fit.SCALES
+    pgm_features: bool = True  # atom features include the pGM q, alpha, radius, |covalent dipoles|
+    table_depth: int | None = None  # typed table (atom environments to this depth; 0 = elements) + residual
+    resid_l2: float = 0.0  # shrinkage of the residual towards the typed table (training loss)
+    context: bool = True  # sequence context (residues i-1, i, i+1) for CONTEXT_ATOMS families
 
     @classmethod
     def from_settings(cls, s) -> NNBConfig:
         """From BondedSettings (nn_* fields)."""
-        return cls(width=s.nn_width, layers=s.nn_layers, ref=s.nn_ref, basis=tuple(s.nn_basis), b_span=s.nn_b_span,
-                   th_span=s.nn_th_span, out_scale=s.nn_out_scale, pgm_features=s.nn_pgm_features,
-                   table_depth=s.nn_table_depth, resid_l2=s.nn_resid_l2, context=getattr(s, "nn_context", True))
+        return cls(
+            width=s.nn_width,
+            layers=s.nn_layers,
+            ref=s.nn_ref,
+            basis=tuple(s.nn_basis),
+            b_span=s.nn_b_span,
+            th_span=s.nn_th_span,
+            out_scale=s.nn_out_scale,
+            pgm_features=s.nn_pgm_features,
+            table_depth=s.nn_table_depth,
+            resid_l2=s.nn_resid_l2,
+            context=getattr(s, "nn_context", True),
+        )
 
 
 @dataclass
 class Vocabulary:
     """Everything that fixes the parameter shapes; grows while training molecules are added,
     frozen by init_params (later molecules must fit it)."""
-    skeletons: dict = field(default_factory=dict)    # family -> [skeleton, ...]
-    slots: dict = field(default_factory=dict)        # family -> components per key
-    table: dict = field(default_factory=dict)        # family / "b0" / "th0" -> {typed key: row}
+
+    skeletons: dict = field(default_factory=dict)  # family -> [skeleton, ...]
+    slots: dict = field(default_factory=dict)  # family -> components per key
+    table: dict = field(default_factory=dict)  # family / "b0" / "th0" -> {typed key: row}
     frozen: bool = False
 
 
@@ -75,7 +87,7 @@ class NNBonded:
             raise ValueError("ref: geometry | predicted")
         self.config = config
         self.vocab = vocab or Vocabulary()
-        self.mols, self.data = [], []                 # registered molecules and their tables
+        self.mols, self.data = [], []  # registered molecules and their tables
 
     # ------------------------------------------------------------------ molecules
     @classmethod
@@ -159,7 +171,7 @@ class NNBonded:
 
     def _typed(self, P, d, name, out, res):
         """Typed-table row (zero for keys not in the table) + network residual `out`."""
-        res.append(jnp.mean(out ** 2) if out.size else 0.0)
+        res.append(jnp.mean(out**2) if out.size else 0.0)
         if "tab_" + name not in P:
             return out
         tid = d["tid"][name]
@@ -184,8 +196,10 @@ class NNBonded:
             C["th0"] = jnp.zeros(0)
         r_emb = None
         if "res" in P:
-            hm = jax.ops.segment_sum(h, d["residue"], d["n_res"]) / \
-                jnp.maximum(jax.ops.segment_sum(jnp.ones(d["n"]), d["residue"], d["n_res"]), 1.0)[:, None]
+            hm = (
+                jax.ops.segment_sum(h, d["residue"], d["n_res"])
+                / jnp.maximum(jax.ops.segment_sum(jnp.ones(d["n"]), d["residue"], d["n_res"]), 1.0)[:, None]
+            )
             r_emb = mlp(P["res"], hm)
         for f in c.basis:
             rec = d["fam"][f]
@@ -195,7 +209,7 @@ class NNBonded:
             feat = jnp.zeros((n, v.slots[f] * SLOT * W))
             for (slot, kind, _), (inst, atoms) in rec["groups"].items():
                 r = readout(kind, h, atoms)
-                feat = feat.at[inst, slot * SLOT * W: slot * SLOT * W + r.shape[1]].set(r)
+                feat = feat.at[inst, slot * SLOT * W : slot * SLOT * W + r.shape[1]].set(r)
             parts = [feat, jax.nn.one_hot(rec["skel_idx"], len(v.skeletons[f]))]
             if self._uses_context(f):
                 parts.append(r_emb[rec["ctx_res"]].reshape(n, 3 * W))
@@ -203,7 +217,9 @@ class NNBonded:
             p, c0 = {}, 0
             for pname, (shape, init) in T.REGISTRY[f].params.items():
                 size = int(np.prod(shape)) if shape else 1
-                p[pname] = float(init) + c.out_scale * SCALES.get(pname, 1.0) * o[:, c0:c0 + size].reshape((n,) + tuple(shape))
+                p[pname] = float(init) + c.out_scale * SCALES.get(pname, 1.0) * o[:, c0 : c0 + size].reshape(
+                    (n,) + tuple(shape)
+                )
                 c0 += size
             C[f] = p
         return C, res
@@ -249,8 +265,14 @@ class NNBonded:
     # ------------------------------------------------------------------ persistence
     def save(self, path: str, P: dict):
         with open(path, "wb") as fh:
-            pickle.dump({"config": asdict(self.config), "vocab": asdict(self.vocab),
-                         "params": jax.tree_util.tree_map(np.asarray, P)}, fh)
+            pickle.dump(
+                {
+                    "config": asdict(self.config),
+                    "vocab": asdict(self.vocab),
+                    "params": jax.tree_util.tree_map(np.asarray, P),
+                },
+                fh,
+            )
 
     @classmethod
     def load(cls, path: str):

@@ -24,62 +24,72 @@ Modules: core (geometry, Family, REGISTRY), classical (diagonal and Amber forms)
 To add a family: a Family with `index(top)` -> (arrays, keys), `params` {name: (shape, init)},
 `linear` (names entering the energy linearly) and `energy(G, dev, I, p)`.
 """
+
 from __future__ import annotations
 
 from .class2 import (  # noqa: F401
-                        AngleAngle,
-                        AngleAngleTorsion,
-                        AngleAngleX,
-                        BondAngle,
-                        BondAngleX,
-                        BondBond,
-                        TorsionAngle,
-                        TorsionBond,
-                        TorsionModulated,
+    AngleAngle,
+    AngleAngleTorsion,
+    AngleAngleX,
+    BondAngle,
+    BondAngleX,
+    BondBond,
+    TorsionAngle,
+    TorsionBond,
+    TorsionModulated,
 )
 from .classical import (  # noqa: F401
-                        AngleCos,
-                        AngleCubic,
-                        AngleHarm,
-                        BondHarm,
-                        BondMorse,
-                        BondQuartic,
-                        Improper,
-                        ImproperAmber,
-                        Torsion,
-                        TorsionAmber,
+    AngleCos,
+    AngleCubic,
+    AngleHarm,
+    BondHarm,
+    BondMorse,
+    BondQuartic,
+    Improper,
+    ImproperAmber,
+    Torsion,
+    TorsionAmber,
 )
 from .cmap import CMAPFourier, CMAPFourier6, cmap_basis, cmap_grid, phi_psi  # noqa: F401
 
 # importing the modules registers their families; the names stay available as terms.<name>
 from .core import _N, REGISTRY, Family, _dihedral, _mask_n, _pair_index, geometry, morse_depth, register  # noqa: F401
 from .explore import (  # noqa: F401
-                        AngleHybrid,
-                        AngleHybridSC,
-                        Conjugation,
-                        HyperconjLone,
-                        HyperconjSigma,
-                        Pair13Exp,
-                        Pair13Harm,
-                        Pair13Ovl,
-                        Pair13Tanh,
-                        Pair14Exp,
-                        Pair14Ovl,
-                        Pair14Tanh,
-                        Pyramid,
-                        TorsionOOP,
-                        Twist,
-                        Volume,
-                        pi_axes,
+    AngleHybrid,
+    AngleHybridSC,
+    Conjugation,
+    HyperconjLone,
+    HyperconjSigma,
+    Pair13Exp,
+    Pair13Harm,
+    Pair13Ovl,
+    Pair13Tanh,
+    Pair14Exp,
+    Pair14Ovl,
+    Pair14Tanh,
+    Pyramid,
+    TorsionOOP,
+    Twist,
+    Volume,
+    pi_axes,
 )
 
 AMBER = ("bond_harm", "angle_harm", "torsion_amber", "improper_amber")
-PAPER = ("bond_morse", "angle_cos", "bond_bond", "bond_angle", "angle_angle", "torsion", "torsion_bond",
-         "torsion_angle", "aat", "improper")
+PAPER = (
+    "bond_morse",
+    "angle_cos",
+    "bond_bond",
+    "bond_angle",
+    "angle_angle",
+    "torsion",
+    "torsion_bond",
+    "torsion_angle",
+    "aat",
+    "improper",
+)
 # the three bonded term sets: Amber forms (for tuning GAFF-like parameters), the explored families
 # (class II set of the bonded study; any REGISTRY families can be added), and the fast neural
 # bonded terms (bonded/nn.py; "nnb" is handled by BondedModel, not by this registry)
 # proteins: the Amber forms plus the backbone phi/psi correction map (bonded/terms/cmap.py)
 PROTEIN = AMBER + ("cmap",)
 SETS = {"amber": AMBER, "explore": PAPER, "nn": ("nnb",), "protein": PROTEIN}
-

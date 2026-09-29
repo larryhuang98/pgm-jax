@@ -4,6 +4,7 @@ at 500 K (training) and 298 K (test), relaxed torsion scans.  Labels come from D
     python scripts/bonded/mace_sample.py NAME [--device cpu] [--what md,scan]
     python scripts/bonded/mace_sample.py alanine_dipeptide --what scan2d --rows 0:4
 Writes data/bonded/frames/<name>_<what>.npz (coordinates in Angstrom, MACE energies eV)."""
+
 import argparse
 import json
 import os
@@ -33,13 +34,15 @@ torch.set_num_threads(a.threads)
 d = json.load(open(os.path.join(ROOT, "data/bonded/molecules", f"{a.name}.json")))
 out_dir = os.path.join(ROOT, "data/bonded/frames")
 os.makedirs(out_dir, exist_ok=True)
-calc = mace_off(model=os.path.join(ROOT, "data/bonded/mace/MACE-OFF23_medium.model"), device=a.device,
-                default_dtype="float64")
+calc = mace_off(
+    model=os.path.join(ROOT, "data/bonded/mace/MACE-OFF23_medium.model"), device=a.device, default_dtype="float64"
+)
 el = d["elements"]
 bonds = [tuple(b) for b in d["bonds"]]
 nbr = {i: set() for i in range(len(el))}
 for i, j in bonds:
-    nbr[i].add(j); nbr[j].add(i)
+    nbr[i].add(j)
+    nbr[j].add(i)
 rng = np.random.default_rng(a.seed)
 
 
@@ -62,7 +65,8 @@ def side(b, c):
         u = stack.pop()
         for v in nbr[u]:
             if v not in seen and not (u == c and v == b):
-                seen.add(v); stack.append(v)
+                seen.add(v)
+                stack.append(v)
     mask = np.zeros(len(el), bool)
     mask[list(seen)] = True
     return mask
@@ -76,17 +80,19 @@ def rotatable_torsions():
     """One torsion per rotatable bond (single, not in a ring, both ends with other neighbours);
     heavy atoms preferred at the ends."""
     import networkx  # noqa: F401  (ASE depends on it)
+
     out = []
     ring = set()
     # ring bonds: bond whose removal keeps its ends connected
-    for (i, j) in bonds:
+    for i, j in bonds:
         seen, stack = {i}, [i]
         while stack:
             u = stack.pop()
             for v in nbr[u]:
                 if (u, v) in ((i, j), (j, i)) or v in seen:
                     continue
-                seen.add(v); stack.append(v)
+                seen.add(v)
+                stack.append(v)
         if j in seen:
             ring.add((i, j))
     for k, (j, kk) in enumerate(bonds):
@@ -103,13 +109,15 @@ def rotatable_torsions():
 
 def md(at, T, n_frames, every, equil, dt=0.5):
     MaxwellBoltzmannDistribution(at, temperature_K=T, rng=rng)
-    Stationary(at); ZeroRotation(at)
+    Stationary(at)
+    ZeroRotation(at)
     dyn = Langevin(at, dt * units.fs, temperature_K=T, friction=0.01 / units.fs, rng=rng)
     dyn.run(equil)
     X, E = [], []
     for _ in range(n_frames):
         dyn.run(every)
-        X.append(at.get_positions().copy()); E.append(at.get_potential_energy())
+        X.append(at.get_positions().copy())
+        E.append(at.get_potential_energy())
     return np.array(X), np.array(E)
 
 
@@ -123,10 +131,13 @@ for i in np.argsort(Emin):
         uniq.append(int(i))
 minima = [minima[i] for i in uniq]
 Xmin = np.array([m.get_positions() for m in minima])
-print(f"{a.name}: {len(minima)} minima, E rel (kcal/mol) {np.round((Emin[uniq] - Emin[uniq].min()) * 23.0605, 2)}", flush=True)
+print(
+    f"{a.name}: {len(minima)} minima, E rel (kcal/mol) {np.round((Emin[uniq] - Emin[uniq].min()) * 23.0605, 2)}",
+    flush=True,
+)
 
 if a.what in ("scan", "scan2d") and os.path.exists(os.path.join(out_dir, f"{a.name}_md.npz")):
-    z = np.load(os.path.join(out_dir, f"{a.name}_md.npz"))                     # reuse the minima of the MD run
+    z = np.load(os.path.join(out_dir, f"{a.name}_md.npz"))  # reuse the minima of the MD run
     Xmin = z["minima"]
 
 if "md" in a.what:
@@ -136,9 +147,16 @@ if "md" in a.what:
         Xs, Es, C = [], [], []
         for k, m in enumerate(minima):
             X, E = md(atoms_of(m.get_positions()), T, per[k], every, 2000)
-            Xs.append(X); Es.append(E); C += [k] * len(X)
-        out[tag] = np.concatenate(Xs); out[tag + "_E"] = np.concatenate(Es); out[tag + "_conf"] = np.array(C)
-        print(f"  {tag}: {len(out[tag])} frames, E range {np.ptp(out[tag + '_E']) * 23.06:.1f} kcal/mol, {time.time() - t0:.0f} s", flush=True)
+            Xs.append(X)
+            Es.append(E)
+            C += [k] * len(X)
+        out[tag] = np.concatenate(Xs)
+        out[tag + "_E"] = np.concatenate(Es)
+        out[tag + "_conf"] = np.array(C)
+        print(
+            f"  {tag}: {len(out[tag])} frames, E range {np.ptp(out[tag + '_E']) * 23.06:.1f} kcal/mol, {time.time() - t0:.0f} s",
+            flush=True,
+        )
     np.savez(os.path.join(out_dir, f"{a.name}_md.npz"), **out)
 
 if "scan" in a.what and "scan2d" not in a.what:
@@ -154,11 +172,18 @@ if "scan" in a.what and "scan2d" not in a.what:
             at.set_dihedral(*dih, phi, mask=mask)
             at.set_constraint(FixInternals(dihedrals_deg=[[phi, list(dih)]]))
             relax(at, fmax=0.005, steps=3000)
-            X.append(at.get_positions().copy()); E.append(at.get_potential_energy()); FM.append(fmax_of(at))
+            X.append(at.get_positions().copy())
+            E.append(at.get_potential_energy())
+            FM.append(fmax_of(at))
         at.set_constraint()
-        out[f"scan{t}"] = np.array(X); out[f"scan{t}_E"] = np.array(E); out[f"scan{t}_angle"] = grid
+        out[f"scan{t}"] = np.array(X)
+        out[f"scan{t}_E"] = np.array(E)
+        out[f"scan{t}_angle"] = grid
         out[f"scan{t}_fmax"] = np.array(FM)
-        print(f"  scan {dih}: barrier {np.ptp(E) * 23.06:.2f} kcal/mol, max residual force {max(FM):.3f} eV/A (constraint direction included), {time.time() - t0:.0f} s", flush=True)
+        print(
+            f"  scan {dih}: barrier {np.ptp(E) * 23.06:.2f} kcal/mol, max residual force {max(FM):.3f} eV/A (constraint direction included), {time.time() - t0:.0f} s",
+            flush=True,
+        )
     np.savez(os.path.join(out_dir, f"{a.name}_scan.npz"), **out)
 
 if "scan2d" in a.what:
@@ -172,11 +197,19 @@ if "scan2d" in a.what:
         at = atoms_of(Xmin[0])
         for s in grid:
             at.set_constraint()
-            at.set_dihedral(*phi_idx, p, mask=m_phi); at.set_dihedral(*psi_idx, s, mask=m_psi)
+            at.set_dihedral(*phi_idx, p, mask=m_phi)
+            at.set_dihedral(*psi_idx, s, mask=m_psi)
             at.set_constraint(FixInternals(dihedrals_deg=[[p, phi_idx], [s, psi_idx]]))
             relax(at, fmax=0.005, steps=3000)
-            X.append(at.get_positions().copy()); E.append(at.get_potential_energy()); ang.append((p, s))
+            X.append(at.get_positions().copy())
+            E.append(at.get_potential_energy())
+            ang.append((p, s))
         print(f"  phi {p}: {time.time() - t0:.0f} s", flush=True)
-    np.savez(os.path.join(out_dir, f"{a.name}_scan2d_{lo}_{hi}.npz"), elements=np.array(el), X=np.array(X),
-             E=np.array(E), angles=np.array(ang))
+    np.savez(
+        os.path.join(out_dir, f"{a.name}_scan2d_{lo}_{hi}.npz"),
+        elements=np.array(el),
+        X=np.array(X),
+        E=np.array(E),
+        angles=np.array(ang),
+    )
 print(f"done {a.name} {time.time() - t0:.0f} s", flush=True)

@@ -1,13 +1,14 @@
 """OpenMM (>= 8.4, PythonForce) + pgm_jax (pgm_jax.interfaces.openmm) on the 512-water pGM box.
 
-  1. single point: OpenMM's energy and forces (State) vs the engine and the native force field;
-  2. NVE: OpenMM VerletIntegrator + SETTLE vs the native rigid-body NVE (same start, same dt);
-  3. NVT: LangevinMiddleIntegrator vs native Langevin (gamma 1/ps): temperature, <U>;
-  4. NPT: MonteCarloBarostat vs the native Monte Carlo barostat: density;
-  5. cost per step on OpenMM's CPU and (if present) CUDA platforms vs native.
+1. single point: OpenMM's energy and forces (State) vs the engine and the native force field;
+2. NVE: OpenMM VerletIntegrator + SETTLE vs the native rigid-body NVE (same start, same dt);
+3. NVT: LangevinMiddleIntegrator vs native Langevin (gamma 1/ps): temperature, <U>;
+4. NPT: MonteCarloBarostat vs the native Monte Carlo barostat: density;
+5. cost per step on OpenMM's CPU and (if present) CUDA platforms vs native.
 
-    PYTHONPATH=runs/ommlib python scripts/interfaces/validate_openmm.py --out validation/interfaces/openmm.json
+  PYTHONPATH=runs/ommlib python scripts/interfaces/validate_openmm.py --out validation/interfaces/openmm.json
 """
+
 import argparse
 import json
 import os
@@ -48,7 +49,7 @@ def platforms():
             s.addParticle(1.0)
             openmm.Context(s, openmm.VerletIntegrator(0.001), openmm.Platform.getPlatformByName(p))
             ok.append(p)
-        except Exception as err:                  # noqa: BLE001
+        except Exception as err:  # noqa: BLE001
             print(f"# platform {p} unusable: {err}", flush=True)
     return ok
 
@@ -101,13 +102,17 @@ def main():
     sp = {}
     for p in plats:
         ctx, _ = context(om, openmm.VerletIntegrator(dt * PS), p, pos)
-        ctx.setPositions(pos)                                      # before constraints: compare the same geometry
+        ctx.setPositions(pos)  # before constraints: compare the same geometry
         s_ = ctx.getState(getEnergy=True, getForces=True)
         E = s_.getPotentialEnergy().value_in_unit(KJ)
         F = s_.getForces(asNumpy=True).value_in_unit(KJ / unit.nanometer)
-        sp[p] = {"E_openmm": E, "E_native": float(st.epot), "dE": E - float(st.epot),
-                 "F_maxdiff": float(np.abs(F - np.asarray(nat.forces)).max()),
-                 "F_rms": float(np.sqrt(np.mean(np.asarray(nat.forces) ** 2)))}
+        sp[p] = {
+            "E_openmm": E,
+            "E_native": float(st.epot),
+            "dE": E - float(st.epot),
+            "F_maxdiff": float(np.abs(F - np.asarray(nat.forces)).max()),
+            "F_rms": float(np.sqrt(np.mean(np.asarray(nat.forces) ** 2))),
+        }
         del ctx
     res["single_point_double"] = sp
     print(json.dumps(res, indent=1), flush=True)
@@ -128,11 +133,15 @@ def main():
     for k in range(n_nve // rep):
         nat._advance(rep)
         o = nat.observables()
-        t.append(o["time_ps"]); E.append(o["etot"])
+        t.append(o["time_ps"])
+        E.append(o["etot"])
     ms_nat = 1e3 * (time.perf_counter() - t0) / (n_nve // rep * rep)
     slope = np.polyfit(np.asarray(t) / 1000.0, E, 1)[0]
-    res["nve_native"] = {"drift_kT_per_ns_per_dof": float(slope / (KB * T) / dof), "std_kJmol": float(np.std(E)),
-                         "ms_per_step": ms_nat}
+    res["nve_native"] = {
+        "drift_kT_per_ns_per_dof": float(slope / (KB * T) / dof),
+        "std_kJmol": float(np.std(E)),
+        "ms_per_step": ms_nat,
+    }
 
     for p in plats:
         eng = PGMEngine(sysm, pos0, H, s)
@@ -154,23 +163,31 @@ def main():
         nstep = n_nve // rep * rep
         ndof = 3 * system.getNumParticles() - system.getNumConstraints() - 3
         slope = np.polyfit(np.asarray(t) / 1000.0, E, 1)[0]
-        res[f"nve_openmm_{p}"] = {"drift_kT_per_ns_per_dof": float(slope / (KB * T) / ndof), "std_kJmol": float(np.std(E)),
-                                  "ms_per_step": 1e3 * wall / nstep, "engine_ms_per_call": 1e3 * eng.stats["time"] / max(eng.stats["calls"], 1),
-                                  "pythonforce_ms_per_call": 1e3 * om.stats["t_call"] / max(om.stats["calls"], 1),
-                                  "state_to_numpy_ms": 1e3 * om.stats["t_convert"] / max(om.stats["calls"], 1),
-                                  "calls_per_step": eng.stats["calls"] / nstep, "cg_per_call": eng.stats["cg"] / max(eng.stats["calls"], 1),
-                                  "dof": ndof}
+        res[f"nve_openmm_{p}"] = {
+            "drift_kT_per_ns_per_dof": float(slope / (KB * T) / ndof),
+            "std_kJmol": float(np.std(E)),
+            "ms_per_step": 1e3 * wall / nstep,
+            "engine_ms_per_call": 1e3 * eng.stats["time"] / max(eng.stats["calls"], 1),
+            "pythonforce_ms_per_call": 1e3 * om.stats["t_call"] / max(om.stats["calls"], 1),
+            "state_to_numpy_ms": 1e3 * om.stats["t_convert"] / max(om.stats["calls"], 1),
+            "calls_per_step": eng.stats["calls"] / nstep,
+            "cg_per_call": eng.stats["cg"] / max(eng.stats["calls"], 1),
+            "dof": ndof,
+        }
         print(json.dumps(res[f"nve_openmm_{p}"], indent=1), flush=True)
         del ctx
 
     # ---- NVT
     p = plats[0]
-    natv = Simulation(sysm, pos0, H, s, dt=dt, ensemble="nvt", temperature=T, gamma=1.0, vel_nm_ps=vel0, log=None, seed=5)
+    natv = Simulation(
+        sysm, pos0, H, s, dt=dt, ensemble="nvt", temperature=T, gamma=1.0, vel_nm_ps=vel0, log=None, seed=5
+    )
     Tn, Un = [], []
     for k in range(n_nvt // rep):
         natv._advance(rep)
         o = natv.observables()
-        Tn.append(o["temp_K"]); Un.append(o["epot"] / sysm.nmol)
+        Tn.append(o["temp_K"])
+        Un.append(o["epot"] / sysm.nmol)
     eng = PGMEngine(sysm, pos0, H, s)
     om = PGMOpenMM(eng)
     integ = openmm.LangevinMiddleIntegrator(T * unit.kelvin, 1.0 / PS, dt * PS)
@@ -182,21 +199,43 @@ def main():
     for k in range(n_nvt // rep):
         integ.step(rep)
         s_ = ctx.getState(getEnergy=True)
-        To.append(2 * s_.getKineticEnergy().value_in_unit(KJ) / (ndof * KB)); Uo.append(s_.getPotentialEnergy().value_in_unit(KJ) / sysm.nmol)
+        To.append(2 * s_.getKineticEnergy().value_in_unit(KJ) / (ndof * KB))
+        Uo.append(s_.getPotentialEnergy().value_in_unit(KJ) / sysm.nmol)
     ms = 1e3 * (time.perf_counter() - t0) / (n_nvt // rep * rep)
     sk = len(To) // 10
-    res["nvt"] = {"platform": p, "T_native": float(np.mean(Tn[sk:])), "T_native_err": blockerr(Tn[sk:]),
-                  "T_openmm": float(np.mean(To[sk:])), "T_openmm_err": blockerr(To[sk:]),
-                  "U_native_per_mol": float(np.mean(Un[sk:])), "U_native_err": blockerr(Un[sk:]),
-                  "U_openmm_per_mol": float(np.mean(Uo[sk:])), "U_openmm_err": blockerr(Uo[sk:]), "ms_per_step": ms}
+    res["nvt"] = {
+        "platform": p,
+        "T_native": float(np.mean(Tn[sk:])),
+        "T_native_err": blockerr(Tn[sk:]),
+        "T_openmm": float(np.mean(To[sk:])),
+        "T_openmm_err": blockerr(To[sk:]),
+        "U_native_per_mol": float(np.mean(Un[sk:])),
+        "U_native_err": blockerr(Un[sk:]),
+        "U_openmm_per_mol": float(np.mean(Uo[sk:])),
+        "U_openmm_err": blockerr(Uo[sk:]),
+        "ms_per_step": ms,
+    }
     print(json.dumps(res["nvt"], indent=1), flush=True)
     del ctx
 
     # ---- NPT (Monte Carlo barostats), density
     if n_npt > 0:
         mass = float(np.sum(sysm.masses))
-        natp = Simulation(sysm, pos0, H, s, dt=dt, ensemble="npt", temperature=T, gamma=1.0, pressure=1.0,
-                          barostat_interval=25, vel_nm_ps=vel0, log=None, seed=6)
+        natp = Simulation(
+            sysm,
+            pos0,
+            H,
+            s,
+            dt=dt,
+            ensemble="npt",
+            temperature=T,
+            gamma=1.0,
+            pressure=1.0,
+            barostat_interval=25,
+            vel_nm_ps=vel0,
+            log=None,
+            seed=6,
+        )
         rn = []
         for k in range(n_npt // rep):
             natp._advance(rep)
@@ -210,14 +249,22 @@ def main():
         t0 = time.perf_counter()
         for k in range(n_npt // rep):
             integ.step(rep)
-            V = ctx.getState().getPeriodicBoxVolume().value_in_unit(unit.nanometer ** 3)
+            V = ctx.getState().getPeriodicBoxVolume().value_in_unit(unit.nanometer**3)
             ro.append(mass / V * AMU_NM3_TO_G_CM3)
         ms = 1e3 * (time.perf_counter() - t0) / (n_npt // rep * rep)
         sk = len(ro) // 5
-        res["npt"] = {"platform": p, "rho_native": float(np.mean(rn[sk:])), "rho_native_err": blockerr(rn[sk:]),
-                      "rho_openmm": float(np.mean(ro[sk:])), "rho_openmm_err": blockerr(ro[sk:]), "ms_per_step": ms,
-                      "ps": args.ps_npt, "engine_rebuilds": eng.stats["rebuilds"], "engine_repeats": eng.stats["repeats"],
-                      "calls_per_step": eng.stats["calls"] / (n_npt // rep * rep)}
+        res["npt"] = {
+            "platform": p,
+            "rho_native": float(np.mean(rn[sk:])),
+            "rho_native_err": blockerr(rn[sk:]),
+            "rho_openmm": float(np.mean(ro[sk:])),
+            "rho_openmm_err": blockerr(ro[sk:]),
+            "ms_per_step": ms,
+            "ps": args.ps_npt,
+            "engine_rebuilds": eng.stats["rebuilds"],
+            "engine_repeats": eng.stats["repeats"],
+            "calls_per_step": eng.stats["calls"] / (n_npt // rep * rep),
+        }
         print(json.dumps(res["npt"], indent=1), flush=True)
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     with open(args.out, "w") as fh:

@@ -1,5 +1,6 @@
 """Differentiability: gradients with respect to parameters, box and positions agree with finite
 differences, including second derivatives through the induction solves; parameter tying."""
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -16,22 +17,47 @@ from pgm_jax.system import QUANTITIES, Molecule, System  # noqa: E402
 
 
 def water():
-    return Molecule("WAT", ["O", "H", "H"], ["OW", "HW", "HW"], np.array([-0.8, 0.4, 0.4]),
-                    np.array([0.06, 0.05, 0.05]), np.array([1.0e-3, 0.3e-3, 0.3e-3]),
-                    cov=[(0, 1, -0.02), (0, 2, -0.02), (1, 0, 0.008), (2, 0, 0.008)],
-                    lj_rmin_half=[0.178, 0.0, 0.0], lj_sqrt_eps=[0.80, 0.0, 0.0], bonds=[(0, 1), (0, 2)])
+    return Molecule(
+        "WAT",
+        ["O", "H", "H"],
+        ["OW", "HW", "HW"],
+        np.array([-0.8, 0.4, 0.4]),
+        np.array([0.06, 0.05, 0.05]),
+        np.array([1.0e-3, 0.3e-3, 0.3e-3]),
+        cov=[(0, 1, -0.02), (0, 2, -0.02), (1, 0, 0.008), (2, 0, 0.008)],
+        lj_rmin_half=[0.178, 0.0, 0.0],
+        lj_sqrt_eps=[0.80, 0.0, 0.0],
+        bonds=[(0, 1), (0, 2)],
+    )
 
 
 def methanol():
-    x = np.array([[-0.0467, 0.6590, 0.0], [-0.0467, -0.7598, 0.0], [-1.0830, 0.9930, 0.0],
-                  [0.4406, 1.0735, 0.8902], [0.4406, 1.0735, -0.8902], [0.8785, -1.0591, 0.0]]) * 0.1
-    m = Molecule("MeOH", ["C", "O", "H", "H", "H", "H"], ["c3", "oh", "h1", "h1", "h1", "ho"],
-                 np.array([0.12, -0.62, 0.02, 0.02, 0.02, 0.44]), np.array([0.07, 0.06, 0.05, 0.05, 0.05, 0.05]),
-                 np.array([1.2e-3, 0.8e-3, 0.4e-3, 0.4e-3, 0.4e-3, 0.3e-3]),
-                 cov=[(0, 1, 0.01), (1, 0, -0.01), (1, 5, -0.02), (5, 1, 0.005)]
-                 + [c for h in (2, 3, 4) for c in ((0, h, 0.002), (h, 0, -0.002))],
-                 lj_rmin_half=[0.19, 0.172, 0.139, 0.139, 0.139, 0.02], lj_sqrt_eps=[0.33, 0.85, 0.20, 0.20, 0.20, 0.1],
-                 bonds=[(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)])
+    x = (
+        np.array(
+            [
+                [-0.0467, 0.6590, 0.0],
+                [-0.0467, -0.7598, 0.0],
+                [-1.0830, 0.9930, 0.0],
+                [0.4406, 1.0735, 0.8902],
+                [0.4406, 1.0735, -0.8902],
+                [0.8785, -1.0591, 0.0],
+            ]
+        )
+        * 0.1
+    )
+    m = Molecule(
+        "MeOH",
+        ["C", "O", "H", "H", "H", "H"],
+        ["c3", "oh", "h1", "h1", "h1", "ho"],
+        np.array([0.12, -0.62, 0.02, 0.02, 0.02, 0.44]),
+        np.array([0.07, 0.06, 0.05, 0.05, 0.05, 0.05]),
+        np.array([1.2e-3, 0.8e-3, 0.4e-3, 0.4e-3, 0.4e-3, 0.3e-3]),
+        cov=[(0, 1, 0.01), (1, 0, -0.01), (1, 5, -0.02), (5, 1, 0.005)]
+        + [c for h in (2, 3, 4) for c in ((0, h, 0.002), (h, 0, -0.002))],
+        lj_rmin_half=[0.19, 0.172, 0.139, 0.139, 0.139, 0.02],
+        lj_sqrt_eps=[0.33, 0.85, 0.20, 0.20, 0.20, 0.1],
+        bonds=[(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)],
+    )
     return m, x
 
 
@@ -42,7 +68,9 @@ def _rot(rng):
 def cluster(rng):
     """Water + methanol + water, ~0.3 nm apart (nm)."""
     t = np.radians(104.52 / 2)
-    w = np.array([[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]])
+    w = np.array(
+        [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
+    )
     m, xm = methanol()
     pos = np.concatenate([w, (xm - xm.mean(0)) @ _rot(rng).T + [0.33, 0.05, 0.0], w @ _rot(rng).T + [0.12, 0.30, 0.08]])
     return System([water(), m, water()]), pos
@@ -50,8 +78,11 @@ def cluster(rng):
 
 def perturbed(params, rng, scale=0.05):
     """Parameters moved off the initial values so no gradient is accidentally zero by symmetry."""
-    return {k: v * (1 + scale * rng.uniform(-1, 1, size=v.shape)) + (0.001 * rng.uniform(-1, 1, size=v.shape) if k in ("q", "cov") else 0)
-            for k, v in params.items()}
+    return {
+        k: v * (1 + scale * rng.uniform(-1, 1, size=v.shape))
+        + (0.001 * rng.uniform(-1, 1, size=v.shape) if k in ("q", "cov") else 0)
+        for k, v in params.items()
+    }
 
 
 def check_param_grad(f, params, h=1e-6, rtol=2e-6, atol=1e-8):
@@ -68,29 +99,50 @@ def check_param_grad(f, params, h=1e-6, rtol=2e-6, atol=1e-8):
 
 # ------------------------------------------------------------------------------ tying --
 
+
 def test_default_tying_keys():
     sys, _ = cluster(np.random.default_rng(0))
     t = sys.table
     assert t.keys["q"] == ["WAT:OW", "WAT:HW", "MeOH:c3", "MeOH:oh", "MeOH:h1", "MeOH:ho"]
     assert t.keys["alpha"] == ["OW", "HW", "c3", "oh", "h1", "ho"]
-    assert set(t.keys["cov"]) == {"WAT:OW>HW", "WAT:HW>OW", "MeOH:c3>oh", "MeOH:oh>c3", "MeOH:oh>ho", "MeOH:ho>oh",
-                                  "MeOH:c3>h1", "MeOH:h1>c3"}
+    assert set(t.keys["cov"]) == {
+        "WAT:OW>HW",
+        "WAT:HW>OW",
+        "MeOH:c3>oh",
+        "MeOH:oh>c3",
+        "MeOH:oh>ho",
+        "MeOH:ho>oh",
+        "MeOH:c3>h1",
+        "MeOH:h1>c3",
+    }
     # symmetry classes do not depend on atom order
     m, _ = methanol()
     perm = [5, 3, 1, 0, 4, 2]
     inv = np.argsort(perm)
-    m2 = Molecule(m.name, [m.elements[k] for k in perm], [m.types[k] for k in perm], m.q[perm], m.radius[perm], m.alpha[perm],
-                  cov=[(int(inv[i]), int(inv[j]), c) for i, j, c in m.cov], bonds=[(int(inv[i]), int(inv[j])) for i, j in m.bonds])
+    m2 = Molecule(
+        m.name,
+        [m.elements[k] for k in perm],
+        [m.types[k] for k in perm],
+        m.q[perm],
+        m.radius[perm],
+        m.alpha[perm],
+        cov=[(int(inv[i]), int(inv[j]), c) for i, j, c in m.cov],
+        bonds=[(int(inv[i]), int(inv[j])) for i, j in m.bonds],
+    )
     k1, k2 = m.tying_keys(), m2.tying_keys()
     assert [k1["q"][k] for k in perm] == k2["q"]
 
 
 def test_tied_gradient_is_sum_of_atom_gradients():
     sys, pos = cluster(np.random.default_rng(1))
-    untied = [Molecule(**{**m.__dict__, "keys": {qn: [f"{id(m)}:{qn}{k}" for k in range(m.n_terms(qn))]
-                                                  for qn in QUANTITIES}}) for m in sys.molecules]
+    untied = [
+        Molecule(
+            **{**m.__dict__, "keys": {qn: [f"{id(m)}:{qn}{k}" for k in range(m.n_terms(qn))] for qn in QUANTITIES}}
+        )
+        for m in sys.molecules
+    ]
     sys_u = System(untied)
-    f = lambda s: (lambda P: Model([ElecChannel(), LJChannel()]).energy_fn(s)(jnp.asarray(pos), P)["total"])
+    f = lambda s: lambda P: Model([ElecChannel(), LJChannel()]).energy_fn(s)(jnp.asarray(pos), P)["total"]
     g_t = jax.grad(f(sys))(sys.params0)
     g_u = jax.grad(f(sys_u))(sys_u.params0)
     for qn in QUANTITIES:
@@ -112,6 +164,7 @@ def test_no_recompile_when_parameters_change():
 
 
 # ---------------------------------------------------------------------------- gas phase --
+
 
 def test_gas_parameter_gradients():
     rng = np.random.default_rng(4)
@@ -141,11 +194,12 @@ def test_polarizability_parameter_gradients():
 
 # ----------------------------------------------------------------------------- periodic --
 
+
 @pytest.fixture(scope="module")
 def periodic():
     rng = np.random.default_rng(7)
     sys, pos = cluster(rng)
-    H = np.array([[1.45, 0.0, 0.0], [0.15, 1.40, 0.0], [-0.10, 0.20, 1.35]])      # triclinic, nm
+    H = np.array([[1.45, 0.0, 0.0], [0.15, 1.40, 0.0], [-0.10, 0.20, 1.35]])  # triclinic, nm
     pos = pos + np.array([0.5, 0.5, 0.5])
     model = PeriodicModel(sys, H, pos, rc=0.6, b0=6.5, skin=0.05, k_tol=1e-10, cg_tol=1e-13)
     P = perturbed(sys.params0, rng)
@@ -159,7 +213,8 @@ def test_periodic_forces(periodic):
     e = lambda x: float(ej(x))
     h = 1e-6
     for a, k in [(0, 0), (4, 1), (7, 2), (10, 0)]:
-        d = np.zeros_like(pos); d[a, k] = h
+        d = np.zeros_like(pos)
+        d[a, k] = h
         fd = -(e(pos + d) - e(pos - d)) / (2 * h)
         assert abs(fd - F[a, k]) < 1e-5 * max(1.0, abs(fd)), (a, k, fd, F[a, k])
 
@@ -184,7 +239,8 @@ def test_periodic_box_gradient(periodic):
     step = 1e-6
     for a in range(3):
         for b in range(3):
-            d = np.zeros((3, 3)); d[a, b] = step
+            d = np.zeros((3, 3))
+            d[a, b] = step
             fd = (e(H + d) - e(H - d)) / (2 * step)
             assert abs(fd - g[a, b]) < 1e-5 * max(1.0, abs(fd)), (a, b, fd, g[a, b])
 
@@ -223,7 +279,7 @@ def test_charged_system_independent_of_ewald_splitting():
     rng = np.random.default_rng(9)
     sys, pos = cluster(rng)
     P = dict(sys.params0)
-    P["q"] = P["q"].at[0].add(0.5)                      # net charge
+    P["q"] = P["q"].at[0].add(0.5)  # net charge
     pos = pos + 3.0
     H = np.eye(3) * 6.0
     e1 = float(PeriodicPGM(sys, H, pos, b0=1.2, rc=2.9).energy(pos, P)[0]["total"])

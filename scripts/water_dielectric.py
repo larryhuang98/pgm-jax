@@ -20,6 +20,7 @@ thermostat, Monte Carlo barostat, PME 48^3 per replica (order 6), 0.9 nm cutoff,
 Configurational properties do not depend on the masses, so --hmr (heavier water hydrogens,
 constraints engine) with 4 fs is legitimate for eps (not for the IR spectrum).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -87,14 +88,18 @@ def main():
     if a.model == "tip3p":
         if any(list(m.elements) != ["O", "H", "H"] for m in mols):
             raise ValueError("--model tip3p expects a box of water only")
-        tip = {id(m): dataclasses.replace(m, name="TIP3", q=np.array([-0.834, 0.417, 0.417]), radius=np.full(3, 1e-4),
-                                          cov=[]) for m in mols}
+        tip = {
+            id(m): dataclasses.replace(
+                m, name="TIP3", q=np.array([-0.834, 0.417, 0.417]), radius=np.full(3, 1e-4), cov=[]
+            )
+            for m in mols
+        }
         mols = [tip[id(m)] for m in mols]
         elec = "q"
     xyz, vel, box = read_coordinates(a.coords)
     if a.model == "pgm3p25":
         xyz = paper_geometry(xyz, 0.9745, 103.64, [list(m.elements) for m in mols])
-        sig, eps = 3.18156, 0.14473                              # A, kcal/mol (A = 622716.4, B = 600.41)
+        sig, eps = 3.18156, 0.14473  # A, kcal/mol (A = 622716.4, B = 600.41)
         rh = np.array([2 ** (1 / 6) * sig / 2 * 0.1, 0.0, 0.0])
         se = np.array([np.sqrt(eps * 4.184), 0.0, 0.0])
         new = {id(m): dataclasses.replace(m, lj_rmin_half=rh, lj_sqrt_eps=se) for m in mols}
@@ -105,14 +110,35 @@ def main():
     pos = np.concatenate([xyz * 0.1 + s for s in shifts])
     v = None if vel is None else np.concatenate([vel * 0.1] * len(shifts))
     sys_ = System(mols * len(shifts))
-    st = MDSettings(cutoff=0.9, skin=0.1, ewald_beta=4.0, pme_grid=(48 * n,) * 3, pme_order=6, lj_lrc=True,
-                    dipole_tol=a.tol, precision="mixed", elec=elec, **iel_settings(a))
-    kw = dict(settings=st, ensemble=a.ensemble, temperature=298.0, pressure=1.0, barostat_interval=100,
-              dt=a.dt / 1000, log=sys.stdout, thermostat="bussi", tau_t=1.0, seed=a.seed)
+    st = MDSettings(
+        cutoff=0.9,
+        skin=0.1,
+        ewald_beta=4.0,
+        pme_grid=(48 * n,) * 3,
+        pme_order=6,
+        lj_lrc=True,
+        dipole_tol=a.tol,
+        precision="mixed",
+        elec=elec,
+        **iel_settings(a),
+    )
+    kw = dict(
+        settings=st,
+        ensemble=a.ensemble,
+        temperature=298.0,
+        pressure=1.0,
+        barostat_interval=100,
+        dt=a.dt / 1000,
+        log=sys.stdout,
+        thermostat="bussi",
+        tau_t=1.0,
+        seed=a.seed,
+    )
     if a.engine == "rigid":
         sim = Simulation(sys_, pos, H * n, vel_nm_ps=v, **kw)
     else:
         from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
+
         tpl = {id(m): RigidTemplate(m, pos[sys_.atom_slice(k)]) for k, m in enumerate(sys_.molecules)}
         sim = FlexibleSimulation(sys_, [tpl[id(m)] for m in sys_.molecules], pos, H * n, hmr=a.hmr, **kw)
     if a.checkpoint:

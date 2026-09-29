@@ -8,10 +8,20 @@
   optimize.py    Target, Objective (residuals, LM trust-region step, parameter covariance, propagation)
   liquid.py      LiquidFit: NPT simulation -> analysis -> step, iterated, with JSON records
 See docs/liquid_fit.md."""
+
 from .estimators import GasPhase, LiquidSamples
 from .frames import FrameAnalyzer, RDFSpec
 from .optimize import Estimate, Objective, Target
 from .params import Param, ParameterSpace
 
-__all__ = ["GasPhase", "LiquidSamples", "FrameAnalyzer", "RDFSpec", "Estimate", "Objective", "Target", "Param",
-           "ParameterSpace"]
+__all__ = [
+    "GasPhase",
+    "LiquidSamples",
+    "FrameAnalyzer",
+    "RDFSpec",
+    "Estimate",
+    "Objective",
+    "Target",
+    "Param",
+    "ParameterSpace",
+]

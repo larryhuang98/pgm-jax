@@ -10,6 +10,7 @@ Observables from the bead positions only (same definition in both codes): <V_sti
     ~/miniconda3/envs/colabfold/bin/python scripts/pimd_openmm.py openmm      # OpenMM side -> JSON
     python scripts/pimd_openmm.py pgmjax                                       # pgm_jax side, comparison
 """
+
 import json
 import math
 import os
@@ -22,11 +23,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "validation/pimd")
 T, N, M = 300.0, 64, 1.008
 A, W0, WS, B3, B4 = 22.87, 700.0, 60.0, 5.0, 100.0
-D = 0.5 * M * W0 ** 2 / A ** 2                    # kJ/mol: harmonic force constant M W0^2
-KS = M * WS ** 2
+D = 0.5 * M * W0**2 / A**2  # kJ/mol: harmonic force constant M W0^2
+KS = M * WS**2
 CASES = [(8, None), (8, 1), (8, 3), (32, None), (32, 1), (32, 5)]
 DT, NEQ, NSAMP, EVERY = 0.00005, 20000, 3000, 50
-if os.environ.get("PIMD_DT_FS"):                     # time-step check: only the P = 32 full case
+if os.environ.get("PIMD_DT_FS"):  # time-step check: only the P = 32 full case
     f = 0.05 / float(os.environ["PIMD_DT_FS"])
     DT, NEQ, EVERY, CASES = DT / f, int(NEQ * f), int(round(EVERY * f)), [(32, None)]
 TAG = os.environ.get("PIMD_TAG", "")
@@ -34,7 +35,7 @@ TAG = os.environ.get("PIMD_TAG", "")
 
 def v_stiff_np(x):
     y = A * x[..., 0]
-    return D * (y * y - y ** 3 + 7.0 / 12.0 * y ** 4)
+    return D * (y * y - y**3 + 7.0 / 12.0 * y**4)
 
 
 def v_soft_np(x):
@@ -45,13 +46,17 @@ def v_soft_np(x):
 def observables(Q):
     """Q (S, P, N, 3) bead positions -> dict of means and block errors."""
     qc = Q.mean(1)
-    obs = {"V_stiff": v_stiff_np(Q).sum(-1).mean(1) / N, "V_soft": v_soft_np(Q).sum(-1).mean(1) / N,
-           "xc2": np.sum(qc * qc, -1).mean(-1), "spread": np.sum((Q - qc[:, None]) ** 2, -1).mean((1, 2))}
+    obs = {
+        "V_stiff": v_stiff_np(Q).sum(-1).mean(1) / N,
+        "V_soft": v_soft_np(Q).sum(-1).mean(1) / N,
+        "xc2": np.sum(qc * qc, -1).mean(-1),
+        "spread": np.sum((Q - qc[:, None]) ** 2, -1).mean((1, 2)),
+    }
     out = {}
     for k, v in obs.items():
         nb = 20
         m = len(v) // nb * nb
-        b = v[len(v) - m:].reshape(nb, -1).mean(1)
+        b = v[len(v) - m :].reshape(nb, -1).mean(1)
         out[k] = [float(v.mean()), float(b.std(ddof=1) / math.sqrt(nb))]
     return out
 
@@ -59,6 +64,7 @@ def observables(Q):
 def run_openmm():
     import openmm as mm
     import openmm.unit as u
+
     res = {}
     for P, Pc in CASES:
         system = mm.System()
@@ -73,8 +79,9 @@ def run_openmm():
         f2.setForceGroup(1)
         system.addForce(f1)
         system.addForce(f2)
-        integ = mm.RPMDIntegrator(P, T * u.kelvin, 20.0 / u.picosecond, DT * u.picoseconds,
-                                  {} if Pc is None else {1: Pc})
+        integ = mm.RPMDIntegrator(
+            P, T * u.kelvin, 20.0 / u.picosecond, DT * u.picoseconds, {} if Pc is None else {1: Pc}
+        )
         integ.setRandomNumberSeed(7)
         ctx = mm.Context(system, integ, mm.Platform.getPlatformByName("CPU"))
         ctx.setPositions(np.zeros((N, 3)))
@@ -98,16 +105,18 @@ def run_openmm():
 def run_pgmjax():
     import jax
     import jax.numpy as jnp
+
     jax.config.update("jax_enable_x64", True)
     sys.path.insert(0, ROOT)
     from pgm_jax.md.pimd import PIMDIntegrator, PotentialEngine
 
     def vs(x, box):
         y = A * x[:, 0]
-        return jnp.sum(D * (y * y - y ** 3 + 7.0 / 12.0 * y ** 4))
+        return jnp.sum(D * (y * y - y**3 + 7.0 / 12.0 * y**4))
 
     def vw(x, box):
         return jnp.sum(KS * (0.5 * jnp.sum(x * x, -1) + B3 * x[:, 1] ** 3 + B4 * x[:, 1] ** 4))
+
     res = {}
     for P, Pc in CASES:
         eng = PotentialEngine(vs, soft=vw, contract=Pc)
@@ -118,6 +127,7 @@ def run_pgmjax():
         def body(s, _):
             s = integ._run(s, EVERY)
             return s, s.q
+
         st, Q = jax.jit(lambda s: jax.lax.scan(body, s, None, length=NSAMP))(st)
         key = f"P{P}_c{Pc or P}"
         res[key] = observables(np.asarray(Q))
@@ -139,7 +149,9 @@ if __name__ == "__main__":
         for key in res:
             if key in o:
                 a, b = (res, o) if which != "openmm" else (o, res)
-                line = " ".join(f"{k} {a[key][k][0]:.5g}/{b[key][k][0]:.5g} "
-                                f"({(a[key][k][0] - b[key][k][0]) / math.hypot(a[key][k][1], b[key][k][1]):+.1f} sd)"
-                                for k in ("V_stiff", "V_soft", "xc2", "spread"))
+                line = " ".join(
+                    f"{k} {a[key][k][0]:.5g}/{b[key][k][0]:.5g} "
+                    f"({(a[key][k][0] - b[key][k][0]) / math.hypot(a[key][k][1], b[key][k][1]):+.1f} sd)"
+                    for k in ("V_stiff", "V_soft", "xc2", "spread")
+                )
                 print(key, line)

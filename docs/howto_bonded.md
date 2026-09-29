@@ -45,7 +45,7 @@ from pgm_jax.bonded import terms as T
 from pgm_jax.md.flexible import FlexibleTemplate
 
 spec = mol_spec("methanol")
-model = BondedModel([spec], BondedSettings(families=T.PAPER))            # pGM all pairs + LJ 1-5+
+model = BondedModel([spec], BondedSettings(families=T.PAPER))  # pGM all pairs + LJ 1-5+
 fit = Fitter(model, {0: {"train": frames("methanol", "train500"), "test": frames("methanol", "test298")}})
 P = fit.fit(model.init_params())
 print(fit.metrics(P, "test"))

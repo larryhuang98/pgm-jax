@@ -15,6 +15,7 @@ Sources:
   `ResidueLibrary.from_fits(...)`       residue parameters taken from fitted fragments (capped
       dipeptides fitted with py_resp / pgm_jax), averaged over the instances of each residue.
 Residue names are Amber's (terminal variants NALA, CALA, ...; HID / HIE / HIP, ASH, GLH, LYN, CYX)."""
+
 from __future__ import annotations
 
 import json
@@ -29,8 +30,15 @@ BOHR_NM = 0.0529177210903
 FORMAT = "pgm_jax residue library 1"
 _GENERIC = {"H": "hc", "C": "c3", "N": "n", "O": "o", "S": "s"}
 # rough monatomic-ion values (bohr^3, bohr) for the placeholder only: free-ion polarizabilities
-_ION = {"Na": (1.0, 1.0), "K": (5.5, 1.3), "Li": (0.2, 0.8), "Cl": (23.6, 1.8), "Br": (32.0, 1.9), "Mg": (0.5, 0.9),
-        "Ca": (3.2, 1.1)}
+_ION = {
+    "Na": (1.0, 1.0),
+    "K": (5.5, 1.3),
+    "Li": (0.2, 0.8),
+    "Cl": (23.6, 1.8),
+    "Br": (32.0, 1.9),
+    "Mg": (0.5, 0.9),
+    "Ca": (3.2, 1.1),
+}
 _ZEL = {1: "H", 3: "Li", 6: "C", 7: "N", 8: "O", 11: "Na", 12: "Mg", 16: "S", 17: "Cl", 19: "K", 20: "Ca", 35: "Br"}
 
 
@@ -68,6 +76,7 @@ class ResidueLibrary:
         Amber extra points (type EP: virtual sites) keep their charge as a point charge
         (md/vsites.py POINT_RADIUS) and get no polarizability."""
         from ..md.vsites import AMBER_EP_TYPE, POINT_RADIUS
+
         pt = Prmtop.read(prmtop)
         tab = pol_table or read_pol_table()
         names, types = pt.get("ATOM_NAME"), pt.get("AMBER_ATOM_TYPE")
@@ -76,7 +85,7 @@ class ResidueLibrary:
         ptr = list(pt.get("RESIDUE_POINTER") - 1) + [len(names)]
         res = {}
         for r, lab in enumerate(pt.get("RESIDUE_LABEL")):
-            key = residue_key(lab, names[ptr[r]:ptr[r + 1]])
+            key = residue_key(lab, names[ptr[r] : ptr[r + 1]])
             if key in res:
                 continue
             atoms = {}
@@ -90,7 +99,7 @@ class ResidueLibrary:
                     alpha, rad = _ION[e]
                 else:
                     alpha, rad = tab[t if t in tab else _GENERIC.get(e, "c3")]
-                atoms[names[a]] = {"q": float(q[a]), "alpha_nm3": alpha * BOHR_NM ** 3, "radius_nm": rad * BOHR_NM}
+                atoms[names[a]] = {"q": float(q[a]), "alpha_nm3": alpha * BOHR_NM**3, "radius_nm": rad * BOHR_NM}
             res[key] = {"atoms": atoms, "cov": []}
         return cls(res, note=f"placeholder from {prmtop}: Amber charges, pGM-pol polarizabilities, no covalent dipoles")
 
@@ -117,7 +126,15 @@ class ResidueLibrary:
                 cov.setdefault(resn[i], {}).setdefault((names[i], pn), []).append(float(c))
         res = {}
         for rn, atoms in acc.items():
-            res[rn] = {"atoms": {n: {"q": float(np.mean([v[0] for v in vals])), "alpha_nm3": float(np.mean([v[1] for v in vals])),
-                                     "radius_nm": float(np.mean([v[2] for v in vals]))} for n, vals in atoms.items()},
-                       "cov": [[a, b, float(np.mean(v))] for (a, b), v in sorted(cov.get(rn, {}).items())]}
+            res[rn] = {
+                "atoms": {
+                    n: {
+                        "q": float(np.mean([v[0] for v in vals])),
+                        "alpha_nm3": float(np.mean([v[1] for v in vals])),
+                        "radius_nm": float(np.mean([v[2] for v in vals])),
+                    }
+                    for n, vals in atoms.items()
+                },
+                "cov": [[a, b, float(np.mean(v))] for (a, b), v in sorted(cov.get(rn, {}).items())],
+            }
         return cls(res, note="from fitted fragments")

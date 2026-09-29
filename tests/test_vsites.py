@@ -3,6 +3,7 @@
 the pair topology, pGM with charged and polarizable sites (forces and strain derivative against
 finite differences with the dipoles re-solved), atoms with zero polarizability, and both MD
 engines (energies, body forces, NVE, degrees of freedom)."""
+
 import os
 
 import jax
@@ -33,23 +34,33 @@ TET = np.radians(54.735)
 def methanol_sites():
     """Methanol with one site of every kind (charged; some polarizable, some not), a covalent
     dipole to a site, and positions (nm) with the sites placed."""
-    m, x = methanol()                       # C O H H H HO
-    vs = [VirtualSite.average2(6, 0, 1, 0.3, 0.7),
-          VirtualSite.average3(7, 1, 0, 5, 0.5, 0.3, 0.2),
-          VirtualSite.out_of_plane(8, 1, 0, 5, 0.2, 0.3, 4.0),
-          VirtualSite.local(9, (1, 0, 5, 2), (0.6, 0.4, 0.0, 0.0), (-1.0, 1.0, 0.0, 0.0), (-1.0, 0.0, 1.0, 0.0),
-                            (0.02, 0.015, -0.01)),
-          VirtualSite.amber(10, 1, 0, 5, (0.0, 0.03 * np.sin(TET), 0.03 * np.cos(TET))),
-          VirtualSite.amber(11, 0, 2, 3, (0.01, -0.02, 0.025))]
+    m, x = methanol()  # C O H H H HO
+    vs = [
+        VirtualSite.average2(6, 0, 1, 0.3, 0.7),
+        VirtualSite.average3(7, 1, 0, 5, 0.5, 0.3, 0.2),
+        VirtualSite.out_of_plane(8, 1, 0, 5, 0.2, 0.3, 4.0),
+        VirtualSite.local(
+            9, (1, 0, 5, 2), (0.6, 0.4, 0.0, 0.0), (-1.0, 1.0, 0.0, 0.0), (-1.0, 0.0, 1.0, 0.0), (0.02, 0.015, -0.01)
+        ),
+        VirtualSite.amber(10, 1, 0, 5, (0.0, 0.03 * np.sin(TET), 0.03 * np.cos(TET))),
+        VirtualSite.amber(11, 0, 2, 3, (0.01, -0.02, 0.025)),
+    ]
     ns = len(vs)
     q = np.concatenate([m.q, [0.05, -0.08, 0.04, -0.03, -0.06, 0.02]])
-    q[1] -= q.sum()                          # neutral
-    mol = Molecule("MeOHVS", m.elements + ["EP"] * ns, m.types + [f"EP{k}" for k in range(ns)], q,
-                   np.concatenate([m.radius, [0.04, 0.05, 0.03, 0.04, 0.035, 0.03]]),
-                   np.concatenate([m.alpha, [0.2e-3, 0.0, 0.1e-3, 0.0, 0.15e-3, 0.0]]),
-                   cov=m.cov + [(1, 10, 0.004), (10, 1, -0.002), (0, 6, 0.003)],
-                   lj_rmin_half=np.concatenate([m.lj_rmin_half, np.zeros(ns)]),
-                   lj_sqrt_eps=np.concatenate([m.lj_sqrt_eps, np.zeros(ns)]), bonds=m.bonds, vsites=vs)
+    q[1] -= q.sum()  # neutral
+    mol = Molecule(
+        "MeOHVS",
+        m.elements + ["EP"] * ns,
+        m.types + [f"EP{k}" for k in range(ns)],
+        q,
+        np.concatenate([m.radius, [0.04, 0.05, 0.03, 0.04, 0.035, 0.03]]),
+        np.concatenate([m.alpha, [0.2e-3, 0.0, 0.1e-3, 0.0, 0.15e-3, 0.0]]),
+        cov=m.cov + [(1, 10, 0.004), (10, 1, -0.002), (0, 6, 0.003)],
+        lj_rmin_half=np.concatenate([m.lj_rmin_half, np.zeros(ns)]),
+        lj_sqrt_eps=np.concatenate([m.lj_sqrt_eps, np.zeros(ns)]),
+        bonds=m.bonds,
+        vsites=vs,
+    )
     xs = np.asarray(VirtualSites.of(System([mol])).place(np.concatenate([x, np.zeros((ns, 3))])))
     return mol, xs
 
@@ -57,17 +68,21 @@ def methanol_sites():
 def reference_sites(x):
     """The sites of methanol_sites from the published formulas, absolute coordinates, numpy."""
     C, O, H1, H2, H3, HO = x[:6]
-    unit = lambda v: v / np.linalg.norm(v)                                  # noqa: E731
-    out = [0.3 * C + 0.7 * O,                                                # TwoParticleAverageSite
-           0.5 * O + 0.3 * C + 0.2 * HO]                                     # ThreeParticleAverageSite
+    unit = lambda v: v / np.linalg.norm(v)  # noqa: E731
+    out = [
+        0.3 * C + 0.7 * O,  # TwoParticleAverageSite
+        0.5 * O + 0.3 * C + 0.2 * HO,
+    ]  # ThreeParticleAverageSite
     r12, r13 = C - O, HO - O
-    out.append(O + 0.2 * r12 + 0.3 * r13 + 4.0 * np.cross(r12, r13))         # OutOfPlaneSite
-    o = 0.6 * O + 0.4 * C                                                    # LocalCoordinatesSite
+    out.append(O + 0.2 * r12 + 0.3 * r13 + 4.0 * np.cross(r12, r13))  # OutOfPlaneSite
+    o = 0.6 * O + 0.4 * C  # LocalCoordinatesSite
     xd, yd = C - O, HO - O
-    ez = unit(np.cross(xd, yd)); ex = unit(xd); ey = np.cross(ez, ex)
+    ez = unit(np.cross(xd, yd))
+    ex = unit(xd)
+    ey = np.cross(ez, ex)
     out.append(o + 0.02 * ex + 0.015 * ey - 0.01 * ez)
     for B, A, Cc, p in ((O, C, HO, (0.0, 0.03 * np.sin(TET), 0.03 * np.cos(TET))), (C, H1, H2, (0.01, -0.02, 0.025))):
-        u, v = unit(A - B), unit(Cc - B)                                      # sander do_local_global
+        u, v = unit(A - B), unit(Cc - B)  # sander do_local_global
         ave, diff = (u + v) / 2, (v - u) / 2
         f3, f1 = -ave / np.linalg.norm(ave), diff / np.linalg.norm(diff)
         f2 = np.cross(f3, f1)
@@ -81,16 +96,26 @@ def lattice_box(mol, x, n_side=3, spacing=0.5, seed=0):
     m = mol.masses
     x0 = x - (m[:, None] * x).sum(0) / m.sum()
     pos = []
-    for i in range(n_side ** 3):
-        g = np.array([i // n_side ** 2, (i // n_side) % n_side, i % n_side]) + 0.5
+    for i in range(n_side**3):
+        g = np.array([i // n_side**2, (i // n_side) % n_side, i % n_side]) + 0.5
         R = np.linalg.qr(rng.normal(size=(3, 3)))[0]
         pos.append(x0 @ R.T + g * spacing + rng.normal(scale=0.01, size=3))
     return np.concatenate(pos), np.eye(3) * spacing * n_side
 
 
 def settings(**kw):
-    base = dict(cutoff=0.6, skin=0.05, ewald_beta=6.0, pme_grid=(40, 40, 40), pme_order=8, lj_lrc=True,
-                dipole_tol=1e-12, max_iter=500, peek=0.0, precision="double")
+    base = dict(
+        cutoff=0.6,
+        skin=0.05,
+        ewald_beta=6.0,
+        pme_grid=(40, 40, 40),
+        pme_order=8,
+        lj_lrc=True,
+        dipole_tol=1e-12,
+        max_iter=500,
+        peek=0.0,
+        precision="double",
+    )
     base.update(kw)
     return MDSettings(**base)
 
@@ -102,7 +127,7 @@ def test_constructions_match_published_formulas_and_minimum_image():
     assert vs.n_sites == 6 and vs.kinds == ("amber", "average2", "average3", "local", "outofplane")
     rng = np.random.default_rng(1)
     y = x.copy()
-    y[:6] += rng.normal(scale=0.005, size=(6, 3))                          # a distorted geometry
+    y[:6] += rng.normal(scale=0.005, size=(6, 3))  # a distorted geometry
     ref = reference_sites(y[:6])
     got = np.asarray(vs.place(y))
     assert np.abs(got[6:] - ref).max() < 1e-14 and np.array_equal(got[:6], y[:6])
@@ -132,7 +157,7 @@ def test_spread_is_the_transposed_jacobian():
     assert np.abs(Fs.sum(0) - F.sum(0)).max() < 1e-12
     assert np.abs(np.cross(x, Fs).sum(0) - np.cross(x, F).sum(0)).max() < 1e-12
     # work: F . d(place(x))/dx along random directions of the real atoms, by central differences
-    E = lambda y: float(jnp.sum(jnp.asarray(F) * vs.place(y)))             # noqa: E731
+    E = lambda y: float(jnp.sum(jnp.asarray(F) * vs.place(y)))  # noqa: E731
     for _ in range(3):
         d = np.zeros_like(x)
         d[:6] = rng.normal(size=(6, 3))
@@ -143,27 +168,56 @@ def test_spread_is_the_transposed_jacobian():
 
 def test_definitions_are_validated():
     with pytest.raises(ValueError):
-        VirtualSite.average3(3, 0, 1, 2, 0.5, 0.3, 0.3)                 # weights do not sum to 1
+        VirtualSite.average3(3, 0, 1, 2, 0.5, 0.3, 0.3)  # weights do not sum to 1
     with pytest.raises(ValueError):
-        VirtualSite.local(3, (0, 1, 2), (1, 0, 0), (1, 0, 0), (-1, 0, 1), (0, 0, 0))   # x weights must sum to 0
+        VirtualSite.local(3, (0, 1, 2), (1, 0, 0), (1, 0, 0), (-1, 0, 1), (0, 0, 0))  # x weights must sum to 0
     with pytest.raises(ValueError):
-        VirtualSite.average2(1, 1, 0, 0.5, 0.5)                          # a site among its parents
+        VirtualSite.average2(1, 1, 0, 0.5, 0.5)  # a site among its parents
     w = water()
-    bad = Molecule("W", w.elements + ["EP"], w.types + ["EP"], np.r_[w.q, 0.0], np.r_[w.radius, 0.01],
-                   np.r_[w.alpha, 0.0], masses=np.r_[w.masses, 1.0], vsites=[VirtualSite.tip4p(3, 0, 1, 2, 0.015)])
+    bad = Molecule(
+        "W",
+        w.elements + ["EP"],
+        w.types + ["EP"],
+        np.r_[w.q, 0.0],
+        np.r_[w.radius, 0.01],
+        np.r_[w.alpha, 0.0],
+        masses=np.r_[w.masses, 1.0],
+        vsites=[VirtualSite.tip4p(3, 0, 1, 2, 0.015)],
+    )
     with pytest.raises(ValueError, match="massless"):
         VirtualSites.of(System([bad]))
-    ok = Molecule("W", w.elements + ["EP"], w.types + ["EP"], np.r_[w.q, 0.0], np.r_[w.radius, 0.01],
-                  np.r_[w.alpha, 0.0], vsites=[VirtualSite.tip4p(3, 0, 1, 2, 0.015)])
-    assert ok.masses[3] == 0.0                                           # element EP is massless
+    ok = Molecule(
+        "W",
+        w.elements + ["EP"],
+        w.types + ["EP"],
+        np.r_[w.q, 0.0],
+        np.r_[w.radius, 0.01],
+        np.r_[w.alpha, 0.0],
+        vsites=[VirtualSite.tip4p(3, 0, 1, 2, 0.015)],
+    )
+    assert ok.masses[3] == 0.0  # element EP is massless
     back = molecule_from_dict(molecule_to_dict(ok))
     assert back.vsites == ok.vsites
-    plain = Molecule("W", w.elements + ["EP"], w.types + ["EP"], np.r_[w.q, 0.0], np.r_[w.radius, 0.01],
-                     np.r_[w.alpha, 0.0], vsites=[VirtualSite.tip4p(3, 0, 1, 2, 0.02)])
-    assert len({id(m) for m in _dedupe([ok, back, plain])}) == 2         # sites are part of the identity
+    plain = Molecule(
+        "W",
+        w.elements + ["EP"],
+        w.types + ["EP"],
+        np.r_[w.q, 0.0],
+        np.r_[w.radius, 0.01],
+        np.r_[w.alpha, 0.0],
+        vsites=[VirtualSite.tip4p(3, 0, 1, 2, 0.02)],
+    )
+    assert len({id(m) for m in _dedupe([ok, back, plain])}) == 2  # sites are part of the identity
     # degenerate frames are refused at setup (a local frame with parallel x and y directions)
-    loc = Molecule("W", w.elements + ["EP"], w.types + ["EP"], np.r_[w.q, 0.0], np.r_[w.radius, 0.01], np.r_[w.alpha, 0.0],
-                   vsites=[VirtualSite.local(3, (0, 1, 2), (1, 0, 0), (-1, 1, 0), (-2, 2, 0), (0.01, 0, 0))])
+    loc = Molecule(
+        "W",
+        w.elements + ["EP"],
+        w.types + ["EP"],
+        np.r_[w.q, 0.0],
+        np.r_[w.radius, 0.01],
+        np.r_[w.alpha, 0.0],
+        vsites=[VirtualSite.local(3, (0, 1, 2), (1, 0, 0), (-1, 1, 0), (-2, 2, 0), (0.01, 0, 0))],
+    )
     x = np.array([[0, 0, 0], [0.1, 0, 0], [-0.03, 0.09, 0], [0, 0, 0]])
     with pytest.raises(ValueError, match="degenerate"):
         VirtualSites.of(System([loc])).check(x)
@@ -199,10 +253,10 @@ def test_amber_extra_points_from_tleap(name, nep, req):
     assert np.abs(d - req).max() < 1e-12
     u = X[:, 1:3] - X[:, :1]
     bis = (u / np.linalg.norm(u, axis=-1, keepdims=True)).sum(1)
-    if nep == 1:                        # TIP4P: on the bisector, toward the hydrogens
+    if nep == 1:  # TIP4P: on the bisector, toward the hydrogens
         cos = np.sum((X[:, 3] - X[:, 0]) * bis, -1) / (d[:, 0] * np.linalg.norm(bis, axis=-1))
         assert cos.min() > 1 - 1e-12
-    else:                               # TIP5P: tetrahedral lone pairs opposite the hydrogens
+    else:  # TIP5P: tetrahedral lone pairs opposite the hydrogens
         lp = X[:, 3:] - X[:, :1]
         ang = np.degrees(np.arccos(np.sum(lp[:, 0] * lp[:, 1], -1) / (req * req)))
         assert np.abs(ang - 2 * 54.735).max() < 1e-9
@@ -224,16 +278,31 @@ def test_amber_frame_rules():
     eps = amber_extra_points(types, [], heavy, [1.5, 0.35])
     assert set(eps) == {4, 5} and eps[4].atoms == (1, 2, 0, 3) and eps[4].kind == "amber"
     s60 = np.sin(np.radians(60.0))
-    assert np.allclose(eps[4].params[2], (s60 * 0.035, 0, 0.5 * 0.035)) and np.allclose(eps[5].params[2], (-s60 * 0.035, 0, 0.5 * 0.035))
+    assert np.allclose(eps[4].params[2], (s60 * 0.035, 0, 0.5 * 0.035)) and np.allclose(
+        eps[5].params[2], (-s60 * 0.035, 0, 0.5 * 0.035)
+    )
     x = np.array([[0, 0, 0], [0, 0.123, 0], [0.13, -0.07, 0], [-0.13, -0.07, 0], [0, 0, 0], [0, 0, 0]], float)
-    sys = System([Molecule("CO", ["C", "O", "C", "N", "EP", "EP"], types, np.zeros(6), np.full(6, 0.05), np.zeros(6),
-                           vsites=[eps[4], eps[5]])])
+    sys = System(
+        [
+            Molecule(
+                "CO",
+                ["C", "O", "C", "N", "EP", "EP"],
+                types,
+                np.zeros(6),
+                np.full(6, 0.05),
+                np.zeros(6),
+                vsites=[eps[4], eps[5]],
+            )
+        ]
+    )
     y = np.asarray(VirtualSites.of(sys).place(x))
-    A, C = (x[2] + x[0]) / 2, (x[3] + x[0]) / 2                           # bond midpoints of the carbon
+    A, C = (x[2] + x[0]) / 2, (x[3] + x[0]) / 2  # bond midpoints of the carbon
     ref = _amber_ep_reference(np.array([A, x[1], C]), 1, 0, 2, eps[4].params[2])
     assert np.abs(y[4] - ref).max() < 1e-14 and abs(np.linalg.norm(y[4] - x[1]) - 0.035) < 1e-14
     # sulfur: EPs along +-y; a heavy + hydrogen centre; errors where Amber stops
-    eps = amber_extra_points(["S", "CT", "CT", "EP", "EP"], [], [(0, 1, 0), (0, 2, 0), (0, 3, 1), (0, 4, 1)], [1.8, 0.7])
+    eps = amber_extra_points(
+        ["S", "CT", "CT", "EP", "EP"], [], [(0, 1, 0), (0, 2, 0), (0, 3, 1), (0, 4, 1)], [1.8, 0.7]
+    )
     assert np.allclose(eps[3].params[2], (0, 0.07, 0)) and np.allclose(eps[4].params[2], (0, -0.07, 0))
     eps = amber_extra_points(["OH", "CT", "HO", "EP"], [(0, 2, 0)], [(0, 1, 0), (0, 3, 1)], [1.0, 0.5])
     assert eps[3].atoms == (0, 1, 2) and np.allclose(eps[3].params[2], (0, 0, 0.05))
@@ -247,15 +316,20 @@ def test_amber_frame_rules():
 def test_topology_sites_belong_to_their_host():
     mol, x = methanol_sites()
     rule = MoleculeRule(bonds=list(mol.bonds) + [(1, 10)], vdw="graph", lj_min_sep=4, lj14_scale=0.5)
-    top = MDTopology.build(System([mol]), [rule], max_single=4)          # force heavy-atom groups
+    top = MDTopology.build(System([mol]), [rule], max_single=4)  # force heavy-atom groups
     g = top.group
     assert g[6] == g[0] and g[11] == g[0] and all(g[k] == g[1] for k in (7, 8, 9, 10))
-    assert top.n_group == len(set(g.tolist())) == 2                     # no empty groups
-    w = {(int(a), int(b)): float(wt) for a in range(top.n) for b, wt in zip(top.special[a], top.special_w[a]) if b < top.n}
-    assert w[(10, 1)] == 0.0 and w[(10, 7)] == 0.0                     # the host and a site of the same host
-    assert w[(10, 2)] == 0.0                                            # host O - H1 is 1-3: excluded
-    assert w[(5, 2)] == 0.5 and w[(10, 2)] == w[(1, 2)]                  # HO-C-O... 1-4; sites inherit
-    assert w[(11, 5)] == w[(0, 5)] == 0.0                               # C-HO is 1-3
+    assert top.n_group == len(set(g.tolist())) == 2  # no empty groups
+    w = {
+        (int(a), int(b)): float(wt)
+        for a in range(top.n)
+        for b, wt in zip(top.special[a], top.special_w[a])
+        if b < top.n
+    }
+    assert w[(10, 1)] == 0.0 and w[(10, 7)] == 0.0  # the host and a site of the same host
+    assert w[(10, 2)] == 0.0  # host O - H1 is 1-3: excluded
+    assert w[(5, 2)] == 0.5 and w[(10, 2)] == w[(1, 2)]  # HO-C-O... 1-4; sites inherit
+    assert w[(11, 5)] == w[(0, 5)] == 0.0  # C-HO is 1-3
     with pytest.raises(ValueError, match="virtual sites"):
         MDTopology.build(System([mol]), [MoleculeRule(bonds=mol.bonds, constraints=((1, 10, 0.03),))])
 
@@ -284,18 +358,23 @@ def test_pgm_forces_and_strain_derivative_with_sites():
     e = jax.jit(lambda y, h: ff.energy(vs.place(y, h), h, idx, ff.init_induction())[0])
     h = 1e-6
     for a, k in [(0, 0), (1, 1), (5, 2), (13, 0), (12 * 13 + 1, 2)]:
-        d = np.zeros_like(pos); d[a, k] = h
+        d = np.zeros_like(pos)
+        d[a, k] = h
         fd = -(float(e(pos + d, H)) - float(e(pos - d, H))) / (2 * h)
         assert abs(fd - F[a, k]) < 1e-6 * max(1.0, abs(fd)), (a, k, fd, F[a, k])
     W = np.asarray(ff.strain_derivative(pos, H, idx, res.induction.mu))
     m = np.asarray(sys.masses)
     com = np.array([np.average(pos[sys.mol == k], 0, weights=m[sys.mol == k]) for k in range(sys.nmol)])
     from pgm_jax.lj import lj_long_range
+
     tail = float(lj_long_range(ff._atoms(None), abs(np.linalg.det(H)), 0.6))
-    for (i, j) in [(0, 0), (1, 2), (2, 0)]:
-        eps = np.zeros((3, 3)); eps[i, j] = h
+    for i, j in [(0, 0), (1, 2), (2, 0)]:
+        eps = np.zeros((3, 3))
+        eps[i, j] = h
         # the engine assumes a lower-triangular box: strained boxes are rotated back
-        ee = lambda s: float(e(*lower_triangular_frame(pos + (com @ (s * eps).T)[sys.mol], H @ (np.eye(3) + s * eps).T)))  # noqa: E731
+        ee = lambda s: float(
+            e(*lower_triangular_frame(pos + (com @ (s * eps).T)[sys.mol], H @ (np.eye(3) + s * eps).T))
+        )  # noqa: E731
         fd = (ee(1.0) - ee(-1.0)) / (2 * h) - (tail if i == j else 0.0)
         assert abs(fd - W[i, j]) < 1e-5 * max(1.0, abs(fd)), (i, j, fd, W[i, j])
     with pytest.raises(NotImplementedError):
@@ -309,7 +388,7 @@ def test_zero_polarizability_atoms():
     sys, pos, H = _pgm_box()
     P = dict(sys.params0)
     keys = sys.table.keys["alpha"]
-    P["alpha"] = P["alpha"].at[keys.index("ho")].set(0.0)               # a real atom type without polarizability
+    P["alpha"] = P["alpha"].at[keys.index("ho")].set(0.0)  # a real atom type without polarizability
     ff = PGMForceField(sys, H, settings(differentiable=True, adjoint_tol=1e-12))
     idx = ff.rows_for(pos, H)
     res = jax.jit(ff.compute)(pos, H, idx, ff.init_induction(), P)
@@ -318,7 +397,8 @@ def test_zero_polarizability_atoms():
     g = jax.jit(jax.grad(lambda th: ff.compute(pos, H, idx, ff.init_induction(), th).energy["total"]))(P)
     assert all(bool(jnp.all(jnp.isfinite(v))) for v in jax.tree_util.tree_leaves(g))
     # the mask is the limit of a vanishing polarizability
-    P2 = dict(P); P2["alpha"] = P["alpha"].at[keys.index("ho")].set(1e-12)
+    P2 = dict(P)
+    P2["alpha"] = P["alpha"].at[keys.index("ho")].set(1e-12)
     r2 = jax.jit(ff.compute)(pos, H, idx, ff.init_induction(), P2)
     assert abs(float(r2.energy["total"]) - float(res.energy["total"])) < 1e-8 * abs(float(res.energy["total"]))
     # every predictor path (fused mu4, ls, none) keeps them at 0 over a few steps
@@ -357,11 +437,13 @@ def test_engines_with_sites_agree_and_conserve_energy():
     """TIP4P-Ew (point charges, Amber's EP frame) in the rigid engine and as constrained water with a
     placed site in the flexible engine: same energies and body forces at the same state; NVE."""
     from pgm_jax.md.forcefield import ewald_beta_for
+
     sys, pos, H = _tip4pew_ideal()
-    s = MDSettings(elec="q", cutoff=0.65, skin=0.05, ewald_beta=ewald_beta_for(0.65), pme_spacing=0.06,
-                   precision="double")
+    s = MDSettings(
+        elec="q", cutoff=0.65, skin=0.05, ewald_beta=ewald_beta_for(0.65), pme_spacing=0.06, precision="double"
+    )
     eq = Simulation(sys, pos, H, s, dt=0.001, ensemble="nvt", thermostat="bussi", tau_t=0.1, log=None, seed=1)
-    eq._advance(500)                                      # relax tleap's voids a little
+    eq._advance(500)  # relax tleap's voids a little
     pos, vel, H = eq.positions_nm(), eq.velocities_nm_ps(), np.asarray(eq.state.box)
     rig = Simulation(sys, pos, H, s, dt=0.001, ensemble="nve", log=None, vel_nm_ps=vel)
     tpl = RigidTemplate(sys.molecules[0], pos[:4])
@@ -383,7 +465,7 @@ def test_engines_with_sites_agree_and_conserve_energy():
         for _ in range(6):
             sim._advance(50)
             E.append(sim.observables()["etot"])
-        ke = 0.5 * sim.integ.dof * KB * 300.0              # hard cutoffs in a small box: crossings dominate
+        ke = 0.5 * sim.integ.dof * KB * 300.0  # hard cutoffs in a small box: crossings dominate
         assert np.std(E) < 2e-3 * ke and abs(E[-1] - E[0]) < 3e-3 * ke, (type(sim).__name__, np.std(E) / ke)
         trace.append(np.array(E) - E[0])
     # NO_SQUISH rigid bodies and RATTLE + placed sites integrate the same dynamics
@@ -399,6 +481,7 @@ def test_flexible_molecule_with_sites_nvt_nve_and_hmr():
     alone, the temperature counts real atoms only, and NVE conserves energy."""
     from pgm_jax.bonded import terms as T
     from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
+
     mol, x = methanol_sites()
     spec = MolSpec("meohvs", list(mol.elements), [(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)], [1] * 5, 0, x, mol)
     model = BondedModel([spec], BondedSettings(families=T.PAPER, lj14_scale=0.5))
@@ -406,10 +489,23 @@ def test_flexible_molecule_with_sites_nvt_nve_and_hmr():
     pos, H = liquid_box(tpl, 27, 0.45, seed=0, min_dist=0.18)
     sys = System([mol] * 27)
     s = MDSettings(precision="double", dipole_tol=1e-9, cutoff=0.6, skin=0.05, lj_lrc=False)
-    sim = FlexibleSimulation(sys, [tpl] * 27, pos, H, s, dt=0.001, ensemble="nvt", temperature=300.0, thermostat="langevin",
-                             gamma=20.0, constraints="h-bonds", hmr=3.0, log=None)
+    sim = FlexibleSimulation(
+        sys,
+        [tpl] * 27,
+        pos,
+        H,
+        s,
+        dt=0.001,
+        ensemble="nvt",
+        temperature=300.0,
+        thermostat="langevin",
+        gamma=20.0,
+        constraints="h-bonds",
+        hmr=3.0,
+        log=None,
+    )
     m = np.asarray(sim.flex.masses)
-    assert np.all(m[6::12] == 0.0) and abs(m.sum() - sys.masses.sum()) < 1e-9          # sites stay massless
+    assert np.all(m[6::12] == 0.0) and abs(m.sum() - sys.masses.sum()) < 1e-9  # sites stay massless
     assert sim.integ.dof == 3 * 6 * 27 - 4 * 27
     sim._advance(300)
     o = sim.observables()
@@ -417,9 +513,25 @@ def test_flexible_molecule_with_sites_nvt_nve_and_hmr():
     p = np.asarray(sim.state.dyn.momentum).reshape(27, 12, 3)
     assert np.all(p[:, 6:] == 0.0)
     y = sim.positions_nm().reshape(27, 12, 3)
-    assert np.abs(y[:, 6:] - np.asarray(VirtualSites.of(sys).place(y.reshape(-1, 3), sim.state.box)).reshape(27, 12, 3)[:, 6:]).max() < 1e-12
-    nve = FlexibleSimulation(sys, [tpl] * 27, sim.positions_nm(), np.asarray(sim.state.box), s, dt=0.0005, ensemble="nve",
-                             vel_nm_ps=sim.velocities_nm_ps(), constraints="h-bonds", hmr=3.0, log=None)
+    assert (
+        np.abs(
+            y[:, 6:] - np.asarray(VirtualSites.of(sys).place(y.reshape(-1, 3), sim.state.box)).reshape(27, 12, 3)[:, 6:]
+        ).max()
+        < 1e-12
+    )
+    nve = FlexibleSimulation(
+        sys,
+        [tpl] * 27,
+        sim.positions_nm(),
+        np.asarray(sim.state.box),
+        s,
+        dt=0.0005,
+        ensemble="nve",
+        vel_nm_ps=sim.velocities_nm_ps(),
+        constraints="h-bonds",
+        hmr=3.0,
+        log=None,
+    )
     E = []
     for _ in range(8):
         nve._advance(50)
@@ -431,6 +543,7 @@ def test_flexible_molecule_with_sites_nvt_nve_and_hmr():
 def test_load_amber_protein_in_tip4pew():
     from pgm_jax.protein.amber import amber_template, load_amber
     from pgm_jax.protein.pmemd import write_pgm_prmtop
+
     prm, crd = os.path.join(DATA, "pep_tip4pew.prmtop"), os.path.join(DATA, "pep_tip4pew.inpcrd")
     asys = load_amber(prm, crd)
     kinds = [m.kind for m in asys.molecules]
@@ -439,13 +552,24 @@ def test_load_amber_protein_in_tip4pew():
     assert wat.elements == ["O", "H", "H", "EP"] and wat.alpha[3] == 0.0 and len(wat.vsites) == 1
     k = kinds.index("protein")
     tpls = asys.templates({k: amber_template(asys.molecules[k], prm)})
-    sim = FlexibleSimulation(asys.system(), tpls, asys.system_positions(), asys.box,
-                             MDSettings(cutoff=0.8, skin=0.05, pme_spacing=0.1), dt=0.002, ensemble="nvt",
-                             constraints="h-bonds", hmr=asys.hmr({"water": 4.0, "protein": 3.024}),
-                             thermostat="bussi", log=None)
+    sim = FlexibleSimulation(
+        asys.system(),
+        tpls,
+        asys.system_positions(),
+        asys.box,
+        MDSettings(cutoff=0.8, skin=0.05, pme_spacing=0.1),
+        dt=0.002,
+        ensemble="nvt",
+        constraints="h-bonds",
+        hmr=asys.hmr({"water": 4.0, "protein": 3.024}),
+        thermostat="bussi",
+        log=None,
+    )
     n_wat = kinds.count("water")
-    assert sim.vsites.n_sites == n_wat and sim.integ.dof == 3 * (asys.system().n - n_wat) - sim.constraints.nc - 3  # Bussi
-    out = sim.minimize(10)                                  # steepest descent keeps the sites placed
+    assert (
+        sim.vsites.n_sites == n_wat and sim.integ.dof == 3 * (asys.system().n - n_wat) - sim.constraints.nc - 3
+    )  # Bussi
+    out = sim.minimize(10)  # steepest descent keeps the sites placed
     assert out["accepted"] > 0
     sim._advance(20)
     assert np.isfinite(sim.observables()["etot"])
@@ -460,11 +584,23 @@ def test_replica_exchange_with_sites():
     engines: the same trajectories; site momenta and thermostat auxiliaries stay 0, sites placed."""
     from pgm_jax.md.forcefield import ewald_beta_for
     from pgm_jax.md.remd import ReplicaExchange
+
     sys, pos, H = _tip4pew_ideal()
-    s = MDSettings(elec="q", cutoff=0.65, skin=0.05, ewald_beta=ewald_beta_for(0.65), pme_spacing=0.06,
-                   precision="double")
-    sim = FlexibleSimulation(sys, [RigidTemplate(sys.molecules[0], pos[:4])] * sys.nmol, pos, H, s, dt=0.002,
-                             temperature=300.0, thermostat="gle", log=None, seed=1)
+    s = MDSettings(
+        elec="q", cutoff=0.65, skin=0.05, ewald_beta=ewald_beta_for(0.65), pme_spacing=0.06, precision="double"
+    )
+    sim = FlexibleSimulation(
+        sys,
+        [RigidTemplate(sys.molecules[0], pos[:4])] * sys.nmol,
+        pos,
+        H,
+        s,
+        dt=0.002,
+        temperature=300.0,
+        thermostat="gle",
+        log=None,
+        seed=1,
+    )
     T = np.array([300.0, 330.0])
     runs = {}
     for batched in (True, False):

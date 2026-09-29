@@ -15,6 +15,7 @@ hand-coded derivatives.
 
 Periodic CVs (Dihedral, or any CV with `period`) have their differences wrapped to the nearest
 image by the biases (hills and kernels on a circle).  Units: nm, rad."""
+
 from __future__ import annotations
 
 import jax
@@ -30,6 +31,7 @@ def _mi(d, H):
     if H is None:
         return d
     from ..md.box import min_image
+
     return min_image(d, jnp.asarray(H, jnp.float64))
 
 
@@ -48,6 +50,7 @@ def wrap(ds, period):
 class CV:
     """A collective variable.  Subclasses define __call__(pos, H) -> scalar and atoms().
     period: None (not periodic) or the period (the value is taken in [lo, lo + period))."""
+
     name = "cv"
     period = None
     lo = None
@@ -121,15 +124,17 @@ class Angle(CV):
 class Dihedral(CV):
     """Dihedral i-j-k-l (rad, (-pi, pi]; IUPAC sign as md/restraints.py and pgm_jax.bonded).
     Periodic with period 2 pi."""
+
     period = 2.0 * np.pi
     lo = -np.pi
 
-    def __init__(self, i: int, j: int, k: int, l: int, name: str | None = None):   # noqa: E741
+    def __init__(self, i: int, j: int, k: int, l: int, name: str | None = None):  # noqa: E741
         self.idx = (int(i), int(j), int(k), int(l))
         self.name = name or "dih" + "_".join(map(str, self.idx))
 
     def __call__(self, pos, H=None):
         from ..md.restraints import dihedral_from_bonds
+
         x = _x(pos)
         a, b, c, d = self.idx
         return dihedral_from_bonds(_mi(x[b] - x[a], H), _mi(x[c] - x[b], H), _mi(x[d] - x[c], H))
@@ -171,7 +176,7 @@ def switching(r, r0: float, n: int = 6, m: int = 12, d0: float = 0.0):
     e = x - 1.0
     near = jnp.abs(e) < 1e-4
     xs = jnp.where(near, 0.5, x)
-    f = (1.0 - xs ** n) / (1.0 - xs ** m)
+    f = (1.0 - xs**n) / (1.0 - xs**m)
     return jnp.where(near, n / m + n * (n - m) / (2.0 * m) * e, f)
 
 
@@ -181,8 +186,7 @@ class Coordination(CV):
     evaluated (|A| x |B| distances: groups of up to a few thousand pairs); pairs listed twice when
     the groups overlap count twice, as in PLUMED's COORDINATION with GROUPA/GROUPB."""
 
-    def __init__(self, group_a, group_b, r0: float, n: int = 6, m: int = 12, d0: float = 0.0,
-                 name: str | None = None):
+    def __init__(self, group_a, group_b, r0: float, n: int = 6, m: int = 12, d0: float = 0.0, name: str | None = None):
         self.ga, self.gb = (np.asarray(g, int).reshape(-1) for g in (group_a, group_b))
         if int(n) >= int(m):
             raise ValueError("switching exponents need n < m")
@@ -247,11 +251,14 @@ def _key_matrix(R):
     Sxx, Sxy, Sxz = R[0, 0], R[0, 1], R[0, 2]
     Syx, Syy, Syz = R[1, 0], R[1, 1], R[1, 2]
     Szx, Szy, Szz = R[2, 0], R[2, 1], R[2, 2]
-    return jnp.array([
-        [Sxx + Syy + Szz, Syz - Szy, Szx - Sxz, Sxy - Syx],
-        [Syz - Szy, Sxx - Syy - Szz, Sxy + Syx, Szx + Sxz],
-        [Szx - Sxz, Sxy + Syx, -Sxx + Syy - Szz, Syz + Szy],
-        [Sxy - Syx, Szx + Sxz, Syz + Szy, -Sxx - Syy + Szz]])
+    return jnp.array(
+        [
+            [Sxx + Syy + Szz, Syz - Szy, Szx - Sxz, Sxy - Syx],
+            [Syz - Szy, Sxx - Syy - Szz, Sxy + Syx, Szx + Sxz],
+            [Szx - Sxz, Sxy + Syx, -Sxx + Syy - Szz, Syz + Szy],
+            [Sxy - Syx, Szx + Sxz, Syz + Szy, -Sxx - Syy + Szz],
+        ]
+    )
 
 
 class Linear(CV):

@@ -1,5 +1,6 @@
 """MD engine: PME vs exact Ewald, forces and virial vs finite differences, neighbour lists,
 rigid bodies, thermostat, energy conservation, I/O and exact restarts."""
+
 import os
 
 import jax
@@ -23,7 +24,9 @@ from pgm_jax.md.simulation import Simulation  # noqa: E402
 TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
 RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
 W = water()
-need_water_box = pytest.mark.skipif(not (os.path.exists(TOP) and os.path.exists(RST)), reason="pGM3P-25 box not available")
+need_water_box = pytest.mark.skipif(
+    not (os.path.exists(TOP) and os.path.exists(RST)), reason="pGM3P-25 box not available"
+)
 
 
 def small_box(seed=0, nw=30, nm=4):
@@ -31,28 +34,40 @@ def small_box(seed=0, nw=30, nm=4):
     rng = np.random.default_rng(seed)
     H = reduce_box(np.array([[1.75, 0.0, 0.0], [0.45, 1.70, 0.0], [-0.40, 0.50, 1.65]]))
     t = np.radians(104.52 / 2)
-    w = np.array([[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]])
+    w = np.array(
+        [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
+    )
     m, xm = methanol()
     xm = xm - xm.mean(0)
     mols, pos = [], []
     grid = np.array([[i, j, k] for i in range(4) for j in range(4) for k in range(3)], float)
     grid = (grid + 0.5) / np.array([4, 4, 3])
-    for n, f in enumerate(grid[rng.permutation(len(grid))][:nw + nm]):
+    for n, f in enumerate(grid[rng.permutation(len(grid))][: nw + nm]):
         R = np.linalg.qr(rng.normal(size=(3, 3)))[0]
         c = f @ H + rng.normal(scale=0.01, size=3)
         if n < nm:
-            mols.append(m); pos.append(xm @ R.T + c)
+            mols.append(m)
+            pos.append(xm @ R.T + c)
         else:
-            mols.append(W); pos.append((w - w.mean(0)) @ R.T + c)
+            mols.append(W)
+            pos.append((w - w.mean(0)) @ R.T + c)
     return System(mols), np.concatenate(pos), H
 
 
-
-
-
 def settings(**kw):
-    base = dict(cutoff=0.6, skin=0.05, ewald_beta=6.0, pme_grid=(48, 48, 48), pme_order=8, lj_lrc=False,
-                dipole_tol=1e-12, max_iter=500, peek=0.0, extrap_order=0, precision="double")
+    base = dict(
+        cutoff=0.6,
+        skin=0.05,
+        ewald_beta=6.0,
+        pme_grid=(48, 48, 48),
+        pme_order=8,
+        lj_lrc=False,
+        dipole_tol=1e-12,
+        max_iter=500,
+        peek=0.0,
+        extrap_order=0,
+        precision="double",
+    )
     base.update(kw)
     return MDSettings(**base)
 
@@ -86,7 +101,8 @@ def test_row_gradient_forces_equal_autodiff_and_finite_differences():
     e = jax.jit(lambda x: ff.energy(x, H, idx, ff.init_induction())[0])
     h = 1e-6
     for a, k in [(0, 0), (5, 1), (40, 2), (77, 0)]:
-        d = np.zeros_like(pos); d[a, k] = h
+        d = np.zeros_like(pos)
+        d[a, k] = h
         fd = -(float(e(pos + d)) - float(e(pos - d))) / (2 * h)
         assert abs(fd - float(res.forces[a, k])) < 1e-5 * max(1.0, abs(fd)), (a, k, fd, float(res.forces[a, k]))
 
@@ -111,8 +127,13 @@ def test_differentiable_forces_and_dipoles():
     g_th, g_x = jax.jit(jax.grad(loss, argnums=(0, 1)))(theta0, x0)
     # forward values do not depend on the option
     plain = PGMForceField(sys, H, settings())
-    r0, r1 = jax.jit(plain.compute)(x0, H, idx, plain.init_induction()), jax.jit(ff.compute)(x0, H, idx, ff.init_induction())
-    assert np.allclose(r0.forces, r1.forces, rtol=0, atol=1e-10) and np.allclose(r0.induction.mu, r1.induction.mu, rtol=0, atol=1e-14)
+    r0, r1 = (
+        jax.jit(plain.compute)(x0, H, idx, plain.init_induction()),
+        jax.jit(ff.compute)(x0, H, idx, ff.init_induction()),
+    )
+    assert np.allclose(r0.forces, r1.forces, rtol=0, atol=1e-10) and np.allclose(
+        r0.induction.mu, r1.induction.mu, rtol=0, atol=1e-14
+    )
     # parameters: random directions scaled by each leaf
     leaves, tree = jax.tree_util.tree_flatten(theta0)
     for trial in range(3):
@@ -140,18 +161,19 @@ def test_molecular_strain_derivative():
     W = ff.strain_derivative(pos, H, idx, res.induction.mu)
     P = ff._atoms(None)
     from pgm_jax.lj import lj_long_range
+
     m = np.asarray(sys.masses)
     com = np.array([np.average(pos[sys.mol == k], 0, weights=m[sys.mol == k]) for k in range(sys.nmol)])
     e = jax.jit(lambda s: ff.energy(pos + (s * com)[sys.mol], H * (1 + s), idx, ff.init_induction())[0])
     h = 1e-6
     fd = (float(e(h)) - float(e(-h))) / (2 * h)
-    tail = -3 * float(lj_long_range(P, abs(np.linalg.det(H)), 0.6))           # impulse term added to W
+    tail = -3 * float(lj_long_range(P, abs(np.linalg.det(H)), 0.6))  # impulse term added to W
     assert abs(fd + tail - float(jnp.trace(W))) < 1e-5 * max(1.0, abs(fd)), (fd, float(jnp.trace(W)))
 
 
 def test_neighbor_list_is_complete_in_skewed_box():
     rng = np.random.default_rng(3)
-    H = reduce_box(np.array([[2.72, 0, 0], [-0.9067, 2.5645, 0], [-0.9067, -1.2823, 2.2210]]))   # truncated octahedron
+    H = reduce_box(np.array([[2.72, 0, 0], [-0.9067, 2.5645, 0], [-0.9067, -1.2823, 2.2210]]))  # truncated octahedron
     pos = rng.uniform(size=(600, 3)) @ H
     nb = Neighbors(600, H, 0.9, 0.1)
     idx = np.asarray(nb.allocate(pos, None, H).idx)
@@ -175,6 +197,7 @@ def test_rigid_bodies_roundtrip():
     Rm = np.linalg.qr(rng.normal(size=(3, 3)))[0]
     Rm = Rm * np.sign(np.linalg.det(Rm))
     from pgm_jax.md._jaxmd import rigid_body
+
     q = rigid_body.Quaternion(jnp.asarray(matrix_to_quaternion(Rm)))
     v = rng.normal(size=3)
     assert np.allclose(rigid_body.quaternion_rotate(q, jnp.asarray(v)), Rm @ v)
@@ -195,6 +218,7 @@ def test_langevin_equipartition():
     integ = Integrator(ff, rig, Neighbors(sys.n, H, 0.6, 0.05), dt=0.002, ensemble="nvt", temperature=300.0, gamma=5.0)
     from pgm_jax.md._jaxmd import simulate
     from pgm_jax.md.integrate import Dynamics
+
     zero = jax.tree_util.tree_map(jnp.zeros_like, rig.body0)
     dyn = simulate.canonicalize_mass(Dynamics(rig.body0, zero, zero, rig.mass, jax.random.PRNGKey(0)))
     aux = jnp.zeros((0, 2, sys.nmol, 3))
@@ -204,8 +228,9 @@ def test_langevin_equipartition():
         dyn = step(dyn)
         if i > 500:
             ke = simulate.kinetic_energy(dyn)
-            ket = 0.5 * jnp.sum(dyn.momentum.center ** 2 / dyn.mass.center)
-            kt.append(float(ket)); kr.append(float(ke - ket))
+            ket = 0.5 * jnp.sum(dyn.momentum.center**2 / dyn.mass.center)
+            kt.append(float(ket))
+            kr.append(float(ke - ket))
     n = sys.nmol * 3
     assert abs(np.mean(kt) / (0.5 * n * KB * 300) - 1) < 0.05
     assert abs(np.mean(kr) / (0.5 * n * KB * 300) - 1) < 0.05
@@ -213,6 +238,7 @@ def test_langevin_equipartition():
 
 def test_netcdf_trajectory_and_restart(tmp_path):
     from scipy.io import netcdf_file
+
     n = 7
     tr = NetCDFTrajectory(str(tmp_path / "t.nc"), n)
     H = np.array([[20.0, 0, 0], [3.0, 19.0, 0], [-2.0, 4.0, 18.0]])

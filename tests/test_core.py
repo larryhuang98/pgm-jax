@@ -1,4 +1,5 @@
 """Kernels, solvers and parameter plumbing (no Amber files needed)."""
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -14,13 +15,26 @@ from pgm_jax.system import Molecule, System  # noqa: E402
 
 
 def _methanol():
-    x = np.array([[-0.0467, 0.6590, 0.0], [-0.0467, -0.7598, 0.0], [-1.0830, 0.9930, 0.0],
-                  [0.4406, 1.0735, 0.8902], [0.4406, 1.0735, -0.8902], [0.8785, -1.0591, 0.0]])  # Angstrom
-    m = Molecule("MeOH", ["C", "O", "H", "H", "H", "H"], ["c3", "oh", "h1", "h1", "h1", "ho"],
-                 np.array([0.12, -0.62, 0.02, 0.02, 0.02, 0.44]), np.array([0.07, 0.06, 0.05, 0.05, 0.05, 0.05]),
-                 np.array([1.2e-3, 0.8e-3, 0.4e-3, 0.4e-3, 0.4e-3, 0.3e-3]),
-                 cov=[(0, 1, 0.01), (1, 0, -0.01), (1, 5, -0.02), (5, 1, 0.005)]
-                 + [c for h in (2, 3, 4) for c in ((0, h, 0.002), (h, 0, -0.002))])   # symmetric in the 3 methyl H
+    x = np.array(
+        [
+            [-0.0467, 0.6590, 0.0],
+            [-0.0467, -0.7598, 0.0],
+            [-1.0830, 0.9930, 0.0],
+            [0.4406, 1.0735, 0.8902],
+            [0.4406, 1.0735, -0.8902],
+            [0.8785, -1.0591, 0.0],
+        ]
+    )  # Angstrom
+    m = Molecule(
+        "MeOH",
+        ["C", "O", "H", "H", "H", "H"],
+        ["c3", "oh", "h1", "h1", "h1", "ho"],
+        np.array([0.12, -0.62, 0.02, 0.02, 0.02, 0.44]),
+        np.array([0.07, 0.06, 0.05, 0.05, 0.05, 0.05]),
+        np.array([1.2e-3, 0.8e-3, 0.4e-3, 0.4e-3, 0.4e-3, 0.3e-3]),
+        cov=[(0, 1, 0.01), (1, 0, -0.01), (1, 5, -0.02), (5, 1, 0.005)]
+        + [c for h in (2, 3, 4) for c in ((0, h, 0.002), (h, 0, -0.002))],
+    )  # symmetric in the 3 methyl H
     m.bonds = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)]
     return m, x
 
@@ -39,7 +53,7 @@ def test_gauss_overlap_is_normalised():
     b = float(gauss_bij(0.06, 0.05))
     r = np.linspace(0, 12 / b, 20001)
     trap = getattr(np, "trapezoid", None) or np.trapz
-    integral = trap(4 * np.pi * r ** 2 * np.asarray(gauss_overlap(jnp.asarray(r), b)), r)
+    integral = trap(4 * np.pi * r**2 * np.asarray(gauss_overlap(jnp.asarray(r), b)), r)
     assert abs(integral - 1) < 1e-8
 
 
@@ -54,7 +68,7 @@ def test_damping_functions_limits():
     assert np.isclose(g[0], 8 * 1e-18 / (9 * np.pi))
     xs = jnp.array([0.5 - 1e-9, 0.5 + 1e-9])
     ts = np.asarray(tt6_jax(xs))
-    assert abs(ts[0] - ts[1]) < 1e-6 * ts[1]          # series truncated after x^11: 3.5e-7 relative at x = 0.5
+    assert abs(ts[0] - ts[1]) < 1e-6 * ts[1]  # series truncated after x^11: 3.5e-7 relative at x = 0.5
 
 
 def test_newton_solver_matches_linear_induction_and_its_gradient():
@@ -86,8 +100,12 @@ def test_molecule_json_roundtrip():
         assert np.array_equal(getattr(m, k), getattr(m2, k))
     assert m2.cov == m.cov and m2.elements == m.elements and m2.types == m.types
     assert m2.bonds == m.bonds and m2.keys == m.keys and m2.tying_keys() == m.tying_keys()
-    old = {k: v for k, v in molecule_to_dict(m).items() if k in ("name", "elements", "types", "q", "radius_nm", "alpha_nm3", "cov")}
-    m3 = molecule_from_dict(old)                                       # evoff's format
+    old = {
+        k: v
+        for k, v in molecule_to_dict(m).items()
+        if k in ("name", "elements", "types", "q", "radius_nm", "alpha_nm3", "cov")
+    }
+    m3 = molecule_from_dict(old)  # evoff's format
     assert np.array_equal(m3.q, m.q) and np.all(m3.lj_sqrt_eps == 0) and m3.bonds == []
 
 
@@ -95,6 +113,7 @@ def test_atom_mapping_permutation_invariance():
     """Shuffle the atom order of a geometry, map parameters onto it by bond graph: same pGM energy."""
     pytest.importorskip("networkx")
     from pgm_jax.param import map_atoms, reorder
+
     m, x = _methanol()
     order = np.random.default_rng(0).permutation(m.n)
     x2, el2 = x[order], [m.elements[k] for k in order]

@@ -29,15 +29,16 @@ C(w) estimated by Welch-averaged periodograms of M(t), dt |sum_n h_n dM_n e^{-iw
 (Hann windows h, half overlap).  The sampling interval must resolve the motion (<= 4 fs up to
 4000 cm^-1); rigid water has only the translational and librational bands (below ~1200 cm^-1).
 Kinetic properties need physical masses (no hydrogen mass repartitioning)."""
+
 from __future__ import annotations
 
 import numpy as np
 
-E_CHARGE = 1.602176634e-19        # C
-EPS0 = 8.8541878128e-12           # F/m
-KB_SI = 1.380649e-23              # J/K
-C_LIGHT = 2.99792458e8            # m/s
-E_NM = E_CHARGE * 1e-9            # 1 e nm in C m
+E_CHARGE = 1.602176634e-19  # C
+EPS0 = 8.8541878128e-12  # F/m
+KB_SI = 1.380649e-23  # J/K
+C_LIGHT = 2.99792458e8  # m/s
+E_NM = E_CHARGE * 1e-9  # 1 e nm in C m
 
 
 def _series(M, V):
@@ -50,7 +51,7 @@ def fluctuation(M, V, T: float) -> float:
     """(<M.M> - <M>.<M>) / (3 eps0 <V> kB T) for M (F, 3) in e nm, V in nm^3 (scalar or (F,)), T in K."""
     M, V = _series(M, V)
     dM2 = np.mean(np.sum(M * M, axis=1)) - np.sum(np.mean(M, axis=0) ** 2)
-    return float(dM2 * E_NM ** 2 / (3.0 * EPS0 * np.mean(V) * 1e-27 * KB_SI * T))
+    return float(dM2 * E_NM**2 / (3.0 * EPS0 * np.mean(V) * 1e-27 * KB_SI * T))
 
 
 def eps_inf(alpha, V) -> tuple[float, float]:
@@ -74,7 +75,7 @@ def jackknife(M, V, T: float, nblocks: int = 10) -> tuple[float, float]:
     s1 = np.array([M[p].sum(0) for p in parts])
     s2 = np.array([np.sum(M[p] * M[p]) for p in parts])
     sv = np.array([V[p].sum() for p in parts])
-    conv = E_NM ** 2 / (3.0 * EPS0 * 1e-27 * KB_SI * T)
+    conv = E_NM**2 / (3.0 * EPS0 * 1e-27 * KB_SI * T)
 
     def f(nn, a1, a2, av):
         nn = np.asarray(nn, float)
@@ -97,9 +98,18 @@ def static_dielectric(M, V, T: float, alpha=None, eps_inf_value: float | None = 
     else:
         ei, ei_err = float(eps_inf_value), 0.0
     fl, err = jackknife(M, V, T, nblocks)
-    return {"eps": ei + fl, "err": float(np.hypot(err, ei_err)), "fluct": fl, "fluct_err": err, "eps_inf": ei,
-            "eps_inf_err": ei_err, "n": len(M), "mean_M": M.mean(0), "rms_M": float(np.sqrt(np.mean(np.sum(M * M, 1)))),
-            "V": float(np.mean(V))}
+    return {
+        "eps": ei + fl,
+        "err": float(np.hypot(err, ei_err)),
+        "fluct": fl,
+        "fluct_err": err,
+        "eps_inf": ei,
+        "eps_inf_err": ei_err,
+        "n": len(M),
+        "mean_M": M.mean(0),
+        "rms_M": float(np.sqrt(np.mean(np.sum(M * M, 1)))),
+        "V": float(np.mean(V)),
+    }
 
 
 def block_errors(M, V, T: float, blocks=(4, 5, 8, 10, 16, 20, 32, 50)) -> list[tuple[int, float]]:
@@ -123,11 +133,11 @@ def decomposition(parts: dict, V, T: float) -> dict:
     <dA.dA> and the cross terms 2 <dA.dB>, in units of eps."""
     names = list(parts)
     d = {k: np.asarray(v, float) - np.mean(v, axis=0) for k, v in parts.items()}
-    conv = E_NM ** 2 / (3.0 * EPS0 * float(np.mean(V)) * 1e-27 * KB_SI * T)
+    conv = E_NM**2 / (3.0 * EPS0 * float(np.mean(V)) * 1e-27 * KB_SI * T)
     out = {}
     for i, a in enumerate(names):
         out[a] = float(np.mean(np.sum(d[a] * d[a], 1)) * conv)
-        for b in names[i + 1:]:
+        for b in names[i + 1 :]:
             out[f"{a}x{b}"] = float(2.0 * np.mean(np.sum(d[a] * d[b], 1)) * conv)
     return out
 
@@ -140,7 +150,7 @@ def autocorrelation(M, max_lag: int | None = None) -> np.ndarray:
     max_lag = n - 1 if max_lag is None else min(int(max_lag), n - 1)
     nfft = 1 << int(np.ceil(np.log2(2 * n)))
     F = np.fft.rfft(d, nfft, axis=0)
-    c = np.fft.irfft(np.sum(np.abs(F) ** 2, axis=1), nfft)[:max_lag + 1] / (n - np.arange(max_lag + 1))
+    c = np.fft.irfft(np.sum(np.abs(F) ** 2, axis=1), nfft)[: max_lag + 1] / (n - np.arange(max_lag + 1))
     return c / c[0]
 
 
@@ -171,10 +181,10 @@ def ir_spectrum(M, dt_ps: float, V, T: float, segment_ps: float = 10.0):
     d = M - M.mean(0)
     S = np.zeros(n // 2 + 1)
     for s in starts:
-        seg = d[s:s + n] - d[s:s + n].mean(0)
+        seg = d[s : s + n] - d[s : s + n].mean(0)
         S += np.sum(np.abs(np.fft.rfft(seg * h[:, None], axis=0)) ** 2, axis=1)
-    S *= dt / np.sum(h * h) / len(starts) * E_NM ** 2               # C(w), C^2 m^2 s
-    w = 2.0 * np.pi * np.fft.rfftfreq(n, dt)                          # rad/s
+    S *= dt / np.sum(h * h) / len(starts) * E_NM**2  # C(w), C^2 m^2 s
+    w = 2.0 * np.pi * np.fft.rfftfreq(n, dt)  # rad/s
     V_m3 = float(np.mean(V)) * 1e-27
-    alpha_n = w ** 2 * S / (6.0 * C_LIGHT * EPS0 * V_m3 * KB_SI * T)   # 1/m
+    alpha_n = w**2 * S / (6.0 * C_LIGHT * EPS0 * V_m3 * KB_SI * T)  # 1/m
     return w / (2.0 * np.pi * C_LIGHT) / 100.0, alpha_n / 100.0

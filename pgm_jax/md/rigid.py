@@ -10,6 +10,7 @@ and body forces/torques are the vector-Jacobian product of this map with the ato
 Monatomic and linear molecules have no (or one degenerate) principal moment: they get a nominal
 moment so the integrator stays regular; the rotations it adds do not move any atom and are
 removed from the degree-of-freedom count (dof_correction)."""
+
 from __future__ import annotations
 
 import jax
@@ -76,17 +77,19 @@ class RigidMolecules:
             key = id(molk)
             if key not in templates:
                 y = x - com
-                I = (mk[:, None, None] * (np.sum(y * y, 1)[:, None, None] * np.eye(3) - y[:, :, None] * y[:, None, :])).sum(0)
+                I = (
+                    mk[:, None, None] * (np.sum(y * y, 1)[:, None, None] * np.eye(3) - y[:, :, None] * y[:, None, :])
+                ).sum(0)
                 ev, U = np.linalg.eigh(I)
                 if np.linalg.det(U) < 0:
                     U[:, 0] = -U[:, 0]
-                body = y @ U                                           # template in its principal frame
+                body = y @ U  # template in its principal frame
                 big = max(ev.max(), nominal_moment)
                 corr = 0
                 if len(mk) == 1:
                     ev = np.full(3, nominal_moment)
                     corr = 3
-                elif ev.min() < 1e-6 * big:                            # linear: nominal axial moment
+                elif ev.min() < 1e-6 * big:  # linear: nominal axial moment
                     ev = ev.copy()
                     ev[np.argmin(ev)] = np.sort(ev)[1]
                     corr = 1
@@ -122,7 +125,9 @@ class RigidMolecules:
         P = jax.ops.segment_sum(m[:, None] * vel, self.mol, self.nmol)
         rel = pos - body.center[self.mol]
         L = jax.ops.segment_sum(m[:, None] * jnp.cross(rel, vel), self.mol, self.nmol)
-        Lb = jnp.einsum("kij,kj->ki", rigid_body.space_to_body_rotation(body.orientation), L, precision=jax.lax.Precision.HIGHEST)
+        Lb = jnp.einsum(
+            "kij,kj->ki", rigid_body.space_to_body_rotation(body.orientation), L, precision=jax.lax.Precision.HIGHEST
+        )
         return RigidBody(P, rigid_body.angular_momentum_to_conjugate_momentum(body.orientation, Lb))
 
     def atom_velocities(self, body, momentum):
@@ -131,7 +136,7 @@ class RigidMolecules:
         Lb = rigid_body.conjugate_momentum_to_angular_momentum(body.orientation, momentum.orientation)
         w_body = Lb / self.mass.orientation
         Rs2b = rigid_body.space_to_body_rotation(body.orientation)
-        w = jnp.einsum("kji,kj->ki", Rs2b, w_body)                        # body -> space
+        w = jnp.einsum("kji,kj->ki", Rs2b, w_body)  # body -> space
         rel = self.positions(body) - body.center[self.mol]
         return v_com[self.mol] + jnp.cross(w[self.mol], rel)
 

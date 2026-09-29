@@ -15,6 +15,7 @@ dipoles and box, so energies, fields, forces and box derivatives come from autod
 Units: nm, e, e nm; energies in e^2/nm (multiply by the Coulomb constant).  H has the lattice
 vectors as rows.
 """
+
 from __future__ import annotations
 
 import jax
@@ -59,7 +60,7 @@ def bspline_moduli(K: int, order: int) -> np.ndarray:
     m = np.arange(K)[:, None]
     arg = 2 * np.pi * m * j[None, :] / K
     mod = (data * np.cos(arg)).sum(1) ** 2 + (data * np.sin(arg)).sum(1) ** 2
-    for i in range(K):                                       # odd orders have zeros at m = K/2
+    for i in range(K):  # odd orders have zeros at m = K/2
         if mod[i] < 1e-7:
             mod[i] = 0.5 * (mod[(i - 1) % K] + mod[(i + 1) % K])
     return mod
@@ -69,8 +70,11 @@ def grid_size(H, spacing: float = 0.05, factors=(2, 3, 5)) -> tuple[int, int, in
     """Smallest FFT-friendly grid with at most `spacing` nm between planes."""
     H = np.asarray(H, float)
     V = abs(np.linalg.det(H))
-    heights = [V / np.linalg.norm(np.cross(H[1], H[2])), V / np.linalg.norm(np.cross(H[2], H[0])),
-               V / np.linalg.norm(np.cross(H[0], H[1]))]
+    heights = [
+        V / np.linalg.norm(np.cross(H[1], H[2])),
+        V / np.linalg.norm(np.cross(H[2], H[0])),
+        V / np.linalg.norm(np.cross(H[0], H[1])),
+    ]
 
     def ok(n):
         for f in factors:
@@ -96,28 +100,31 @@ class PME:
         self.order, self.beta, self.dtype = int(order), float(beta), dtype
         K1, K2, K3 = self.K
         mods = [bspline_moduli(k, self.order) for k in self.K]
-        Binv = 1.0 / (mods[0][:, None, None] * mods[1][None, :, None] * mods[2][None, None, :K3 // 2 + 1])
+        Binv = 1.0 / (mods[0][:, None, None] * mods[1][None, :, None] * mods[2][None, None, : K3 // 2 + 1])
         w3 = np.full(K3 // 2 + 1, 2.0)
         w3[0] = 1.0
         if K3 % 2 == 0:
             w3[-1] = 1.0
-        self._Bw = jnp.asarray(Binv * w3[None, None, :])                      # float64
-        self._w3inv = jnp.asarray(1.0 / w3, dtype)                             # undo the half-space weights
-        self._m = [jnp.asarray(np.fft.fftfreq(K1, 1.0 / K1)), jnp.asarray(np.fft.fftfreq(K2, 1.0 / K2)),
-                   jnp.asarray(np.arange(K3 // 2 + 1, dtype=float))]
+        self._Bw = jnp.asarray(Binv * w3[None, None, :])  # float64
+        self._w3inv = jnp.asarray(1.0 / w3, dtype)  # undo the half-space weights
+        self._m = [
+            jnp.asarray(np.fft.fftfreq(K1, 1.0 / K1)),
+            jnp.asarray(np.fft.fftfreq(K2, 1.0 / K2)),
+            jnp.asarray(np.arange(K3 // 2 + 1, dtype=float)),
+        ]
         self._Kf = jnp.asarray(np.array(self.K, float))
         self._ar = jnp.arange(self.order, dtype=jnp.int32)
 
     def influence(self, H):
         """G(m) on the rfft grid, including the spline moduli and half-space weights (e^2/nm)."""
         H = jnp.asarray(H, jnp.float64)
-        R = inv3(H).T                                                # rows: reciprocal vectors
+        R = inv3(H).T  # rows: reciprocal vectors
         m1, m2, m3 = self._m
-        mv = (m1[:, None, None, None] * R[0] + m2[None, :, None, None] * R[1] + m3[None, None, :, None] * R[2])
+        mv = m1[:, None, None, None] * R[0] + m2[None, :, None, None] * R[1] + m3[None, None, :, None] * R[2]
         msq = jnp.sum(mv * mv, -1)
         V = jnp.abs(det3(H))
         safe = jnp.where(msq > 0, msq, 1.0)
-        G = jnp.where(msq > 0, jnp.exp(-(jnp.pi ** 2) * safe / self.beta ** 2) / (2 * jnp.pi * V * safe), 0.0)
+        G = jnp.where(msq > 0, jnp.exp(-(jnp.pi**2) * safe / self.beta**2) / (2 * jnp.pi * V * safe), 0.0)
         return (G * self._Bw).astype(self.dtype)
 
     def setup(self, pos, H):
@@ -128,24 +135,32 @@ class PME:
         w = (u - jnp.floor(u)) * self._Kf
         base = jnp.floor(w)
         f = (w - base).astype(self.dtype)
-        th, dth = bspline(f, self.order)                                       # (N, 3, p)
-        idx = (base.astype(jnp.int32)[:, :, None] + self._ar[None, None, :]) % jnp.asarray(self.K, jnp.int32)[None, :, None]
+        th, dth = bspline(f, self.order)  # (N, 3, p)
+        idx = (base.astype(jnp.int32)[:, :, None] + self._ar[None, None, :]) % jnp.asarray(self.K, jnp.int32)[
+            None, :, None
+        ]
         K1, K2, K3 = self.K
         flat = (idx[:, 0, :, None, None] * K2 + idx[:, 1, None, :, None]) * K3 + idx[:, 2, None, None, :]
-        return {"flat": flat.reshape(pos.shape[0], -1), "th": th, "dth": dth,
-                "e_scale": (Hinv * self._Kf[None, :]).astype(self.dtype)}
+        return {
+            "flat": flat.reshape(pos.shape[0], -1),
+            "th": th,
+            "dth": dth,
+            "e_scale": (Hinv * self._Kf[None, :]).astype(self.dtype),
+        }
 
     def spread(self, S, q, d):
         """Grid Q (K1, K2, K3) of charges q (N,) and dipoles d (N, 3) e nm."""
         th, dth = S["th"], S["dth"]
-        e = jnp.matmul(d.astype(self.dtype), S["e_scale"], precision=_HI)                               # (N, 3) scaled fractional dipoles
+        e = jnp.matmul(d.astype(self.dtype), S["e_scale"], precision=_HI)  # (N, 3) scaled fractional dipoles
         t1, t2, t3 = th[:, 0], th[:, 1], th[:, 2]
         d1, d2, d3 = dth[:, 0], dth[:, 1], dth[:, 2]
         a1 = q.astype(self.dtype)[:, None] * t1 + e[:, 0:1] * d1
         # q t1 t2 t3 + e1 d1 t2 t3 + e2 t1 d2 t3 + e3 t1 t2 d3
-        val = (a1[:, :, None, None] * t2[:, None, :, None] * t3[:, None, None, :]
-               + (e[:, 1:2] * t1)[:, :, None, None] * d2[:, None, :, None] * t3[:, None, None, :]
-               + (e[:, 2:3] * t1)[:, :, None, None] * t2[:, None, :, None] * d3[:, None, None, :])
+        val = (
+            a1[:, :, None, None] * t2[:, None, :, None] * t3[:, None, None, :]
+            + (e[:, 1:2] * t1)[:, :, None, None] * d2[:, None, :, None] * t3[:, None, None, :]
+            + (e[:, 2:3] * t1)[:, :, None, None] * t2[:, None, :, None] * d3[:, None, None, :]
+        )
         K1, K2, K3 = self.K
         Q = jnp.zeros(K1 * K2 * K3, self.dtype).at[S["flat"].reshape(-1)].add(val.reshape(-1))
         return Q.reshape(K1, K2, K3)
@@ -158,7 +173,9 @@ class PME:
         p = self.order
         Q = self.spread(S, q, d)
         # U = sum_m G_m |FQ_m|^2 over the full spectrum; dU/dQ = 2 K1 K2 K3 irfft(G_m FQ_m)
-        phi = jnp.fft.irfftn(jnp.fft.rfftn(Q) * (G * self._w3inv), Q.shape) * jnp.asarray(2.0 * K1 * K2 * K3, self.dtype)
+        phi = jnp.fft.irfftn(jnp.fft.rfftn(Q) * (G * self._w3inv), Q.shape) * jnp.asarray(
+            2.0 * K1 * K2 * K3, self.dtype
+        )
         n = S["flat"].shape[0]
         ph = phi.reshape(-1)[S["flat"]].reshape(n, p, p, p)
         th, dth = S["th"], S["dth"]
@@ -174,4 +191,4 @@ class PME:
     def energy(self, S, G, q, d):
         """Reciprocal energy (e^2/nm), float64 accumulation."""
         FQ = jnp.fft.rfftn(self.spread(S, q, d))
-        return jnp.sum((G * (FQ.real ** 2 + FQ.imag ** 2)).astype(jnp.float64))
+        return jnp.sum((G * (FQ.real**2 + FQ.imag**2)).astype(jnp.float64))

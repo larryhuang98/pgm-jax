@@ -22,6 +22,7 @@ states pooled, N_k of them from state k, in order).
                                    (prefix_fe.npz), with the gas-phase leg for a hydration free energy
 
 Uncertainties are one standard error of the uncorrelated (subsampled) estimates."""
+
 from __future__ import annotations
 
 import json
@@ -49,9 +50,9 @@ def statistical_inefficiency(a, b=None, mintime: int = 3) -> float:
         return 1.0
     n = 1 << int(math.ceil(math.log2(2 * N)))
     fa, fb = np.fft.rfft(dA, n), np.fft.rfft(dB, n)
-    c = np.fft.irfft(fa.conj() * fb, n)[:N] + np.fft.irfft(fb.conj() * fa, n)[:N]    # sum_i dA_i dB_{i+t} + dB_i dA_{i+t}
+    c = np.fft.irfft(fa.conj() * fb, n)[:N] + np.fft.irfft(fb.conj() * fa, n)[:N]  # sum_i dA_i dB_{i+t} + dB_i dA_{i+t}
     t = np.arange(1, N - 1)
-    C = c[1:N - 1] / (2.0 * (N - t) * s2)
+    C = c[1 : N - 1] / (2.0 * (N - t) * s2)
     g = 1.0
     for tt, Ct in zip(t, C):
         if Ct <= 0.0 and tt > mintime:
@@ -107,7 +108,7 @@ def bar(w_F, w_R, tol: float = 1e-12) -> tuple:
     df = brentq(zero, lo, hi, xtol=tol, rtol=4 * np.finfo(float).eps, maxiter=500)
     fF = expit(-(M + wF - df))
     fR = expit(-(-M + wR + df))
-    var = np.mean(fF ** 2) / (nF * np.mean(fF) ** 2) + np.mean(fR ** 2) / (nR * np.mean(fR) ** 2) - (1.0 / nF + 1.0 / nR)
+    var = np.mean(fF**2) / (nF * np.mean(fF) ** 2) + np.mean(fR**2) / (nR * np.mean(fR) ** 2) - (1.0 / nF + 1.0 / nR)
     return float(df), float(math.sqrt(max(var, 0.0)))
 
 
@@ -144,12 +145,12 @@ def mbar(u_kn, N_k, tol: float = 1e-10, max_iter: int = 500, f0=None) -> tuple:
     if Nk[0] <= 0:
         raise ValueError("state 0 (the reference) needs samples")
     samp = np.nonzero(Nk > 0)[0]
-    act = samp[1:]                                             # optimised (f_0 = 0 fixed)
+    act = samp[1:]  # optimised (f_0 = 0 fixed)
     start = np.concatenate([[0], np.cumsum(Nk).astype(int)])
     if f0 is None:
         f = np.zeros(K)
         for a, b in zip(samp[:-1], samp[1:]):
-            xa, xb = u[:, start[a]:start[a + 1]], u[:, start[b]:start[b + 1]]
+            xa, xb = u[:, start[a] : start[a + 1]], u[:, start[b] : start[b + 1]]
             fwd = np.mean(np.where(np.isfinite(xa[b] - xa[a]), xa[b] - xa[a], 0.0))
             rev = np.mean(np.where(np.isfinite(xb[a] - xb[b]), xb[a] - xb[b], 0.0))
             f[b] = f[a] + 0.5 * (fwd - rev)
@@ -164,7 +165,7 @@ def mbar(u_kn, N_k, tol: float = 1e-10, max_iter: int = 500, f0=None) -> tuple:
     def gnorm(g):
         return float(np.max(np.abs(g[act] / Nk[act]))) if len(act) else 0.0
 
-    def update(f, W):                                          # self-consistent MBAR equation
+    def update(f, W):  # self-consistent MBAR equation
         f = f - np.log(np.maximum(W.sum(axis=1), 1e-300))
         return f - f[0]
 
@@ -187,7 +188,7 @@ def mbar(u_kn, N_k, tol: float = 1e-10, max_iter: int = 500, f0=None) -> tuple:
         _, f, W, g = min(res, key=lambda t: t[0])
     else:
         raise RuntimeError(f"MBAR did not converge (gradient {gnorm(g):.2e})")
-    f = update(f, W)                                           # also the states without samples
+    f = update(f, W)  # also the states without samples
     lw, _ = _mbar_weights(u, Nk, f)
     return f, _mbar_covariance(np.exp(lw).T, Nk)
 
@@ -219,9 +220,9 @@ def ti(lambdas, means, sems=None) -> tuple:
     L = np.asarray(lambdas, float).reshape(len(lambdas), -1)
     G = np.asarray(means, float).reshape(L.shape)
     E = np.zeros_like(G) if sems is None else np.asarray(sems, float).reshape(L.shape)
-    dL = np.diff(L, axis=0)                                   # (K-1, d)
+    dL = np.diff(L, axis=0)  # (K-1, d)
     val = float(np.sum(0.5 * (G[:-1] + G[1:]) * dL))
-    c = np.zeros_like(L)                                      # weight of each window's mean
+    c = np.zeros_like(L)  # weight of each window's mean
     c[:-1] += 0.5 * dL
     c[1:] += 0.5 * dL
     return val, float(np.sqrt(np.sum((c * E) ** 2)))
@@ -249,7 +250,7 @@ def estimate(samples, discard_ps: float = 0.0, gas=None, stride: int = 1, end_ps
     kT = float(S["kT"])
     t = np.asarray(S["time_ps"], float)
     last = np.inf if end_ps is None else float(end_ps) + 1e-9
-    keep = np.nonzero((t > float(discard_ps) + 1e-9) & (t <= last))[0][::max(int(stride), 1)]
+    keep = np.nonzero((t > float(discard_ps) + 1e-9) & (t <= last))[0][:: max(int(stride), 1)]
     if len(keep) < 10:
         raise ValueError(f"only {len(keep)} samples after {discard_ps} ps")
     u, dudl = u[keep], dudl[keep]
@@ -291,7 +292,7 @@ def estimate(samples, discard_ps: float = 0.0, gas=None, stride: int = 1, end_ps
     out["bar_steps"], out["bar_steps_err"] = [kT * x for x in dfs], [kT * x for x in errs]
     out["bar"], out["bar_err"] = kT * float(np.sum(dfs)), kT * float(np.sqrt(np.sum(np.square(errs))))
     # ---- MBAR on every window's uncorrelated samples
-    cols = [u[idx_de[k], :, k] for k in range(K)]            # (n_k, K) each: sample of window k in every state
+    cols = [u[idx_de[k], :, k] for k in range(K)]  # (n_k, K) each: sample of window k in every state
     N_k = np.array([len(c) for c in cols])
     u_kn = np.concatenate(cols, axis=0).T
     f, Theta = mbar(u_kn, N_k)
@@ -306,11 +307,11 @@ def estimate(samples, discard_ps: float = 0.0, gas=None, stride: int = 1, end_ps
         s = int(stage[0])
         out["mbar_elec"], out["mbar_elec_err"] = kT * float(D[0, s]), kT * float(dD[0, s])
         out["mbar_vdw"], out["mbar_vdw_err"] = kT * float(D[s, -1]), kT * float(dD[s, -1])
-        out["ti_elec"] = ti(L[:s + 1], means[:s + 1], sems[:s + 1])[0]
+        out["ti_elec"] = ti(L[: s + 1], means[: s + 1], sems[: s + 1])[0]
         out["ti_vdw"] = ti(L[s:], means[s:], sems[s:])[0]
     # ---- hydration free energy with the gas-phase leg
     if gas is not None:
-        by = lambda v, m: float(v[m]) if isinstance(v, dict) else float(v)          # noqa: E731
+        by = lambda v, m: float(v[m]) if isinstance(v, dict) else float(v)  # noqa: E731
         out["gas"] = by(gas["delta_g"], "mbar")
         for m in ("ti", "bar", "mbar"):
             ge = by(gas.get("delta_g_err", 0.0), m)

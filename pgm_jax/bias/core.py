@@ -25,6 +25,7 @@ The biases of one simulation form a `BiasSet` (the `bias=` argument of Simulatio
 FlexibleSimulation, bias/toy.py), whose state (`BiasState`) also holds a COLVAR buffer (the CVs and
 bias energies every `colvar` steps, written to prefix.colvar by the drivers) and the work done on
 the system by bias updates (booked as heat, so econs stays conserved)."""
+
 from __future__ import annotations
 
 import pickle
@@ -36,7 +37,7 @@ import numpy as np
 
 from .cv import CVSet, wrap
 
-KB = 0.0083144626181532                  # kJ/mol/K
+KB = 0.0083144626181532  # kJ/mol/K
 
 
 def _vec(x, d, name):
@@ -51,6 +52,7 @@ def _vec(x, d, name):
 class Bias:
     """Base class.  cvs: a CV, a list of CVs or a CVSet.  pace: steps between updates (0: static).
     temperature: of the bias (K; None: the simulation's, set by bind())."""
+
     kind = "bias"
     pace = 0
 
@@ -110,6 +112,7 @@ class Bias:
 # ----------------------------------------------------------------------------- static biases
 class StaticBias(Bias):
     """V = fn(s) with fn a JAX function of the CV vector s (d,) -> kJ/mol."""
+
     kind = "static"
 
     def __init__(self, cvs, fn, temperature=None, name: str = "static"):
@@ -122,8 +125,8 @@ class StaticBias(Bias):
 
 
 class HarmonicState(NamedTuple):
-    at: jnp.ndarray                 # (d,) centre (CV units)
-    kappa: jnp.ndarray              # (d,) kJ/mol per CV unit^2
+    at: jnp.ndarray  # (d,) centre (CV units)
+    kappa: jnp.ndarray  # (d,) kJ/mol per CV unit^2
 
 
 class Harmonic(Bias):
@@ -131,6 +134,7 @@ class Harmonic(Bias):
     note the factor 1/2, unlike md/restraints.py's Amber form k x^2).  Centre and force constants
     are state variables (HarmonicState): umbrella windows can share one compiled step (walkers.py)
     and a centre can be moved between blocks (steered MD) without recompiling."""
+
     kind = "harmonic"
 
     def __init__(self, cvs, at, kappa, temperature=None):
@@ -142,8 +146,10 @@ class Harmonic(Bias):
 
     def state(self, at=None, kappa=None) -> HarmonicState:
         """A state with another centre and / or force constants."""
-        return HarmonicState(jnp.asarray(self.at if at is None else _vec(at, self.d, "at")),
-                             jnp.asarray(self.kappa if kappa is None else _vec(kappa, self.d, "kappa")))
+        return HarmonicState(
+            jnp.asarray(self.at if at is None else _vec(at, self.d, "at")),
+            jnp.asarray(self.kappa if kappa is None else _vec(kappa, self.d, "kappa")),
+        )
 
     def potential(self, state, s):
         ds = self.cvs.diff(s, state.at)
@@ -152,6 +158,7 @@ class Harmonic(Bias):
 
 class UpperWall(StaticBias):
     """V = sum_k kappa_k ((s_k - at_k) / eps_k)^exp for s_k > at_k (PLUMED UPPER_WALLS)."""
+
     sign = 1.0
 
     def __init__(self, cvs, at, kappa, exp: float = 2.0, eps: float = 1.0, temperature=None):
@@ -162,21 +169,22 @@ class UpperWall(StaticBias):
 
     def fn(self, s):
         x = jnp.maximum(self.sign * (s - jnp.asarray(self.at)), 0.0) / jnp.asarray(self.eps)
-        return jnp.sum(jnp.asarray(self.kappa) * x ** self.exp)
+        return jnp.sum(jnp.asarray(self.kappa) * x**self.exp)
 
 
 class LowerWall(UpperWall):
     """V = sum_k kappa_k ((at_k - s_k) / eps_k)^exp for s_k < at_k (PLUMED LOWER_WALLS)."""
+
     sign = -1.0
 
 
 # ----------------------------------------------------------------------------- metadynamics
 class MetaDState(NamedTuple):
-    centers: jnp.ndarray            # (M, d) hill centres (periodic components canonical)
-    heights: jnp.ndarray            # (M,) kJ/mol (0 for unused slots)
-    steps: jnp.ndarray              # (M,) int32 step of deposition (-1 unused)
-    n: jnp.ndarray                  # hills deposited (int32)
-    grid: jnp.ndarray = None        # (2^d, *nodes) V and its derivatives on the grid nodes (grid=...), else None
+    centers: jnp.ndarray  # (M, d) hill centres (periodic components canonical)
+    heights: jnp.ndarray  # (M,) kJ/mol (0 for unused slots)
+    steps: jnp.ndarray  # (M,) int32 step of deposition (-1 unused)
+    n: jnp.ndarray  # hills deposited (int32)
+    grid: jnp.ndarray = None  # (2^d, *nodes) V and its derivatives on the grid nodes (grid=...), else None
 
 
 def _h(t):
@@ -210,11 +218,11 @@ class HillGrid:
         self.nodes = np.where(per, self.bins, self.bins + 1).astype(int)
         axes = [self.lo[k] + self.dx[k] * np.arange(self.nodes[k]) for k in range(d)]
         g = np.meshgrid(*axes, indexing="ij")
-        self.points = np.stack([x.reshape(-1) for x in g], 1)          # (G, d)
+        self.points = np.stack([x.reshape(-1) for x in g], 1)  # (G, d)
         self.shape = tuple(int(n) for n in self.nodes)
 
     def zeros(self):
-        return jnp.zeros((2 ** self.d,) + self.shape, jnp.float64)
+        return jnp.zeros((2**self.d,) + self.shape, jnp.float64)
 
     def add(self, grid, c, w, sigma):
         """Add the hill w exp(-|(s - c) / sigma|^2 / 2) to the node values and derivatives."""
@@ -246,7 +254,7 @@ class HillGrid:
         dx = self.dx
         if self.d == 1:
             h00, h01, h10, h11 = _h(ts[0])
-            (i0, i1), = idx
+            ((i0, i1),) = idx
             V, D = grid[0], grid[1] * dx[0]
             return h00 * V[i0] + h01 * V[i1] + h10 * D[i0] + h11 * D[i1]
         hx, hy = _h(ts[0]), _h(ts[1])
@@ -254,9 +262,12 @@ class HillGrid:
         for a in (0, 1):
             for b in (0, 1):
                 i, j = idx[0][a], idx[1][b]
-                out = out + (hx[a] * hy[b] * grid[0, i, j] + hx[2 + a] * hy[b] * dx[0] * grid[1, i, j]
-                             + hx[a] * hy[2 + b] * dx[1] * grid[2, i, j]
-                             + hx[2 + a] * hy[2 + b] * dx[0] * dx[1] * grid[3, i, j])
+                out = out + (
+                    hx[a] * hy[b] * grid[0, i, j]
+                    + hx[2 + a] * hy[b] * dx[0] * grid[1, i, j]
+                    + hx[a] * hy[2 + b] * dx[1] * grid[2, i, j]
+                    + hx[2 + a] * hy[2 + b] * dx[0] * dx[1] * grid[3, i, j]
+                )
         return out
 
 
@@ -272,10 +283,20 @@ class MetaD(Bias):
     (HillGrid, cubic Hermite interpolation) and V is read from it, O(1) per step whatever the
     number of hills (PLUMED's GRID_MIN / GRID_MAX / GRID_BIN); use bins with a spacing <= sigma / 4
     (interpolation error ~1e-3 of the hill height).  The hill list is kept for output and c(t)."""
+
     kind = "metad"
 
-    def __init__(self, cvs, sigma, height: float, pace: int, biasfactor: float | None = 10.0,
-                 temperature=None, capacity: int = 1024, grid=None):
+    def __init__(
+        self,
+        cvs,
+        sigma,
+        height: float,
+        pace: int,
+        biasfactor: float | None = 10.0,
+        temperature=None,
+        capacity: int = 1024,
+        grid=None,
+    ):
         super().__init__(cvs, temperature)
         self.grid = None if grid is None else HillGrid(self.cvs, *grid)
         self.sigma = _vec(sigma, self.d, "sigma")
@@ -289,9 +310,13 @@ class MetaD(Bias):
 
     def init(self):
         M, d = self.capacity, self.d
-        return MetaDState(jnp.zeros((M, d), jnp.float64), jnp.zeros(M, jnp.float64),
-                          jnp.full(M, -1, jnp.int32), jnp.zeros((), jnp.int32),
-                          None if self.grid is None else self.grid.zeros())
+        return MetaDState(
+            jnp.zeros((M, d), jnp.float64),
+            jnp.zeros(M, jnp.float64),
+            jnp.full(M, -1, jnp.int32),
+            jnp.zeros((), jnp.int32),
+            None if self.grid is None else self.grid.zeros(),
+        )
 
     def potential(self, state, s):
         if self.grid is not None:
@@ -313,8 +338,13 @@ class MetaD(Bias):
         n = state.n
         c = self.cvs.canonical(s)
         grid = None if self.grid is None else self.grid.add(state.grid, c, w, self.sigma)
-        return MetaDState(state.centers.at[n].set(c), state.heights.at[n].set(w),
-                          state.steps.at[n].set(jnp.asarray(step, jnp.int32)), n + 1, grid)
+        return MetaDState(
+            state.centers.at[n].set(c),
+            state.heights.at[n].set(w),
+            state.steps.at[n].set(jnp.asarray(step, jnp.int32)),
+            n + 1,
+            grid,
+        )
 
     def reserve(self, state, n_updates: int):
         n, M = int(state.n), state.heights.shape[0]
@@ -331,9 +361,13 @@ class MetaD(Bias):
         pad = int(size) - state.heights.shape[0]
         if pad <= 0:
             return state
-        return MetaDState(jnp.concatenate([state.centers, jnp.zeros((pad, self.d))]),
-                          jnp.concatenate([state.heights, jnp.zeros(pad)]),
-                          jnp.concatenate([state.steps, jnp.full(pad, -1, jnp.int32)]), state.n, state.grid)
+        return MetaDState(
+            jnp.concatenate([state.centers, jnp.zeros((pad, self.d))]),
+            jnp.concatenate([state.heights, jnp.zeros(pad)]),
+            jnp.concatenate([state.steps, jnp.full(pad, -1, jnp.int32)]),
+            state.n,
+            state.grid,
+        )
 
     def fes_factor(self) -> float:
         """F(s) = -factor V(s) + const at long times: gamma / (gamma - 1) (1 for standard metaD,
@@ -343,8 +377,12 @@ class MetaD(Bias):
     def hills(self, state) -> dict:
         """Deposited hills (host): step, center (n, d), height, sigma (d,)."""
         n = int(state.n)
-        return {"step": np.asarray(state.steps[:n]), "center": np.asarray(state.centers[:n]),
-                "height": np.asarray(state.heights[:n]), "sigma": self.sigma.copy()}
+        return {
+            "step": np.asarray(state.steps[:n]),
+            "center": np.asarray(state.centers[:n]),
+            "height": np.asarray(state.heights[:n]),
+            "sigma": self.sigma.copy(),
+        }
 
     def info(self, state):
         n = int(state.n)
@@ -352,22 +390,24 @@ class MetaD(Bias):
 
     def describe(self):
         g = "standard" if self.biasfactor is None else f"well-tempered, biasfactor {self.biasfactor:g}"
-        return (f"metadynamics on {', '.join(self.cvs.names)} ({g}, height {self.height:g} kJ/mol, sigma "
-                f"{', '.join(f'{x:g}' for x in self.sigma)}, pace {self.pace}, T {self.temperature})")
+        return (
+            f"metadynamics on {', '.join(self.cvs.names)} ({g}, height {self.height:g} kJ/mol, sigma "
+            f"{', '.join(f'{x:g}' for x in self.sigma)}, pace {self.pace}, T {self.temperature})"
+        )
 
 
 # ----------------------------------------------------------------------------- OPES
 class OPESState(NamedTuple):
-    centers: jnp.ndarray            # (K, d)
-    sigmas: jnp.ndarray             # (K, d)
-    heights: jnp.ndarray            # (K,) (0: unused slot)
-    nk: jnp.ndarray                 # kernels in use (int32)
-    sum_w: jnp.ndarray              # sum of the deposition weights (incl. the initial eps^(1 - 1/gamma))
+    centers: jnp.ndarray  # (K, d)
+    sigmas: jnp.ndarray  # (K, d)
+    heights: jnp.ndarray  # (K,) (0: unused slot)
+    nk: jnp.ndarray  # kernels in use (int32)
+    sum_w: jnp.ndarray  # sum of the deposition weights (incl. the initial eps^(1 - 1/gamma))
     sum_w2: jnp.ndarray
-    zed: jnp.ndarray                # Z: mean of P over the kernel centres
-    counter: jnp.ndarray            # depositions (int32)
-    merged: jnp.ndarray             # depositions merged into an existing kernel (int32)
-    forced: jnp.ndarray = None      # merges forced by a full buffer (int32; 0 unless the capacity was too small)
+    zed: jnp.ndarray  # Z: mean of P over the kernel centres
+    counter: jnp.ndarray  # depositions (int32)
+    merged: jnp.ndarray  # depositions merged into an existing kernel (int32)
+    forced: jnp.ndarray = None  # merges forced by a full buffer (int32; 0 unless the capacity was too small)
 
 
 class OPES(Bias):
@@ -385,12 +425,25 @@ class OPES(Bias):
     barrier: expected barrier Delta E (kJ/mol); defaults as PLUMED: biasfactor gamma = Delta E /
     kB T, eps = exp(-Delta E / ((1 - 1/gamma) kB T)), kernel cutoff sqrt(2 Delta E / ((1 - 1/gamma)
     kB T)).  The bias is bounded by -Delta E below; sum_w starts at eps^(1 - 1/gamma) (PLUMED)."""
+
     kind = "opes"
 
-    def __init__(self, cvs, sigma, pace: int, barrier: float, biasfactor: float | None = None,
-                 temperature=None, epsilon: float | None = None, kernel_cutoff: float | None = None,
-                 compression: float = 1.0, sigma_min=None, fixed_sigma: bool = False, capacity: int = 512,
-                 recursive: bool = True):
+    def __init__(
+        self,
+        cvs,
+        sigma,
+        pace: int,
+        barrier: float,
+        biasfactor: float | None = None,
+        temperature=None,
+        epsilon: float | None = None,
+        kernel_cutoff: float | None = None,
+        compression: float = 1.0,
+        sigma_min=None,
+        fixed_sigma: bool = False,
+        capacity: int = 512,
+        recursive: bool = True,
+    ):
         super().__init__(cvs, temperature)
         self.sigma0 = _vec(sigma, self.d, "sigma")
         self.sigma_min = np.zeros(self.d) if sigma_min is None else _vec(sigma_min, self.d, "sigma_min")
@@ -429,16 +482,26 @@ class OPES(Bias):
 
     def init(self):
         K, d = self.capacity, self.d
-        w0 = self.epsilon ** self.prefactor
+        w0 = self.epsilon**self.prefactor
         z = jnp.zeros((), jnp.int32)
-        return OPESState(jnp.zeros((K, d)), jnp.ones((K, d)), jnp.zeros(K), z, jnp.asarray(w0, jnp.float64),
-                         jnp.asarray(w0 * w0, jnp.float64), jnp.ones((), jnp.float64), z, z, z)
+        return OPESState(
+            jnp.zeros((K, d)),
+            jnp.ones((K, d)),
+            jnp.zeros(K),
+            z,
+            jnp.asarray(w0, jnp.float64),
+            jnp.asarray(w0 * w0, jnp.float64),
+            jnp.ones((), jnp.float64),
+            z,
+            z,
+            z,
+        )
 
     def _kernels(self, st, s):
         """G_k(s) for every slot (K,)."""
         ds = wrap(s[None, :] - st.centers, self.cvs.periods) / st.sigmas
         n2 = jnp.sum(ds * ds, 1)
-        c2 = self.cutoff ** 2
+        c2 = self.cutoff**2
         g = jnp.exp(-0.5 * jnp.minimum(n2, c2)) - np.exp(-0.5 * c2)
         return jnp.where(n2 < c2, st.heights * g, 0.0)
 
@@ -467,8 +530,8 @@ class OPES(Bias):
         ds = wrap(s[None, :] - st.centers, self.cvs.periods)
         n2 = jnp.where(active, jnp.sum((ds / st.sigmas) ** 2, 1), jnp.inf)
         k = jnp.argmin(n2)
-        merge = (self.compression > 0) & (n2[k] < self.compression ** 2)
-        full = st.nk >= K                     # no free slot: merge into the nearest kernel (counted in `forced`)
+        merge = (self.compression > 0) & (n2[k] < self.compression**2)
+        full = st.nk >= K  # no free slot: merge into the nearest kernel (counted in `forced`)
         forced = full & ~merge
         merge = merge | full
         cm, sm, hm = self._merge(st.centers[k], st.sigmas[k], st.heights[k], s, sigma, h)
@@ -479,9 +542,18 @@ class OPES(Bias):
         nk = st.nk + jnp.where(merge, 0, 1).astype(jnp.int32)
         if self.recursive:
             centers, sigmas, heights, nk = self._recursive(centers, sigmas, heights, nk, slot, merge & ~forced)
-        new = OPESState(centers, sigmas, heights, nk, sum_w, sum_w2, st.zed, counter,
-                        st.merged + merge.astype(jnp.int32),
-                        (jnp.zeros((), jnp.int32) if st.forced is None else st.forced) + forced.astype(jnp.int32))
+        new = OPESState(
+            centers,
+            sigmas,
+            heights,
+            nk,
+            sum_w,
+            sum_w2,
+            st.zed,
+            counter,
+            st.merged + merge.astype(jnp.int32),
+            (jnp.zeros((), jnp.int32) if st.forced is None else st.forced) + forced.astype(jnp.int32),
+        )
         # Z = (1 / N_k) sum_k P(c_k)
         act = jnp.arange(K) < nk
         P = jax.vmap(lambda c: self.probability(new, c))(centers)
@@ -495,7 +567,7 @@ class OPES(Bias):
         dc = wrap(c2 - c1, self.cvs.periods)
         a = h2 / hm
         cm = self.cvs.canonical(c1 + a * dc)
-        sm = jnp.sqrt(jnp.maximum((h1 * s1 ** 2 + h2 * (s2 ** 2 + dc ** 2)) / hm - (a * dc) ** 2, 1e-300))
+        sm = jnp.sqrt(jnp.maximum((h1 * s1**2 + h2 * (s2**2 + dc**2)) / hm - (a * dc) ** 2, 1e-300))
         return cm, sm, hm
 
     def _mergeable(self, centers, sigmas, nk, g):
@@ -506,7 +578,7 @@ class OPES(Bias):
         idx = jnp.arange(K)
         n2 = jnp.where((idx < nk) & (idx != g), jnp.sum(ds * ds, 1), jnp.inf)
         j = jnp.argmin(n2)
-        return j, n2[j] < self.compression ** 2
+        return j, n2[j] < self.compression**2
 
     def _recursive(self, centers, sigmas, heights, nk, g, go):
         """PLUMED's recursive merging: while the merged kernel g is within the threshold of another
@@ -517,9 +589,12 @@ class OPES(Bias):
             centers, sigmas, heights, nk, g, t, _ = c
             cm, sm, hm = self._merge(centers[t], sigmas[t], heights[t], centers[g], sigmas[g], heights[g])
             centers, sigmas, heights = centers.at[t].set(cm), sigmas.at[t].set(sm), heights.at[t].set(hm)
-            last = nk - 1                                         # delete g: the last kernel takes its slot
-            centers, sigmas, heights = (centers.at[g].set(centers[last]), sigmas.at[g].set(sigmas[last]),
-                                        heights.at[g].set(heights[last]))
+            last = nk - 1  # delete g: the last kernel takes its slot
+            centers, sigmas, heights = (
+                centers.at[g].set(centers[last]),
+                sigmas.at[g].set(sigmas[last]),
+                heights.at[g].set(heights[last]),
+            )
             heights = heights.at[last].set(0.0)
             sigmas = sigmas.at[last].set(1.0)
             t = jnp.where(t == last, g, t)
@@ -547,9 +622,11 @@ class OPES(Bias):
         pad = int(size) - st.heights.shape[0]
         if pad <= 0:
             return st
-        return st._replace(centers=jnp.concatenate([st.centers, jnp.zeros((pad, self.d))]),
-                           sigmas=jnp.concatenate([st.sigmas, jnp.ones((pad, self.d))]),
-                           heights=jnp.concatenate([st.heights, jnp.zeros(pad)]))
+        return st._replace(
+            centers=jnp.concatenate([st.centers, jnp.zeros((pad, self.d))]),
+            sigmas=jnp.concatenate([st.sigmas, jnp.ones((pad, self.d))]),
+            heights=jnp.concatenate([st.heights, jnp.zeros(pad)]),
+        )
 
     def fes_factor(self) -> float:
         return 1.0 / self.prefactor
@@ -559,21 +636,28 @@ class OPES(Bias):
 
     def info(self, st):
         c = int(st.counter)
-        return {"kernels": int(st.nk), "forced": int(0 if st.forced is None else st.forced), "zed": float(st.zed), "neff": self.neff(st),
-                "rct": float(self.kT * np.log(float(st.sum_w) / max(c, 1))) if c else 0.0}
+        return {
+            "kernels": int(st.nk),
+            "forced": int(0 if st.forced is None else st.forced),
+            "zed": float(st.zed),
+            "neff": self.neff(st),
+            "rct": float(self.kT * np.log(float(st.sum_w) / max(c, 1))) if c else 0.0,
+        }
 
     def describe(self):
-        return (f"OPES_METAD on {', '.join(self.cvs.names)} (barrier {self.barrier:g} kJ/mol, biasfactor "
-                f"{self.biasfactor:.3g}, sigma0 {', '.join(f'{x:g}' for x in self.sigma0)}, pace {self.pace}, "
-                f"compression {self.compression:g}{', fixed sigma' if self.fixed_sigma else ''}, T {self.temperature})")
+        return (
+            f"OPES_METAD on {', '.join(self.cvs.names)} (barrier {self.barrier:g} kJ/mol, biasfactor "
+            f"{self.biasfactor:.3g}, sigma0 {', '.join(f'{x:g}' for x in self.sigma0)}, pace {self.pace}, "
+            f"compression {self.compression:g}{', fixed sigma' if self.fixed_sigma else ''}, T {self.temperature})"
+        )
 
 
 # ----------------------------------------------------------------------------- the set of biases
 class BiasState(NamedTuple):
-    parts: tuple                    # one state per bias
-    log: jnp.ndarray                # (C, 1 + sum_d + n_bias) COLVAR rows: step, CVs of each bias, V of each bias
-    nlog: jnp.ndarray               # rows filled since the last drain (int32)
-    work: jnp.ndarray               # sum of V_new(x) - V_old(x) at the updates (kJ/mol)
+    parts: tuple  # one state per bias
+    log: jnp.ndarray  # (C, 1 + sum_d + n_bias) COLVAR rows: step, CVs of each bias, V of each bias
+    nlog: jnp.ndarray  # rows filled since the last drain (int32)
+    work: jnp.ndarray  # sum of V_new(x) - V_old(x) at the updates (kJ/mol)
 
 
 class BiasSet:
@@ -613,6 +697,7 @@ class BiasSet:
     def stride(self) -> int:
         """Steps between possible COLVAR rows or updates (gcd of `colvar` and the paces; 0: none)."""
         import math
+
         s = 0
         for x in [self.colvar] + [b.pace for b in self.biases]:
             if x > 0:
@@ -620,8 +705,12 @@ class BiasSet:
         return s
 
     def init(self, log_rows: int = 64) -> BiasState:
-        return BiasState(tuple(b.init() for b in self.biases), jnp.zeros((int(log_rows), self.ncol), jnp.float64),
-                         jnp.zeros((), jnp.int32), jnp.zeros((), jnp.float64))
+        return BiasState(
+            tuple(b.init() for b in self.biases),
+            jnp.zeros((int(log_rows), self.ncol), jnp.float64),
+            jnp.zeros((), jnp.int32),
+            jnp.zeros((), jnp.float64),
+        )
 
     # -- device side
     def cv_values(self, pos, H=None):
@@ -665,15 +754,17 @@ class BiasSet:
         for k, b in enumerate(self.biases):
             if b.pace > 0:
                 s = b.cvs.values(pos, H)
-                parts[k] = jax.lax.cond(step % b.pace == 0, lambda p, s=s, b=b: b.update(p, s, step),
-                                        lambda p: p, parts[k])
+                parts[k] = jax.lax.cond(
+                    step % b.pace == 0, lambda p, s=s, b=b: b.update(p, s, step), lambda p: p, parts[k]
+                )
         return state._replace(parts=tuple(parts))
 
     # -- host side
     def reserve(self, state: BiasState, nsteps: int, step0: int = 0) -> BiasState:
         """Buffers large enough for nsteps more steps starting after step0 (host)."""
-        parts = tuple(b.reserve(p, (nsteps // b.pace + 1) if b.pace > 0 else 0)
-                      for b, p in zip(self.biases, state.parts))
+        parts = tuple(
+            b.reserve(p, (nsteps // b.pace + 1) if b.pace > 0 else 0) for b, p in zip(self.biases, state.parts)
+        )
         state = state._replace(parts=parts)
         if self.colvar > 0:
             need = int(state.nlog) + nsteps // self.colvar + 1
@@ -693,7 +784,11 @@ class BiasSet:
         C = max(st.log.shape[0] for st in states)
         out = []
         for w, st in enumerate(states):
-            log = st.log if st.log.shape[0] == C else jnp.concatenate([st.log, jnp.zeros((C - st.log.shape[0], self.ncol))])
+            log = (
+                st.log
+                if st.log.shape[0] == C
+                else jnp.concatenate([st.log, jnp.zeros((C - st.log.shape[0], self.ncol))])
+            )
             out.append(st._replace(parts=tuple(p[w] for p in parts), log=log))
         return out
 
@@ -717,7 +812,7 @@ class BiasSet:
         infos = [(k, b.info(p)) for k, (b, p) in enumerate(zip(self.biases, state.parts))]
         infos = [(k, i) for k, i in infos if i]
         out = {}
-        for k, i in infos:                     # keys numbered by bias only when several biases report
+        for k, i in infos:  # keys numbered by bias only when several biases report
             for key, v in i.items():
                 out[key if len(infos) == 1 else f"{key}{k}"] = v
         return out

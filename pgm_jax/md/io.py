@@ -1,5 +1,6 @@
 """Amber file I/O: coordinates/velocities/box in (ASCII inpcrd or NetCDF restart), NetCDF
 trajectories and restarts out (AMBER convention 1.0, readable by cpptraj, VMD, MDTraj)."""
+
 from __future__ import annotations
 
 import os
@@ -10,7 +11,7 @@ from scipy.io import netcdf_file
 
 from ..ewald import box_matrix
 
-AMBER_VEL = 20.455                 # Amber velocity unit: A / (1/20.455 ps)
+AMBER_VEL = 20.455  # Amber velocity unit: A / (1/20.455 ps)
 
 
 def read_coordinates(path: str):
@@ -25,18 +26,25 @@ def read_coordinates(path: str):
         if "velocities" in v:
             sc = float(getattr(v["velocities"], "scale_factor", AMBER_VEL))
             vel = np.array(v["velocities"][:], float).reshape(-1, 3) * sc
-        box = (np.array(v["cell_lengths"][:], float).reshape(-1)[:3], np.array(v["cell_angles"][:], float).reshape(-1)[:3]) if "cell_lengths" in v else None
+        box = (
+            (
+                np.array(v["cell_lengths"][:], float).reshape(-1)[:3],
+                np.array(v["cell_angles"][:], float).reshape(-1)[:3],
+            )
+            if "cell_lengths" in v
+            else None
+        )
         f.close()
         return xyz, vel, box
     lines = open(path).read().splitlines()
     n = int(lines[1].split()[0])
-    vals = [float(l[k:k + 12]) for l in lines[2:] for k in range(0, len(l.rstrip()), 12) if l[k:k + 12].strip()]
-    xyz = np.array(vals[:3 * n]).reshape(n, 3)
-    rest = vals[3 * n:]
+    vals = [float(l[k : k + 12]) for l in lines[2:] for k in range(0, len(l.rstrip()), 12) if l[k : k + 12].strip()]
+    xyz = np.array(vals[: 3 * n]).reshape(n, 3)
+    rest = vals[3 * n :]
     vel = None
     if len(rest) >= 3 * n:
-        vel = np.array(rest[:3 * n]).reshape(n, 3) * AMBER_VEL
-        rest = rest[3 * n:]
+        vel = np.array(rest[: 3 * n]).reshape(n, 3) * AMBER_VEL
+        rest = rest[3 * n :]
     box = (np.array(rest[:3]), np.array(rest[3:6])) if len(rest) >= 6 else None
     return xyz, vel, box
 
@@ -71,23 +79,43 @@ def box_from_cell(lengths, angles):
 
 def write_restart(path: str, xyz_A, vel_A_ps, H_A, time_ps: float, title: str = "pgm_jax restart"):
     f = netcdf_file(path, "w", version=2)
-    f.Conventions, f.ConventionVersion, f.program, f.programVersion, f.title = "AMBERRESTART", "1.0", "pgm_jax", "0.2", title
+    f.Conventions, f.ConventionVersion, f.program, f.programVersion, f.title = (
+        "AMBERRESTART",
+        "1.0",
+        "pgm_jax",
+        "0.2",
+        title,
+    )
     n = len(xyz_A)
-    f.createDimension("spatial", 3); f.createDimension("atom", n); f.createDimension("cell_spatial", 3)
-    f.createDimension("cell_angular", 3); f.createDimension("label", 5)
-    sp = f.createVariable("spatial", "c", ("spatial",)); sp[:] = np.array(list("xyz"), "S1")
-    cs = f.createVariable("cell_spatial", "c", ("cell_spatial",)); cs[:] = np.array(list("abc"), "S1")
+    f.createDimension("spatial", 3)
+    f.createDimension("atom", n)
+    f.createDimension("cell_spatial", 3)
+    f.createDimension("cell_angular", 3)
+    f.createDimension("label", 5)
+    sp = f.createVariable("spatial", "c", ("spatial",))
+    sp[:] = np.array(list("xyz"), "S1")
+    cs = f.createVariable("cell_spatial", "c", ("cell_spatial",))
+    cs[:] = np.array(list("abc"), "S1")
     ca = f.createVariable("cell_angular", "c", ("cell_angular", "label"))
     ca[:] = np.array([list("alpha"), list("beta "), list("gamma")], "S1")
-    t = f.createVariable("time", "d", ()); t.units = "picosecond"; t[...] = time_ps
-    c = f.createVariable("coordinates", "d", ("atom", "spatial")); c.units = "angstrom"; c[:] = np.asarray(xyz_A, float)
+    t = f.createVariable("time", "d", ())
+    t.units = "picosecond"
+    t[...] = time_ps
+    c = f.createVariable("coordinates", "d", ("atom", "spatial"))
+    c.units = "angstrom"
+    c[:] = np.asarray(xyz_A, float)
     if vel_A_ps is not None:
-        v = f.createVariable("velocities", "d", ("atom", "spatial")); v.units = "angstrom/picosecond"
+        v = f.createVariable("velocities", "d", ("atom", "spatial"))
+        v.units = "angstrom/picosecond"
         v.scale_factor = AMBER_VEL
         v[:] = np.asarray(vel_A_ps, float) / AMBER_VEL
     L, A = cell_parameters(H_A)
-    cl = f.createVariable("cell_lengths", "d", ("cell_spatial",)); cl.units = "angstrom"; cl[:] = L
-    cg = f.createVariable("cell_angles", "d", ("cell_angular",)); cg.units = "degree"; cg[:] = A
+    cl = f.createVariable("cell_lengths", "d", ("cell_spatial",))
+    cl.units = "angstrom"
+    cl[:] = L
+    cg = f.createVariable("cell_angles", "d", ("cell_angular",))
+    cg.units = "degree"
+    cg[:] = A
     f.close()
 
 
@@ -101,7 +129,7 @@ class NetCDFTrajectory:
 
     def __init__(self, path: str, n_atoms: int, append: bool = False):
         self.path, self.n = path, int(n_atoms)
-        self.recsize = 4 + 12 * self.n + 24 + 24                 # time, coordinates, cell lengths, cell angles
+        self.recsize = 4 + 12 * self.n + 24 + 24  # time, coordinates, cell lengths, cell angles
         if append and os.path.exists(path):
             with open(path, "rb") as fh:
                 fh.seek(4)
@@ -131,18 +159,22 @@ class NetCDFTrajectory:
         dims = [("frame", 0), ("spatial", 3), ("atom", n), ("cell_spatial", 3), ("cell_angular", 3), ("label", 5)]
         D = {k: i for i, (k, _) in enumerate(dims)}
         # (name, dims, type, attributes, bytes per record or total)
-        vars_ = [("spatial", ["spatial"], self.CHAR, {}, 4, False),
-                 ("cell_spatial", ["cell_spatial"], self.CHAR, {}, 4, False),
-                 ("cell_angular", ["cell_angular", "label"], self.CHAR, {}, 16, False),
-                 ("time", ["frame"], self.FLOAT, {"units": "picosecond"}, 4, True),
-                 ("coordinates", ["frame", "atom", "spatial"], self.FLOAT, {"units": "angstrom"}, 12 * n, True),
-                 ("cell_lengths", ["frame", "cell_spatial"], self.DOUBLE, {"units": "angstrom"}, 24, True),
-                 ("cell_angles", ["frame", "cell_angular"], self.DOUBLE, {"units": "degree"}, 24, True)]
+        vars_ = [
+            ("spatial", ["spatial"], self.CHAR, {}, 4, False),
+            ("cell_spatial", ["cell_spatial"], self.CHAR, {}, 4, False),
+            ("cell_angular", ["cell_angular", "label"], self.CHAR, {}, 16, False),
+            ("time", ["frame"], self.FLOAT, {"units": "picosecond"}, 4, True),
+            ("coordinates", ["frame", "atom", "spatial"], self.FLOAT, {"units": "angstrom"}, 12 * n, True),
+            ("cell_lengths", ["frame", "cell_spatial"], self.DOUBLE, {"units": "angstrom"}, 24, True),
+            ("cell_angles", ["frame", "cell_angular"], self.DOUBLE, {"units": "degree"}, 24, True),
+        ]
         gatts = {"Conventions": "AMBER", "ConventionVersion": "1.0", "program": "pgm_jax", "programVersion": "0.2"}
 
         def header(begins):
             h = b"CDF\x02" + struct.pack(">i", self.nframes)
-            h += struct.pack(">ii", self.NC_DIM, len(dims)) + b"".join(self._name(k) + struct.pack(">i", v) for k, v in dims)
+            h += struct.pack(">ii", self.NC_DIM, len(dims)) + b"".join(
+                self._name(k) + struct.pack(">i", v) for k, v in dims
+            )
             h += self._atts(gatts)
             h += struct.pack(">ii", self.NC_VAR, len(vars_))
             for (name, vd, t, att, size, _), beg in zip(vars_, begins):
@@ -168,8 +200,12 @@ class NetCDFTrajectory:
 
     def write(self, time_ps: float, xyz_A, H_A):
         L, A = cell_parameters(H_A)
-        rec = (struct.pack(">f", float(time_ps)) + np.asarray(xyz_A, ">f4").reshape(-1).tobytes()
-               + np.asarray(L, ">f8").tobytes() + np.asarray(A, ">f8").tobytes())
+        rec = (
+            struct.pack(">f", float(time_ps))
+            + np.asarray(xyz_A, ">f4").reshape(-1).tobytes()
+            + np.asarray(L, ">f8").tobytes()
+            + np.asarray(A, ">f8").tobytes()
+        )
         assert len(rec) == self.recsize
         with open(self.path, "r+b") as fh:
             fh.seek(0, 2)

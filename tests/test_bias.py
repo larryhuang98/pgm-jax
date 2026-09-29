@@ -3,6 +3,7 @@ differences, metadynamics hills and grids, OPES against a plain re-implementatio
 OPES_METAD, the MD hook in both engines (forces, NVE with a static and a growing bias, deposition
 inside the compiled loop, files, checkpoints, pressure), the model-potential engine with walkers,
 and the analysis tools (c(t), WHAM, histograms)."""
+
 import os
 
 import jax
@@ -44,12 +45,17 @@ def _fd_grad(f, x, h=1e-6):
 
 
 def _cvs(pos, H):
-    return [cv.Distance(0, 9), cv.Angle(1, 2, 3), cv.Dihedral(4, 5, 6, 7),
-            cv.Coordination([0, 1, 2, 3], [4, 5, 6, 7, 8], r0=0.5), cv.COMDistance([0, 1, 2], [10, 11], masses=np.arange(1.0, 15)),
-            cv.RMSD([3, 4, 5, 6, 7], pos[3:8] + 0.05 * np.random.default_rng(1).normal(size=(5, 3))),
-            cv.RMSD([3, 4, 5, 6, 7], pos[3:8] + 0.02, align=False),
-            cv.Linear([cv.Distance(0, 9), cv.Angle(1, 2, 3)], [1.0, -0.3], offset=0.2),
-            cv.Custom(lambda x, H: jnp.sum(x[:3, 0] ** 2), name="custom")]
+    return [
+        cv.Distance(0, 9),
+        cv.Angle(1, 2, 3),
+        cv.Dihedral(4, 5, 6, 7),
+        cv.Coordination([0, 1, 2, 3], [4, 5, 6, 7, 8], r0=0.5),
+        cv.COMDistance([0, 1, 2], [10, 11], masses=np.arange(1.0, 15)),
+        cv.RMSD([3, 4, 5, 6, 7], pos[3:8] + 0.05 * np.random.default_rng(1).normal(size=(5, 3))),
+        cv.RMSD([3, 4, 5, 6, 7], pos[3:8] + 0.02, align=False),
+        cv.Linear([cv.Distance(0, 9), cv.Angle(1, 2, 3)], [1.0, -0.3], offset=0.2),
+        cv.Custom(lambda x, H: jnp.sum(x[:3, 0] ** 2), name="custom"),
+    ]
 
 
 def test_cv_gradients_match_finite_differences():
@@ -63,13 +69,14 @@ def test_cv_gradients_match_finite_differences():
 
 def test_cv_values():
     from pgm_jax.md.restraints import dihedral
+
     pos, H = _system()
     x = np.asarray(pos)
     assert abs(float(cv.Dihedral(4, 5, 6, 7)(pos, None)) - float(dihedral(*x[[4, 5, 6, 7]]))) < 1e-14
     # rational switching: the limit at r = r0 and the value away from it
     s = cv.switching(jnp.asarray([0.25, 0.5, 0.5 + 1e-6, 1.0]), 0.5)
     assert abs(float(s[1]) - 0.5) < 1e-12 and abs(float(s[2]) - 0.5) < 1e-5
-    assert abs(float(s[0]) - (1 - 0.5 ** 6) / (1 - 0.5 ** 12)) < 1e-12
+    assert abs(float(s[0]) - (1 - 0.5**6) / (1 - 0.5**12)) < 1e-12
     # RMSD after the optimal rotation: a rotated, translated copy has RMSD 0; Kabsch reference
     rng = np.random.default_rng(3)
     ref = rng.normal(size=(6, 3)) * 0.3
@@ -92,11 +99,11 @@ def test_static_biases_and_walls():
     d, phi = cv.Distance(0, 9), cv.Dihedral(4, 5, 6, 7)
     s = np.array([float(d(pos, H)), float(phi(pos, H))])
     h = Harmonic([d, phi], at=[0.3, s[1] + 2 * np.pi - 0.1], kappa=[100.0, 20.0], temperature=300.0)
-    assert abs(float(h.energy(h.init(), pos, H)) - (50.0 * (s[0] - 0.3) ** 2 + 10.0 * 0.1 ** 2)) < 1e-10
+    assert abs(float(h.energy(h.init(), pos, H)) - (50.0 * (s[0] - 0.3) ** 2 + 10.0 * 0.1**2)) < 1e-10
     assert abs(float(h.energy(h.state(at=[s[0], s[1]]), pos, H))) < 1e-20
     uw = UpperWall(d, s[0] - 0.1, 400.0, exp=2, eps=0.5)
     lw = LowerWall(d, s[0] - 0.1, 400.0)
-    assert abs(float(uw.energy((), pos, H)) - 400.0 * 0.2 ** 2) < 1e-10 and float(lw.energy((), pos, H)) == 0.0
+    assert abs(float(uw.energy((), pos, H)) - 400.0 * 0.2**2) < 1e-10 and float(lw.energy((), pos, H)) == 0.0
     st = StaticBias(phi, lambda x: 3.0 * jnp.cos(3.0 * x[0]))
     assert abs(float(st.energy((), pos, H)) - 3.0 * np.cos(3 * s[1])) < 1e-12
 
@@ -117,9 +124,17 @@ def test_metad_hills_heights_and_periodicity():
     st = b.init()
     st = b.reserve(st, 12)
     assert st.heights.shape[0] >= 12
-    V = lambda C, H, s: sum(h * np.exp(-0.5 * (((s[0] - c[0]) / 0.05) ** 2                       # noqa: E731
-                                              + ((np.mod(s[1] - c[1] + np.pi, 2 * np.pi) - np.pi) / 0.4) ** 2))
-                            for c, h in zip(C, H))
+    V = lambda C, H, s: sum(
+        h
+        * np.exp(
+            -0.5
+            * (
+                ((s[0] - c[0]) / 0.05) ** 2  # noqa: E731
+                + ((np.mod(s[1] - c[1] + np.pi, 2 * np.pi) - np.pi) / 0.4) ** 2
+            )
+        )
+        for c, h in zip(C, H)
+    )
     C, Hs = [], []
     for i, s in enumerate(S):
         w = 1.5 * np.exp(-V(C, Hs, s) / (kT * 5.0))
@@ -131,7 +146,13 @@ def test_metad_hills_heights_and_periodicity():
         assert abs(float(b.potential(st, jnp.asarray(s))) - V(C, Hs, s)) < 1e-12
     # a hill at +pi - 0.05 acts at -pi + 0.05 as at +pi - 0.15
     one = b.update(b.init(), jnp.asarray([0.3, np.pi - 0.05]), 10)
-    assert abs(float(b.potential(one, jnp.asarray([0.3, -np.pi + 0.05]))) - float(b.potential(one, jnp.asarray([0.3, np.pi - 0.15])))) < 1e-12
+    assert (
+        abs(
+            float(b.potential(one, jnp.asarray([0.3, -np.pi + 0.05])))
+            - float(b.potential(one, jnp.asarray([0.3, np.pi - 0.15])))
+        )
+        < 1e-12
+    )
     h = b.hills(st)
     assert list(h["step"]) == list(range(10, 130, 10)) and h["center"].shape == (12, 2)
     # standard metadynamics: constant heights
@@ -186,8 +207,8 @@ def _opes_reference(S, sigma0, barrier, kT, periods, compression=1.0, fixed_sigm
         x = np.asarray(a) - np.asarray(b)
         return np.where(P > 0, x - P * np.round(x / np.where(P > 0, P, 1)), x)
 
-    K = []                                     # [height, center, sigma]
-    sw = eps ** pref
+    K = []  # [height, center, sigma]
+    sw = eps**pref
     sw2 = sw * sw
     Z = 1.0
 
@@ -211,15 +232,16 @@ def _opes_reference(S, sigma0, barrier, kT, periods, compression=1.0, fixed_sigm
         if not fixed_sigma:
             sig = sig * (neff * (d + 2) / 4) ** (-1 / (4 + d))
         h = w * np.prod(np.asarray(sigma0) / sig)
-        def merge(t, g):                           # g merged into t (moments about t's centre)
+
+        def merge(t, g):  # g merged into t (moments about t's centre)
             dc = diff(g[1], t[1])
             hm = t[0] + g[0]
             c = t[1] + g[0] / hm * dc
-            s2 = (t[0] * t[2] ** 2 + g[0] * (g[2] ** 2 + dc ** 2)) / hm - (g[0] / hm * dc) ** 2
+            s2 = (t[0] * t[2] ** 2 + g[0] * (g[2] ** 2 + dc**2)) / hm - (g[0] / hm * dc) ** 2
             return [hm, np.where(P > 0, c - P * np.round(c / np.where(P > 0, P, 1)), c), np.sqrt(s2)]
 
         def mergeable(center, skip):
-            best, bn = None, compression ** 2
+            best, bn = None, compression**2
             for i, k in enumerate(K):
                 if i == skip:
                     continue
@@ -251,30 +273,58 @@ def _opes_reference(S, sigma0, barrier, kT, periods, compression=1.0, fixed_sigm
 def test_opes_matches_reference_algorithm(fixed, recursive):
     kT = KB * 300.0
     phi, d = cv.Dihedral(0, 1, 2, 3), cv.Distance(0, 3)
-    b = OPES([d, phi], sigma=[0.05, 0.3], pace=1, barrier=30.0, temperature=300.0, capacity=8, fixed_sigma=fixed,
-             recursive=recursive)
+    b = OPES(
+        [d, phi],
+        sigma=[0.05, 0.3],
+        pace=1,
+        barrier=30.0,
+        temperature=300.0,
+        capacity=8,
+        fixed_sigma=fixed,
+        recursive=recursive,
+    )
     rng = np.random.default_rng(2)
-    S = np.stack([0.3 + 0.08 * rng.normal(size=60), np.mod(2.0 + 0.9 * rng.normal(size=60) + np.pi, 2 * np.pi) - np.pi], 1)
+    S = np.stack(
+        [0.3 + 0.08 * rng.normal(size=60), np.mod(2.0 + 0.9 * rng.normal(size=60) + np.pi, 2 * np.pi) - np.pi], 1
+    )
     st = b.init()
-    assert abs(float(b.potential(st, jnp.asarray(S[0]))) + 30.0) < 1e-10          # V = -barrier at the start
+    assert abs(float(b.potential(st, jnp.asarray(S[0]))) + 30.0) < 1e-10  # V = -barrier at the start
     V = []
     for i, s in enumerate(S):
         st = b.reserve(st, 1)
         V.append(float(b.potential(st, jnp.asarray(s))))
         st = b.update(st, jnp.asarray(s), i + 1)
-    Vr, Kr, Zr, swr = _opes_reference(S, [0.05, 0.3], 30.0, kT, [0.0, 2 * np.pi], fixed_sigma=fixed, recursive=recursive)
+    Vr, Kr, Zr, swr = _opes_reference(
+        S, [0.05, 0.3], 30.0, kT, [0.0, 2 * np.pi], fixed_sigma=fixed, recursive=recursive
+    )
     assert np.allclose(V, Vr, atol=1e-9, rtol=0), np.max(np.abs(np.array(V) - Vr))
     assert int(st.nk) == len(Kr) < 60 and (recursive or int(st.merged) == 60 - len(Kr))
     # the same kernels (in another order after recursive deletions)
     kr = np.array(sorted([[k[0], *k[1], *k[2]] for k in Kr]))
-    kj = np.array(sorted(np.concatenate([np.asarray(st.heights[:int(st.nk)])[:, None], np.asarray(st.centers[:int(st.nk)]),
-                                         np.asarray(st.sigmas[:int(st.nk)])], 1).tolist()))
+    kj = np.array(
+        sorted(
+            np.concatenate(
+                [
+                    np.asarray(st.heights[: int(st.nk)])[:, None],
+                    np.asarray(st.centers[: int(st.nk)]),
+                    np.asarray(st.sigmas[: int(st.nk)]),
+                ],
+                1,
+            ).tolist()
+        )
+    )
     assert np.allclose(kr, kj, rtol=1e-9, atol=1e-12)
     assert abs(float(st.zed) - Zr) < 1e-10 * Zr and abs(float(st.sum_w) - swr) < 1e-9 * swr
-    for s in S[:5]:                                          # the final bias too
-        assert abs(float(b.potential(st, jnp.asarray(s))) - _opes_reference(np.vstack([S, s]), [0.05, 0.3], 30.0, kT,
-                                                                              [0.0, 2 * np.pi], fixed_sigma=fixed,
-                                                                              recursive=recursive)[0][-1]) < 1e-9
+    for s in S[:5]:  # the final bias too
+        assert (
+            abs(
+                float(b.potential(st, jnp.asarray(s)))
+                - _opes_reference(
+                    np.vstack([S, s]), [0.05, 0.3], 30.0, kT, [0.0, 2 * np.pi], fixed_sigma=fixed, recursive=recursive
+                )[0][-1]
+            )
+            < 1e-9
+        )
     assert b.info(st)["kernels"] == len(Kr)
     # a full buffer: new kernels merge into their nearest neighbour instead of being lost
     small = OPES([d, phi], sigma=[0.05, 0.3], pace=1, barrier=30.0, temperature=300.0, capacity=4, compression=0.0)
@@ -284,8 +334,10 @@ def test_opes_matches_reference_algorithm(fixed, recursive):
 
 def test_bias_set_state_io(tmp_path):
     d = cv.Distance(0, 1)
-    bs = BiasSet([MetaD(d, 0.05, 1.0, 5, temperature=300.0), OPES(d, 0.05, 5, 20.0, temperature=300.0),
-                  Harmonic(d, 0.3, 10.0)], colvar=1)
+    bs = BiasSet(
+        [MetaD(d, 0.05, 1.0, 5, temperature=300.0), OPES(d, 0.05, 5, 20.0, temperature=300.0), Harmonic(d, 0.3, 10.0)],
+        colvar=1,
+    )
     st = bs.init(log_rows=2)
     st = bs.reserve(st, 50)
     assert st.log.shape[0] >= 51
@@ -306,6 +358,7 @@ def test_bias_set_state_io(tmp_path):
 def _water_sim(engine, pos, H, w, settings, **kw):
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
     from pgm_jax.md.simulation import Simulation
+
     wat = water()
     sys = System([wat] * (len(pos) // 3))
     if engine == "rigid":
@@ -317,7 +370,7 @@ def _cluster_bias(pace=0, height=2.0):
     d, phi = cv.Distance(0, 9), cv.Dihedral(1, 0, 9, 10)
     m = MetaD([d, phi], sigma=[0.03, 0.4], height=height, pace=max(pace, 1), biasfactor=5.0, temperature=300.0)
     if pace == 0:
-        m.pace = 0                                             # static: never deposits
+        m.pace = 0  # static: never deposits
     return m, d, phi
 
 
@@ -343,8 +396,11 @@ def test_md_bias_forces_and_static_nve(engine):
     fd = _fd_grad(lambda p: bs.energy(sim.state.bias, jnp.asarray(p), H), np.asarray(x), h=1e-6)
     assert np.allclose(np.asarray(g), fd, atol=1e-6 * np.abs(fd).max()) and np.abs(fd).max() > 10.0
     mapped = sim.rigid.forces(sim.state.dyn.position, -g) if engine == "rigid" else -g
-    for a, b_, c in zip(jax.tree_util.tree_leaves(sim.state.dyn.force), jax.tree_util.tree_leaves(ref.state.dyn.force),
-                        jax.tree_util.tree_leaves(mapped)):
+    for a, b_, c in zip(
+        jax.tree_util.tree_leaves(sim.state.dyn.force),
+        jax.tree_util.tree_leaves(ref.state.dyn.force),
+        jax.tree_util.tree_leaves(mapped),
+    ):
         assert np.allclose(np.asarray(a) - np.asarray(b_), np.asarray(c), atol=1e-7 * np.abs(np.asarray(c)).max())
     o = sim.observables()
     assert abs(o["epot"] - ref.observables()["epot"] - o["ebias"]) < 1e-6 and o["ebias"] > 5.0
@@ -368,6 +424,7 @@ def test_md_deposition_in_loop(engine, tmp_path):
     booked as heat) stays constant while the bias pumps in tens of kJ/mol; COLVAR / HILLS files,
     checkpoint and continuation."""
     from pgm_jax.bias.io import read_table
+
     pos, H, w = _cluster()
     s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, d, phi = _cluster_bias(pace=10, height=1.0)
@@ -391,10 +448,19 @@ def test_md_deposition_in_loop(engine, tmp_path):
     assert np.array_equal(hills["step"], np.arange(10, 210, 10))
     assert np.allclose(hills["height"], np.asarray(st.bias.parts[0].heights[:20]))
     # the bias of step t is recorded before the hill of step t
-    assert cvs["bias0_metad"][1] == 0.0 and cvs["bias0_metad"][2] > 0.0     # step 10: before the first hill
+    assert cvs["bias0_metad"][1] == 0.0 and cvs["bias0_metad"][2] > 0.0  # step 10: before the first hill
     # continuation from the checkpoint reproduces the next block
     a = sim.integ.run(sim.state, 20)
-    sim2 = _water_sim(engine, pos, H, w, s, dt=0.0005, ensemble="nve", bias=BiasSet([_cluster_bias(10, 1.0)[0], Harmonic(d, 0.30, 2000.0)], colvar=5))
+    sim2 = _water_sim(
+        engine,
+        pos,
+        H,
+        w,
+        s,
+        dt=0.0005,
+        ensemble="nve",
+        bias=BiasSet([_cluster_bias(10, 1.0)[0], Harmonic(d, 0.30, 2000.0)], colvar=5),
+    )
     sim2.load(prefix + ".chk")
     b_ = sim2.integ.run(sim2.state, 20)
     assert int(a.bias.parts[0].n) == int(b_.bias.parts[0].n) == 22
@@ -408,18 +474,31 @@ def test_md_opes_nvt_pressure_and_mts():
     slow group): runs, deposits, and the pressure includes the bias's strain derivative."""
     from pgm_jax.md.mts import MTS
     from pgm_jax.md.restraints import molecular_strain
+
     pos, H, w = _cluster()
     s = MDSettings(precision="double", dipole_tol=1e-8, cutoff=1.2, skin=0.1, lj_lrc=False)
     d = cv.Distance(0, 9)
     op = OPES(d, sigma=0.02, pace=20, barrier=15.0)
-    sim = _water_sim("rigid", pos, H, w, s, dt=0.001, ensemble="nvt", thermostat="bussi", temperature=300.0,
-                     bias=[op, UpperWall(d, 0.7, 500.0)])
+    sim = _water_sim(
+        "rigid",
+        pos,
+        H,
+        w,
+        s,
+        dt=0.001,
+        ensemble="nvt",
+        thermostat="bussi",
+        temperature=300.0,
+        bias=[op, UpperWall(d, 0.7, 500.0)],
+    )
     sim._advance(200)
     o = sim.observables()
     assert o["kernels"] >= 1 and o["neff"] > 1.0
     st = sim.state
     x = sim.rigid.positions(st.dyn.position)
-    W = molecular_strain(lambda p, h: sim.integ.bias.energy(st.bias, p, h), x, st.box, sim.ff.mol, sim.ff.masses, sim.sys.nmol)
+    W = molecular_strain(
+        lambda p, h: sim.integ.bias.energy(st.bias, p, h), x, st.box, sim.ff.mol, sim.ff.masses, sim.sys.nmol
+    )
     p_with = sim.pressure()
     ref = _water_sim("rigid", pos, H, w, s, dt=0.001, ensemble="nvt", temperature=300.0)
     ref.state = st.set(bias=None)
@@ -440,28 +519,44 @@ def test_flexible_peptide_dihedral_bias():
     from pgm_jax.ensemble import backbone_torsions
     from pgm_jax.md.flexible import FlexibleSimulation
     from pgm_jax.protein import amber_template, load_amber
+
     prm, crd = os.path.join(DATA, "pep_wat.prmtop"), os.path.join(DATA, "pep_wat.inpcrd")
     asys = load_amber(prm, crd)
     prot = asys.molecules[0]
     top = prot.spec.top
     tpl = amber_template(prot, prm)
-    q = np.asarray(top.cmaps)[0]                                  # C-N-CA-C-N of residue 1
+    q = np.asarray(top.cmaps)[0]  # C-N-CA-C-N of residue 1
     phi, psi = cv.Dihedral(*q[:4]), cv.Dihedral(*q[1:])
     m = MetaD([phi, psi], sigma=0.35, height=1.0, pace=5, biasfactor=6.0, grid=(-np.pi, np.pi, 72))
     s = MDSettings(dipole_tol=1e-5, cutoff=0.8, skin=0.1)
-    sim = FlexibleSimulation(asys.system(), asys.templates({0: tpl}), asys.system_positions(), asys.box, s,
-                             dt=0.001, temperature=300.0, thermostat="bussi", constraints="h-bonds", bias=m, log=None)
+    sim = FlexibleSimulation(
+        asys.system(),
+        asys.templates({0: tpl}),
+        asys.system_positions(),
+        asys.box,
+        s,
+        dt=0.001,
+        temperature=300.0,
+        thermostat="bussi",
+        constraints="h-bonds",
+        bias=m,
+        log=None,
+    )
     sim._advance(20)
     o = sim.observables()
     assert o["hills"] == 4 and np.isfinite(o["econs"])
-    x = sim.positions_nm()[:prot.n][None]
+    x = sim.positions_nm()[: prot.n][None]
     ph, ps = backbone_torsions(x, top)
     v = sim.cv_values()[0]
-    assert abs(np.cos(v[0]) - np.cos(float(np.asarray(ph)[0, 0]))) < 1e-9 and abs(np.cos(v[1]) - np.cos(float(np.asarray(ps)[0, 0]))) < 1e-9
+    assert (
+        abs(np.cos(v[0]) - np.cos(float(np.asarray(ph)[0, 0]))) < 1e-9
+        and abs(np.cos(v[1]) - np.cos(float(np.asarray(ps)[0, 0]))) < 1e-9
+    )
 
 
 def test_remd_refuses_dynamic_bias():
     from pgm_jax.md.remd import ReplicaExchange
+
     pos, H, w = _cluster()
     s = MDSettings(precision="double", dipole_tol=1e-8, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, _, _ = _cluster_bias(pace=10)
@@ -478,12 +573,23 @@ def test_toy_walkers_and_analysis():
     U = double_well(barrier=15.0)
     x = cv.Component(0, 0)
     b = MetaD(x, sigma=0.1, height=1.0, pace=50, biasfactor=8.0, grid=(-2.5, 2.5, 250))
-    sh = ToyLangevin(U, [[-1.0, 0, 0]], mass=10.0, temperature=300.0, dt=0.005, gamma=1.0, bias=b, walkers=4, shared=True, seed=1)
+    sh = ToyLangevin(
+        U, [[-1.0, 0, 0]], mass=10.0, temperature=300.0, dt=0.005, gamma=1.0, bias=b, walkers=4, shared=True, seed=1
+    )
     out = sh.run(1000, sample=50)
     assert int(sh.state.bias.parts[0].n) == 4 * 20 and out["cv"].shape == (20, 4, 1)
-    ind = ToyLangevin(U, [[-1.0, 0, 0]], mass=10.0, temperature=300.0, dt=0.005, gamma=1.0,
-                      bias=MetaD(x, sigma=0.1, height=1.0, pace=50, biasfactor=8.0, grid=(-2.5, 2.5, 250)),
-                      walkers=3, shared=False, seed=2)
+    ind = ToyLangevin(
+        U,
+        [[-1.0, 0, 0]],
+        mass=10.0,
+        temperature=300.0,
+        dt=0.005,
+        gamma=1.0,
+        bias=MetaD(x, sigma=0.1, height=1.0, pace=50, biasfactor=8.0, grid=(-2.5, 2.5, 250)),
+        walkers=3,
+        shared=False,
+        seed=2,
+    )
     out = ind.run(60000, sample=50)
     assert np.all(np.asarray(ind.state.bias.parts[0].n) == 1200)
     kT = KB * 300.0
@@ -519,8 +625,13 @@ def test_toy_ring_periodic_opes():
         st = jax.tree_util.tree_map(lambda a: a[wk], sim.state.bias.parts[0])
         F = A.fes_from_bias(b, st, ax[:, None])
         assert A.align_rmsd(F, Fex, Fex < 15.0)[0] < 3.0
-        Fh = A.histogram_fes(out["cv"][:, wk, 0], A.opes_weights(out["bias"][:, wk, 0], KB * 300.0), [ax], KB * 300.0,
-                             periods=[2 * np.pi])
+        Fh = A.histogram_fes(
+            out["cv"][:, wk, 0],
+            A.opes_weights(out["bias"][:, wk, 0], KB * 300.0),
+            [ax],
+            KB * 300.0,
+            periods=[2 * np.pi],
+        )
         assert A.align_rmsd(Fh, Fex, Fex < 15.0)[0] < 4.0
 
 
@@ -529,10 +640,10 @@ def test_wham_and_histogram():
     rng = np.random.default_rng(0)
     kT = 2.5
     ax = np.linspace(-1.5, 1.5, 61)
-    F = 8.0 * (ax ** 2 - 1) ** 2
+    F = 8.0 * (ax**2 - 1) ** 2
     samples, centers = [], np.linspace(-1.4, 1.4, 15)
     fine = np.linspace(-2.0, 2.0, 4001)
-    Ff = 8.0 * (fine ** 2 - 1) ** 2
+    Ff = 8.0 * (fine**2 - 1) ** 2
     for c in centers:
         p = np.exp(-(Ff + 0.5 * 300.0 * (fine - c) ** 2) / kT)
         samples.append(rng.choice(fine, size=20000, p=p / p.sum()))
@@ -551,11 +662,22 @@ def test_walkers(shared, tmp_path):
     state's forces equal a fresh evaluation with the shared bias); files and checkpoint."""
     from pgm_jax.bias.io import read_table
     from pgm_jax.bias.walkers import Walkers
+
     pos, H, w = _cluster()
     s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, d, phi = _cluster_bias(pace=10, height=1.0)
-    sim = _water_sim("rigid", pos, H, w, s, dt=0.001, ensemble="nvt", thermostat="bussi", temperature=300.0,
-                     bias=BiasSet([m], colvar=5))
+    sim = _water_sim(
+        "rigid",
+        pos,
+        H,
+        w,
+        s,
+        dt=0.001,
+        ensemble="nvt",
+        thermostat="bussi",
+        temperature=300.0,
+        bias=BiasSet([m], colvar=5),
+    )
     W = 3
     wk = Walkers(sim, W, shared=shared, seed=4)
     prefix = str(tmp_path / "wk")
@@ -572,8 +694,18 @@ def test_walkers(shared, tmp_path):
     else:
         assert np.all(np.asarray(wk.S.bias.parts[0].n) == 10)
         # walker 0 vs the same state advanced alone
-        one = _water_sim("rigid", pos, H, w, s, dt=0.001, ensemble="nvt", thermostat="bussi", temperature=300.0,
-                         bias=BiasSet([_cluster_bias(pace=10, height=1.0)[0]], colvar=5))
+        one = _water_sim(
+            "rigid",
+            pos,
+            H,
+            w,
+            s,
+            dt=0.001,
+            ensemble="nvt",
+            thermostat="bussi",
+            temperature=300.0,
+            bias=BiasSet([_cluster_bias(pace=10, height=1.0)[0]], colvar=5),
+        )
         wk2 = Walkers(sim, W, shared=False, seed=4)
         st0 = wk2.state(0)
         one.state = st0.set(nbr=one.state.nbr)
@@ -592,8 +724,13 @@ def test_walkers(shared, tmp_path):
 def test_reserve_many_equal_shapes():
     """Independent walkers whose buffers grow differently are padded to common sizes (stackable)."""
     d = cv.Distance(0, 1)
-    bs = BiasSet([OPES(d, 0.01, 1, 20.0, temperature=300.0, capacity=4, compression=0.0),
-                  MetaD(d, 0.05, 1.0, 1, temperature=300.0, capacity=4)], colvar=1)
+    bs = BiasSet(
+        [
+            OPES(d, 0.01, 1, 20.0, temperature=300.0, capacity=4, compression=0.0),
+            MetaD(d, 0.05, 1.0, 1, temperature=300.0, capacity=4),
+        ],
+        colvar=1,
+    )
     a = bs.init(log_rows=2)
     b = bs.init(log_rows=2)
     x = np.zeros((2, 3))
@@ -605,5 +742,10 @@ def test_reserve_many_equal_shapes():
     assert all(p.shape == q.shape for p, q in zip(la, lb))
     assert out[0].parts[0].heights.shape[0] > 4 and int(out[0].parts[0].nk) == 3
     stacked = jax.tree_util.tree_map(lambda *v: jnp.stack(v), *out)
-    assert abs(float(bs.energy(jax.tree_util.tree_map(lambda v: v[0], stacked), jnp.asarray(x)))
-               - float(bs.energy(a, jnp.asarray(x)))) < 1e-12
+    assert (
+        abs(
+            float(bs.energy(jax.tree_util.tree_map(lambda v: v[0], stacked), jnp.asarray(x)))
+            - float(bs.energy(a, jnp.asarray(x)))
+        )
+        < 1e-12
+    )

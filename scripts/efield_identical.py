@@ -6,6 +6,7 @@ flexible engines, NVT Bussi, mixed precision, 300 steps) of a small pGM box, run
     python scripts/efield_identical.py --code /tmp/master --out m.npz
     python scripts/efield_identical.py --out b.npz
     python scripts/efield_identical.py --compare m.npz b.npz"""
+
 import argparse
 import os
 import sys

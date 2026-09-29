@@ -1,5 +1,6 @@
 """Protein bonded terms: backbone and residues from the bond graph, the CMAP family (Fourier
 phi/psi correction), the protein term set."""
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -21,6 +22,7 @@ def peptide_spec(smiles, name="peptide", seed=7):
     """MolSpec of a small peptide from SMILES (RDKit, ETKDG geometry, nm); no pGM parameters."""
     Chem = pytest.importorskip("rdkit.Chem")
     from rdkit.Chem import AllChem
+
     m = Chem.AddHs(Chem.MolFromSmiles(smiles))
     AllChem.EmbedMolecule(m, randomSeed=seed)
     AllChem.MMFFOptimizeMolecule(m)
@@ -38,8 +40,8 @@ def _top(spec):
 def test_backbone_and_residues_from_graph():
     s = peptide_spec(ACE_ALA_GLY_NME)
     top = _top(s)
-    assert top.cmaps.shape == (2, 5)                      # Ala and Gly have both torsions; the caps none
-    assert int(top.residue.max()) + 1 == 4                # ACE, ALA, GLY, NME
+    assert top.cmaps.shape == (2, 5)  # Ala and Gly have both torsions; the caps none
+    assert int(top.residue.max()) + 1 == 4  # ACE, ALA, GLY, NME
     el = s.elements
     for cp, n, ca, c, nn in top.cmaps:
         assert (el[cp], el[n], el[ca], el[c], el[nn]) == ("C", "N", "C", "C", "N")
@@ -71,7 +73,9 @@ def test_cmap_basis_grid_and_torsions():
     phi, psi = rng.uniform(-np.pi, np.pi, 50), rng.uniform(-np.pi, np.pi, 50)
     B = np.asarray(T.cmap_basis(jnp.asarray(phi), jnp.asarray(psi)))
     assert B.shape == (50, nb)
-    assert np.allclose(B, np.asarray(T.cmap_basis(jnp.asarray(phi + 2 * np.pi), jnp.asarray(psi - 2 * np.pi))), atol=1e-12)
+    assert np.allclose(
+        B, np.asarray(T.cmap_basis(jnp.asarray(phi + 2 * np.pi), jnp.asarray(psi - 2 * np.pi))), atol=1e-12
+    )
     # orthogonal on the full grid (distinct Fourier modes)
     g = -np.pi + 2 * np.pi * np.arange(24) / 24
     P, S = np.meshgrid(g, g, indexing="ij")
@@ -103,7 +107,7 @@ def test_protein_set_energy_gradients_and_invariance():
     E = lambda R: model.bonded_energy(0, R, P)
     _fd_check(E, x, rng)
     Q = np.linalg.qr(rng.normal(size=(3, 3)))[0]
-    Q = Q * np.sign(np.linalg.det(Q))                      # proper rotation (phi/psi change sign under reflection)
+    Q = Q * np.sign(np.linalg.det(Q))  # proper rotation (phi/psi change sign under reflection)
     assert abs(float(E(jnp.asarray(x @ Q.T))) - float(E(jnp.asarray(x)))) < 1e-9
     # zero map, zero energy
     P0 = model.init_params()
@@ -113,6 +117,7 @@ def test_protein_set_energy_gradients_and_invariance():
 
 def _nn_net(specs, **kw):
     from pgm_jax.bonded.nn import NNBConfig, NNBonded
+
     for s in specs:
         if s.top is None:
             s.top = _top(s)
@@ -125,6 +130,7 @@ def _randomise(P, rng, scale=0.1):
 
 def test_nnb_protein_basis_context_reuse_and_persistence(tmp_path):
     from pgm_jax.bonded.nn import NNBonded
+
     train = [peptide_spec(ACE_ALA_NME, "ala"), peptide_spec(ACE_ALA_GLY_NME, "alagly")]
     net = _nn_net(train)
     assert net.vocab.skeletons["cmap"] == ["X"] and net.vocab.slots["cmap"] == 1
@@ -137,7 +143,8 @@ def test_nnb_protein_basis_context_reuse_and_persistence(tmp_path):
     C = net.coefficients(P, net.prepare(new))
     assert C["cmap"]["cm"].shape == (2, (2 * 3 + 1) ** 2 - 1)
     # the residue context reaches the map: changing only the residue MLP changes the cmap coefficients
-    P2 = dict(P); P2["res"] = _randomise(P["res"], rng, 0.5)
+    P2 = dict(P)
+    P2["res"] = _randomise(P["res"], rng, 0.5)
     C2 = net.coefficients(P2, net.prepare(new))
     assert float(jnp.max(jnp.abs(C2["cmap"]["cm"] - C["cmap"]["cm"]))) > 1e-6
     assert float(jnp.max(jnp.abs(C2["bond_harm"]["Kb"] - C["bond_harm"]["Kb"]))) == 0.0
@@ -149,12 +156,32 @@ def test_nnb_protein_basis_context_reuse_and_persistence(tmp_path):
     net.save(str(tmp_path / "nnb.pkl"), P)
     net2, P3 = NNBonded.load(str(tmp_path / "nnb.pkl"))
     C3 = net2.coefficients(P3, net2.prepare(new))
-    assert all(np.allclose(np.asarray(a), np.asarray(b)) for a, b in
-               zip(jax.tree_util.tree_leaves(C), jax.tree_util.tree_leaves(C3)))
+    assert all(
+        np.allclose(np.asarray(a), np.asarray(b))
+        for a, b in zip(jax.tree_util.tree_leaves(C), jax.tree_util.tree_leaves(C3))
+    )
     # families the training set never saw are refused, not silently mispredicted
-    small = _nn_net([MolSpec("meoh", ["C", "O", "H", "H", "H", "H"], [(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)],
-                             [1] * 5, 0, np.array([[0, 0, 0], [0.143, 0, 0], [-0.036, 0.1, 0], [-0.036, -0.05, 0.087],
-                                                   [-0.036, -0.05, -0.087], [0.175, 0.09, 0]]))])
+    small = _nn_net(
+        [
+            MolSpec(
+                "meoh",
+                ["C", "O", "H", "H", "H", "H"],
+                [(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)],
+                [1] * 5,
+                0,
+                np.array(
+                    [
+                        [0, 0, 0],
+                        [0.143, 0, 0],
+                        [-0.036, 0.1, 0],
+                        [-0.036, -0.05, 0.087],
+                        [-0.036, -0.05, -0.087],
+                        [0.175, 0.09, 0],
+                    ]
+                ),
+            )
+        ]
+    )
     small.init_params()
     with pytest.raises(ValueError):
         small.prepare(new)
@@ -175,6 +202,7 @@ def test_dihedral_sign_is_iupac():
     """The sign of the torsions (it matters for the CMAP sine terms) is RDKit's / Amber's."""
     Chem = pytest.importorskip("rdkit.Chem")
     from rdkit.Chem import AllChem, rdMolTransforms
+
     m = Chem.AddHs(Chem.MolFromSmiles(ACE_ALA_NME))
     AllChem.EmbedMolecule(m, randomSeed=3)
     X = m.GetConformer().GetPositions()
@@ -187,16 +215,29 @@ def test_dihedral_sign_is_iupac():
 def _minimal_prmtop(path, elements):
     """A prmtop with only what the bonded export / import reads (not a runnable topology)."""
     from pgm_jax.prmtop import POINTER_NAMES, Prmtop, Section
+
     Z = {"H": 1, "C": 6, "N": 7, "O": 8, "S": 16}
-    secs = [Section("POINTERS", "10I8", [len(elements)] + [0] * (len(POINTER_NAMES) - 1)),
-            Section("ATOMIC_NUMBER", "10I8", [Z[e] for e in elements])]
-    for name, fmt in (("BOND_FORCE_CONSTANT", "5E16.8"), ("BOND_EQUIL_VALUE", "5E16.8"),
-                      ("ANGLE_FORCE_CONSTANT", "5E16.8"), ("ANGLE_EQUIL_VALUE", "5E16.8"),
-                      ("DIHEDRAL_FORCE_CONSTANT", "5E16.8"), ("DIHEDRAL_PERIODICITY", "5E16.8"),
-                      ("DIHEDRAL_PHASE", "5E16.8"), ("SCEE_SCALE_FACTOR", "5E16.8"), ("SCNB_SCALE_FACTOR", "5E16.8"),
-                      ("BONDS_INC_HYDROGEN", "10I8"), ("BONDS_WITHOUT_HYDROGEN", "10I8"),
-                      ("ANGLES_INC_HYDROGEN", "10I8"), ("ANGLES_WITHOUT_HYDROGEN", "10I8"),
-                      ("DIHEDRALS_INC_HYDROGEN", "10I8"), ("DIHEDRALS_WITHOUT_HYDROGEN", "10I8")):
+    secs = [
+        Section("POINTERS", "10I8", [len(elements)] + [0] * (len(POINTER_NAMES) - 1)),
+        Section("ATOMIC_NUMBER", "10I8", [Z[e] for e in elements]),
+    ]
+    for name, fmt in (
+        ("BOND_FORCE_CONSTANT", "5E16.8"),
+        ("BOND_EQUIL_VALUE", "5E16.8"),
+        ("ANGLE_FORCE_CONSTANT", "5E16.8"),
+        ("ANGLE_EQUIL_VALUE", "5E16.8"),
+        ("DIHEDRAL_FORCE_CONSTANT", "5E16.8"),
+        ("DIHEDRAL_PERIODICITY", "5E16.8"),
+        ("DIHEDRAL_PHASE", "5E16.8"),
+        ("SCEE_SCALE_FACTOR", "5E16.8"),
+        ("SCNB_SCALE_FACTOR", "5E16.8"),
+        ("BONDS_INC_HYDROGEN", "10I8"),
+        ("BONDS_WITHOUT_HYDROGEN", "10I8"),
+        ("ANGLES_INC_HYDROGEN", "10I8"),
+        ("ANGLES_WITHOUT_HYDROGEN", "10I8"),
+        ("DIHEDRALS_INC_HYDROGEN", "10I8"),
+        ("DIHEDRALS_WITHOUT_HYDROGEN", "10I8"),
+    ):
         secs.append(Section(name, fmt, []))
     Prmtop("%VERSION  VERSION_STAMP = V0001.000", secs).write(path)
 
@@ -205,6 +246,7 @@ def test_prmtop_export_import_round_trip(tmp_path):
     from pgm_jax.bonded.amber import export_bonded, init_from_prmtop, read_bonded
     from pgm_jax.bonded.model import BondedTerms
     from pgm_jax.prmtop import Prmtop
+
     s = peptide_spec(ACE_ALA_GLY_NME)
     terms = BondedTerms([s], BondedSettings(families=T.PROTEIN))
     rng = np.random.default_rng(4)
@@ -223,16 +265,22 @@ def test_prmtop_export_import_round_trip(tmp_path):
     amb = read_bonded(out)
     assert ptr["NBONH"] + ptr["MBONA"] == len(s.bonds) == len(amb["bonds"])
     # one dihedral per 1-4 pair carries the 1-4 interactions
-    raw = np.concatenate([Prmtop.read(out).get("DIHEDRALS_INC_HYDROGEN"),
-                          Prmtop.read(out).get("DIHEDRALS_WITHOUT_HYDROGEN")]).reshape(-1, 5)
+    raw = np.concatenate(
+        [Prmtop.read(out).get("DIHEDRALS_INC_HYDROGEN"), Prmtop.read(out).get("DIHEDRALS_WITHOUT_HYDROGEN")]
+    ).reshape(-1, 5)
     with14 = {tuple(sorted((a // 3, d // 3))) for a, b, c, d, t in raw if c > 0 and d > 0}
     assert with14 == {tuple(p) for p in terms.mols[0].top.pairs14.tolist()}
     # importing the exported file gives the parameters back
     fresh = BondedTerms([s], BondedSettings(families=T.PROTEIN))
     Q = init_from_prmtop(fresh, fresh.init_params(), {0: out})
-    for f, name in (("bond_harm", "Kb"), ("angle_harm", "Ka"), ("torsion_amber", "K"), ("improper_amber", "K"),
-                    ("cmap", "cm")):
-        tol = 1e-4 if f == "cmap" else 1e-6                   # CMAP grids are written with 5 decimals (kcal/mol)
+    for f, name in (
+        ("bond_harm", "Kb"),
+        ("angle_harm", "Ka"),
+        ("torsion_amber", "K"),
+        ("improper_amber", "K"),
+        ("cmap", "cm"),
+    ):
+        tol = 1e-4 if f == "cmap" else 1e-6  # CMAP grids are written with 5 decimals (kcal/mol)
         assert np.allclose(np.asarray(Q[f][name]), P[f][name], rtol=tol, atol=tol), f
     for name in ("b0", "th0"):
         assert np.allclose(np.asarray(Q["ref"][name]), P["ref"][name], atol=1e-7), name

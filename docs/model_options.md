@@ -40,12 +40,16 @@ every atom pair interact, with no 1-2/1-3 masking.
 
 ```python
 from pgm_jax.channels import ElecChannel
-e = ElecChannel.level("qp").energy(pos, sys)[0]           # {"perm": ...}; "ind" only with induction
+
+e = ElecChannel.level("qp").energy(pos, sys)[0]  # {"perm": ...}; "ind" only with induction
 from pgm_jax.periodic import PeriodicModel
+
 pm = PeriodicModel(sys, H, pos, elec="q", vdw="gvdw", gvdw_rep="slater")
 from pgm_jax.md.forcefield import MDSettings
-st = MDSettings(elec="qp", vdw="lj")                      # no induction solve in MD
+
+st = MDSettings(elec="qp", vdw="lj")  # no induction solve in MD
 from pgm_jax.bonded.model import BondedSettings
+
 bs = BondedSettings(elec="qi", vdw="gvdw")
 ```
 
@@ -101,9 +105,10 @@ like the CBV dipoles. Keys: `mol:Q:C>O` (axial) and `mol:Q:C>H|O` (pair), stored
 
 ```python
 from pgm_jax.multipole import with_quadrupoles
-mq = with_quadrupoles(mol)                  # adds the (i, j, k, t) terms, t = 0
-ch = ElecChannel(quadrupoles=True)          # or ElecChannel.level("qpi", quadrupoles=True)
-bs = BondedSettings(quadrupoles=True)       # fitting; BondedModel.esp() includes (1/3)(xΘx)B2
+
+mq = with_quadrupoles(mol)  # adds the (i, j, k, t) terms, t = 0
+ch = ElecChannel(quadrupoles=True)  # or ElecChannel.level("qpi", quadrupoles=True)
+bs = BondedSettings(quadrupoles=True)  # fitting; BondedModel.esp() includes (1/3)(xΘx)B2
 ```
 
 **Status.** The quadrupoles are in the gas phase and bonded fitting, and they are tested. With

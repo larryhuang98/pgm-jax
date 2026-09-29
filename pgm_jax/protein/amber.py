@@ -19,6 +19,7 @@ electrostatics come from a ResidueLibrary, from the prmtop itself when it is a p
 (POL_GAUSS_* sections; electrostatics="prmtop"), or from `ResidueLibrary.placeholder(prmtop)`.
 Water can be replaced by a given pGM water model (`water=`: Molecule, atoms in the prmtop's order).
 Units nm, e."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -33,19 +34,37 @@ from ..system import Molecule, System
 from .library import ResidueLibrary
 from .residues import IONS, WATER, bond_order, residue_key
 
-_EL = {1: "H", 3: "Li", 6: "C", 7: "N", 8: "O", 9: "F", 11: "Na", 12: "Mg", 15: "P", 16: "S", 17: "Cl", 19: "K",
-       20: "Ca", 30: "Zn", 35: "Br", 37: "Rb", 53: "I", 55: "Cs"}
+_EL = {
+    1: "H",
+    3: "Li",
+    6: "C",
+    7: "N",
+    8: "O",
+    9: "F",
+    11: "Na",
+    12: "Mg",
+    15: "P",
+    16: "S",
+    17: "Cl",
+    19: "K",
+    20: "Ca",
+    30: "Zn",
+    35: "Br",
+    37: "Rb",
+    53: "I",
+    55: "Cs",
+}
 
 
 @dataclass
 class LoadedMolecule:
-    kind: str                       # "protein" | "water" | "ion" | "other"
-    atoms: np.ndarray               # indices in the prmtop
-    molecule: Molecule              # pGM electrostatics + van der Waals, local atom order
-    spec: MolSpec | None            # input of the bonded models (flexible molecules)
+    kind: str  # "protein" | "water" | "ion" | "other"
+    atoms: np.ndarray  # indices in the prmtop
+    molecule: Molecule  # pGM electrostatics + van der Waals, local atom order
+    spec: MolSpec | None  # input of the bonded models (flexible molecules)
     atom_names: list
-    residue_names: list             # per atom
-    residue_index: np.ndarray       # per atom (prmtop residue numbering)
+    residue_names: list  # per atom
+    residue_index: np.ndarray  # per atom (prmtop residue numbering)
 
     @property
     def n(self) -> int:
@@ -55,10 +74,10 @@ class LoadedMolecule:
 @dataclass
 class AmberSystem:
     molecules: list
-    positions: np.ndarray           # (N, 3) nm, the prmtop's atom order
-    box: np.ndarray | None          # (3, 3) nm
+    positions: np.ndarray  # (N, 3) nm, the prmtop's atom order
+    box: np.ndarray | None  # (3, 3) nm
     prmtop: str
-    order: np.ndarray = field(default=None)   # prmtop atom index of every atom of system() (molecules concatenated)
+    order: np.ndarray = field(default=None)  # prmtop atom index of every atom of system() (molecules concatenated)
 
     def system(self) -> System:
         return System([m.molecule for m in self.molecules])
@@ -109,8 +128,16 @@ class AmberSystem:
             off += m.n
         return np.concatenate(out) if out else np.zeros(0, int)
 
-    def position_restraints(self, k: float, selection="heavy", positions=None, box=None, r0: float = 0.0,
-                            scaling: str = "com", kinds=("protein",)):
+    def position_restraints(
+        self,
+        k: float,
+        selection="heavy",
+        positions=None,
+        box=None,
+        r0: float = 0.0,
+        scaling: str = "com",
+        kinds=("protein",),
+    ):
         """Positional restraints (md/restraints.py) holding the selected atoms (see `select`) of each
         molecule of the given kinds at `positions` (system order, nm; default the loaded
         coordinates, e.g. sim.positions_nm() after minimisation) with box `box` (default the
@@ -118,6 +145,7 @@ class AmberSystem:
         (default) its reference centroid is mass-weighted, so under NPT the reference moves with
         the molecule.  k in kJ/mol/nm^2 with Amber's E = k d^2 (1 kcal/mol/A^2 = 418.4)."""
         from ..md.restraints import PositionRestraint, Restraints
+
         pos = self.system_positions() if positions is None else np.asarray(positions, float)
         H = self.box if box is None else np.asarray(box, float)
         terms, off = [], 0
@@ -126,8 +154,17 @@ class AmberSystem:
                 loc = self._local_selection(m, selection)
                 if len(loc):
                     idx = off + loc
-                    terms.append(PositionRestraint(idx, pos[idx], k, r0=r0, scaling=scaling, box=H,
-                                                   weights=np.asarray(m.molecule.masses, float)[loc]))
+                    terms.append(
+                        PositionRestraint(
+                            idx,
+                            pos[idx],
+                            k,
+                            r0=r0,
+                            scaling=scaling,
+                            box=H,
+                            weights=np.asarray(m.molecule.masses, float)[loc],
+                        )
+                    )
             off += m.n
         if not terms:
             raise ValueError(f"no atoms selected ({selection!r} in {kinds})")
@@ -137,6 +174,7 @@ class AmberSystem:
         """One MD template per molecule: RigidTemplate for water and ions (geometry of the first
         instance), `flexible[k]` for the others (FlexibleTemplate)."""
         from ..md.flexible import RigidTemplate
+
         flexible = flexible or {}
         out, rigid = [], {}
         for k, m in enumerate(self.molecules):
@@ -155,7 +193,8 @@ class AmberSystem:
 def _components(n, bonds):
     nbr = [[] for _ in range(n)]
     for i, j in bonds:
-        nbr[i].append(j); nbr[j].append(i)
+        nbr[i].append(j)
+        nbr[j].append(i)
     comp = np.full(n, -1)
     c = 0
     for s in range(n):
@@ -181,7 +220,7 @@ def load_amber(prmtop: str, inpcrd: str, electrostatics="placeholder", water: Mo
     names = pt.get("ATOM_NAME")
     n = len(names)
     Z = pt.get("ATOMIC_NUMBER")
-    eps = prmtop_extra_points(s)                              # extra points -> virtual sites
+    eps = prmtop_extra_points(s)  # extra points -> virtual sites
     el = ["EP" if a in eps else _EL[int(z)] for a, z in enumerate(Z)]
     types = pt.get("AMBER_ATOM_TYPE")
     mass = pt.get("MASS")
@@ -189,7 +228,7 @@ def load_amber(prmtop: str, inpcrd: str, electrostatics="placeholder", water: Mo
     ptr = list(pt.get("RESIDUE_POINTER") - 1) + [n]
     resi = np.zeros(n, int)
     for r in range(len(labels)):
-        resi[ptr[r]:ptr[r + 1]] = r
+        resi[ptr[r] : ptr[r + 1]] = r
     resn = [labels[r] for r in resi]
     B = np.concatenate([pt.get("BONDS_INC_HYDROGEN"), pt.get("BONDS_WITHOUT_HYDROGEN")]).reshape(-1, 3)[:, :2] // 3
     bonds = [tuple(sorted((int(a), int(b)))) for a, b in B]
@@ -213,13 +252,14 @@ def load_amber(prmtop: str, inpcrd: str, electrostatics="placeholder", water: Mo
     elif isinstance(electrostatics, ResidueLibrary):
         lib = electrostatics
         q, alp, rad = np.zeros(n), np.zeros(n), np.zeros(n)
-        rkey = [residue_key(labels[r], names[ptr[r]:ptr[r + 1]]) for r in range(len(labels))]
+        rkey = [residue_key(labels[r], names[ptr[r] : ptr[r + 1]]) for r in range(len(labels))]
         for a in range(n):
             d = lib.atom(rkey[resi[a]], names[a])
             q[a], alp[a], rad[a] = d["q"], d["alpha_nm3"], d["radius_nm"]
         nbr = [[] for _ in range(n)]
         for i, j in bonds:
-            nbr[i].append(j); nbr[j].append(i)
+            nbr[i].append(j)
+            nbr[j].append(i)
         for r in range(len(labels)):
             atoms_r = {names[a]: a for a in range(ptr[r], ptr[r + 1])}
             for an, pn, c in lib.cov(rkey[r]):
@@ -229,9 +269,11 @@ def load_amber(prmtop: str, inpcrd: str, electrostatics="placeholder", water: Mo
                 if pn[0] in "+-":
                     near = {v for u in range(ptr[r], ptr[r + 1]) for v in nbr[u] if resi[v] != r}
                     near |= {w for v in list(near) for w in nbr[v]}
-                    cand = [v for v in near if names[v] == pn[1:] and ((resi[v] < r) if pn[0] == "-" else (resi[v] > r))]
+                    cand = [
+                        v for v in near if names[v] == pn[1:] and ((resi[v] < r) if pn[0] == "-" else (resi[v] > r))
+                    ]
                     if not cand:
-                        continue                                   # chain end: the partner does not exist
+                        continue  # chain end: the partner does not exist
                     j = cand[0]
                 else:
                     j = atoms_r[pn]
@@ -254,32 +296,65 @@ def load_amber(prmtop: str, inpcrd: str, electrostatics="placeholder", water: Mo
         else:
             kind = "other"
         if n_ep and kind != "water":
-            raise NotImplementedError(f"molecule {c} ({rn[0]}, {len(atoms)} atoms) has Amber extra points: supported in "
-                                      "water only (the bonded models have no virtual sites)")
-        vs = [type(v)(loc[v.site], v.kind, tuple(loc[x] for x in v.atoms), v.params)       # local indices
-              for v in (eps[int(a)] for a in atoms if int(a) in eps)]
+            raise NotImplementedError(
+                f"molecule {c} ({rn[0]}, {len(atoms)} atoms) has Amber extra points: supported in "
+                "water only (the bonded models have no virtual sites)"
+            )
+        vs = [
+            type(v)(loc[v.site], v.kind, tuple(loc[x] for x in v.atoms), v.params)  # local indices
+            for v in (eps[int(a)] for a in atoms if int(a) in eps)
+        ]
         ri = resi[atoms]
         key = (kind, tuple(rn), tuple(names[a] for a in atoms), tuple(np.round(q[atoms], 8)))
         if kind == "water" and water is not None:
             mol = water
         elif kind in ("water", "ion") and key in shared:
-            mol = shared[key]                                  # identical solvent molecules share one Molecule
+            mol = shared[key]  # identical solvent molecules share one Molecule
         else:
             cov = [(loc[i], loc[j], cc) for i, j, cc in cov_global if i in loc]
-            mol = Molecule(name=rn[0] if kind in ("water", "ion") else f"mol{c}", elements=[el[a] for a in atoms],
-                           types=[types[a] for a in atoms], q=q[atoms], radius=rad[atoms], alpha=alp[atoms], cov=cov,
-                           lj_rmin_half=rh[atoms], lj_sqrt_eps=se[atoms], bonds=lbonds, masses=mass[atoms],
-                           vsites=vs)
+            mol = Molecule(
+                name=rn[0] if kind in ("water", "ion") else f"mol{c}",
+                elements=[el[a] for a in atoms],
+                types=[types[a] for a in atoms],
+                q=q[atoms],
+                radius=rad[atoms],
+                alpha=alp[atoms],
+                cov=cov,
+                lj_rmin_half=rh[atoms],
+                lj_sqrt_eps=se[atoms],
+                bonds=lbonds,
+                masses=mass[atoms],
+                vsites=vs,
+            )
             if kind in ("water", "ion"):
                 shared[key] = mol
         spec = None
         if kind == "other":
             oxt = {r for r in set(ri) if any(names[a] == "OXT" for a in atoms if resi[a] == r)}
-            orders = [bond_order(resn[atoms[i]], names[atoms[i]], resn[atoms[j]], names[atoms[j]],
-                                 ri[i] == ri[j], terminal_carboxylate=ri[i] in oxt) for i, j in lbonds]
-            spec = MolSpec(mol.name, [el[a] for a in atoms], lbonds, orders, int(round(float(np.sum(mol.q)))),
-                           pos[atoms], mol, atom_names=[names[a] for a in atoms], residue_names=rn)
+            orders = [
+                bond_order(
+                    resn[atoms[i]],
+                    names[atoms[i]],
+                    resn[atoms[j]],
+                    names[atoms[j]],
+                    ri[i] == ri[j],
+                    terminal_carboxylate=ri[i] in oxt,
+                )
+                for i, j in lbonds
+            ]
+            spec = MolSpec(
+                mol.name,
+                [el[a] for a in atoms],
+                lbonds,
+                orders,
+                int(round(float(np.sum(mol.q)))),
+                pos[atoms],
+                mol,
+                atom_names=[names[a] for a in atoms],
+                residue_names=rn,
+            )
             from ..bonded.topology import build_topology
+
             spec.top = build_topology(spec.elements, spec.bonds, (spec.bonds, spec.bond_orders), spec.ref_xyz * 10.0)
             if len(spec.top.cmaps) or len(spec.top.backbone):
                 kind = "protein"
@@ -296,11 +371,14 @@ def amber_template(loaded: LoadedMolecule, prmtop: str, families=None, lj14_scal
     from ..bonded.amber import init_from_prmtop, with_amber_impropers
     from ..bonded.model import BondedSettings, BondedTerms
     from ..md.flexible import FlexibleTemplate
+
     spec = loaded.spec
     offset = int(loaded.atoms[0])
     if not np.array_equal(loaded.atoms, np.arange(offset, offset + loaded.n)):
         raise ValueError("the molecule's atoms are not contiguous in the prmtop")
     with_amber_impropers(spec, prmtop, offset=offset)
-    terms = BondedTerms([spec], BondedSettings(families=tuple(families or T.PROTEIN), lj14_scale=lj14_scale, **settings))
+    terms = BondedTerms(
+        [spec], BondedSettings(families=tuple(families or T.PROTEIN), lj14_scale=lj14_scale, **settings)
+    )
     P = init_from_prmtop(terms, terms.init_params(), {0: (prmtop, offset)})
     return FlexibleTemplate.from_fit(terms, P)

@@ -13,6 +13,7 @@ and polarizabilities can be differentiated with respect to both, to any order.
 Other channels (pair terms, dispersion, breathing widths, charge transfer) follow the same
 interface: an object with `name` and `energy(pos, sys, params) -> (dict, aux)`.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from .system import System
 from .units import KE
 
 # ================================================================== electrostatics ==
+
 
 def perm_dipoles(pos, sys: System, cov_c):
     """Covalent dipoles -> atomic permanent dipoles (n, 3) for one geometry (n, 3).
@@ -55,6 +57,7 @@ def _field_at_i(ri, rj, qj, pj, b, phi):
 def quadrupole_field(x, a, Tj):
     """Field (P, 3) at i of the quadrupoles Tj (P, 3, 3) of j, x = r_i - r_j (multipole.py)."""
     from .md.kernels import erf_kernels
+
     r = jnp.linalg.norm(x, axis=-1)
     _, _, B2, B3 = erf_kernels(a, r, 4)
     Tjx = jnp.einsum("pab,pb->pa", Tj, x)
@@ -70,7 +73,7 @@ def _dipole_tensor(ri, rj, b, phi):
 def _dipole_matrix(pos, sys: System, phi, b_pair):
     """(n, n, 3, 3) dipole-dipole tensors, zero diagonal blocks."""
     ii, jj = sys.pair_i, sys.pair_j
-    T_pair = jax.vmap(lambda a, c, bb: _dipole_tensor(a, c, bb, phi))(pos[ii], pos[jj], b_pair)   # (P,3,3), i<j
+    T_pair = jax.vmap(lambda a, c, bb: _dipole_tensor(a, c, bb, phi))(pos[ii], pos[jj], b_pair)  # (P,3,3), i<j
     return jnp.zeros((sys.n, sys.n, 3, 3)).at[ii, jj].set(T_pair).at[jj, ii].set(jnp.swapaxes(T_pair, 1, 2))
 
 
@@ -100,6 +103,7 @@ class ElecChannel:
     sum mu(E) - sum mu(0) = alpha_mol E and the total energy is E(0) - E . M(0) - E . alpha_mol E / 2
     exactly.  "ind" is then the rest of the induction energy, (mu . E - mu . F_perm) / 2 (kJ/mol), so
     that perm + ind is the model's energy at the field-polarized dipoles (as "elec" of the MD engine)."""
+
     density: str = "gaussian"
     polarizable: bool = True
     perm_dipoles: bool = True
@@ -110,6 +114,7 @@ class ElecChannel:
     @classmethod
     def level(cls, elec: str = "qpi", quadrupoles: bool = False, **kw):
         from .options import elec_flags
+
         pd, ind = elec_flags(elec)
         return cls(polarizable=ind, perm_dipoles=pd, quadrupoles=quadrupoles, **kw)
 
@@ -122,12 +127,16 @@ class ElecChannel:
         p = perm_dipoles(pos, sys, P["cov"]) if self.perm_dipoles else jnp.zeros((sys.n, 3))
         ii, jj = sys.pair_i, sys.pair_j
         b_pair = dens["pair_exponent"](R[ii], R[jj])
-        e_perm = jnp.sum(jax.vmap(lambda a, c, qa, pa, qc, pc, bb: _pair_perm(a, c, qa, pa, qc, pc, bb, phi))(
-            pos[ii], pos[jj], q[ii], p[ii], q[jj], p[jj], b_pair))
+        e_perm = jnp.sum(
+            jax.vmap(lambda a, c, qa, pa, qc, pc, bb: _pair_perm(a, c, qa, pa, qc, pc, bb, phi))(
+                pos[ii], pos[jj], q[ii], p[ii], q[jj], p[jj], b_pair
+            )
+        )
         aux = {"p": p}
         if self.quadrupoles:
             from .md.kernels import erf_kernels
             from .multipole import quadrupole_pair_terms, quadrupoles
+
             Th = quadrupoles(pos, sys, P["quad"])
             x = pos[ii] - pos[jj]
             B = erf_kernels(b_pair, jnp.linalg.norm(x, axis=-1), 5)
@@ -137,6 +146,7 @@ class ElecChannel:
         Ext = None
         if self.efield is not None:
             from .md.efield import VNM_TO_INTERNAL
+
             Ext = jnp.asarray(self.efield, jnp.float64).reshape(3) * VNM_TO_INTERNAL
             out["field"] = -KE * jnp.dot(Ext, jnp.sum(q[:, None] * pos, axis=0) + jnp.sum(p, axis=0))
         if self.polarizable:
@@ -144,7 +154,9 @@ class ElecChannel:
             # ordered pairs i != j only (no self terms: they would put NaNs into the gradients)
             oi, oj = np.nonzero(~np.eye(n, dtype=bool))
             b_ord = dens["pair_exponent"](R[oi], R[oj])
-            F_ord = jax.vmap(lambda a, c, qc, pc, bb: _field_at_i(a, c, qc, pc, bb, phi))(pos[oi], pos[oj], q[oj], p[oj], b_ord)
+            F_ord = jax.vmap(lambda a, c, qc, pc, bb: _field_at_i(a, c, qc, pc, bb, phi))(
+                pos[oi], pos[oj], q[oj], p[oj], b_ord
+            )
             if self.quadrupoles:
                 F_ord = F_ord + quadrupole_field(pos[oi] - pos[oj], b_ord, Th[oj])
             F = jnp.zeros((n, 3)).at[oi].add(F_ord)
@@ -189,7 +201,8 @@ def elec_decomposition(pos, sys: System, params=None, density: str = "gaussian",
         b_pair = b_pair * jnp.where(jnp.asarray(sys.pair_inter), 1e4, 1.0)
         b_ord = b_ord * jnp.where(jnp.asarray(sys.mol[oi] != sys.mol[oj]), 1e4, 1.0)
     e_pair = jax.vmap(lambda a, c, qa, pa, qc, pc, bb: _pair_perm(a, c, qa, pa, qc, pc, bb, phi))(
-        pos[ii], pos[jj], q[ii], p[ii], q[jj], p[jj], b_pair)
+        pos[ii], pos[jj], q[ii], p[ii], q[jj], p[jj], b_pair
+    )
     intra_pair = jnp.asarray(~sys.pair_inter, float)
     F_ord = jax.vmap(lambda a, c, qc, pc, bb: _field_at_i(a, c, qc, pc, bb, phi))(pos[oi], pos[oj], q[oj], p[oj], b_ord)
     same = jnp.asarray(sys.mol[oi] == sys.mol[oj], float)[:, None]
@@ -205,6 +218,8 @@ def elec_decomposition(pos, sys: System, params=None, density: str = "gaussian",
     e_mono_ind = -0.5 * jnp.sum(mu0 * F0)
     e_frozen_ind = G(mu0)
     e_relaxed_ind = -0.5 * jnp.sum(mu * F)
-    return {"elst": KE * (e_perm_int + e_frozen_ind - e_mono_ind),
-            "ind": KE * (e_relaxed_ind - e_frozen_ind),
-            "elec": KE * (e_perm_int + e_relaxed_ind - e_mono_ind)}
+    return {
+        "elst": KE * (e_perm_int + e_frozen_ind - e_mono_ind),
+        "ind": KE * (e_relaxed_ind - e_frozen_ind),
+        "elec": KE * (e_perm_int + e_relaxed_ind - e_mono_ind),
+    }

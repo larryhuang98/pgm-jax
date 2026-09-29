@@ -50,6 +50,7 @@ Parameters.  ChargeFlux.params = {"jb", "jc"[, "jc2"]}, one value per parameter 
 the fits, one block per template); PGMForceField takes them from params["flux"] when the parameter
 pytree has that entry (for gradients, e.g. {**sys.params0, "flux": ff.flux.params}) and from
 ChargeFlux.params otherwise.  write_pgm_prmtop refuses models with flux (pmemd-pgm has none)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -81,6 +82,7 @@ class ChargeFlux:
     params    {"jb": (nk,) e/nm, "jc": (nk,) e[, "jc2": (nk,) e/nm]}
     n_atoms   atoms of the System
     names     parameter key names (nk,), for inspection"""
+
     bonds: np.ndarray
     b0: np.ndarray
     key: np.ndarray
@@ -103,9 +105,13 @@ class ChargeFlux:
             raise ValueError(f"flux parameters are jb, jc and optionally jc2; got {sorted(self.params)}")
         nk = len(self.params["jb"])
         if any(v.shape != (nk,) for v in self.params.values()):
-            raise ValueError("flux parameters must be vectors of one length (one value per key): "
-                             + ", ".join(f"{k} {v.shape}" for k, v in self.params.items()))
-        if nb and (self.bonds.min() < 0 or self.bonds.max() >= self.n_atoms or np.any(self.bonds[:, 0] == self.bonds[:, 1])):
+            raise ValueError(
+                "flux parameters must be vectors of one length (one value per key): "
+                + ", ".join(f"{k} {v.shape}" for k, v in self.params.items())
+            )
+        if nb and (
+            self.bonds.min() < 0 or self.bonds.max() >= self.n_atoms or np.any(self.bonds[:, 0] == self.bonds[:, 1])
+        ):
             raise ValueError("flux bonds must join two different atoms of the system")
         if nb and (self.key.min() < 0 or self.key.max() >= nk):
             raise ValueError(f"flux bond keys must index the {nk} parameter values")
@@ -122,8 +128,8 @@ class ChargeFlux:
         n = self.n_atoms
         deg = np.bincount(self.bonds.reshape(-1), minlength=n) if nb else np.zeros(n, int)
         D = max(int(deg.max()) if n else 0, 1)
-        self._abond = np.full((n, D), nb, np.int32)          # flux bonds of each atom (nb: padding)
-        self._asgn = np.zeros((n, D))                          # -1 first atom, +1 second atom, 0 padding
+        self._abond = np.full((n, D), nb, np.int32)  # flux bonds of each atom (nb: padding)
+        self._asgn = np.zeros((n, D))  # -1 first atom, +1 second atom, 0 padding
         fill = np.zeros(n, int)
         for b, (i, j) in enumerate(self.bonds):
             for a, sg in ((i, -1.0), (j, 1.0)):
@@ -131,7 +137,7 @@ class ChargeFlux:
                 fill[a] += 1
         has = self.cov_bond >= 0
         self._n_cov_flux = int(has.sum())
-        self._cb = np.where(has, self.cov_bond, nb).astype(np.int32)          # bond of each dipole (nb: none)
+        self._cb = np.where(has, self.cov_bond, nb).astype(np.int32)  # bond of each dipole (nb: none)
         self._ck = np.where(has, self.key[np.maximum(self.cov_bond, 0)] if nb else 0, 0).astype(np.int32)
         self._ch = has.astype(np.float64)
 
@@ -146,9 +152,11 @@ class ChargeFlux:
         if set(th) != set(self.params):
             raise ValueError(f"flux parameters {sorted(th)}, the model has {sorted(self.params)}")
         bad = [k for k in th if jnp.shape(th[k]) != self.params[k].shape]
-        if bad:                                         # (a gather would clamp indices silently)
-            raise ValueError(f"flux parameters {bad}: shapes {[jnp.shape(th[k]) for k in bad]}, the model has "
-                             f"{[self.params[k].shape for k in bad]}")
+        if bad:  # (a gather would clamp indices silently)
+            raise ValueError(
+                f"flux parameters {bad}: shapes {[jnp.shape(th[k]) for k in bad]}, the model has "
+                f"{[self.params[k].shape for k in bad]}"
+            )
         return {k: jnp.asarray(v, jnp.float64) for k, v in th.items()}
 
     def deviations(self, pos, H):
@@ -193,24 +201,37 @@ class ChargeFlux:
             loc = {tuple(sorted(map(int, b))): n for n, b in enumerate(tb["bonds"])}
             a0 = int(sys.offsets[k])
             bonds.append(tb["bonds"] + a0)
-            b0.append(tb["b0"]); key.append(tb["key"] + off); sign.append(tb["sign"])
-            cov_bond += [nbond + loc[tuple(sorted((i, j)))] if tuple(sorted((i, j))) in loc else -1
-                         for i, j, _ in mol.cov]
+            b0.append(tb["b0"])
+            key.append(tb["key"] + off)
+            sign.append(tb["sign"])
+            cov_bond += [
+                nbond + loc[tuple(sorted((i, j)))] if tuple(sorted((i, j))) in loc else -1 for i, j, _ in mol.cov
+            ]
             nbond += len(tb["bonds"])
         if not blocks:
             return None
         quad = any("jc2" in b[0] for b in blocks.values())
         params = {}
-        for p in (("jb", "jc", "jc2") if quad else ("jb", "jc")):
+        for p in ("jb", "jc", "jc2") if quad else ("jb", "jc"):
             params[p] = np.concatenate([b[0].get(p, np.zeros_like(b[0]["jb"])) for b in blocks.values()])
         names = sum((tuple(b[0]["names"]) for b in blocks.values()), ())
-        return cls(np.concatenate(bonds), np.concatenate(b0), np.concatenate(key), np.concatenate(sign),
-                   np.asarray(cov_bond, int), params, sys.n, names)
+        return cls(
+            np.concatenate(bonds),
+            np.concatenate(b0),
+            np.concatenate(key),
+            np.concatenate(sign),
+            np.asarray(cov_bond, int),
+            params,
+            sys.n,
+            names,
+        )
 
     def describe(self) -> str:
         n_cov = self._n_cov_flux
-        return (f"charge flux on {self.n_bonds} bonds ({int(np.sum(self.sign != 0))} with charge flux, {n_cov} covalent "
-                f"dipoles{', quadratic' if 'jc2' in self.params else ''}), {len(self.params['jb'])} parameter keys")
+        return (
+            f"charge flux on {self.n_bonds} bonds ({int(np.sum(self.sign != 0))} with charge flux, {n_cov} covalent "
+            f"dipoles{', quadratic' if 'jc2' in self.params else ''}), {len(self.params['jb'])} parameter keys"
+        )
 
 
 def _template_flux(tpl) -> dict:
@@ -227,8 +248,13 @@ def _template_flux(tpl) -> dict:
     used, local = np.unique(kb, return_inverse=True)
     cls_ = [cl([int(a)], "atom") for a in range(len(tpl.spec.elements))]
     sign = np.array([0.0 if cls_[i] == cls_[j] else (1.0 if cls_[i] < cls_[j] else -1.0) for i, j in bonds])
-    out = {"bonds": bonds, "b0": np.asarray(P["ref"]["b0"], float)[kb], "key": local.astype(np.int32), "sign": sign,
-           "names": [f"{tpl.name}:{terms.ref_keys['b0'][u]}" for u in used]}
+    out = {
+        "bonds": bonds,
+        "b0": np.asarray(P["ref"]["b0"], float)[kb],
+        "key": local.astype(np.int32),
+        "sign": sign,
+        "names": [f"{tpl.name}:{terms.ref_keys['b0'][u]}" for u in used],
+    }
     for p in FLUX_PARAMS:
         if p in P["flux"]:
             out[p] = np.asarray(P["flux"][p], float)[used]
@@ -246,6 +272,7 @@ def molecule_at(tpl, xyz=None, params=None, name: str | None = None):
     from dataclasses import replace
 
     from ..system import System
+
     mol = tpl.pgm
     sys = System([mol])
     fl = ChargeFlux.from_templates(sys, [tpl])
@@ -253,7 +280,7 @@ def molecule_at(tpl, xyz=None, params=None, name: str | None = None):
         raise ValueError(f"template {tpl.name} has no charge flux")
     x = jnp.asarray(tpl.spec.ref_xyz if xyz is None else xyz, jnp.float64).reshape(mol.n, 3)
     P = sys.expand(params)
-    H = jnp.eye(3) * (4.0 * float(jnp.max(jnp.abs(x))) + 10.0)                  # no image is nearer
+    H = jnp.eye(3) * (4.0 * float(jnp.max(jnp.abs(x))) + 10.0)  # no image is nearer
     q, cov = fl.charges(x, H, jnp.asarray(P["q"], jnp.float64), jnp.asarray(P["cov"], jnp.float64), fl.theta(params))
     q, cov = np.asarray(q), np.asarray(cov)
     name = mol.name + "@flux" if name is None else str(name)

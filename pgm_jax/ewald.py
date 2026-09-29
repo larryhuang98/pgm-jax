@@ -26,6 +26,7 @@ k-vectors are computed from H inside JAX, so H can be differentiated.  Molecules
 
 Units: nm, e, kJ/mol.
 """
+
 from __future__ import annotations
 
 import jax
@@ -49,7 +50,7 @@ def box_matrix(a, b, c, alpha, beta, gamma):
     bx = np.array([b * np.cos(ga), b * np.sin(ga), 0.0])
     cx = c * np.cos(be)
     cy = c * (np.cos(al) - np.cos(be) * np.cos(ga)) / np.sin(ga)
-    cz = np.sqrt(c ** 2 - cx ** 2 - cy ** 2)
+    cz = np.sqrt(c**2 - cx**2 - cy**2)
     return np.array([ax, bx, [cx, cy, cz]])
 
 
@@ -65,14 +66,17 @@ def neighbor_list(pos: np.ndarray, H: np.ndarray, rc: float, chunk: int = 200_00
     Hinv = np.linalg.inv(H)
     out_i, out_j, out_n = [], [], []
     for s in range(0, len(ii), chunk):
-        a, b = ii[s:s + chunk], jj[s:s + chunk]
+        a, b = ii[s : s + chunk], jj[s : s + chunk]
         d = pos[a] - pos[b]
-        base = -np.round(d @ Hinv)                            # integer: d + base.H is near the origin
-        dd = (d + base @ H)[:, None, :] + shifts[None, :, :]   # candidate displacements
+        base = -np.round(d @ Hinv)  # integer: d + base.H is near the origin
+        dd = (d + base @ H)[:, None, :] + shifts[None, :, :]  # candidate displacements
         r = np.linalg.norm(dd, axis=-1)
         k, m = np.nonzero(r < rc)
-        out_i.append(a[k]); out_j.append(b[k]); out_n.append(base[k] + cells[m])
-    i = np.concatenate(out_i); j = np.concatenate(out_j)
+        out_i.append(a[k])
+        out_j.append(b[k])
+        out_n.append(base[k] + cells[m])
+    i = np.concatenate(out_i)
+    j = np.concatenate(out_j)
     img = np.rint(np.concatenate(out_n)).astype(np.int32)
     return i, j, img
 
@@ -80,7 +84,7 @@ def neighbor_list(pos: np.ndarray, H: np.ndarray, rc: float, chunk: int = 200_00
 def kvector_indices(H: np.ndarray, kcut: float) -> np.ndarray:
     """Integer indices m (half space) of reciprocal vectors k = 2 pi m.H^-T with 0 < |k| < kcut."""
     H = np.asarray(H, float)
-    B = 2 * np.pi * np.linalg.inv(H).T                        # H[i] . B[j] = 2 pi delta_ij
+    B = 2 * np.pi * np.linalg.inv(H).T  # H[i] . B[j] = 2 pi delta_ij
     # integer range: |m_i| <= kcut * |H_i| / (2 pi), bounded generously for skewed cells
     Mx = int(np.ceil(kcut * np.max(np.linalg.norm(H, axis=1)) / (2 * np.pi))) + 1
     rng = range(-Mx, Mx + 1)
@@ -104,9 +108,21 @@ class PeriodicPGM:
     parameters and box (default: the reference box).  Pairs of the list farther apart than rc
     are masked, so a list built with a skin (rc + skin) stays valid for small displacements."""
 
-    def __init__(self, sys: System, H: np.ndarray, pos_ref: np.ndarray, b0: float = 3.8, rc: float = 1.0,
-                 skin: float = 0.0, k_tol: float = 1e-12, cg_tol: float = 1e-12, nlist=None, elec: str = "qpi"):
+    def __init__(
+        self,
+        sys: System,
+        H: np.ndarray,
+        pos_ref: np.ndarray,
+        b0: float = 3.8,
+        rc: float = 1.0,
+        skin: float = 0.0,
+        k_tol: float = 1e-12,
+        cg_tol: float = 1e-12,
+        nlist=None,
+        elec: str = "qpi",
+    ):
         from .options import elec_flags
+
         self.pd, self.ind = elec_flags(elec)
         self.sys, self.H = sys, np.asarray(H, float)
         self.b0, self.rc, self.cg_tol = b0, rc, cg_tol
@@ -123,23 +139,27 @@ class PeriodicPGM:
         x = pos[self.pi] - pos[self.pj] + jnp.asarray(self.img, float) @ H
         bij = gauss_bij(R[self.pi], R[self.pj])
         f, gx, Hx = jax.vmap(lambda v, b: _pair_tensors(v, b, self.b0))(x, bij)
-        w = jax.lax.stop_gradient(jnp.where(jnp.sum(x * x, -1) < self.rc ** 2, 1.0, 0.0))
+        w = jax.lax.stop_gradient(jnp.where(jnp.sum(x * x, -1) < self.rc**2, 1.0, 0.0))
         return f * w, gx * w[:, None], Hx * w[:, None, None]
 
     def _U_dir(self, tens, q, d):
         f, gx, Hx = tens
         i, j = self.pi, self.pj
-        e = (q[i] * q[j] * f - q[i] * jnp.sum(d[j] * gx, -1) + q[j] * jnp.sum(d[i] * gx, -1)
-             - jnp.einsum("pa,pab,pb->p", d[i], Hx, d[j]))
+        e = (
+            q[i] * q[j] * f
+            - q[i] * jnp.sum(d[j] * gx, -1)
+            + q[j] * jnp.sum(d[i] * gx, -1)
+            - jnp.einsum("pa,pab,pb->p", d[i], Hx, d[j])
+        )
         return jnp.sum(e)
 
     def _U_rec(self, pos, q, d, H):
         B = 2 * jnp.pi * jnp.linalg.inv(H).T
-        k = jnp.asarray(self.m, float) @ B                    # (K, 3)
+        k = jnp.asarray(self.m, float) @ B  # (K, 3)
         V = jnp.abs(jnp.linalg.det(H))
-        k2 = jnp.sum(k ** 2, 1)
-        kfac = (4 * jnp.pi / V) * jnp.exp(-k2 / (4 * self.b0 ** 2)) / k2   # half-space x 2
-        ph = pos @ k.T                                        # (n, K)
+        k2 = jnp.sum(k**2, 1)
+        kfac = (4 * jnp.pi / V) * jnp.exp(-k2 / (4 * self.b0**2)) / k2  # half-space x 2
+        ph = pos @ k.T  # (n, K)
         kd = d @ k.T
         c, s = jnp.cos(ph), jnp.sin(ph)
         A = jnp.sum(q[:, None] * c - kd * s, 0)
@@ -148,10 +168,10 @@ class PeriodicPGM:
 
     def _U_self(self, q, d):
         b0 = self.b0
-        return -(b0 / SQRT_PI) * jnp.sum(q ** 2) - (2 * b0 ** 3 / (3 * SQRT_PI)) * jnp.sum(d * d)
+        return -(b0 / SQRT_PI) * jnp.sum(q**2) - (2 * b0**3 / (3 * SQRT_PI)) * jnp.sum(d * d)
 
     def _U_bg(self, q, H):
-        return -jnp.pi * jnp.sum(q) ** 2 / (2 * jnp.abs(jnp.linalg.det(H)) * self.b0 ** 2)
+        return -jnp.pi * jnp.sum(q) ** 2 / (2 * jnp.abs(jnp.linalg.det(H)) * self.b0**2)
 
     def U(self, pos, q, d, R, H, tens=None):
         tens = self._direct_tensors(pos, R, H) if tens is None else tens
@@ -169,7 +189,7 @@ class PeriodicPGM:
     def _solve(self, theta):
         z = jnp.zeros((self.sys.n, 3))
         gradG = lambda mu: jax.grad(self._G)(mu, theta)
-        g0, hvp = jax.linearize(gradG, z)                     # G is quadratic: the Hessian is constant
+        g0, hvp = jax.linearize(gradG, z)  # G is quadratic: the Hessian is constant
         mu, _ = jax.scipy.sparse.linalg.cg(hvp, -g0, tol=self.cg_tol, maxiter=2000)
         return mu
 

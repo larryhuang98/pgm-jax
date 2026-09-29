@@ -3,6 +3,7 @@ copies of a molecule (vmapped over copies, as FlexibleMolecules does), one GPU.
     python scripts/bonded/bench_sets.py [--mol alanine_dipeptide] [--copies 500]
 The neural set is timed frozen (stage-1 coefficients evaluated once, as in MD); stage 1 itself
 is timed separately."""
+
 import argparse
 import json
 import os
@@ -10,7 +11,8 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
 import jax
 
 jax.config.update("jax_enable_x64", True)
@@ -28,13 +30,17 @@ ap.add_argument("--reps", type=int, default=200)
 a = ap.parse_args()
 specs, data = load([a.mol], with_scans=False)
 X0 = np.asarray(data[0]["test"].X)
-X = jnp.asarray(np.concatenate([X0] * (a.copies // len(X0) + 1))[:a.copies])
+X = jnp.asarray(np.concatenate([X0] * (a.copies // len(X0) + 1))[: a.copies])
 n_atoms = int(X.shape[0] * X.shape[1])
 out = {"molecule": a.mol, "copies": a.copies, "atoms": n_atoms, "device": str(jax.devices()[0]), "sets": {}}
-for name, fams in (("amber", T.SETS["amber"]), ("explore (class II)", T.SETS["explore"]), ("nn (frozen)", T.SETS["nn"])):
+for name, fams in (
+    ("amber", T.SETS["amber"]),
+    ("explore (class II)", T.SETS["explore"]),
+    ("nn (frozen)", T.SETS["nn"]),
+):
     model = BondedModel(specs, BondedSettings(families=fams))
     P = model.init_params()
-    for f in model.fams:                                        # nonzero couplings so that nothing is skipped
+    for f in model.fams:  # nonzero couplings so that nothing is skipped
         P[f] = {k: v + 0.1 for k, v in P[f].items()}
     if model.nnb is not None:
         rng = np.random.default_rng(0)
@@ -45,7 +51,8 @@ for name, fams in (("amber", T.SETS["amber"]), ("explore (class II)", T.SETS["ex
         for _ in range(20):
             jax.block_until_ready(coef(P["nnb"]))
         stage1 = (time.perf_counter() - t0) / 20
-        P = dict(P); P["nnb"] = model.nnb.freeze(P["nnb"])
+        P = dict(P)
+        P["nnb"] = model.nnb.freeze(P["nnb"])
     f = jax.jit(jax.vmap(jax.value_and_grad(lambda R: model.bonded_energy(0, R, P))))
     jax.block_until_ready(f(X))
     t0 = time.perf_counter()

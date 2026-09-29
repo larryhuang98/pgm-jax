@@ -26,6 +26,7 @@ neighbour-list cells across the box: the 512-water truncated octahedron (27.2 A)
 <out>.md.in (NPT, Langevin 1/ps, 298 K, 1 bar, Monte Carlo barostat, SETTLE, 2 fs, frames every
 1 ps; the settings of docs/dielectric.md).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -44,8 +45,8 @@ from water_dielectric import RST, TOP, paper_geometry  # noqa: E402
 from pgm_jax.md.io import read_coordinates  # noqa: E402
 from pgm_jax.prmtop import Prmtop  # noqa: E402
 
-L_OH, THETA = 0.9745, 103.64                          # A, deg
-LJ_A, LJ_B = 622716.376, 600.412                      # kcal A^12/mol, kcal A^6/mol
+L_OH, THETA = 0.9745, 103.64  # A, deg
+LJ_A, LJ_B = 622716.376, 600.412  # kcal A^12/mol, kcal A^6/mol
 AMBER_CHARGE = 18.2223
 CPPTRAJ = os.path.expanduser("~/ambers/pgm-larry-install/bin/cpptraj")
 
@@ -79,13 +80,14 @@ def write_rst7(path: str, xyz, lengths, angles, title: str = "pGM3P-25"):
         fh.write(f"{title}\n{len(xyz):6d}\n")
         flat = np.asarray(xyz, float).reshape(-1)
         for i in range(0, len(flat), 6):
-            fh.write("".join(f"{v:12.7f}" for v in flat[i:i + 6]) + "\n")
+            fh.write("".join(f"{v:12.7f}" for v in flat[i : i + 6]) + "\n")
         fh.write("".join(f"{v:12.7f}" for v in list(lengths) + list(angles)) + "\n")
 
 
 def replicate(prmtop: str, rst7: str, out: str, n: int, lengths, angles):
     """n x n x n supercell of a water box (cpptraj + pgm_supercell), box sections restored."""
     import pgm_supercell
+
     dirs = " ".join(f"dir {i}{j}{k}" for i in range(n) for j in range(n) for k in range(n))
     with tempfile.TemporaryDirectory() as tmp:
         std = os.path.join(tmp, "std.prmtop")
@@ -93,17 +95,19 @@ def replicate(prmtop: str, rst7: str, out: str, n: int, lengths, angles):
         r = subprocess.run([CPPTRAJ], input=inp, text=True, capture_output=True)
         if r.returncode != 0 or not os.path.exists(std):
             raise RuntimeError(f"cpptraj failed:\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}")
-        pgm_supercell.main(prmtop, std, out + ".prmtop", n ** 3)
+        pgm_supercell.main(prmtop, std, out + ".prmtop", n**3)
     pt = Prmtop.read(out + ".prmtop")
     nres = pt.pointers["NRES"]
     L = [float(x) * n for x in lengths]
     pt.set_pointers(IFBOX=2 if np.allclose(angles, 109.4712190, atol=1e-4) else 1)
-    for name, vals, fmt, after in (("SOLVENT_POINTERS", [0, nres, 1], "3I8", "IROTAT"),
-                                   ("ATOMS_PER_MOLECULE", [3] * nres, "10I8", "SOLVENT_POINTERS"),
-                                   ("BOX_DIMENSIONS", [float(angles[1])] + L, "5E16.8", "ATOMS_PER_MOLECULE")):
+    for name, vals, fmt, after in (
+        ("SOLVENT_POINTERS", [0, nres, 1], "3I8", "IROTAT"),
+        ("ATOMS_PER_MOLECULE", [3] * nres, "10I8", "SOLVENT_POINTERS"),
+        ("BOX_DIMENSIONS", [float(angles[1])] + L, "5E16.8", "ATOMS_PER_MOLECULE"),
+    ):
         pt.set(name, vals, fmt=None if name in pt else fmt, after=after)
     pt.write(out + ".prmtop")
-    with open(out + ".rst7") as fh:                   # cpptraj writes no box line without a box
+    with open(out + ".rst7") as fh:  # cpptraj writes no box line without a box
         lines = fh.read().splitlines()
     natom = 3 * nres
     if len(lines) == 2 + (3 * natom + 5) // 6:
@@ -128,20 +132,33 @@ def main(argv=None):
     L = list(lengths)
     if a.replicate > 1:
         L = replicate(one + ".prmtop", one + ".rst7", a.out, a.replicate, lengths, angles)
-    print(f"{a.out}.prmtop / .rst7: {len(x) // 3 * a.replicate ** 3} waters, box {L[0]:.4f} A, angles {angles[0]:.4f} deg")
+    print(
+        f"{a.out}.prmtop / .rst7: {len(x) // 3 * a.replicate**3} waters, box {L[0]:.4f} A, angles {angles[0]:.4f} deg"
+    )
     if a.mdin:
         from pgm_jax.md.forcefield import MDSettings
         from pgm_jax.md.io import box_from_cell
         from pgm_jax.protein.pmemd import pmemd_mdin
+
         H = box_from_cell(L, angles) * 0.1
-        st = MDSettings(cutoff=0.9, skin=0.1, ewald_beta=4.0, pme_grid=(48 * a.replicate,) * 3, pme_order=6,
-                        lj_lrc=True, dipole_tol=1e-5)
+        st = MDSettings(
+            cutoff=0.9,
+            skin=0.1,
+            ewald_beta=4.0,
+            pme_grid=(48 * a.replicate,) * 3,
+            pme_order=6,
+            lj_lrc=True,
+            dipole_tol=1e-5,
+        )
         kw = dict(dt=0.002, ensemble="npt", thermostat="langevin", gamma=1.0)
         open(a.out + ".eq.in", "w").write(pmemd_mdin(st, H, nstlim=50000, ntpr=5000, ntwr=50000, **kw))
-        open(a.out + ".md.in", "w").write(pmemd_mdin(st, H, nstlim=int(round(a.ns * 5e5)), irest=1, ntpr=5000,
-                                                     ntwx=500, ntwr=50000, **kw))
-        print(f"{a.out}.eq.in, {a.out}.md.in: pmemd.pgm.cuda_SPFP -O -i {a.out}.eq.in -p {a.out}.prmtop "
-              f"-c {a.out}.rst7 -r eq.rst7 ...")
+        open(a.out + ".md.in", "w").write(
+            pmemd_mdin(st, H, nstlim=int(round(a.ns * 5e5)), irest=1, ntpr=5000, ntwx=500, ntwr=50000, **kw)
+        )
+        print(
+            f"{a.out}.eq.in, {a.out}.md.in: pmemd.pgm.cuda_SPFP -O -i {a.out}.eq.in -p {a.out}.prmtop "
+            f"-c {a.out}.rst7 -r eq.rst7 ..."
+        )
 
 
 if __name__ == "__main__":

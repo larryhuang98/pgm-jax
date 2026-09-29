@@ -10,6 +10,7 @@ clusters), the WATER27 clusters and the Smith-type stationary structures; train 
 and p25 liquid snapshots).  Writes runs/qmfit/<name>.json (report) and, for fits,
 data/qm/fits/<name>.json (the fitted molecule, pgm_jax.param.load_molecule).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -48,10 +49,17 @@ from pgm_jax.qmfit import (  # noqa: E402
 )
 from pgm_jax.vdw import PGM3P_GVDW, set_gvdw  # noqa: E402
 
-MODELS = {"p25": ("/home8/larry/project/epsp/p25_512.prmtop", (0.9745, 103.64)),
-          "base": ("/home8/larry/project/epsp/base/base_512.prmtop", (0.9572, 104.49))}
-LIT_DIMER = -5.0      # kcal/mol, CCSD(T)/CBS water dimer minimum (Tschumper et al. JCP 2002: -5.02 +- 0.05; HBB2 -4.98)
-HEXAMERS = [("water27/H2O6", "prism"), ("water27/H2O6c", "cage"), ("water27/H2O6b", "book"), ("water27/H2O6c2", "cyclic")]
+MODELS = {
+    "p25": ("/home8/larry/project/epsp/p25_512.prmtop", (0.9745, 103.64)),
+    "base": ("/home8/larry/project/epsp/base/base_512.prmtop", (0.9572, 104.49)),
+}
+LIT_DIMER = -5.0  # kcal/mol, CCSD(T)/CBS water dimer minimum (Tschumper et al. JCP 2002: -5.02 +- 0.05; HBB2 -4.98)
+HEXAMERS = [
+    ("water27/H2O6", "prism"),
+    ("water27/H2O6c", "cage"),
+    ("water27/H2O6b", "book"),
+    ("water27/H2O6c2", "cyclic"),
+]
 
 
 def is_test(r):
@@ -105,8 +113,10 @@ def report(cm, W, P, data, name, extra=None):
     sets = np.array(ev["set"])
     tagged = dict(ev)
     tagged["set"] = [("test:" if t else "train:") + s for s, t in zip(sets, test)]
-    grp = {"train (all)": [s for s in set(tagged["set"]) if s.startswith("train:")],
-           "test (all)": [s for s in set(tagged["set"]) if s.startswith("test:")]}
+    grp = {
+        "train (all)": [s for s in set(tagged["set"]) if s.startswith("train:")],
+        "test (all)": [s for s in set(tagged["set"]) if s.startswith("test:")],
+    }
     grp.update({s: [s] for s in sorted(set(tagged["set"]))})
     rows = error_table(tagged, grp)
     out = {"name": name, "table": rows}
@@ -116,28 +126,47 @@ def report(cm, W, P, data, name, extra=None):
     k = ev["ids"].index("smith/Cs_open")
     Emin, Xmin = rigid_minimize(cm, d.records[k]["xyz_A"], P)
     roo = float(np.linalg.norm(Xmin[3] - Xmin[0]))
-    out["dimer"] = {"E_at_ref_min": float(ev["total"][k]), "ref": float(ev["ref"][k]), "lit": LIT_DIMER,
-                    "model_min": Emin, "model_min_ROO": roo}
-    print(f"water dimer: E(model) at the QM minimum {ev['total'][k]:.3f}, QM {ev['ref'][k]:.3f}, literature {LIT_DIMER}; "
-          f"model minimum {Emin:.3f} at R_OO {roo:.3f} A")
+    out["dimer"] = {
+        "E_at_ref_min": float(ev["total"][k]),
+        "ref": float(ev["ref"][k]),
+        "lit": LIT_DIMER,
+        "model_min": Emin,
+        "model_min_ROO": roo,
+    }
+    print(
+        f"water dimer: E(model) at the QM minimum {ev['total'][k]:.3f}, QM {ev['ref'][k]:.3f}, literature {LIT_DIMER}; "
+        f"model minimum {Emin:.3f} at R_OO {roo:.3f} A"
+    )
     smith = [(i, ev["ids"][i]) for i in range(len(ev["ids"])) if ev["set"][i] == "smith"]
     e0m, e0q = ev["total"][k], ev["ref"][k]
     out["smith"] = {}
     for i, sid in smith:
-        out["smith"][sid] = {"model": float(ev["total"][i]), "ref": float(ev["ref"][i]),
-                             "model_rel": float(ev["total"][i] - e0m), "ref_rel": float(ev["ref"][i] - e0q)}
-        print(f"  {sid:32s} E {ev['total'][i]:7.3f} ref {ev['ref'][i]:7.3f}   rel {ev['total'][i] - e0m:6.3f} ref {ev['ref'][i] - e0q:6.3f}")
+        out["smith"][sid] = {
+            "model": float(ev["total"][i]),
+            "ref": float(ev["ref"][i]),
+            "model_rel": float(ev["total"][i] - e0m),
+            "ref_rel": float(ev["ref"][i] - e0q),
+        }
+        print(
+            f"  {sid:32s} E {ev['total'][i]:7.3f} ref {ev['ref'][i]:7.3f}   rel {ev['total'][i] - e0m:6.3f} ref {ev['ref'][i] - e0q:6.3f}"
+        )
     # hexamers
     out["hexamers"] = {}
-    print("hexamers (kcal/mol): model at the rigidified WATER27 geometries / model rigid-body minimum / CCSD(T)/CBS* "
-          "(same geometries) / WATER27 literature (relaxed monomers)")
+    print(
+        "hexamers (kcal/mol): model at the rigidified WATER27 geometries / model rigid-body minimum / CCSD(T)/CBS* "
+        "(same geometries) / WATER27 literature (relaxed monomers)"
+    )
     for hid, lab in HEXAMERS:
         if hid not in ev["ids"]:
             continue
         i = ev["ids"].index(hid)
         Em, _ = rigid_minimize(cm, d.records[i]["xyz_A"], P)
-        out["hexamers"][lab] = {"model": float(ev["total"][i]), "model_min": Em, "ref": float(ev["ref"][i]),
-                                "lit": label(d.records[i], "E.lit_De")}
+        out["hexamers"][lab] = {
+            "model": float(ev["total"][i]),
+            "model_min": Em,
+            "ref": float(ev["ref"][i]),
+            "lit": label(d.records[i], "E.lit_De"),
+        }
         print(f"  {lab:8s} {ev['total'][i]:8.2f} {Em:8.2f} {ev['ref'][i]:8.2f} {label(d.records[i], 'E.lit_De'):8.2f}")
     for key in ("model", "model_min", "ref", "lit"):
         order = sorted(out["hexamers"], key=lambda h: out["hexamers"][h][key])
@@ -151,8 +180,10 @@ def report(cm, W, P, data, name, extra=None):
             s = ev["set"][idx[cid]]
             rat.setdefault(s, []).append((m3, q3))
         out["nb3_ratio"] = {s: float(np.sum([a for a, _ in v]) / np.sum([b for _, b in v])) for s, v in rat.items()}
-        print("3-body energy, model / MP2 (sums over the clusters of each set):",
-              {s: round(v, 3) for s, v in out["nb3_ratio"].items()})
+        print(
+            "3-body energy, model / MP2 (sums over the clusters of each set):",
+            {s: round(v, 3) for s, v in out["nb3_ratio"].items()},
+        )
     # rigid-body forces (liquid pairs with MP2/aTZ gradients)
     prep = Prepared(d, cm)
     if prep.force_recs:
@@ -162,18 +193,29 @@ def report(cm, W, P, data, name, extra=None):
             dF = np.asarray(F - Fq) / (KCAL / ANG)
             dT = np.asarray(T - Tq) / KCAL
             fq = np.asarray(Fq) / (KCAL / ANG)
-            tk = np.repeat(test[ks], n)                              # rows are (record, molecule)
+            tk = np.repeat(test[ks], n)  # rows are (record, molecule)
             for tag, mk in (("train", ~tk), ("test", tk)):
                 if mk.any():
-                    out["forces"][tag] = {"N": int(mk.sum()) // n, "F_RMSE": float(np.sqrt(np.mean(dF[mk] ** 2))),
-                                          "F_rms_ref": float(np.sqrt(np.mean(fq[mk] ** 2))),
-                                          "T_RMSE": float(np.sqrt(np.mean(dT[mk] ** 2)))}
-        print("rigid-body forces vs CP MP2/aTZ (kcal/mol/A; torques kcal/mol):",
-              {k: {kk: round(vv, 3) for kk, vv in v.items()} for k, v in out["forces"].items()})
+                    out["forces"][tag] = {
+                        "N": int(mk.sum()) // n,
+                        "F_RMSE": float(np.sqrt(np.mean(dF[mk] ** 2))),
+                        "F_rms_ref": float(np.sqrt(np.mean(fq[mk] ** 2))),
+                        "T_RMSE": float(np.sqrt(np.mean(dT[mk] ** 2))),
+                    }
+        print(
+            "rigid-body forces vs CP MP2/aTZ (kcal/mol/A; torques kcal/mol):",
+            {k: {kk: round(vv, 3) for kk, vv in v.items()} for k, v in out["forces"].items()},
+        )
     mu = float(np.linalg.norm(cm.monomer_dipole(P)) / DEBYE)
-    al = float(cm.monomer_polarizability(P) / ANG ** 3)
-    out["monomer"] = {"dipole_D": mu, "polarizability_A3": al, "qm": {k: data.monomer.get(k) for k in ("dipole_D", "polarizability_A3")}}
-    print(f"monomer: dipole {mu:.4f} D (QM {data.monomer.get('dipole_D')}), polarizability {al:.4f} A^3 (QM {data.monomer.get('polarizability_A3')})")
+    al = float(cm.monomer_polarizability(P) / ANG**3)
+    out["monomer"] = {
+        "dipole_D": mu,
+        "polarizability_A3": al,
+        "qm": {k: data.monomer.get(k) for k in ("dipole_D", "polarizability_A3")},
+    }
+    print(
+        f"monomer: dipole {mu:.4f} D (QM {data.monomer.get('dipole_D')}), polarizability {al:.4f} A^3 (QM {data.monomer.get('polarizability_A3')})"
+    )
     out.update(extra or {})
     return out
 
@@ -189,24 +231,30 @@ def summary(names):
         p = os.path.join(ROOT, f"runs/qmfit/{n}.json")
         if os.path.exists(p):
             reps[n] = json.load(open(p))
+
     def get(r, grp, q, key="RMSE"):
         for row in r["table"]:
             if row["group"] == grp and row["quantity"] == q:
                 return row[key]
         return float("nan")
-    hdr = (f"{'model':16s} {'Eint tr':>8s} {'Eint te':>8s} {'MAE te':>7s} {'elst te':>8s} {'ind te':>7s} {'ex+di te':>8s} "
-           f"{'3b te':>6s} {'3b W27':>8s} {'dimer':>7s} {'dim min':>7s} {'hex order':>10s} {'mu D':>6s} {'a A3':>6s} {'F te':>6s}")
+
+    hdr = (
+        f"{'model':16s} {'Eint tr':>8s} {'Eint te':>8s} {'MAE te':>7s} {'elst te':>8s} {'ind te':>7s} {'ex+di te':>8s} "
+        f"{'3b te':>6s} {'3b W27':>8s} {'dimer':>7s} {'dim min':>7s} {'hex order':>10s} {'mu D':>6s} {'a A3':>6s} {'F te':>6s}"
+    )
     lines = [hdr]
     for n, r in reps.items():
         hx = r.get("hexamers_order_model", [])
         ok = "ok" if hx == ["prism", "cage", "book", "cyclic"] else "/".join(h[:2] for h in hx)
         rat = r.get("nb3_ratio", {})
-        lines.append(f"{n:16s} {get(r, 'train (all)', 'E_int'):8.3f} {get(r, 'test (all)', 'E_int'):8.3f} "
-                     f"{get(r, 'test (all)', 'E_int', 'MAE'):7.3f} {get(r, 'test (all)', 'elst'):8.3f} {get(r, 'test (all)', 'ind'):7.3f} "
-                     f"{get(r, 'test (all)', 'exch+disp'):8.3f} {get(r, 'test (all)', '3-body'):6.3f} "
-                     f"{rat.get('water27', float('nan')):8.3f} {r['dimer']['E_at_ref_min']:7.3f} "
-                     f"{r['dimer']['model_min']:7.3f} {ok:>10s} {r['monomer']['dipole_D']:6.3f} {r['monomer']['polarizability_A3']:6.3f} "
-                     f"{r.get('forces', {}).get('test', {}).get('F_RMSE', float('nan')):6.3f}")
+        lines.append(
+            f"{n:16s} {get(r, 'train (all)', 'E_int'):8.3f} {get(r, 'test (all)', 'E_int'):8.3f} "
+            f"{get(r, 'test (all)', 'E_int', 'MAE'):7.3f} {get(r, 'test (all)', 'elst'):8.3f} {get(r, 'test (all)', 'ind'):7.3f} "
+            f"{get(r, 'test (all)', 'exch+disp'):8.3f} {get(r, 'test (all)', '3-body'):6.3f} "
+            f"{rat.get('water27', float('nan')):8.3f} {r['dimer']['E_at_ref_min']:7.3f} "
+            f"{r['dimer']['model_min']:7.3f} {ok:>10s} {r['monomer']['dipole_D']:6.3f} {r['monomer']['polarizability_A3']:6.3f} "
+            f"{r.get('forces', {}).get('test', {}).get('F_RMSE', float('nan')):6.3f}"
+        )
     print("\n".join(lines))
     return lines
 
@@ -254,14 +302,30 @@ def main(a):
     mol.q = np.asarray(Pa["q"])
     mol.radius, mol.alpha = np.asarray(Pa["radius"]), np.asarray(Pa["alpha"])
     mol.lj_rmin_half, mol.lj_sqrt_eps = np.asarray(Pa["lj_rmin_half"]), np.asarray(Pa["lj_sqrt_eps"])
-    mol.gvdw_sqrt_a, mol.gvdw_sqrt_c6, mol.gvdw_b = (np.asarray(Pa[k]) for k in ("gvdw_sqrt_a", "gvdw_sqrt_c6", "gvdw_b"))
+    mol.gvdw_sqrt_a, mol.gvdw_sqrt_c6, mol.gvdw_b = (
+        np.asarray(Pa[k]) for k in ("gvdw_sqrt_a", "gvdw_sqrt_c6", "gvdw_b")
+    )
     mol.cov = [(i, j, float(c)) for (i, j, _), c in zip(mol.cov, np.asarray(Pa["cov"]))]
-    if a.vdw == "gvdw":                                   # the fitted model has no Lennard-Jones
+    if a.vdw == "gvdw":  # the fitted model has no Lennard-Jones
         mol.lj_rmin_half, mol.lj_sqrt_eps = np.zeros(mol.n), np.zeros(mol.n)
     os.makedirs(os.path.join(ROOT, "data/qm/fits"), exist_ok=True)
     save_molecule(mol, os.path.join(ROOT, f"data/qm/fits/{a.name}.json"))
-    out = report(cm, W, P, data, a.name, {"params": named, "free": free, "weights": w.__dict__, "vdw": a.vdw,
-                                          "start": a.start, "init": a.init, "cost": [L0, float(res.cost)]})
+    out = report(
+        cm,
+        W,
+        P,
+        data,
+        a.name,
+        {
+            "params": named,
+            "free": free,
+            "weights": w.__dict__,
+            "vdw": a.vdw,
+            "start": a.start,
+            "init": a.init,
+            "cost": [L0, float(res.cost)],
+        },
+    )
     json.dump(out, open(os.path.join(ROOT, f"runs/qmfit/{a.name}.json"), "w"), indent=1)
 
 

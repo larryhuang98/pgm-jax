@@ -31,13 +31,14 @@ every kick, drift and thermostat step.  With X-H bonds constrained (`constraints
 molecules run at 2 fs, with hydrogen mass repartitioning (`repartition_masses`; `hmr_masses`: one
 hydrogen mass, or one per molecule) at 4 fs (docs/shake.md, docs/protein_ff.md).
 Units nm, ps, amu."""
+
 from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-DENSE_MAX = 12                 # clusters with more constraints go to the matrix-free (sparse) solver
+DENSE_MAX = 12  # clusters with more constraints go to the matrix-free (sparse) solver
 
 
 def _clusters(pairs, n_atoms):
@@ -98,7 +99,7 @@ def _solve_small(A, b):
         return jnp.stack([d * b[..., 0] - bb * b[..., 1], -c * b[..., 0] + a * b[..., 1]], -1) / det[..., None]
     if C == 3:
         r0, r1, r2 = A[..., 0, :], A[..., 1, :], A[..., 2, :]
-        c0, c1, c2 = jnp.cross(r1, r2), jnp.cross(r2, r0), jnp.cross(r0, r1)       # adjugate columns
+        c0, c1, c2 = jnp.cross(r1, r2), jnp.cross(r2, r0), jnp.cross(r0, r1)  # adjugate columns
         det = jnp.sum(r0 * c0, -1)
         return (c0 * b[..., 0:1] + c1 * b[..., 1:2] + c2 * b[..., 2:3]) / det[..., None]
     return _solve_gauss(A, b)
@@ -107,6 +108,7 @@ def _solve_small(A, b):
 class _DenseBlock:
     """Clusters of at most C constraints padded to (K clusters, A atoms, C constraints): exact
     Newton.  Works on padded arrays (row n: a dummy atom of zero inverse mass)."""
+
     kind = "dense"
 
     def __init__(self, clusters, pairs, d0, n, n_iter):
@@ -114,12 +116,12 @@ class _DenseBlock:
         C = max(len(c) for _, c in clusters)
         K = len(clusters)
         atoms = np.full((K, A), n, np.int32)
-        inc = np.zeros((K, A, C))                           # incidence: +1 at a_c, -1 at b_c
+        inc = np.zeros((K, A, C))  # incidence: +1 at a_c, -1 at b_c
         d = np.ones((K, C))
         cmask = np.zeros((K, C))
         ends = np.zeros((K, C, 2), np.int32)
         for k, (at, cs) in enumerate(clusters):
-            atoms[k, :len(at)] = at
+            atoms[k, : len(at)] = at
             loc = {a: s for s, a in enumerate(at)}
             for s, c in enumerate(cs):
                 i, j = loc[int(pairs[c, 0])], loc[int(pairs[c, 1])]
@@ -143,14 +145,14 @@ class _DenseBlock:
         return f"{K} x ({A} atoms, {C} constraints)"
 
     def set_masses(self, invm_padded):
-        self.invm = jnp.asarray(invm_padded)[self.atoms]                   # (K, A)
+        self.invm = jnp.asarray(invm_padded)[self.atoms]  # (K, A)
         # K_cd = sum_a inc_ac inc_ad / m_a: how constraint forces c move the length of d
         self.kmat = jnp.einsum("kac,ka,kad->kcd", self.inc, self.invm, self.inc)
 
     def _vectors(self, X):
         """Constraint vectors r_a - r_b (K, C, 3)."""
         i, j = self.ends[..., 0], self.ends[..., 1]
-        take = lambda idx: jnp.take_along_axis(X, idx[..., None], axis=1)   # noqa: E731
+        take = lambda idx: jnp.take_along_axis(X, idx[..., None], axis=1)  # noqa: E731
         return take(i) - take(j)
 
     def _move(self, w, V):
@@ -172,7 +174,7 @@ class _DenseBlock:
 
         lam = jnp.zeros(self.shape[::2], X.dtype)
         R, sig = resid(lam)
-        for _ in range(self.n_iter):                 # fixed count, unrolled: no reduction per step
+        for _ in range(self.n_iter):  # fixed count, unrolled: no reduction per step
             J = 2.0 * self._gram(R, S) * self.kmat * self._off + self._pad
             lam = lam - _solve_small(J, sig)
             R, sig = resid(lam)
@@ -203,9 +205,10 @@ class _DenseBlock:
 class _SparseBlock:
     """Large clusters as one flat list of constraints, matrix-free: SHAKE by quasi-Newton iterations
     with J0 = 2 S K S^T solved by preconditioned CG, RATTLE by CG on R K R^T (while loops to `tol`)."""
+
     kind = "sparse"
 
-    unroll = 8                    # CG iterations per convergence test (each test is a device-to-host sync)
+    unroll = 8  # CG iterations per convergence test (each test is a device-to-host sync)
 
     def __init__(self, pairs, d0, n, tol=1e-10, max_iter=100, inner_tol=1e-3, cg_max=400, rattle_tol=1e-11):
         pairs = np.asarray(pairs, int).reshape(-1, 2)
@@ -216,9 +219,10 @@ class _SparseBlock:
         nc, na = len(pairs), len(atoms)
         rows = [[] for _ in range(na)]
         for c in range(nc):
-            rows[al[c]].append((c, 1.0)); rows[bl[c]].append((c, -1.0))
+            rows[al[c]].append((c, 1.0))
+            rows[bl[c]].append((c, -1.0))
         D = max(len(r) for r in rows)
-        inc_c = np.full((na, D), nc, np.int32)              # padding: a zero constraint vector
+        inc_c = np.full((na, D), nc, np.int32)  # padding: a zero constraint vector
         inc_s = np.zeros((na, D))
         for a, r in enumerate(rows):
             for s, (c, sg) in enumerate(r):
@@ -237,7 +241,7 @@ class _SparseBlock:
         return f"iterative: {nc} constraints on {na} atoms (tol {self.tol:g})"
 
     def set_masses(self, invm_padded):
-        self.invm = jnp.asarray(invm_padded)[self.atoms]                   # (na,)
+        self.invm = jnp.asarray(invm_padded)[self.atoms]  # (na,)
         self._w = self.invm[self.al] + self.invm[self.bl]
 
     def _acc(self, W):
@@ -255,7 +259,7 @@ class _SparseBlock:
         """Solve (V K V^T) x = b (the Gram matrix of the mass-weighted constraint gradients), Jacobi
         preconditioned, until |r|_max <= tol |b|_max; `unroll` iterations between tests.
         Returns (x, iterations)."""
-        op = lambda x: jnp.sum(V * self._vec(self._move(x, V)), -1)      # noqa: E731
+        op = lambda x: jnp.sum(V * self._vec(self._move(x, V)), -1)  # noqa: E731
         dinv = 1.0 / (jnp.sum(V * V, -1) * self._w)
         stop = tol * jnp.max(jnp.abs(b))
         z = dinv * b
@@ -293,7 +297,7 @@ class _SparseBlock:
 
         def body(c):
             lam, _, sig, it = c
-            lam = lam - self._cg(S, 0.5 * sig, self.inner_tol, self.cg_max)[0]   # J0 = 2 S K S^T
+            lam = lam - self._cg(S, 0.5 * sig, self.inner_tol, self.cg_max)[0]  # J0 = 2 S K S^T
             Y, sig = resid(lam)
             return lam, Y, sig, it + 1
 
@@ -331,8 +335,17 @@ class Constraints:
     one block).  Each block costs a few kernel launches per call, so on a GPU one padded block of
     X-H groups and waters is faster than one block per size (docs/shake.md)."""
 
-    def __init__(self, pairs, d0, masses, n_iter: int = 4, dense_max: int = DENSE_MAX, tol: float = 1e-10,
-                 rattle_tol: float = 1e-11, bucket: bool = True):
+    def __init__(
+        self,
+        pairs,
+        d0,
+        masses,
+        n_iter: int = 4,
+        dense_max: int = DENSE_MAX,
+        tol: float = 1e-10,
+        rattle_tol: float = 1e-11,
+        bucket: bool = True,
+    ):
         pairs = np.asarray(pairs, int).reshape(-1, 2)
         d0 = np.asarray(d0, float).reshape(-1)
         self.n = len(masses)
@@ -343,14 +356,16 @@ class Constraints:
         small = [c for c in cl if len(c[1]) <= dense_max]
         big = [c for c in cl if len(c[1]) > dense_max]
         groups = {}
-        for c in small:                                  # <= 3 constraints: one block (closed-form solves)
+        for c in small:  # <= 3 constraints: one block (closed-form solves)
             groups.setdefault(max(len(c[1]), 3) if bucket else 0, []).append(c)
         self.blocks = [_DenseBlock(g, pairs, d0, self.n, n_iter) for _, g in sorted(groups.items())]
         if big:
             idx = np.array([c for _, cs in big for c in cs], int)
             self.blocks.append(_SparseBlock(pairs[idx], d0[idx], self.n, tol, rattle_tol=rattle_tol))
         m = np.asarray(masses, float)
-        invm = np.concatenate([np.divide(1.0, m, out=np.zeros_like(m), where=m != 0), [0.0]])   # massless sites: never in a cluster
+        invm = np.concatenate(
+            [np.divide(1.0, m, out=np.zeros_like(m), where=m != 0), [0.0]]
+        )  # massless sites: never in a cluster
         self.set_masses(invm)
 
     def set_masses(self, invm_padded):
@@ -369,8 +384,7 @@ class Constraints:
     def describe(self) -> str:
         if not self.nc:
             return "no constraints"
-        return (f"{self.nc} constraints in {self.n_clusters} clusters: "
-                + "; ".join(b.describe() for b in self.blocks))
+        return f"{self.nc} constraints in {self.n_clusters} clusters: " + "; ".join(b.describe() for b in self.blocks)
 
     @staticmethod
     def _pad(x):
@@ -451,8 +465,9 @@ def hmr_masses(sys, hmr) -> np.ndarray:
     if hmr is None:
         return masses
     if isinstance(hmr, dict):
-        raise TypeError("hmr: a mass or one value per molecule; for masses by molecule kind use "
-                        "AmberSystem.hmr({kind: mass})")
+        raise TypeError(
+            "hmr: a mass or one value per molecule; for masses by molecule kind use AmberSystem.hmr({kind: mass})"
+        )
     if np.ndim(hmr) == 0:
         per_mol = [float(hmr)] * sys.nmol
     else:
@@ -463,6 +478,7 @@ def hmr_masses(sys, hmr) -> np.ndarray:
     for k, h in enumerate(per_mol):
         if h is not None:
             target[sys.atom_slice(k)] = float(h)
-    bonds = np.concatenate([np.asarray(m.bonds, int).reshape(-1, 2) + sys.offsets[k]
-                            for k, m in enumerate(sys.molecules)])
+    bonds = np.concatenate(
+        [np.asarray(m.bonds, int).reshape(-1, 2) + sys.offsets[k] for k, m in enumerate(sys.molecules)]
+    )
     return repartition_masses(masses, sys.elements, bonds, target)

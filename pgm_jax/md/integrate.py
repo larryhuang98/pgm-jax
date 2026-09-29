@@ -32,6 +32,7 @@ recompiling), modulated by cos(omega t + phase) for a time-dependent field, whos
 dependence is booked in MDState.heat.  Without a field the step is unchanged.
 
 Units: nm, ps, amu, kJ/mol, K."""
+
 from __future__ import annotations
 
 import jax
@@ -46,13 +47,14 @@ from .restraints import as_restraints, molecular_strain
 from .rigid import RigidBody, RigidMolecules
 from .thermostats import Thermostat, make_thermostat
 
-KB = 0.0083144626181532                  # kJ/mol/K
-BAR = 1.0 / 16.605390671738466           # kJ/mol/nm^3 per bar
+KB = 0.0083144626181532  # kJ/mol/K
+BAR = 1.0 / 16.605390671738466  # kJ/mol/nm^3 per bar
 
 
 @dataclasses.dataclass
 class Dynamics:
     """The part of the state JAX-MD's primitives act on."""
+
     position: RigidBody
     momentum: RigidBody
     force: RigidBody
@@ -63,31 +65,31 @@ class Dynamics:
 @dataclasses.dataclass
 class MDState:
     dyn: Dynamics
-    box: jnp.ndarray                  # H, lattice vectors as rows (nm)
+    box: jnp.ndarray  # H, lattice vectors as rows (nm)
     induction: InductionState
-    nbr: object                       # jax_md.partition.NeighborList (dense)
-    epot: jnp.ndarray                 # kJ/mol (float64)
+    nbr: object  # jax_md.partition.NeighborList (dense)
+    epot: jnp.ndarray  # kJ/mol (float64)
     elec: jnp.ndarray
     vdw: jnp.ndarray
-    iters: jnp.ndarray                # CG iterations of the last solve
-    max_iters: jnp.ndarray            # largest since the last report
-    resid: jnp.ndarray                # largest final residual since the last report
+    iters: jnp.ndarray  # CG iterations of the last solve
+    max_iters: jnp.ndarray  # largest since the last report
+    resid: jnp.ndarray  # largest final residual since the last report
     step: jnp.ndarray
-    mc: jnp.ndarray                   # (tries, accepts, window tries, window accepts) int32
-    mc_dv: jnp.ndarray                # current maximum volume change (nm^3)
-    overflow: jnp.ndarray             # a force evaluation exceeded the row capacity (block must be repeated)
-    aux: jnp.ndarray = None           # thermostat auxiliary momenta (mass-scaled), (n_aux,) + momenta shape
-    heat: jnp.ndarray = None          # heat taken up in the thermostat steps since the start (kJ/mol)
-    cg_total: jnp.ndarray = None      # CG iterations summed over all force evaluations (float64)
-    kT: jnp.ndarray = None            # thermostat kB T (kJ/mol) as a state variable (replica exchange, remd.py:
-                                      # one compiled step for every temperature); None: Integrator.kT
-    lam: jnp.ndarray = None           # (2,) alchemical coupling (lambda_elec, lambda_vdw) of the state (alchemy.py:
-                                      # lambda windows share one compiled step); None: the Alchemy's default
-    mts: object = None                # multiple time stepping: forces of each level, short-range list (mts.MTSState)
-    bias: object = None               # state of the biases (pgm_jax.bias.BiasState) or None
-    efield: jnp.ndarray = None        # (3,) V/nm amplitude of the external field (efield.py); None: no field
-    fshift: jnp.ndarray = None        # (3,) e nm dipole of the re-wrapped charged molecules (itinerant charges)
-    fdip: jnp.ndarray = None          # (3,) e nm M of the last force evaluation (the dipole the field acts on)
+    mc: jnp.ndarray  # (tries, accepts, window tries, window accepts) int32
+    mc_dv: jnp.ndarray  # current maximum volume change (nm^3)
+    overflow: jnp.ndarray  # a force evaluation exceeded the row capacity (block must be repeated)
+    aux: jnp.ndarray = None  # thermostat auxiliary momenta (mass-scaled), (n_aux,) + momenta shape
+    heat: jnp.ndarray = None  # heat taken up in the thermostat steps since the start (kJ/mol)
+    cg_total: jnp.ndarray = None  # CG iterations summed over all force evaluations (float64)
+    kT: jnp.ndarray = None  # thermostat kB T (kJ/mol) as a state variable (replica exchange, remd.py:
+    # one compiled step for every temperature); None: Integrator.kT
+    lam: jnp.ndarray = None  # (2,) alchemical coupling (lambda_elec, lambda_vdw) of the state (alchemy.py:
+    # lambda windows share one compiled step); None: the Alchemy's default
+    mts: object = None  # multiple time stepping: forces of each level, short-range list (mts.MTSState)
+    bias: object = None  # state of the biases (pgm_jax.bias.BiasState) or None
+    efield: jnp.ndarray = None  # (3,) V/nm amplitude of the external field (efield.py); None: no field
+    fshift: jnp.ndarray = None  # (3,) e nm dipole of the re-wrapped charged molecules (itinerant charges)
+    fdip: jnp.ndarray = None  # (3,) e nm M of the last force evaluation (the dipole the field acts on)
 
 
 def upgrade_state(st: MDState, aux) -> MDState:
@@ -112,7 +114,7 @@ def strided_loop(st, n, step, post, stride: int):
     st = jax.lax.cond((h == head) & (head > 0), post, lambda s: s, st)
     rem = n - h
     nch = rem // stride
-    inner = lambda s: jax.lax.fori_loop(0, stride, lambda _, t: step(t), s)          # noqa: E731
+    inner = lambda s: jax.lax.fori_loop(0, stride, lambda _, t: step(t), s)  # noqa: E731
     st = jax.lax.fori_loop(0, nch, lambda _, s: post(inner(s)), st)
     return jax.lax.fori_loop(0, rem - nch * stride, lambda _, s: step(s), st)
 
@@ -124,19 +126,35 @@ def field_state(st: MDState, field) -> MDState:
         return st.set(efield=None, fshift=None, fdip=None)
     z = jnp.zeros(3, jnp.float64)
     E = getattr(st, "efield", None)
-    return st.set(efield=jnp.asarray(field.E0, jnp.float64) if E is None else jnp.asarray(E, jnp.float64),
-                  fshift=z if getattr(st, "fshift", None) is None else st.fshift,
-                  fdip=z if getattr(st, "fdip", None) is None else st.fdip)
+    return st.set(
+        efield=jnp.asarray(field.E0, jnp.float64) if E is None else jnp.asarray(E, jnp.float64),
+        fshift=z if getattr(st, "fshift", None) is None else st.fshift,
+        fdip=z if getattr(st, "fdip", None) is None else st.fdip,
+    )
 
 
 class Integrator:
-    keep_geometry = False             # ask the force field for its row geometry (multiple time stepping, mts.py)
+    keep_geometry = False  # ask the force field for its row geometry (multiple time stepping, mts.py)
 
-    def __init__(self, ff: PGMForceField, rigid: RigidMolecules, neighbors, dt: float = 0.001,
-                 ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0,
-                 pressure: float = 1.0, barostat_interval: int = 100, params=None,
-                 thermostat: str | Thermostat = "langevin", tau_t: float = 1.0, restraints=None, alchemy=None,
-                 bias=None, efield=None):
+    def __init__(
+        self,
+        ff: PGMForceField,
+        rigid: RigidMolecules,
+        neighbors,
+        dt: float = 0.001,
+        ensemble: str = "nvt",
+        temperature: float = 298.0,
+        gamma: float = 1.0,
+        pressure: float = 1.0,
+        barostat_interval: int = 100,
+        params=None,
+        thermostat: str | Thermostat = "langevin",
+        tau_t: float = 1.0,
+        restraints=None,
+        alchemy=None,
+        bias=None,
+        efield=None,
+    ):
         ensemble = ensemble.lower()
         if ensemble not in ("nve", "nvt", "npt"):
             raise ValueError("ensemble must be nve, nvt or npt")
@@ -155,25 +173,29 @@ class Integrator:
         if self.restraints is not None:
             self.restraints.check(rigid.sys.n)
         from ..bias.core import as_bias_set
-        self.bias = as_bias_set(bias, colvar=100)   # pgm_jax.bias.BiasSet or None
+
+        self.bias = as_bias_set(bias, colvar=100)  # pgm_jax.bias.BiasSet or None
         if self.bias is not None:
             self.bias.bind(float(temperature))
             self.bias.check(rigid.sys.n)
-        self.alchemy = alchemy                     # alchemy.Alchemy or None (then every hook below is inactive)
+        self.alchemy = alchemy  # alchemy.Alchemy or None (then every hook below is inactive)
         if alchemy is not None:
             alchemy.check(ff)
             if ff.iel:
                 raise NotImplementedError("extended-Lagrangian dipoles (iel) with an alchemical region")
-        self.efield = as_field(efield)             # efield.ExternalField or None (then the step is unchanged)
+        self.efield = as_field(efield)  # efield.ExternalField or None (then the step is unchanged)
         if self.efield is not None:
             if alchemy is not None:
-                raise NotImplementedError("an external field with an alchemical region (the field would act on the "
-                                          "unscaled solute charges)")
+                raise NotImplementedError(
+                    "an external field with an alchemical region (the field would act on the unscaled solute charges)"
+                )
             Q = np.bincount(np.asarray(ff.sys.mol), weights=np.asarray(ff._atoms(params)["q"]), minlength=ff.sys.nmol)
             self.field_charged = bool(np.any(np.abs(Q) > 1e-6))
             if ensemble == "npt" and self.field_charged:
-                raise NotImplementedError("NPT with an external field and charged molecules: the field energy of the "
-                                          "ions is not invariant under the barostat's scaling (md/efield.py); run NVT")
+                raise NotImplementedError(
+                    "NPT with an external field and charged molecules: the field energy of the "
+                    "ions is not invariant under the barostat's scaling (md/efield.py); run NVT"
+                )
         self.compile()
 
     def compile(self):
@@ -197,8 +219,11 @@ class Integrator:
             return new
         f = self.efield
         t0, t1 = old.step * self.dt, new.step * self.dt
-        w = 0.5 * (t1 - t0) * (f.dHdt(old.efield, t0, old.fdip, volume(old.box))
-                               + f.dHdt(new.efield, t1, new.fdip, volume(new.box)))
+        w = (
+            0.5
+            * (t1 - t0)
+            * (f.dHdt(old.efield, t0, old.fdip, volume(old.box)) + f.dHdt(new.efield, t1, new.fdip, volume(new.box)))
+        )
         return new.set(heat=new.heat + w)
 
     def _forces(self, body, box, induction, nbr, force_rebuild=False, lam=None, bias=None, field=None):
@@ -206,9 +231,10 @@ class Integrator:
         nbr = self.nb.update(nbr, pos, body.center, box, force_rebuild)
         cand, ovf = self.nb.candidates(nbr, body.center, box, pos)
         if self.alchemy is None:
-            res = self.ff.compute(pos, box, cand, induction, self.params, keep_geometry=self.keep_geometry,
-                                  efield=field)
-        else:                                      # Hamiltonian at the state's coupling lam
+            res = self.ff.compute(
+                pos, box, cand, induction, self.params, keep_geometry=self.keep_geometry, efield=field
+            )
+        else:  # Hamiltonian at the state's coupling lam
             res = self.alchemy.compute(self.ff, pos, box, cand, induction, self.params, lam)
         res = self._add_restraints(res._replace(overflow=res.overflow | ovf), pos, box, bias)
         return self.rigid.forces(body, res.forces), res, nbr
@@ -239,8 +265,9 @@ class Integrator:
         """d(E_restraint + E_bias) / d eps (3, 3) under molecular scaling (for the pressure)."""
         if not self._has_extra(bias):
             return jnp.zeros((3, 3))
-        return molecular_strain(lambda p, h: self._extra_energy(p, h, bias), pos, box, self.ff.mol, self.ff.masses,
-                                self.nmol)
+        return molecular_strain(
+            lambda p, h: self._extra_energy(p, h, bias), pos, box, self.ff.mol, self.ff.masses, self.nmol
+        )
 
     # --------------------------------------------------------------------- biases (pgm_jax.bias)
     def _bias_atoms(self, x):
@@ -270,21 +297,34 @@ class Integrator:
             e1, g1 = jax.value_and_grad(self.bias.energy, argnums=1)(new, pos, box)
             dF = self._map_atom_forces(x, box, g0 - g1)
             de = e1 - e0
-            add = lambda a, b: jax.tree_util.tree_map(jnp.add, a, b)          # noqa: E731
-            st = st.set(bias=new._replace(work=new.work + de), dyn=st.dyn.set(force=add(st.dyn.force, dF)),
-                        epot=st.epot + de, heat=st.heat + de)
+            add = lambda a, b: jax.tree_util.tree_map(jnp.add, a, b)  # noqa: E731
+            st = st.set(
+                bias=new._replace(work=new.work + de),
+                dyn=st.dyn.set(force=add(st.dyn.force, dF)),
+                epot=st.epot + de,
+                heat=st.heat + de,
+            )
             m = getattr(st, "mts", None)
-            if m is not None:                          # multiple time stepping: the bias is in the slow group
+            if m is not None:  # multiple time stepping: the bias is in the slow group
                 st = st.set(mts=m.set(forces=(add(m.forces[0], dF),) + tuple(m.forces[1:])))
             return st
 
         return jax.lax.cond(self.bias.due(st.step), dep, lambda s: s, st)
 
     def _with_result(self, st: MDState, F, res, nbr) -> MDState:
-        st = st.set(dyn=st.dyn.set(force=F), nbr=nbr, induction=res.induction, epot=res.energy["total"],
-                    elec=res.energy["elec"], vdw=res.energy["vdw"], iters=res.iterations,
-                    max_iters=jnp.maximum(st.max_iters, res.iterations), resid=jnp.maximum(st.resid, res.residual),
-                    overflow=st.overflow | res.overflow, cg_total=st.cg_total + res.iterations)
+        st = st.set(
+            dyn=st.dyn.set(force=F),
+            nbr=nbr,
+            induction=res.induction,
+            epot=res.energy["total"],
+            elec=res.energy["elec"],
+            vdw=res.energy["vdw"],
+            iters=res.iterations,
+            max_iters=jnp.maximum(st.max_iters, res.iterations),
+            resid=jnp.maximum(st.resid, res.residual),
+            overflow=st.overflow | res.overflow,
+            cg_total=st.cg_total + res.iterations,
+        )
         return st if res.dipole is None else st.set(fdip=res.dipole)
 
     def check_block(self, st: MDState) -> None:
@@ -293,8 +333,16 @@ class Integrator:
         return None
 
     def _state_forces(self, st: MDState, force_rebuild=True) -> MDState:
-        F, res, nbr = self._forces(st.dyn.position, st.box, st.induction, st.nbr, force_rebuild, lam=st.lam,
-                                   bias=st.bias, field=self.field_at(st, st.step))
+        F, res, nbr = self._forces(
+            st.dyn.position,
+            st.box,
+            st.induction,
+            st.nbr,
+            force_rebuild,
+            lam=st.lam,
+            bias=st.bias,
+            field=self.field_at(st, st.step),
+        )
         return self._with_result(st, F, res, nbr)
 
     # --------------------------------------------------------------------- setup
@@ -312,10 +360,26 @@ class Integrator:
         z = jnp.zeros((), jnp.float64)
         zi = jnp.zeros((), jnp.int32)
         dyn, aux = self._init_aux(dyn)
-        st = MDState(dyn=dyn, box=box, induction=self.ff.init_induction(), nbr=nbr, epot=z, elec=z, vdw=z,
-                     iters=zi, max_iters=zi, resid=z, step=zi, mc=jnp.zeros(4, jnp.int32),
-                     mc_dv=jnp.asarray(0.01 * float(volume(box)), jnp.float64), overflow=jnp.zeros((), bool),
-                     aux=aux, heat=z, cg_total=z, bias=self._init_bias(bias))
+        st = MDState(
+            dyn=dyn,
+            box=box,
+            induction=self.ff.init_induction(),
+            nbr=nbr,
+            epot=z,
+            elec=z,
+            vdw=z,
+            iters=zi,
+            max_iters=zi,
+            resid=z,
+            step=zi,
+            mc=jnp.zeros(4, jnp.int32),
+            mc_dv=jnp.asarray(0.01 * float(volume(box)), jnp.float64),
+            overflow=jnp.zeros((), bool),
+            aux=aux,
+            heat=z,
+            cg_total=z,
+            bias=self._init_bias(bias),
+        )
         return self.forces(field_state(st, self.efield), False)
 
     def _init_bias(self, bias=None):
@@ -328,9 +392,9 @@ class Integrator:
     def _scaled(self, dyn: Dynamics):
         """Mass-scaled momenta of the thermostatted degrees of freedom, a mask (0 for rotations about
         axes with zero moment of inertia), the inverse map and the constraint projection."""
-        P, M = dyn.momentum.center, dyn.mass.center                       # M: (nmol, 1)
+        P, M = dyn.momentum.center, dyn.mass.center  # M: (nmol, 1)
         q = dyn.position.orientation
-        I = dyn.mass.orientation                                         # (nmol, 3) principal moments
+        I = dyn.mass.orientation  # (nmol, 3) principal moments
         L = rigid_body.conjugate_momentum_to_angular_momentum(q, dyn.momentum.orientation)
         has = I > 0
         v = jnp.stack([P / jnp.sqrt(M), jnp.where(has, L / jnp.sqrt(jnp.where(has, I, 1.0)), 0.0)])
@@ -339,6 +403,7 @@ class Integrator:
         def unpack(v):
             Pq = rigid_body.angular_momentum_to_conjugate_momentum(q, v[1] * jnp.sqrt(I))
             return dyn.set(momentum=RigidBody(v[0] * jnp.sqrt(M), Pq))
+
         return v, mask, unpack, (lambda u: u)
 
     def _init_aux(self, dyn: Dynamics):
@@ -376,8 +441,9 @@ class Integrator:
             dyn = simulate.position_step(dyn, self.shift, dt / 2)
             dyn, aux, heat = self._o_step(dyn, aux, heat, dt, self.thermostat_kT(st))
             dyn = simulate.position_step(dyn, self.shift, dt / 2)
-        F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr, lam=st.lam, bias=st.bias,
-                                   field=self.field_at(st, st.step + 1))
+        F, res, nbr = self._forces(
+            dyn.position, st.box, st.induction, st.nbr, lam=st.lam, bias=st.bias, field=self.field_at(st, st.step + 1)
+        )
         st = self._with_result(st.set(dyn=dyn, aux=aux, heat=heat), F, res, nbr)
         st = st.set(dyn=simulate.momentum_step(st.dyn, dt / 2), step=st.step + 1)
         if self.ensemble == "npt":
@@ -406,10 +472,11 @@ class Integrator:
         ovf = ovf | ovf0
         kT = self.thermostat_kT(st)
         e_0 = st.epot
-        if self.ff.shadow:                         # iEL/0-SCF: converged energies at both volumes
+        if self.ff.shadow:  # iEL/0-SCF: converged energies at both volumes
             pos0 = self.rigid.positions(body)
-            e_0 = self.ff.energy(pos0, H, self.nb.candidates(st.nbr, body.center, H, pos0)[0], st.induction,
-                                 self.params, efield=field)[0] + self._restraint_energy(pos0, H, st.bias)
+            e_0 = self.ff.energy(
+                pos0, H, self.nb.candidates(st.nbr, body.center, H, pos0)[0], st.induction, self.params, efield=field
+            )[0] + self._restraint_energy(pos0, H, st.bias)
         w = (e_n - e_0) + self.pressure * dV - self.nmol * kT * jnp.log(jnp.maximum(Vn, 1e-12) / V)
         accept = (Vn > 0) & (jnp.log(jax.random.uniform(k2, dtype=jnp.float64)) < -w / kT)
         st = st.set(dyn=st.dyn.set(rng=key), overflow=st.overflow | ovf)
@@ -423,14 +490,16 @@ class Integrator:
         mc = st.mc + jnp.array([1, 0, 1, 0], jnp.int32) + accept.astype(jnp.int32) * jnp.array([0, 1, 0, 1], jnp.int32)
         adapt = mc[2] >= 10
         rate = mc[3] / jnp.maximum(mc[2], 1)
-        dv = jnp.where(adapt & (rate < 0.25), st.mc_dv / 1.1, jnp.where(adapt & (rate > 0.75), st.mc_dv * 1.1, st.mc_dv))
+        dv = jnp.where(
+            adapt & (rate < 0.25), st.mc_dv / 1.1, jnp.where(adapt & (rate > 0.75), st.mc_dv * 1.1, st.mc_dv)
+        )
         dv = jnp.minimum(dv, 0.3 * volume(st.box))
         mc = jnp.where(adapt, mc.at[2].set(0).at[3].set(0), mc)
         return st.set(mc=mc, mc_dv=dv)
 
     def _run(self, st: MDState, n) -> MDState:
         st = st.set(max_iters=jnp.zeros((), jnp.int32), resid=jnp.zeros((), jnp.float64), overflow=jnp.zeros((), bool))
-        step = lambda s: self._book_field(s, self._step(s))                   # noqa: E731
+        step = lambda s: self._book_field(s, self._step(s))  # noqa: E731
         if self.bias is None or self.bias.stride == 0:
             return jax.lax.fori_loop(0, n, lambda _, s: step(s), st)
         return strided_loop(st, n, step, self._bias_post, self.bias.stride)

@@ -7,6 +7,7 @@ Only intermolecular pairs (including periodic images of the same molecule) are s
 rigid molecules in Amber, where every intramolecular pair is excluded.  Intramolecular LJ
 (1-4 and beyond) belongs with bonded terms, which are not implemented.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ def _pair_params(P, i, j):
 @dataclass
 class LJChannel:
     """Gas phase: all intermolecular pairs, no cutoff."""
+
     name: str = "vdw"
 
     def energy(self, pos, sys: System, params=None):
@@ -46,9 +48,9 @@ def lj_long_range(P, volume, rc):
     -2 pi / (3 V rc^3) sum_{i,j} B_ij over all ordered atom pairs (i = j included),
     B_ij = 2 eps_ij rmin_ij^6.  Uses (R*_i + R*_j)^6 = sum_k C(6,k) R*_i^k R*_j^(6-k): O(n)."""
     R, s = P["lj_rmin_half"], P["lj_sqrt_eps"]
-    M = [jnp.sum(s * R ** k) for k in range(7)]
+    M = [jnp.sum(s * R**k) for k in range(7)]
     SB = 2.0 * sum(comb(6, k) * M[k] * M[6 - k] for k in range(7))
-    return -2.0 * jnp.pi * SB / (3.0 * volume * rc ** 3)
+    return -2.0 * jnp.pi * SB / (3.0 * volume * rc**3)
 
 
 class PeriodicLJ:
@@ -57,9 +59,10 @@ class PeriodicLJ:
 
     def __init__(self, sys: System, H, pos_ref, rc: float = 1.0, skin: float = 0.0, lrc: bool = False, nlist=None):
         from .ewald import neighbor_list
+
         self.sys, self.H, self.rc, self.lrc = sys, np.asarray(H, float), rc, lrc
         i, j, img = nlist if nlist is not None else neighbor_list(pos_ref, self.H, rc + skin)
-        keep = ~((sys.mol[i] == sys.mol[j]) & np.all(img == 0, axis=1))       # intermolecular or image
+        keep = ~((sys.mol[i] == sys.mol[j]) & np.all(img == 0, axis=1))  # intermolecular or image
         self.pi, self.pj, self.img = i[keep], j[keep], img[keep]
 
     def energy(self, pos, params=None, H=None):

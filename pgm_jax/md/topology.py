@@ -23,6 +23,7 @@ pGM electrostatics has no exclusions, but the van der Waals term does, and molec
 
 MDTopology.rigid(sys) reproduces the rigid-body engine (groups = molecules, every intramolecular pair
 special with weight 0, no constraints).  Units nm."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -31,7 +32,7 @@ import numpy as np
 
 from ..bonded.topology import near_pairs
 
-MAX_SINGLE = 6                      # molecules up to this many atoms are one neighbour-list group
+MAX_SINGLE = 6  # molecules up to this many atoms are one neighbour-list group
 
 
 @dataclass
@@ -39,6 +40,7 @@ class MoleculeRule:
     """How the MD engine treats one molecule type.
     vdw: "none" (no intramolecular van der Waals) or "graph" (weights from graph distances);
     constraints: [(i, j, d0 nm)] in the molecule's atom order."""
+
     bonds: list
     vdw: str = "none"
     lj_min_sep: int = 4
@@ -72,21 +74,21 @@ def heavy_atom_groups(elements, bonds) -> np.ndarray:
 @dataclass
 class MDTopology:
     n: int
-    mol: np.ndarray                 # (N,) molecule of every atom
-    group: np.ndarray               # (N,) neighbour-list group of every atom
+    mol: np.ndarray  # (N,) molecule of every atom
+    group: np.ndarray  # (N,) neighbour-list group of every atom
     n_group: int
-    special: np.ndarray             # (N, S) special partners (padding N)
-    special_w: np.ndarray           # (N, S) van der Waals weights of the special pairs
-    special_groups: np.ndarray      # (N, Gs) special groups of each atom's group (padding -1)
-    constraints: np.ndarray         # (nc, 2) atom pairs
-    constraint_d0: np.ndarray       # (nc,) nm
+    special: np.ndarray  # (N, S) special partners (padding N)
+    special_w: np.ndarray  # (N, S) van der Waals weights of the special pairs
+    special_groups: np.ndarray  # (N, Gs) special groups of each atom's group (padding -1)
+    constraints: np.ndarray  # (nc, 2) atom pairs
+    constraint_d0: np.ndarray  # (nc,) nm
 
     # ------------------------------------------------------------------ builders
     @classmethod
     def rigid(cls, sys) -> MDTopology:
         """Groups = molecules, every intramolecular pair special with weight 0 (the rigid engine)."""
         rule = MoleculeRule(bonds=[], vdw="none")
-        return cls.build(sys, [rule] * sys.nmol, max_single=10 ** 9)
+        return cls.build(sys, [rule] * sys.nmol, max_single=10**9)
 
     @classmethod
     def build(cls, sys, rules, max_single: int = MAX_SINGLE) -> MDTopology:
@@ -105,12 +107,13 @@ class MDTopology:
             if key not in cache:
                 cache[key] = cls._molecule(m, rule, max_single)
             lg, n_lg, sp, sg, c = cache[key]
-            group[off:off + m.n] = lg + g0
+            group[off : off + m.n] = lg + g0
             for a in range(m.n):
                 sp_rows[off + a] = [(off + b, w) for b, w in sp[a]]
                 sgs[off + a] = [g + g0 for g in sg[lg[a]]]
             for i, j, d in c:
-                cons.append((off + i, off + j)); d0s.append(d)
+                cons.append((off + i, off + j))
+                d0s.append(d)
             g0 += n_lg
         S = max([len(r) for r in sp_rows] + [1])
         Gs = max([len(r) for r in sgs] + [1])
@@ -120,17 +123,25 @@ class MDTopology:
         for a in range(N):
             for s, (b, w) in enumerate(sp_rows[a]):
                 special[a, s], special_w[a, s] = b, w
-            special_groups[a, :len(sgs[a])] = sgs[a]
-        return cls(n=N, mol=np.asarray(sys.mol), group=group, n_group=g0, special=special, special_w=special_w,
-                   special_groups=special_groups, constraints=np.array(cons, int).reshape(-1, 2),
-                   constraint_d0=np.array(d0s, float))
+            special_groups[a, : len(sgs[a])] = sgs[a]
+        return cls(
+            n=N,
+            mol=np.asarray(sys.mol),
+            group=group,
+            n_group=g0,
+            special=special,
+            special_w=special_w,
+            special_groups=special_groups,
+            constraints=np.array(cons, int).reshape(-1, 2),
+            constraint_d0=np.array(d0s, float),
+        )
 
     @staticmethod
     def _molecule(m, rule: MoleculeRule, max_single: int):
         """(local groups, n groups, special partners [(atom, weight)] per atom, special groups per
         group, constraints) of one molecule."""
         n = m.n
-        host = {vs.site: vs.host for vs in (getattr(m, "vsites", None) or ())}          # site -> host atom
+        host = {vs.site: vs.host for vs in (getattr(m, "vsites", None) or ())}  # site -> host atom
         bonds = [(int(i), int(j)) for i, j in rule.bonds if int(i) not in host and int(j) not in host]
         bad = [(i, j) for i, j, _ in rule.constraints if i in host or j in host]
         if bad:
@@ -139,10 +150,12 @@ class MDTopology:
             lg = np.zeros(n, int)
         else:
             if rule.vdw == "none":
-                raise ValueError(f"{m.name}: a molecule without intramolecular van der Waals must be one group "
-                                 f"({n} atoms > {max_single})")
+                raise ValueError(
+                    f"{m.name}: a molecule without intramolecular van der Waals must be one group "
+                    f"({n} atoms > {max_single})"
+                )
             lg = heavy_atom_groups(list(m.elements), bonds)
-            if host:                                   # a site joins its host's group (renumbered, no empty groups)
+            if host:  # a site joins its host's group (renumbered, no empty groups)
                 for a, h in host.items():
                     lg[a] = lg[h]
                 lg = np.unique(lg, return_inverse=True)[1].reshape(-1)
@@ -150,17 +163,19 @@ class MDTopology:
         depth = max(3, int(rule.lj_min_sep) - 1)
         nbr = [[] for _ in range(n)]
         for i, j in bonds:
-            nbr[i].append(j); nbr[j].append(i)
+            nbr[i].append(j)
+            nbr[j].append(i)
         near = near_pairs(nbr, depth) if bonds else {}
         sg = [{g} for g in range(n_lg)]
-        for (i, j) in near:
-            sg[lg[i]].add(lg[j]); sg[lg[j]].add(lg[i])
+        for i, j in near:
+            sg[lg[i]].add(lg[j])
+            sg[lg[j]].add(lg[i])
         members = [np.nonzero(lg == g)[0] for g in range(n_lg)]
 
         def weight(i, j):
             if rule.vdw == "none":
                 return 0.0
-            i, j = host.get(i, i), host.get(j, j)                  # a site takes its host's place in the graph
+            i, j = host.get(i, i), host.get(j, j)  # a site takes its host's place in the graph
             if i == j:
                 return 0.0
             d = near.get((min(i, j), max(i, j)), depth + 1)

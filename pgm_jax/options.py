@@ -11,6 +11,7 @@ Electrostatics (`elec`), all with Gaussian distributions and every atom pair int
 Van der Waals (`vdw`): "lj" (Amber form, Lorentz-Berthelot), "gvdw" (Gaussian-density vdW,
 vdw.py; `gvdw_rep` "gauss" | "slater"), "none".
 """
+
 ELEC_LEVELS = {"q": (False, False), "qp": (True, False), "qi": (False, True), "qpi": (True, True)}
 VDW_FORMS = ("lj", "gvdw", "none")
 GVDW_REP = ("gauss", "slater")

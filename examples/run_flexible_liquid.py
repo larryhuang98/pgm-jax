@@ -5,6 +5,7 @@
 Builds a dilute box (random orientations on a lattice), relaxes it with Langevin NVT, then runs
 Monte Carlo NPT; writes <prefix>.log (energies, temperatures, density), <prefix>.nc (Amber NetCDF
 trajectory) and <prefix>.chk, and prints the mean density of the second half of the run."""
+
 import argparse
 import os
 import sys
@@ -36,16 +37,27 @@ prefix = a.prefix or os.path.splitext(a.template)[0] + "_npt"
 pos, H = liquid_box(tpl, a.n, a.density0, seed=1, min_dist=0.18)
 sys_ = System([tpl.pgm] * a.n)
 dt = a.dt / 1000.0
-settings = MDSettings()                                   # 0.9 nm cutoff, PME, dipole tol 1e-5, mixed precision
+settings = MDSettings()  # 0.9 nm cutoff, PME, dipole tol 1e-5, mixed precision
 nvt = FlexibleSimulation(sys_, [tpl] * a.n, pos, H, settings, dt=dt, ensemble="nvt", temperature=a.T, gamma=5.0)
-nvt.run(int(round(2.0 / dt)), report=int(round(1.0 / dt)), prefix=prefix + "_nvt")          # 2 ps relaxation
-sim = FlexibleSimulation(sys_, [tpl] * a.n, nvt.positions_nm(), np.asarray(nvt.state.box), settings, dt=dt,
-                         ensemble="npt", temperature=a.T, pressure=a.P, gamma=1.0, barostat_interval=25,
-                         vel_nm_ps=nvt.velocities_nm_ps())
-every = int(round(1.0 / dt))                                                          # report every ps
+nvt.run(int(round(2.0 / dt)), report=int(round(1.0 / dt)), prefix=prefix + "_nvt")  # 2 ps relaxation
+sim = FlexibleSimulation(
+    sys_,
+    [tpl] * a.n,
+    nvt.positions_nm(),
+    np.asarray(nvt.state.box),
+    settings,
+    dt=dt,
+    ensemble="npt",
+    temperature=a.T,
+    pressure=a.P,
+    gamma=1.0,
+    barostat_interval=25,
+    vel_nm_ps=nvt.velocities_nm_ps(),
+)
+every = int(round(1.0 / dt))  # report every ps
 sim.run(int(round(a.ps / dt)), report=every, traj=every, restart=10 * every, prefix=prefix)
 log = [ln.split() for ln in open(prefix + ".log") if ln.strip() and not ln.startswith("#")]
 head = [ln for ln in open(prefix + ".log") if ln.startswith("#") and "density_g_cm3" in ln][-1].split()[1:]
 rho = np.array([float(r[head.index("density_g_cm3")]) for r in log])
-half = rho[len(rho) // 2:]
+half = rho[len(rho) // 2 :]
 print(f"density, second half ({len(half)} ps): {half.mean():.4f} g/cm^3 (sd {half.std():.4f})")

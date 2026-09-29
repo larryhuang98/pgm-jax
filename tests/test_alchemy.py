@@ -4,6 +4,7 @@ finite differences with the dipoles re-solved, soft core finite at overlap, pres
 lambda windows (= sequential, samples, Hamiltonian exchange), the gas-phase leg, the estimators
 (MBAR, BAR, TI, statistical inefficiency) on harmonic oscillators with analytic free energies,
 and the driver's outputs and restarts."""
+
 import os
 
 import jax
@@ -32,8 +33,16 @@ from pgm_jax.md.simulation import Simulation  # noqa: E402
 
 
 def settings(**kw):
-    base = dict(precision="double", dipole_tol=1e-11, max_iter=400, cutoff=0.55, skin=0.05, ewald_beta=5.0,
-                pme_grid=(32, 32, 32), peek=0.0)
+    base = dict(
+        precision="double",
+        dipole_tol=1e-11,
+        max_iter=400,
+        cutoff=0.55,
+        skin=0.05,
+        ewald_beta=5.0,
+        pme_grid=(32, 32, 32),
+        peek=0.0,
+    )
     base.update(kw)
     return MDSettings(**base)
 
@@ -67,7 +76,9 @@ def test_full_coupling_is_the_original_hamiltonian():
     assert abs(float(sim.state.epot) - float(plain.state.epot)) < 1e-9 * abs(float(plain.state.epot))
     assert abs(float(sim.state.vdw) - float(plain.state.vdw)) < 1e-9
     F0, F1 = plain.state.dyn.force, sim.state.dyn.force
-    assert np.allclose(F0.center, F1.center, atol=1e-8) and np.allclose(F0.orientation.vec, F1.orientation.vec, atol=1e-8)
+    assert np.allclose(F0.center, F1.center, atol=1e-8) and np.allclose(
+        F0.orientation.vec, F1.orientation.vec, atol=1e-8
+    )
     assert abs(sim.pressure() - plain.pressure()) < 1e-6 * max(1.0, abs(plain.pressure()))
     X, Hb, cand = frame(sim)
     e1 = alch.energy(sim.ff, X, Hb, cand, sim.ff.init_induction(), P, None)[0]
@@ -142,7 +153,7 @@ def test_decoupled_end_state_is_the_box_without_the_solute():
     assert abs(float(res.energy["total"]) - float(ref.energy["total"])) < 1e-8 * abs(float(ref.energy["total"]))
     assert abs(float(res.energy["vdw"]) - float(ref.energy["vdw"])) < 1e-9
     assert np.allclose(res.forces[3:], ref.forces, atol=1e-7)
-    assert float(jnp.max(jnp.abs(res.forces[:3]))) < 1e-5            # the floor leaves ~1e-8 of the induction
+    assert float(jnp.max(jnp.abs(res.forces[:3]))) < 1e-5  # the floor leaves ~1e-8 of the induction
 
 
 def test_softcore_is_finite_at_overlap_and_lennard_jones_at_one():
@@ -155,16 +166,16 @@ def test_softcore_is_finite_at_overlap_and_lennard_jones_at_one():
     N = sim.sys.n
     tail = float(alch._tail(Pa, Hb))
     assert tail < 0.0
-    one = jnp.full(cand.shape, N, cand.dtype).at[0, 0].set(9)          # the pair (solute O, oxygen 9) only
-    Xo = X.at[9:12].add(X[0] - X[9])                                  # that water's oxygen on the solute's
+    one = jnp.full(cand.shape, N, cand.dtype).at[0, 0].set(9)  # the pair (solute O, oxygen 9) only
+    Xo = X.at[9:12].add(X[0] - X[9])  # that water's oxygen on the solute's
     E = jax.jit(lambda x, c, lv: alch.softcore_energy(x, Hb, c, P, lv))
     eps = float(Pa["lj_sqrt_eps"][0] * Pa["lj_sqrt_eps"][9])
     for lv in (0.0, 0.2, 0.5, 0.9):
         e, g = jax.value_and_grad(E)(Xo, one, lv)
         w = 0.5 * alch.sc_alpha * (1.0 - lv)
-        assert abs(float(e) - lv * (tail + eps * (1.0 / w ** 2 - 2.0 / w))) < 1e-9 * max(1.0, abs(float(e))), lv
+        assert abs(float(e) - lv * (tail + eps * (1.0 / w**2 - 2.0 / w))) < 1e-9 * max(1.0, abs(float(e))), lv
         assert np.all(np.isfinite(np.asarray(g))) and float(jnp.abs(g).max()) < 1e-12
-    e, g = jax.value_and_grad(E)(Xo, cand, 0.5)                       # with the whole row: finite too
+    e, g = jax.value_and_grad(E)(Xo, cand, 0.5)  # with the whole row: finite too
     assert np.isfinite(float(e)) and np.all(np.isfinite(np.asarray(g)))
     # lambda_vdw = 1: plain LJ (Amber form) over the same pairs, plus the full tail
     kk = np.asarray(cand[0])
@@ -189,7 +200,10 @@ def test_pressure_at_intermediate_lambda_matches_volume_derivative():
     _, ind, _, _ = alch.energy(ff, X, Hb, cand, ff.init_induction(), P, lam)
     W = alch.strain_derivative(ff, X, Hb, cand, ind.mu, P, lam)
     m = ff.masses
-    com = jax.ops.segment_sum(m[:, None] * X, ff.mol, sim.sys.nmol) / jax.ops.segment_sum(m, ff.mol, sim.sys.nmol)[:, None]
+    com = (
+        jax.ops.segment_sum(m[:, None] * X, ff.mol, sim.sys.nmol)
+        / jax.ops.segment_sum(m, ff.mol, sim.sys.nmol)[:, None]
+    )
 
     def e(s):
         return float(alch.energy_fixed_mu(ff, X + ((s - 1.0) * com)[ff.mol], Hb * s, cand, ind.mu, P, lam))
@@ -214,7 +228,7 @@ def test_windows_batched_equal_sequential_and_exchange():
     us, gs, _ = ws.sample()
     assert np.allclose(ub, us, atol=1e-8) and np.allclose(gb, gs, atol=1e-7)
     beta = 1.0 / float(wb.integ.kT)
-    assert np.allclose(np.diag(ub), beta * wb.potentials(), atol=1e-7)     # u_k(x_k) = beta U at the window's own lambda
+    assert np.allclose(np.diag(ub), beta * wb.potentials(), atol=1e-7)  # u_k(x_k) = beta U at the window's own lambda
     # dU/dlambda_vdw from the samples: the soft-core term alone
     X, Hb, cand = frame(wb._on(3))
     gv = jax.grad(lambda lv: alch.softcore_energy(X, Hb, cand, P, lv))(L[3, 1])
@@ -227,7 +241,7 @@ def test_windows_batched_equal_sequential_and_exchange():
     e = wb.potentials()
     assert abs(e[1] - ub[1, 2] / beta) < 1e-6 and abs(e[2] - ub[2, 1] / beta) < 1e-6
     assert np.allclose(e, ws.potentials(), rtol=1e-10)
-    for k in (0, 3, 4):                                                  # untouched slots
+    for k in (0, 3, 4):  # untouched slots
         assert wb.observables(k)["econs"] == econs[k]
     assert np.allclose(np.asarray(wb.state(1).lam), L[1]) and np.allclose(np.asarray(wb.state(2).lam), L[2])
     assert np.allclose(np.asarray(wb.state(1).induction.hist[3]), np.asarray(wb.state(1).induction.mu))
@@ -263,18 +277,31 @@ def test_gas_phase_leg_matches_a_lone_molecule_in_a_large_box():
     alch = Alchemy(sysA, 0)
     rng = np.random.default_rng(3)
     t = np.radians(104.52 / 2)
-    xyz = np.array([[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0],
-                    [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]])
+    xyz = np.array(
+        [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
+    )
     xyz = xyz @ np.linalg.qr(rng.normal(size=(3, 3)))[0].T + 2.1
     H = np.eye(3) * 4.2
-    s = MDSettings(precision="double", cutoff=1.2, skin=0.0, ewald_beta=3.0, pme_grid=(64, 64, 64), pme_order=8,
-                   dipole_tol=1e-12, max_iter=200, peek=0.0, lj_lrc=False)
+    s = MDSettings(
+        precision="double",
+        cutoff=1.2,
+        skin=0.0,
+        ewald_beta=3.0,
+        pme_grid=(64, 64, 64),
+        pme_order=8,
+        dipole_tol=1e-12,
+        max_iter=200,
+        peek=0.0,
+        lj_lrc=False,
+    )
     ff = PGMForceField(sysA, H, s)
     alch.check(ff)
     idx = ff.rows_for(xyz, H)
     gas = GasPhaseLeg(alch, xyz, "qpi")
     for le in (1.0, 0.5, 0.0):
-        e = float(alch.energy(ff, jnp.asarray(xyz), jnp.asarray(H), idx, ff.init_induction(), P, jnp.array([le, 1.0]))[0])
+        e = float(
+            alch.energy(ff, jnp.asarray(xyz), jnp.asarray(H), idx, ff.init_induction(), P, jnp.array([le, 1.0]))[0]
+        )
         assert abs(e - gas.energy(le, P)) < 1e-3, (le, e, gas.energy(le, P))
     assert abs(gas.delta_g(P) - (gas.energy(0.0, P) - gas.energy(1.0, P))) < 1e-12 and abs(gas.energy(0.0, P)) < 1e-6
     h = 1e-5
@@ -285,7 +312,7 @@ def test_gas_phase_leg_matches_a_lone_molecule_in_a_large_box():
 def test_refused_setups():
     pos, H, sys0 = box()
     with pytest.raises(ValueError, match="alchemical_system"):
-        Alchemy(sys0, 0)                                              # shares its keys with every other water
+        Alchemy(sys0, 0)  # shares its keys with every other water
     w = water()
     ion = System([w.__class__("ION", ["Na"], ["Na"], [1.0], [0.05], [1e-4])] + [w] * 3)
     sysI, _ = alchemical_system(ion, 0)
@@ -308,6 +335,7 @@ def flex_box():
     from test_flexible import template
 
     from pgm_jax.md.flexible import RigidTemplate
+
     tpl, xm = template()
     pos, H, w = _water_box(4, 0.31)
     L = H[0, 0]
@@ -315,11 +343,11 @@ def flex_box():
     wat = water()
     keep = []
     for k in range(len(pos) // 3):
-        d = pos[3 * k:3 * k + 3, None, :] - xm[None]
+        d = pos[3 * k : 3 * k + 3, None, :] - xm[None]
         d -= L * np.round(d / L)
         if np.linalg.norm(d, axis=-1).min() > 0.25:
             keep.append(k)
-    X = np.concatenate([xm] + [pos[3 * k:3 * k + 3] for k in keep])
+    X = np.concatenate([xm] + [pos[3 * k : 3 * k + 3] for k in keep])
     rt = RigidTemplate(wat, w)
     return tpl, System([tpl.pgm] + [wat] * len(keep)), [tpl] + [rt] * len(keep), X, H
 
@@ -339,13 +367,14 @@ def test_flexible_solute_hamiltonian():
     the energy is the waters' alone plus the solute's bonded and intramolecular van der Waals energy,
     and the waters feel the forces of the box without the solute."""
     from pgm_jax.md.flexible import FlexibleSimulation
+
     tpl, sys0, tpls, X, H = flex_box()
     s = settings()
     sysA, P = alchemical_system(sys0, 0)
     alch = Alchemy(sysA, 0)
     plain = FlexibleSimulation(sys0, tpls, X, H, s, log=None, constraints="h-bonds")
     sim = FlexibleSimulation(sysA, tpls, X, H, s, log=None, params=P, alchemy=alch, constraints="h-bonds")
-    assert alch._intra is not None and len(alch._intra[0]) == 3            # the three scaled H-C-O-H pairs
+    assert alch._intra is not None and len(alch._intra[0]) == 3  # the three scaled H-C-O-H pairs
     assert abs(float(sim.state.epot) - float(plain.state.epot)) < 1e-9 * abs(float(plain.state.epot))
     assert np.allclose(np.asarray(sim.state.dyn.force), np.asarray(plain.state.dyn.force), atol=1e-7)
     assert abs(sim.pressure() - plain.pressure()) < 1e-6 * max(1.0, abs(plain.pressure()))
@@ -382,6 +411,7 @@ def test_keep_intramolecular_flexible_solute():
     electrostatic energy (the decoupled state is the gas-phase molecule); dU/dlambda against
     finite differences with the dipoles re-solved."""
     from pgm_jax.md.flexible import FlexibleSimulation
+
     tpl, sys0, tpls, X, H = flex_box()
     s = settings()
     sysA, P = alchemical_system(sys0, 0)
@@ -394,8 +424,12 @@ def test_keep_intramolecular_flexible_solute():
     Y = np.asarray(off.dyn.position)
     env = FlexibleSimulation(System(sys0.molecules[1:]), tpls[1:], Y[6:], H, s, log=None, constraints="h-bonds")
     gas = GasPhaseLeg(alch, Y[:6], "qpi")
-    ref = float(env.state.epot) + float(tpl.bonded_energy(jnp.asarray(Y[:6]))) + intra_lj(tpl, sysA.expand(P), Y) \
+    ref = (
+        float(env.state.epot)
+        + float(tpl.bonded_energy(jnp.asarray(Y[:6])))
+        + intra_lj(tpl, sysA.expand(P), Y)
         + gas.energy(1.0, P)
+    )
     assert abs(float(off.epot) - ref) < 1e-8 * abs(ref), (float(off.epot), ref)
     ff = sim.ff
     cand = sim.integ.nb.candidates(off.nbr, sim.flex.list_centers(jnp.asarray(Y)), off.box, jnp.asarray(Y))[0]
@@ -417,10 +451,22 @@ def test_flexible_windows_and_lone_solute_gas_leg():
     E(lambda) - E(0))."""
     from pgm_jax.md.alchemy import lone_solute
     from pgm_jax.md.flexible import FlexibleSimulation
+
     tpl, sys0, tpls, X, H = flex_box()
     sysA, P = alchemical_system(sys0, 0)
-    sim = FlexibleSimulation(sysA, tpls, X, H, settings(dipole_tol=1e-9), dt=0.001, log=None, params=P,
-                             alchemy=Alchemy(sysA, 0), constraints="h-bonds", thermostat="bussi")
+    sim = FlexibleSimulation(
+        sysA,
+        tpls,
+        X,
+        H,
+        settings(dipole_tol=1e-9),
+        dt=0.001,
+        log=None,
+        params=P,
+        alchemy=Alchemy(sysA, 0),
+        constraints="h-bonds",
+        thermostat="bussi",
+    )
     L = standard_schedule(2, [0.4, 0.0])
     wb, ws = LambdaWindows(sim, L, seed=1), LambdaWindows(sim, L, batched=False, seed=1)
     wb.advance(6)
@@ -430,12 +476,23 @@ def test_flexible_windows_and_lone_solute_gas_leg():
     assert np.allclose(ub, us, atol=1e-7) and np.allclose(gb, gs, atol=1e-6)
     assert np.allclose(np.diag(ub), wb.potentials() / float(wb.integ.kT), atol=1e-7)
     sub, x, Hg = lone_solute(sysA, 0, np.asarray(wb.state(0).dyn.position), 4.2)
-    sg = MDSettings(precision="double", cutoff=1.2, skin=0.0, ewald_beta=3.0, pme_grid=(64, 64, 64), pme_order=8,
-                    dipole_tol=1e-12, max_iter=200, peek=0.0, lj_lrc=False)
+    sg = MDSettings(
+        precision="double",
+        cutoff=1.2,
+        skin=0.0,
+        ewald_beta=3.0,
+        pme_grid=(64, 64, 64),
+        pme_order=8,
+        dipole_tol=1e-12,
+        max_iter=200,
+        peek=0.0,
+        lj_lrc=False,
+    )
     alch_g = Alchemy(sub, 0)
-    gsim = FlexibleSimulation(sub, [tpl], x, Hg, sg, log=None, params=P, alchemy=alch_g, ensemble="nve",
-                              neighbor_list="atom")
-    E = lambda le: float(gsim.integ.forces(gsim.state.set(lam=jnp.array([le, 1.0])), False).epot)   # noqa: E731
+    gsim = FlexibleSimulation(
+        sub, [tpl], x, Hg, sg, log=None, params=P, alchemy=alch_g, ensemble="nve", neighbor_list="atom"
+    )
+    E = lambda le: float(gsim.integ.forces(gsim.state.set(lam=jnp.array([le, 1.0])), False).epot)  # noqa: E731
     gas = GasPhaseLeg(alch_g, np.asarray(gsim.state.dyn.position), "qpi")
     e0 = E(0.0)
     for le in (1.0, 0.4):

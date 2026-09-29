@@ -32,6 +32,7 @@ measured errors, and `predicted_errors` these estimates.
     table = analyse(*read_series("ff.ffd"), skip_ps=50)
 
 Units: V/nm, e nm, nm^3, K."""
+
 from __future__ import annotations
 
 import os
@@ -60,13 +61,17 @@ class FieldReplicas(MDReplicas):
         if integ.efield is None:
             raise ValueError("create the simulation with efield=... (any amplitude; each replica sets its own)")
         if sim.ensemble == "npt":
-            raise ValueError("batched field replicas run NVE or NVT (under vmap the barostat's trial energy would be "
-                             "evaluated every step); equilibrate the density first")
+            raise ValueError(
+                "batched field replicas run NVE or NVT (under vmap the barostat's trial energy would be "
+                "evaluated every step); equilibrate the density first"
+            )
         if getattr(integ, "mts", None) is not None:
             raise ValueError("field replicas with multiple time stepping are not supported")
         if integ.field_charged:
-            raise NotImplementedError("field replicas of systems with charged molecules: the batched driver does not "
-                                      "book the itinerant dipole of re-wrapped ions (use Simulation with efield=)")
+            raise NotImplementedError(
+                "field replicas of systems with charged molecules: the batched driver does not "
+                "book the itinerant dipole of re-wrapped ions (use Simulation with efield=)"
+            )
         F = np.asarray(fields, float).reshape(-1, 3)
         self.sim, self.integ, self.batched = sim, integ, True
         self.fields = F
@@ -91,18 +96,37 @@ class FieldReplicas(MDReplicas):
     def header(self, extra: dict | None = None) -> str:
         sim = self.sim
         V = float(np.abs(np.linalg.det(np.asarray(self.S.box)[0])))
-        meta = {"temperature_K": float(sim.T0), "ensemble": sim.ensemble, "dt_ps": self.dt, "n_atoms": sim.sys.n,
-                "n_molecules": sim.sys.nmol, "volume_nm3": V, "replicas": self.n, "field_kind": self.integ.efield.kind}
+        meta = {
+            "temperature_K": float(sim.T0),
+            "ensemble": sim.ensemble,
+            "dt_ps": self.dt,
+            "n_atoms": sim.sys.n,
+            "n_molecules": sim.sys.nmol,
+            "volume_nm3": V,
+            "replicas": self.n,
+            "field_kind": self.integ.efield.kind,
+        }
         meta.update(extra or {})
-        lines = ["pgm_jax finite-field series (pgm_jax.md.finite_field): cell dipole M (e nm) of every replica",
-                 "M = sum q r + sum p + sum mu (whole molecules); fields in V/nm"]
+        lines = [
+            "pgm_jax finite-field series (pgm_jax.md.finite_field): cell dipole M (e nm) of every replica",
+            "M = sum q r + sum p + sum mu (whole molecules); fields in V/nm",
+        ]
         lines += [f"{k} = {v}" for k, v in meta.items()]
         lines += [f"field_{k} = {E[0]:.10g} {E[1]:.10g} {E[2]:.10g}" for k, E in enumerate(self.fields)]
         lines.append("columns = step time_ps " + " ".join(f"M{k}_{c}" for k in range(self.n) for c in "xyz"))
         return "".join(f"# {s}\n" for s in lines)
 
-    def run(self, nsteps: int, every: int = 25, prefix: str = "ff", report: int = 5000, append: bool = False,
-            restart: int = 0, extra: dict | None = None, log=None):
+    def run(
+        self,
+        nsteps: int,
+        every: int = 25,
+        prefix: str = "ff",
+        report: int = 5000,
+        append: bool = False,
+        restart: int = 0,
+        extra: dict | None = None,
+        log=None,
+    ):
         """Advance every replica nsteps, writing M every `every` steps to prefix.ffd, a log line every
         `report` steps to prefix.log (temperatures, energies, CG iterations, ns/day per replica and
         aggregate) and, every `restart` steps and at the end, a checkpoint prefix.ffchk."""
@@ -118,7 +142,9 @@ class FieldReplicas(MDReplicas):
             self.advance(every)
             done += every
             step = int(np.asarray(self.S.step)[0])
-            rows.append(f"{step:10d} {self.time_ps:12.4f} " + " ".join(f"{x:.9e}" for x in self.dipoles().reshape(-1)) + "\n")
+            rows.append(
+                f"{step:10d} {self.time_ps:12.4f} " + " ".join(f"{x:.9e}" for x in self.dipoles().reshape(-1)) + "\n"
+            )
             if report and done % report == 0:
                 with open(path, "a") as fh:
                     fh.writelines(rows)
@@ -126,9 +152,11 @@ class FieldReplicas(MDReplicas):
                 T = [self.integ.temperature(self.state(k)) for k in range(self.n)]
                 el = time.time() - t0
                 nsd = done * self.dt / 1000.0 / max(el, 1e-9) * 86400.0
-                line = (f"step {step} t {self.time_ps:.2f} ps  T {np.mean(T):.1f} (min {np.min(T):.1f} max {np.max(T):.1f})  "
-                        f"cg {float(np.mean(np.asarray(self.S.cg_total))) / max(step, 1):.2f}  "
-                        f"{nsd:.2f} ns/day per replica, {nsd * self.n:.1f} aggregate")
+                line = (
+                    f"step {step} t {self.time_ps:.2f} ps  T {np.mean(T):.1f} (min {np.min(T):.1f} max {np.max(T):.1f})  "
+                    f"cg {float(np.mean(np.asarray(self.S.cg_total))) / max(step, 1):.2f}  "
+                    f"{nsd:.2f} ns/day per replica, {nsd * self.n:.1f} aggregate"
+                )
                 logf.write(line + "\n")
                 logf.flush()
                 if log is not None:
@@ -197,7 +225,7 @@ def block_mean(x, nblocks: int = 10):
     """Mean and its standard error from `nblocks` contiguous block means."""
     x = np.asarray(x, float)
     n = len(x) // nblocks * nblocks
-    b = x[len(x) - n:].reshape(nblocks, -1).mean(1)
+    b = x[len(x) - n :].reshape(nblocks, -1).mean(1)
     return float(x.mean()), float(b.std(ddof=1) / np.sqrt(nblocks))
 
 
@@ -223,7 +251,7 @@ def fluctuation_eps(M, V, T, eps_inf: float = 1.0, nblocks: int = 10):
         return eps_inf + c * (np.mean(np.sum(m * m, 1)) - np.sum(np.mean(m, 0) ** 2))
 
     n = len(M) // nblocks * nblocks
-    Mb = M[len(M) - n:].reshape(nblocks, -1, 3)
+    Mb = M[len(M) - n :].reshape(nblocks, -1, 3)
     jk = np.array([est(np.concatenate([Mb[j] for j in range(nblocks) if j != i])) for i in range(nblocks)])
     return float(est(M)), float(np.sqrt((nblocks - 1) / nblocks * np.sum((jk - jk.mean()) ** 2)))
 
@@ -249,23 +277,47 @@ def analyse(meta: dict, data: dict, skip_ps: float = 50.0, nblocks: int = 10, ep
     t = data["time_ps"][sel]
     dt = float(np.median(np.diff(t)))
     F = np.asarray(meta["fields"])
-    out = {"volume_nm3": V, "temperature_K": T, "run_ps": float(t[-1] - t[0] + dt), "single": [], "pairs": [], "zero": []}
+    out = {
+        "volume_nm3": V,
+        "temperature_K": T,
+        "run_ps": float(t[-1] - t[0] + dt),
+        "single": [],
+        "pairs": [],
+        "zero": [],
+    }
     for k, E in enumerate(F):
         mag = float(np.linalg.norm(E))
         if mag == 0.0 and disp:
             continue
         if mag == 0.0:
             eps, err = fluctuation_eps(M[:, k], V, T, eps_inf, nblocks)
-            out["zero"].append({"replica": k, "eps": eps, "err": err, "tau_ps": correlation_time(M[:, k, 2], dt),
-                                "M_mean": M[:, k].mean(0).tolist()})
+            out["zero"].append(
+                {
+                    "replica": k,
+                    "eps": eps,
+                    "err": err,
+                    "tau_ps": correlation_time(M[:, k, 2], dt),
+                    "M_mean": M[:, k].mean(0).tolist(),
+                }
+            )
             continue
         e = E / mag
         m, err = block_mean(M[:, k] @ e, nblocks)
         tau = correlation_time(M[:, k] @ e, dt)
         eps, eerr = eps_of(m, err, mag)
-        out["single"].append({"replica": k, "E": E.tolist(), "E_mag": mag, "M_par": m, "M_par_err": err,
-                              "eps": eps, "err": eerr, "tau_ps": tau,
-                              "M_perp_rms": float(np.sqrt(np.mean(np.sum((M[:, k] - np.outer(M[:, k] @ e, e)) ** 2, 1))))})
+        out["single"].append(
+            {
+                "replica": k,
+                "E": E.tolist(),
+                "E_mag": mag,
+                "M_par": m,
+                "M_par_err": err,
+                "eps": eps,
+                "err": eerr,
+                "tau_ps": tau,
+                "M_perp_rms": float(np.sqrt(np.mean(np.sum((M[:, k] - np.outer(M[:, k] @ e, e)) ** 2, 1)))),
+            }
+        )
     used = set()
     for i, Ei in enumerate(F):
         for j, Ej in enumerate(F):
@@ -277,7 +329,9 @@ def analyse(meta: dict, data: dict, skip_ps: float = 50.0, nblocks: int = 10, ep
             d = 0.5 * (M[:, i] @ e - M[:, j] @ e)
             m, err = block_mean(d, nblocks)
             eps, eerr = eps_of(m, err, mag)
-            out["pairs"].append({"replicas": (i, j), "E_mag": mag, "eps": eps, "err": eerr, "tau_ps": correlation_time(d, dt)})
+            out["pairs"].append(
+                {"replicas": (i, j), "E_mag": mag, "eps": eps, "err": eerr, "tau_ps": correlation_time(d, dt)}
+            )
     out["fits"] = []
     mags = sorted({p["E_mag"] for p in out["pairs"]})
     for emax in mags[1:]:
@@ -299,16 +353,22 @@ def saturation_fit(pairs):
     C = np.linalg.inv(A.T @ (w[:, None] * A))
     b = C @ A.T @ (w * y)
     chi2 = float(np.sum(w * (y - A @ b) ** 2))
-    return {"eps0": float(b[0]), "eps0_err": float(np.sqrt(C[0, 0])), "c": float(b[1]), "c_err": float(np.sqrt(C[1, 1])),
-            "chi2": chi2, "n": int(len(E))}
+    return {
+        "eps0": float(b[0]),
+        "eps0_err": float(np.sqrt(C[0, 0])),
+        "c": float(b[1]),
+        "c_err": float(np.sqrt(C[1, 1])),
+        "chi2": chi2,
+        "n": int(len(E)),
+    }
 
 
 def predicted_errors(eps: float, eps_inf: float, V: float, T: float, E: float, tau_ps: float, run_ps: float) -> dict:
     """Statistical errors expected for eps from a +-E pair (each replica run_ps long) and from the
     fluctuations of a zero-field run of the same total length (2 run_ps), for a Gaussian M with
     integrated correlation time tau_ps (module docstring), and their cost ratio at equal error."""
-    var_Me = (eps - eps_inf) * EPS0 * V * 1e-27 * KB_SI * T / (E_CHARGE * 1e-9) ** 2      # (e nm)^2, one component
-    s_mean = np.sqrt(var_Me * 2 * tau_ps / run_ps)                                          # error of <M_e> of one run
-    s_ff = EPS_FACTOR / (V * E) * s_mean / np.sqrt(2)                                        # the +-E combination
+    var_Me = (eps - eps_inf) * EPS0 * V * 1e-27 * KB_SI * T / (E_CHARGE * 1e-9) ** 2  # (e nm)^2, one component
+    s_mean = np.sqrt(var_Me * 2 * tau_ps / run_ps)  # error of <M_e> of one run
+    s_ff = EPS_FACTOR / (V * E) * s_mean / np.sqrt(2)  # the +-E combination
     s_fl = (eps - eps_inf) * np.sqrt(2 * tau_ps / (3 * 2 * run_ps))
     return {"sigma_ff": float(s_ff), "sigma_fluct_same_cost": float(s_fl), "cost_ratio": float((s_fl / s_ff) ** 2)}

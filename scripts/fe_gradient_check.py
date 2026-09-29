@@ -8,6 +8,7 @@ estimators, block jackknife errors).  The runs are independent, so G(s_j) - G(s_
 the integral of the gradient between them: the trapezoid rule over neighbouring runs and, for three
 equally spaced runs, Simpson's rule (exact for a cubic G(s)) and the central value
 g(s_mid) (the central difference, truncation error delta^2 G'''/6).  Values in kcal/mol."""
+
 from __future__ import annotations
 
 import argparse
@@ -38,10 +39,12 @@ def point(path, group, discard_ps, n_blocks, solute=True):
     out = {"path": path, "s": s, "samples_per_window": r["samples_per_window"], "leg": leg}
     m = r[leg]["mbar"]
     out["G"], out["G_err"] = m.value / KCAL, m.value_err / KCAL
-    g = fe.estimate(d, discard_ps=discard_ps, gas=None if gas is None else {"delta_g": gas["delta_g"], "dudl": meta["gas_dudl"]})
+    g = fe.estimate(
+        d, discard_ps=discard_ps, gas=None if gas is None else {"delta_g": gas["delta_g"], "dudl": meta["gas_dudl"]}
+    )
     out["G_err_mbar_asymptotic"] = (g["dG_hyd_mbar_err"] if gas is not None else g["mbar_err"]) / KCAL
     for est in ("mbar", "end"):
-        a, b = r[leg][est].project(v)                   # dG/d ln s
+        a, b = r[leg][est].project(v)  # dG/d ln s
         out[f"g_{est}"], out[f"g_{est}_err"] = a / s / KCAL, b / s / KCAL
     return out
 
@@ -56,12 +59,16 @@ def main():
     ap.add_argument("--json")
     a = ap.parse_args()
     pts = sorted((point(p, a.group, a.discard_ps, a.blocks, not a.environment) for p in a.npz), key=lambda x: x["s"])
-    print(f"# group {a.group} ({'environment' if a.environment else 'solute'}), discard {a.discard_ps} ps, "
-          f"{a.blocks} jackknife blocks; kcal/mol")
+    print(
+        f"# group {a.group} ({'environment' if a.environment else 'solute'}), discard {a.discard_ps} ps, "
+        f"{a.blocks} jackknife blocks; kcal/mol"
+    )
     print("#     s    samples     G (MBAR)          [asympt.]   dG/ds MBAR-weighted    dG/ds end states")
     for p in pts:
-        print(f"  {p['s']:6.3f} {p['samples_per_window']:7d}  {p['G']:9.4f} +- {p['G_err']:.4f} [{p['G_err_mbar_asymptotic']:.4f}]"
-              f"  {p['g_mbar']:9.3f} +- {p['g_mbar_err']:.3f}   {p['g_end']:9.3f} +- {p['g_end_err']:.3f}")
+        print(
+            f"  {p['s']:6.3f} {p['samples_per_window']:7d}  {p['G']:9.4f} +- {p['G_err']:.4f} [{p['G_err_mbar_asymptotic']:.4f}]"
+            f"  {p['g_mbar']:9.3f} +- {p['g_mbar_err']:.3f}   {p['g_end']:9.3f} +- {p['g_end_err']:.3f}"
+        )
     res = {"points": pts, "pairs": []}
     print("# neighbouring runs: finite difference vs trapezoid of the gradients (z = difference / combined error)")
     for p, q in zip(pts[:-1], pts[1:]):
@@ -91,8 +98,10 @@ def main():
             zc = (fd - g[1]) / math.hypot(fde, e[1])
             zs = (fd - simp) / math.hypot(fde, simpe)
             res["outer"][est] = {"central": [g[1], e[1], zc], "simpson": [simp, simpe, zs]}
-            print(f"  {est:5s}: gradient at the centre {g[1]:.3f} +- {e[1]:.3f} (z {zc:+.2f}); Simpson {simp:.3f} +- "
-                  f"{simpe:.3f} (z {zs:+.2f})")
+            print(
+                f"  {est:5s}: gradient at the centre {g[1]:.3f} +- {e[1]:.3f} (z {zc:+.2f}); Simpson {simp:.3f} +- "
+                f"{simpe:.3f} (z {zs:+.2f})"
+            )
     if a.json:
         with open(a.json, "w") as fh:
             json.dump(res, fh, indent=1)

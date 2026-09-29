@@ -18,6 +18,7 @@ Sets (record "set"):
 
     python scripts/qmfit/build_water_clusters.py [--smith DIR] [--out data/qm/water_geoms.json]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -28,11 +29,13 @@ import os
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-R_OH, HOH = 0.9745, 103.64           # pGM3P-25 rigid water (p25_512.rst7), Angstrom / degrees
+R_OH, HOH = 0.9745, 103.64  # pGM3P-25 rigid water (p25_512.rst7), Angstrom / degrees
 MASS = np.array([15.999, 1.008, 1.008])
-SNAPSHOTS = {"p25_4096": "/home8/larry/project/epsp/p25_4096.rst7",
-             "p25_512": "/home8/larry/project/epsp/p25_512.rst7",
-             "base_4096": "/home8/larry/project/epsp/base/base_4096.rst7"}
+SNAPSHOTS = {
+    "p25_4096": "/home8/larry/project/epsp/p25_4096.rst7",
+    "p25_512": "/home8/larry/project/epsp/p25_512.rst7",
+    "base_4096": "/home8/larry/project/epsp/base/base_4096.rst7",
+}
 DIMER_JOBS = ["sapt0", "mp2:aug-cc-pvtz", "mp2:aug-cc-pvqz", "ccsdt:aug-cc-pvtz"]
 
 
@@ -86,8 +89,8 @@ def read_rst7(path):
     n = int(L[1].split()[0])
     v = []
     for ln in L[2:]:
-        v += [float(ln[i:i + 12]) for i in range(0, len(ln), 12) if ln[i:i + 12].strip()]
-    X = np.array(v[:3 * n]).reshape(-1, 3)
+        v += [float(ln[i : i + 12]) for i in range(0, len(ln), 12) if ln[i : i + 12].strip()]
+    X = np.array(v[: 3 * n]).reshape(-1, 3)
     a, b, c, al, be, ga = v[-6:]
     al, be, ga = np.radians([al, be, ga])
     H = np.zeros((3, 3))
@@ -116,7 +119,7 @@ class Snapshot:
         X, H = read_rst7(path)
         self.name, self.H, self.Hinv = name, H, np.linalg.inv(H)
         W = X.reshape(-1, 3, 3)
-        W[:, 1:] = W[:, :1] + min_image(W[:, 1:] - W[:, :1], H, self.Hinv)      # whole molecules
+        W[:, 1:] = W[:, :1] + min_image(W[:, 1:] - W[:, :1], H, self.Hinv)  # whole molecules
         self.W = W
         self.O = W[:, 0]
 
@@ -139,7 +142,14 @@ class Snapshot:
 
 def rec(rid, set_, X, jobs, **meta):
     X = np.asarray(X)
-    return {"id": rid, "set": set_, "n": len(X) // 3, "xyz_A": np.round(X, 8).tolist(), "jobs": list(jobs), "meta": meta}
+    return {
+        "id": rid,
+        "set": set_,
+        "n": len(X) // 3,
+        "xyz_A": np.round(X, 8).tolist(),
+        "jobs": list(jobs),
+        "meta": meta,
+    }
 
 
 def roo(X, i=0, j=1):
@@ -158,15 +168,26 @@ def main(a):
     seen = []
     for name, d in sorted(smith.items(), key=lambda kv: kv[1]["E_mp2_adz"]):
         if any(abs(d["E_mp2_adz"] - e) < 1e-6 for e in seen):
-            continue                                          # converged onto another structure (C2 -> C2h)
+            continue  # converged onto another structure (C2 -> C2h)
         seen.append(d["E_mp2_adz"])
         X = rigidify(d["xyz_A"])
-        records.append(rec(f"smith/{name}", "smith", X, DIMER_JOBS, point_group=d["point_group"],
-                           E_mp2_adz_opt=d["E_mp2_adz"], R_OO=roo(X)))
-    for name, dists in (("Cs_open", [2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 3.0, 3.1, 3.2, 3.4, 3.6, 3.8, 4.0, 4.5, 5.0, 6.0, 7.0, 8.0]),
-                        ("Cs_planar", [2.5, 2.7, 3.2, 3.6, 4.0, 5.0]),
-                        ("Ci_cyclic", [2.5, 2.65, 3.0, 3.3, 3.6, 4.0, 5.0]),
-                        ("C2v_bifurcated", [2.6, 2.8, 3.2, 3.5, 4.0, 5.0])):
+        records.append(
+            rec(
+                f"smith/{name}",
+                "smith",
+                X,
+                DIMER_JOBS,
+                point_group=d["point_group"],
+                E_mp2_adz_opt=d["E_mp2_adz"],
+                R_OO=roo(X),
+            )
+        )
+    for name, dists in (
+        ("Cs_open", [2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 3.0, 3.1, 3.2, 3.4, 3.6, 3.8, 4.0, 4.5, 5.0, 6.0, 7.0, 8.0]),
+        ("Cs_planar", [2.5, 2.7, 3.2, 3.6, 4.0, 5.0]),
+        ("Ci_cyclic", [2.5, 2.65, 3.0, 3.3, 3.6, 4.0, 5.0]),
+        ("C2v_bifurcated", [2.6, 2.8, 3.2, 3.5, 4.0, 5.0]),
+    ):
         X = rigidify(smith[name]["xyz_A"])
         u = (X[3] - X[0]) / roo(X)
         for R in dists:
@@ -174,24 +195,38 @@ def main(a):
             Y[3:] += (R - roo(X)) * u
             records.append(rec(f"radial/{name}/{R:.2f}", "radial", Y, DIMER_JOBS, parent=name, R_OO=R))
     X = rigidify(smith["Cs_open"]["xyz_A"])
-    z = np.cross(X[1] - X[0], X[3] - X[0])                     # normal of the mirror plane (donor plane)
+    z = np.cross(X[1] - X[0], X[3] - X[0])  # normal of the mirror plane (donor plane)
     z /= np.linalg.norm(z)
-    for deg in (-60, -40, -20, 20, 40, 60, 80, 100):           # acceptor flap (about the normal, at O_B)
+    for deg in (-60, -40, -20, 20, 40, 60, 80, 100):  # acceptor flap (about the normal, at O_B)
         Y = X.copy()
         Y[3:] = (X[3:] - X[3]) @ rot(z, np.radians(deg)).T + X[3]
-        records.append(rec(f"angular/flap/{deg:+d}", "angular", Y, DIMER_JOBS, parent="Cs_open", angle=deg, R_OO=roo(Y)))
-    for deg in (-40, -25, -12, 12, 25, 40):                    # donor bend (about the normal, at O_A)
+        records.append(
+            rec(f"angular/flap/{deg:+d}", "angular", Y, DIMER_JOBS, parent="Cs_open", angle=deg, R_OO=roo(Y))
+        )
+    for deg in (-40, -25, -12, 12, 25, 40):  # donor bend (about the normal, at O_A)
         Y = X.copy()
         Y[:3] = (X[:3] - X[0]) @ rot(z, np.radians(deg)).T + X[0]
-        records.append(rec(f"angular/bend/{deg:+d}", "angular", Y, DIMER_JOBS, parent="Cs_open", angle=deg, R_OO=roo(Y)))
+        records.append(
+            rec(f"angular/bend/{deg:+d}", "angular", Y, DIMER_JOBS, parent="Cs_open", angle=deg, R_OO=roo(Y))
+        )
     ax = X[3] - X[0]
-    for deg in (30, 60, 90, 120, 150, 180):                    # acceptor twist about O...O
+    for deg in (30, 60, 90, 120, 150, 180):  # acceptor twist about O...O
         Y = X.copy()
         Y[3:] = (X[3:] - X[3]) @ rot(ax, np.radians(deg)).T + X[3]
-        records.append(rec(f"angular/twist/{deg:03d}", "angular", Y, DIMER_JOBS, parent="Cs_open", angle=deg, R_OO=roo(Y)))
+        records.append(
+            rec(f"angular/twist/{deg:03d}", "angular", Y, DIMER_JOBS, parent="Cs_open", angle=deg, R_OO=roo(Y))
+        )
     # ---- liquid snapshots
     snaps = {k: Snapshot(k, p) for k, p in SNAPSHOTS.items()}
-    bins = [(2.40, 2.70, 30), (2.70, 2.90, 40), (2.90, 3.20, 40), (3.20, 3.60, 35), (3.60, 4.20, 35), (4.20, 5.00, 30), (5.00, 6.50, 25)]
+    bins = [
+        (2.40, 2.70, 30),
+        (2.70, 2.90, 40),
+        (2.90, 3.20, 40),
+        (3.20, 3.60, 35),
+        (3.60, 4.20, 35),
+        (4.20, 5.00, 30),
+        (5.00, 6.50, 25),
+    ]
     for sname, frac in (("p25_4096", 0.6), ("p25_512", 0.15), ("base_4096", 0.25)):
         s = snaps[sname]
         for lo, hi, cnt in bins:
@@ -237,8 +272,18 @@ def main(a):
             clusters.append(rec(f"{kind}/{sname}/" + "-".join(map(str, idx)), kind, Y, cl_jobs, snapshot=sname))
             made += 1
     W27 = json.load(open(os.path.join(ROOT, "data/qm/water27_raw.json")))
-    labels = {"H2O2": "dimer", "H2O3": "trimer", "H2O4": "tetramer", "H2O5": "pentamer", "H2O6": "prism",
-              "H2O6c": "cage", "H2O6b": "book", "H2O6c2": "cyclic", "H2O8d2d": "octamer_D2d", "H2O8s4": "octamer_S4"}
+    labels = {
+        "H2O2": "dimer",
+        "H2O3": "trimer",
+        "H2O4": "tetramer",
+        "H2O5": "pentamer",
+        "H2O6": "prism",
+        "H2O6c": "cage",
+        "H2O6b": "book",
+        "H2O6c2": "cyclic",
+        "H2O8d2d": "octamer_D2d",
+        "H2O8s4": "octamer_S4",
+    }
     for k, lab in labels.items():
         Y = rigidify(group_waters(W27[k]))
         n = len(Y) // 3
@@ -248,24 +293,33 @@ def main(a):
             jobs = ["mbe:mp2:aug-cc-pvtz:3"] if n <= 6 else ["mbe:mp2:aug-cc-pvtz:1"]
             clusters.append(rec(f"water27/{k}", "water27", Y, jobs, label=lab))
     records += clusters
-    for c in clusters:                                           # 2-body corrections
+    for c in clusters:  # 2-body corrections
         X = np.asarray(c["xyz_A"])
         for i, j in itertools.combinations(range(c["n"]), 2):
-            Y = np.concatenate([X[3 * i:3 * i + 3], X[3 * j:3 * j + 3]])
+            Y = np.concatenate([X[3 * i : 3 * i + 3], X[3 * j : 3 * j + 3]])
             records.append(rec(f"{c['id']}/p{i}-{j}", "pairs", Y, DIMER_JOBS, parent=c["id"], pair=[i, j], R_OO=roo(Y)))
     ids = [r["id"] for r in records]
     assert len(ids) == len(set(ids)), "duplicate ids"
-    for r in records:                                            # sanity: rigid monomers, no clashes
+    for r in records:  # sanity: rigid monomers, no clashes
         X = np.asarray(r["xyz_A"])
         W = X.reshape(-1, 3, 3)
         assert np.allclose(np.linalg.norm(W[:, 1] - W[:, 0], axis=1), R_OH, atol=1e-6)
-        dmin = min((np.linalg.norm(W[i][:, None] - W[j][None], axis=-1).min() for i, j in itertools.combinations(range(len(W)), 2)), default=9)
+        dmin = min(
+            (
+                np.linalg.norm(W[i][:, None] - W[j][None], axis=-1).min()
+                for i, j in itertools.combinations(range(len(W)), 2)
+            ),
+            default=9,
+        )
         r["meta"]["d_min"] = round(float(dmin), 4)
-    out = {"about": "water clusters, rigid pGM3P-25 monomers (r_OH 0.9745 A, HOH 103.64 deg); coordinates in Angstrom, "
-                    "atoms O,H,H per molecule; built by scripts/qmfit/build_water_clusters.py",
-           "records": records}
+    out = {
+        "about": "water clusters, rigid pGM3P-25 monomers (r_OH 0.9745 A, HOH 103.64 deg); coordinates in Angstrom, "
+        "atoms O,H,H per molecule; built by scripts/qmfit/build_water_clusters.py",
+        "records": records,
+    }
     json.dump(out, open(a.out, "w"), separators=(",", ":"))
     from collections import Counter
+
     print(Counter(r["set"] for r in records), len(records))
     print("tasks", Counter(j for r in records for j in r["jobs"]))
     print("min contact", min(r["meta"]["d_min"] for r in records))

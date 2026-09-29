@@ -3,6 +3,7 @@ water box (512 waters x replicate^3): SCF with a fixed number of CG iterations (
 and iEL/0-SCF, per call, on the current device.
 
     python scripts/iel_cost.py --replicate 2"""
+
 from __future__ import annotations
 
 import argparse
@@ -42,8 +43,16 @@ def main():
     pos = jnp.asarray(np.concatenate([xyz * 0.1 + s for s in shifts]))
     H = jnp.asarray(H * n)
     sys_ = System(mols * len(shifts))
-    base = MDSettings(cutoff=0.9, skin=0.1, ewald_beta=4.0, pme_grid=(48 * n,) * 3, pme_order=6, lj_lrc=True,
-                      dipole_tol=1e-5, precision="mixed")
+    base = MDSettings(
+        cutoff=0.9,
+        skin=0.1,
+        ewald_beta=4.0,
+        pme_grid=(48 * n,) * 3,
+        pme_order=6,
+        lj_lrc=True,
+        dipole_tol=1e-5,
+        precision="mixed",
+    )
     idx = AtomNeighbors(sys_.n, H, 1.0, 0.0).allocate(pos, None, H).idx
     ff0 = PGMForceField(sys_, H, base)
     ff0.size_rows(pos, H, idx)
@@ -55,7 +64,7 @@ def main():
         ff.mc = ff0.mc
         f = jax.jit(ff.compute)
         ind = ff.init_induction()
-        for _ in range(8):                                  # past the warm-up / predictor start
+        for _ in range(8):  # past the warm-up / predictor start
             r = f(pos, H, idx, ind)
             ind = r.induction
         jax.block_until_ready(r.forces)

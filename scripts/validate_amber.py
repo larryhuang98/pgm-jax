@@ -16,6 +16,7 @@ Steps:
     python scripts/validate_amber.py amber      # ~2 min
     python scripts/validate_amber.py compare    # ~5-10 min on CPU
 """
+
 from __future__ import annotations
 
 import glob
@@ -43,15 +44,15 @@ from pgm_jax.system import System
 from pgm_jax.units import KE, KE_AMBER_PGM
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REF = os.path.join(ROOT, "validation", "amber_ref")     # Amber runs: inputs + outputs (in git)
-OUT = os.path.join(ROOT, "runs", "validate")             # our own outputs (not in git)
+REF = os.path.join(ROOT, "validation", "amber_ref")  # Amber runs: inputs + outputs (in git)
+OUT = os.path.join(ROOT, "runs", "validate")  # our own outputs (not in git)
 RESULT = os.path.join(ROOT, "validation", "validate_amber.json")
 TOP = os.path.expanduser("~/pgm-gvdw-data/topology/rayl_512_v2.prmtop")
 RST = os.path.expanduser("~/pgm-gvdw-data/inputs/lj/inpcrd.restrt")
 SANDER = os.path.expanduser("~/ambers/pgm-larry/build/AmberTools/src/sander/sander")
 PMEMD = os.path.expanduser("~/ambers/pgm-vdw/build/src/pmemd-pgm/src/pmemd-pgm")
 KCAL = 4.184
-SCALE = KE_AMBER_PGM / KE          # Amber pGM uses Tinker's Coulomb constant
+SCALE = KE_AMBER_PGM / KE  # Amber pGM uses Tinker's Coulomb constant
 
 
 def read_restart(path):
@@ -71,7 +72,7 @@ def read_nc_frames(path, var):
 
 def mdout_step0(path):
     txt = open(path).read()
-    blk = txt[txt.index("NSTEP =        0"):]
+    blk = txt[txt.index("NSTEP =        0") :]
     get = lambda k: float(re.search(rf"{k}\s*=\s*(-?\d+\.\d+)", blk).group(1))
     out = {"EELEC": get("EELEC"), "VDWAALS": get("VDWAALS"), "BOND": get("BOND"), "ANGLE": get("ANGLE")}
     for k in ("VIRIAL", "PRESS", "VOLUME"):
@@ -85,7 +86,7 @@ def write_inpcrd(path, xyz, title="wrapped"):
         fh.write(title + "\n%6d\n" % len(xyz))
         flat = xyz.ravel()
         for s in range(0, len(flat), 6):
-            fh.write("".join("%12.7f" % v for v in flat[s:s + 6]) + "\n")
+            fh.write("".join("%12.7f" % v for v in flat[s : s + 6]) + "\n")
 
 
 def wrap_molecules(xyz, H):
@@ -101,6 +102,7 @@ def wrap_molecules(xyz, H):
 
 # ------------------------------------------------------------------------ steps --
 
+
 def prep():
     xyz, (L, ang) = read_restart(RST)
     H = box_matrix(*L, *ang)
@@ -113,7 +115,9 @@ def prep():
 
 def amber():
     gas = os.path.join(REF, "sander_gas512w")
-    open(os.path.join(gas, "mdin"), "w").write("""gas-phase 512-water cluster (wrapped), pGM3P-25, no cutoff, tight induction
+    open(
+        os.path.join(gas, "mdin"), "w"
+    ).write("""gas-phase 512-water cluster (wrapped), pGM3P-25, no cutoff, tight induction
  &cntrl
    imin=0, nstlim=1, irest=0, ntx=1, tempi=0.0,
    ntb=0, ntt=0, ntc=1, ntf=1,
@@ -129,11 +133,16 @@ def amber():
  /
 """)
     t0 = time.time()
-    subprocess.run([SANDER, "-O", "-i", "mdin", "-c", "inpcrd", "-p", TOP, "-o", "mdout", "-x", "mdcrd", "-frc", "mdfrc"],
-                   cwd=gas, check=True)
+    subprocess.run(
+        [SANDER, "-O", "-i", "mdin", "-c", "inpcrd", "-p", TOP, "-o", "mdout", "-x", "mdcrd", "-frc", "mdfrc"],
+        cwd=gas,
+        check=True,
+    )
     print(f"sander gas-phase done in {time.time() - t0:.0f}s: {mdout_step0(os.path.join(gas, 'mdout'))}")
-    print("pmemd-pgm periodic run (by hand):\n"
-          f"  cd {os.path.join(REF, 'pmemd_pbc')} && {PMEMD} -O -i mdin -c {RST} -p {TOP} -o mdout -x mdcrd -frc mdfrc")
+    print(
+        "pmemd-pgm periodic run (by hand):\n"
+        f"  cd {os.path.join(REF, 'pmemd_pbc')} && {PMEMD} -O -i mdin -c {RST} -p {TOP} -o mdout -x mdcrd -frc mdfrc"
+    )
 
 
 def compare():
@@ -150,8 +159,8 @@ def compare():
     gas = os.path.join(REF, "sander_gas512w")
     lines = open(os.path.join(gas, "inpcrd")).read().split("\n")
     nat = int(lines[1])
-    vals = [float(l[k:k + 12]) for l in lines[2:] for k in range(0, len(l), 12) if l[k:k + 12].strip()]
-    crd = np.array(vals[:3 * nat]).reshape(nat, 3)
+    vals = [float(l[k : k + 12]) for l in lines[2:] for k in range(0, len(l), 12) if l[k : k + 12].strip()]
+    crd = np.array(vals[: 3 * nat]).reshape(nat, 3)
     amb = mdout_step0(os.path.join(gas, "mdout"))
     f_amb = read_nc_frames(os.path.join(gas, "mdfrc"), "forces")[0]
     elec, vdw = Model([ElecChannel()]), Model([LJChannel()])
@@ -163,12 +172,21 @@ def compare():
     ours = float(e["total"]) / KCAL
     df = (F + f_lj) - f_amb
     df_s = (F * SCALE + f_lj) - f_amb
-    res["gas"] = {"EELEC_amber": amb["EELEC"], "EELEC_ours": ours, "dE": ours - amb["EELEC"], "rel": (ours - amb["EELEC"]) / abs(amb["EELEC"]),
-                  "dE_sameconst": ours * SCALE - amb["EELEC"], "force_rmsd_sameconst": float(np.sqrt(np.mean(df_s ** 2))),
-                  "force_maxdev_sameconst": float(np.abs(df_s).max()),
-                  "VDW_amber": amb["VDWAALS"], "VDW_ours": e_lj,
-                  "force_rms_amber": float(np.sqrt(np.mean(f_amb ** 2))), "force_rmsd": float(np.sqrt(np.mean(df ** 2))),
-                  "force_maxdev": float(np.abs(df).max()), "seconds": time.time() - t0}
+    res["gas"] = {
+        "EELEC_amber": amb["EELEC"],
+        "EELEC_ours": ours,
+        "dE": ours - amb["EELEC"],
+        "rel": (ours - amb["EELEC"]) / abs(amb["EELEC"]),
+        "dE_sameconst": ours * SCALE - amb["EELEC"],
+        "force_rmsd_sameconst": float(np.sqrt(np.mean(df_s**2))),
+        "force_maxdev_sameconst": float(np.abs(df_s).max()),
+        "VDW_amber": amb["VDWAALS"],
+        "VDW_ours": e_lj,
+        "force_rms_amber": float(np.sqrt(np.mean(f_amb**2))),
+        "force_rmsd": float(np.sqrt(np.mean(df**2))),
+        "force_maxdev": float(np.abs(df).max()),
+        "seconds": time.time() - t0,
+    }
     print("GAS", json.dumps(res["gas"], indent=1))
 
     # ================= periodic: vs pmemd-pgm (PME, tight) ==============================
@@ -186,7 +204,7 @@ def compare():
     mol_amb = np.array(mol_amb)
     pos = xyz * 0.1
     res["pbc"] = {"EELEC_amber": amb["EELEC"], "VDW_amber": amb["VDWAALS"]}
-    ljp = PeriodicLJ(sys, H, pos, rc=1.0)                                 # Amber cut = 10 A
+    ljp = PeriodicLJ(sys, H, pos, rc=1.0)  # Amber cut = 10 A
     e_lj = float(ljp.energy(pos)[0]["vdw"]) / KCAL
     f_lj = to_kcal_A(-jax.grad(lambda x: ljp.energy(x)[0]["vdw"])(pos))
     for tag, b0, rc in (("b0=3.8,rc=1.0", 3.8, 1.0), ("b0=3.5,rc=1.1", 3.5, 1.1)):
@@ -194,27 +212,43 @@ def compare():
         per = PeriodicPGM(sys, H, pos, b0=b0, rc=rc)
         e, aux = per.energy(pos)
         F = to_kcal_A(per.forces(pos))
-        mu = np.asarray(per.induced_dipoles(pos)) * 10                   # e A
+        mu = np.asarray(per.induced_dipoles(pos)) * 10  # e A
         p = np.asarray(aux["p"]) * 10
         # molecular total moment with whole molecules: sum_i (q_i r_i + p_i + mu_i), r in A
-        mol = np.array([np.sum(q[3 * m:3 * m + 3, None] * xyz[3 * m:3 * m + 3], 0) + (p + mu)[3 * m:3 * m + 3].sum(0) for m in range(512)])
+        mol = np.array(
+            [
+                np.sum(q[3 * m : 3 * m + 3, None] * xyz[3 * m : 3 * m + 3], 0) + (p + mu)[3 * m : 3 * m + 3].sum(0)
+                for m in range(512)
+            ]
+        )
         ours = float(e["total"]) / KCAL
         df = (F + f_lj) - f_amb
         df_s = (F * SCALE + f_lj) - f_amb
         dmol = mol - mol_amb
         match = np.linalg.norm(dmol, axis=1) < 1e-5
-        res["pbc"][tag] = {"n_pairs": int(len(per.pi)), "n_k": int(len(per.m)), "EELEC_ours": ours, "dE": ours - amb["EELEC"],
-                           "rel": (ours - amb["EELEC"]) / abs(amb["EELEC"]), "VDW_ours": e_lj,
-                           "dE_sameconst": ours * SCALE - amb["EELEC"], "force_rmsd_sameconst": float(np.sqrt(np.mean(df_s ** 2))),
-                           "force_maxdev_sameconst": float(np.abs(df_s).max()),
-                           "moldip_n_match_1e-5": int(match.sum()), "moldip_maxdev_matched": float(np.abs(dmol[match]).max()) if match.any() else None,
-                           "force_rms_amber": float(np.sqrt(np.mean(f_amb ** 2))), "force_rmsd": float(np.sqrt(np.mean(df ** 2))),
-                           "force_maxdev": float(np.abs(df).max()),
-                           "mu_rms_amber": float(np.sqrt(np.mean(mu_amb ** 2))), "mu_rmsd": float(np.sqrt(np.mean((mu - mu_amb) ** 2))),
-                           "mu_maxdev": float(np.abs(mu - mu_amb).max()),
-                           "moldip_mean_amber": float(np.mean(np.linalg.norm(mol_amb, axis=1))),
-                           "moldip_mean_ours": float(np.mean(np.linalg.norm(mol, axis=1))),
-                           "moldip_maxdev": float(np.abs(dmol).max()), "seconds": time.time() - t0}
+        res["pbc"][tag] = {
+            "n_pairs": int(len(per.pi)),
+            "n_k": int(len(per.m)),
+            "EELEC_ours": ours,
+            "dE": ours - amb["EELEC"],
+            "rel": (ours - amb["EELEC"]) / abs(amb["EELEC"]),
+            "VDW_ours": e_lj,
+            "dE_sameconst": ours * SCALE - amb["EELEC"],
+            "force_rmsd_sameconst": float(np.sqrt(np.mean(df_s**2))),
+            "force_maxdev_sameconst": float(np.abs(df_s).max()),
+            "moldip_n_match_1e-5": int(match.sum()),
+            "moldip_maxdev_matched": float(np.abs(dmol[match]).max()) if match.any() else None,
+            "force_rms_amber": float(np.sqrt(np.mean(f_amb**2))),
+            "force_rmsd": float(np.sqrt(np.mean(df**2))),
+            "force_maxdev": float(np.abs(df).max()),
+            "mu_rms_amber": float(np.sqrt(np.mean(mu_amb**2))),
+            "mu_rmsd": float(np.sqrt(np.mean((mu - mu_amb) ** 2))),
+            "mu_maxdev": float(np.abs(mu - mu_amb).max()),
+            "moldip_mean_amber": float(np.mean(np.linalg.norm(mol_amb, axis=1))),
+            "moldip_mean_ours": float(np.mean(np.linalg.norm(mol, axis=1))),
+            "moldip_maxdev": float(np.abs(dmol).max()),
+            "seconds": time.time() - t0,
+        }
         print("PBC", tag, json.dumps(res["pbc"][tag], indent=1))
         np.save(os.path.join(OUT, f"ours_mu_{tag}.npy"), mu)
 
@@ -223,13 +257,12 @@ def compare():
     json.dump(d, open(RESULT, "w"), indent=1)
 
 
-
-
 def pyresp():
     """Independent implementation check: PyRESP (AmberTools, Python) water example, resp-perm with pGM
     polarizabilities (ipol=5, igdm=1, 1-2/1-3 included).  Rebuild the molecule from its output and
     compare our induced dipoles with its 'IND DIP GLOBAL' block (atomic units)."""
     from pgm_jax.system import Molecule
+
     B = 0.052917721067
     ex = os.path.expanduser("~/amber25/AmberTools/examples/PyRESP")
     txt = open(os.path.join(ex, "test/water/resp-perm/wat.chg")).read()
@@ -240,7 +273,9 @@ def pyresp():
 
     crd = block("ATOM CRD", 3)
     q = block("ATOM CHRG", 1)[:, 0]
-    loc = [l.split() for l in txt.split("%FLAG PERM DIP LOCAL")[1].split("%FLAG")[0].strip().split("\n")[2:] if l.strip()]
+    loc = [
+        l.split() for l in txt.split("%FLAG PERM DIP LOCAL")[1].split("%FLAG")[0].strip().split("\n")[2:] if l.strip()
+    ]
     cov = [(int(r[1]) - 1, int(r[2]) - 1, float(r[4]) * B) for r in loc]
     ind_ref = block("IND DIP GLOBAL", 3)
     perm_ref = block("PERM DIP GLOBAL", 3)
@@ -252,15 +287,19 @@ def pyresp():
                 tab[t[0]] = (float(t[1]), float(t[2]))
             except ValueError:
                 pass
-    alpha = np.array([tab["ow"][0], tab["hw"][0], tab["hw"][0]]) * B ** 3
+    alpha = np.array([tab["ow"][0], tab["hw"][0], tab["hw"][0]]) * B**3
     rad = np.array([tab["ow"][1], tab["hw"][1], tab["hw"][1]]) * B
     m = Molecule("WAT", ["O", "H", "H"], ["ow", "hw", "hw"], q, rad, alpha, cov)
     s = System([m])
     _, aux = ElecChannel().energy(crd * B, s)
     mu = np.asarray(aux["mu"]) / B
     p = np.asarray(aux["p"]) / B
-    out = {"perm_dip_maxdev_au": float(np.abs(p - perm_ref).max()), "ind_dip_maxdev_au": float(np.abs(mu - ind_ref).max()),
-           "ind_dip_ref_au": ind_ref.tolist(), "ind_dip_ours_au": mu.tolist()}
+    out = {
+        "perm_dip_maxdev_au": float(np.abs(p - perm_ref).max()),
+        "ind_dip_maxdev_au": float(np.abs(mu - ind_ref).max()),
+        "ind_dip_ref_au": ind_ref.tolist(),
+        "ind_dip_ours_au": mu.tolist(),
+    }
     print(json.dumps(out, indent=1))
     d = json.load(open(RESULT)) if os.path.exists(RESULT) else {}
     d["pyresp_monomer"] = out
@@ -289,8 +328,11 @@ def amber_virial():
         os.makedirs(wd, exist_ok=True)
         open(os.path.join(wd, "mdin"), "w").write(NPT_MDIN.format(vdw=vdw))
         t0 = time.time()
-        subprocess.run([SANDER, "-O", "-i", "mdin", "-c", RST, "-p", TOP, "-o", "mdout", "-r", "restrt", "-inf", "mdinfo"],
-                       cwd=wd, check=True)
+        subprocess.run(
+            [SANDER, "-O", "-i", "mdin", "-c", RST, "-p", TOP, "-o", "mdout", "-r", "restrt", "-inf", "mdinfo"],
+            cwd=wd,
+            check=True,
+        )
         print(f"vdwmeth={vdw}: {time.time() - t0:.0f}s {mdout_step0(os.path.join(wd, 'mdout'))}")
 
 
@@ -309,16 +351,25 @@ def virial():
     for vdw in (0, 1):
         amb = mdout_step0(os.path.join(REF, f"sander_npt_vdw{vdw}", "mdout"))
         ljp = PeriodicLJ(sys, H, pos, rc=1.0, lrc=bool(vdw))
-        W_lj = (np.asarray(strain_derivative(lambda x, h: ljp.energy(x, None, h)[0]["vdw"], pos, H, sys))
-                + np.asarray(ljp.tail_virial())) / KCAL
+        W_lj = (
+            np.asarray(strain_derivative(lambda x, h: ljp.energy(x, None, h)[0]["vdw"], pos, H, sys))
+            + np.asarray(ljp.tail_virial())
+        ) / KCAL
         e_lj = float(ljp.energy(pos)[0]["vdw"]) / KCAL
         vir = 0.5 * (np.trace(W_el) * SCALE + np.trace(W_lj))
-        out[f"vdwmeth={vdw}"] = {"VIRIAL_amber": amb.get("VIRIAL"), "VIRIAL_ours": float(vir),
-                                 "dVIRIAL": float(vir - amb["VIRIAL"]) if "VIRIAL" in amb else None,
-                                 "VIRIAL_elec_ours": float(0.5 * np.trace(W_el) * SCALE), "VIRIAL_vdw_ours": float(0.5 * np.trace(W_lj)),
-                                 "VDW_amber": amb["VDWAALS"], "VDW_ours": e_lj, "EELEC_amber": amb["EELEC"],
-                                 "PRESS_amber": amb.get("PRESS"), "VOLUME_amber": amb.get("VOLUME"),
-                                 "VOLUME_ours": float(abs(np.linalg.det(H)) * 1000)}
+        out[f"vdwmeth={vdw}"] = {
+            "VIRIAL_amber": amb.get("VIRIAL"),
+            "VIRIAL_ours": float(vir),
+            "dVIRIAL": float(vir - amb["VIRIAL"]) if "VIRIAL" in amb else None,
+            "VIRIAL_elec_ours": float(0.5 * np.trace(W_el) * SCALE),
+            "VIRIAL_vdw_ours": float(0.5 * np.trace(W_lj)),
+            "VDW_amber": amb["VDWAALS"],
+            "VDW_ours": e_lj,
+            "EELEC_amber": amb["EELEC"],
+            "PRESS_amber": amb.get("PRESS"),
+            "VOLUME_amber": amb.get("VOLUME"),
+            "VOLUME_ours": float(abs(np.linalg.det(H)) * 1000),
+        }
     out["dE_deps_elec_kcal"] = (W_el * SCALE).tolist()
     print(json.dumps(out, indent=1))
     d = json.load(open(RESULT)) if os.path.exists(RESULT) else {}
@@ -327,5 +378,11 @@ def virial():
 
 
 if __name__ == "__main__":
-    {"prep": prep, "amber": amber, "compare": compare, "pyresp": pyresp,
-     "amber_virial": amber_virial, "virial": virial}[sys.argv[1]]()
+    {
+        "prep": prep,
+        "amber": amber,
+        "compare": compare,
+        "pyresp": pyresp,
+        "amber_virial": amber_virial,
+        "virial": virial,
+    }[sys.argv[1]]()

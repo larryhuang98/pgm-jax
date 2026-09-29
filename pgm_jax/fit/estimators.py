@@ -30,6 +30,7 @@ Observables (name: estimator, unit):
   gas_dipole, gas_polarizability, gas_energy: GasPhase (one rigid molecule, exact gradients)   D, A^3, kJ/mol
 Errors: the frames are cut into contiguous blocks; the jackknife over blocks (leave one out,
 full estimator) gives the covariance of all observables of a run, and of their Jacobians."""
+
 from __future__ import annotations
 
 import jax
@@ -39,12 +40,23 @@ from jax.scipy.special import logsumexp
 
 from ..units import DEBYE_E_NM, KE
 
-KB = 0.0083144626181532          # kJ/mol/K
+KB = 0.0083144626181532  # kJ/mol/K
 KCAL = 4.184
-G_CM3 = 1.66053906660e-3         # amu/nm^3 -> g/cm^3
-BAR_KJ = 16.605390671738466      # bar per kJ/mol/nm^3
-LIQUID = ("density", "hvap", "eps", "liquid_dipole", "rdf", "volume", "energy", "eps_fluct", "eps_inf", "alpha_p",
-          "kappa_t")
+G_CM3 = 1.66053906660e-3  # amu/nm^3 -> g/cm^3
+BAR_KJ = 16.605390671738466  # bar per kJ/mol/nm^3
+LIQUID = (
+    "density",
+    "hvap",
+    "eps",
+    "liquid_dipole",
+    "rdf",
+    "volume",
+    "energy",
+    "eps_fluct",
+    "eps_inf",
+    "alpha_p",
+    "kappa_t",
+)
 GAS = ("gas_dipole", "gas_polarizability", "gas_energy")
 
 
@@ -67,7 +79,7 @@ class LiquidSamples:
         g["M2"] = 2.0 * np.einsum("fc,fcn->fn", f["M"], f["dM"])
         v["aV"], g["aV"] = f["alpha"] / V, f["dalpha"] / V[:, None]
         v["D"], g["D"] = f["D"], f["dD"]
-        Hh = f["U"] + self.p * V                                    # enthalpy (configurational part)
+        Hh = f["U"] + self.p * V  # enthalpy (configurational part)
         v["H"], g["H"] = Hh, f["dU"]
         v["VH"], g["VH"] = V * Hh, V[:, None] * f["dU"]
         v["V2"], g["V2"] = V * V, np.zeros((self.F, n))
@@ -75,7 +87,7 @@ class LiquidSamples:
             v["rdf"], g["rdf"] = f["rdf"], np.zeros(f["rdf"].shape + (n,))
         self.v = {k: jnp.asarray(x) for k, x in v.items()}
         self.g = {k: jnp.asarray(x) for k, x in g.items()}
-        dU = f["dU"] - f["dU"].mean(0)                       # centred: only fluctuations enter the weights
+        dU = f["dU"] - f["dU"].mean(0)  # centred: only fluctuations enter the weights
         self.dU = jnp.asarray(dU)
         self.n = n
         self.nblocks = int(nblocks)
@@ -107,12 +119,23 @@ class LiquidSamples:
         lw -= logsumexp(lw)
         w = np.exp(lw)
         V = np.asarray(new["V"])
-        vals = {"U": new["U"], "V": V, "rho": self.mass / V * G_CM3, "M": new["M"], "M2": np.sum(new["M"] ** 2, 1),
-                "aV": new["alpha"] / V, "D": new["D"], "H": new["U"] + self.p * V, "VH": V * (new["U"] + self.p * V),
-                "V2": V * V}
+        vals = {
+            "U": new["U"],
+            "V": V,
+            "rho": self.mass / V * G_CM3,
+            "M": new["M"],
+            "M2": np.sum(new["M"] ** 2, 1),
+            "aV": new["alpha"] / V,
+            "D": new["D"],
+            "H": new["U"] + self.p * V,
+            "VH": V * (new["U"] + self.p * V),
+            "V2": V * V,
+        }
         if "rdf" in new:
             vals["rdf"] = new["rdf"]
-        return {k: jnp.asarray(np.tensordot(w, np.asarray(x), axes=(0, 0))) for k, x in vals.items()}, float(1.0 / np.sum(w * w))
+        return {k: jnp.asarray(np.tensordot(w, np.asarray(x), axes=(0, 0))) for k, x in vals.items()}, float(
+            1.0 / np.sum(w * w)
+        )
 
     # ------------------------------------------------------------------ observables
     def observable(self, name: str, avg: dict, gas: dict | None = None):
@@ -138,9 +161,9 @@ class LiquidSamples:
             return avg["D"] / DEBYE_E_NM
         if name == "rdf":
             return avg["rdf"]
-        if name == "alpha_p":                                        # thermal expansion (1/K), NPT
-            return (avg["VH"] - avg["V"] * avg["H"]) / (KB * self.T ** 2 * avg["V"])
-        if name == "kappa_t":                                        # isothermal compressibility (1/bar), NPT
+        if name == "alpha_p":  # thermal expansion (1/K), NPT
+            return (avg["VH"] - avg["V"] * avg["H"]) / (KB * self.T**2 * avg["V"])
+        if name == "kappa_t":  # isothermal compressibility (1/bar), NPT
             return (avg["V2"] - avg["V"] ** 2) / (kT * avg["V"]) / BAR_KJ
         raise KeyError(f"unknown liquid observable {name!r}")
 
@@ -173,6 +196,7 @@ class GasPhase:
     def __init__(self, molecule, pos, table, space, elec: str = "qpi"):
         from ..channels import ElecChannel, molecular_polarizability
         from ..system import System
+
         self.sys = System([molecule], table=table)
         self.pos = jnp.asarray(np.asarray(pos, float) - np.mean(pos, axis=0))
         self.space = space

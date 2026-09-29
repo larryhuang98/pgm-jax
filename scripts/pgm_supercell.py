@@ -7,6 +7,7 @@ indices offset per copy.
     cpptraj: parm in.prmtop / trajin in.rst7 / replicatecell out sc.rst7 parmout sc_std.prmtop dir 000 dir 100 ...
     python scripts/pgm_supercell.py in.prmtop sc_std.prmtop sc.prmtop NCOPIES
 """
+
 from __future__ import annotations
 
 import sys
@@ -27,15 +28,16 @@ def values(block):
     fmt = [l for l in block if l.startswith("%FORMAT")][0]
     data = [l.rstrip("\n") for l in block if not l.startswith("%")]
     import re
+
     m = re.search(r"\((\d+)([aAiIeEfF])(\d+)", fmt)
     w = int(m.group(3))
-    return fmt, [ln[s:s + w] for ln in data for s in range(0, len(ln), w) if ln[s:s + w].strip()]
+    return fmt, [ln[s : s + w] for ln in data for s in range(0, len(ln), w) if ln[s : s + w].strip()]
 
 
 def write_block(name, fmt, vals, per_line, width, fmtfun):
     lines = [f"%FLAG {name:<74s}\n", fmt]
     for s in range(0, len(vals), per_line):
-        lines.append("".join(fmtfun(v).rjust(width) for v in vals[s:s + per_line]) + "\n")
+        lines.append("".join(fmtfun(v).rjust(width) for v in vals[s : s + per_line]) + "\n")
     if not vals:
         lines.append("\n")
     return lines

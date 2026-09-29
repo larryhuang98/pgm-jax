@@ -5,6 +5,7 @@ paper's metrics on 298 K frames and force-field-relaxed scans.  Results: runs/bo
     python scripts/bonded/experiments.py run NAME --mols A1 --families paper [--elec 3] ...
     python scripts/bonded/experiments.py table NAME [NAME ...]
 """
+
 import argparse
 import json
 import os
@@ -78,8 +79,12 @@ def families_of(spec: str) -> tuple:
 
 def concat(sets):
     sets = [s for s in sets if s is not None and len(s)]
-    return FrameSet(np.concatenate([s.X for s in sets]), np.concatenate([s.E for s in sets]),
-                    np.concatenate([s.F for s in sets]), np.concatenate([s.mu for s in sets]))
+    return FrameSet(
+        np.concatenate([s.X for s in sets]),
+        np.concatenate([s.E for s in sets]),
+        np.concatenate([s.F for s in sets]),
+        np.concatenate([s.mu for s in sets]),
+    )
 
 
 def mol_list(spec):
@@ -107,9 +112,19 @@ def load(names, with_scans=True):
 def run(a):
     names = mol_list(a.mols)
     specs, data = load(names)
-    st = BondedSettings(families=families_of(a.families), typing=a.typing,
-                        depth=a.depth, elec_exclude=a.elec, lj_min_sep=a.lj_sep, lj14_scale=a.lj14, flux=a.flux,
-                        elec14_scale=a.elec14, escale=tuple(int(x) for x in a.escale.split(",")) if a.escale else (), qfit=a.qfit, qbci=a.qbci)
+    st = BondedSettings(
+        families=families_of(a.families),
+        typing=a.typing,
+        depth=a.depth,
+        elec_exclude=a.elec,
+        lj_min_sep=a.lj_sep,
+        lj14_scale=a.lj14,
+        flux=a.flux,
+        elec14_scale=a.elec14,
+        escale=tuple(int(x) for x in a.escale.split(",")) if a.escale else (),
+        qfit=a.qfit,
+        qbci=a.qbci,
+    )
     out = {"name": a.name, "args": vars(a), "settings": st.__dict__, "molecules": {}}
     groups = [[i] for i in range(len(specs))] if (a.typing == "molecule" and not a.joint) else [list(range(len(specs)))]
     t0 = time.time()
@@ -127,13 +142,23 @@ def run(a):
                 e = esp_data(specs[i].name)
                 if e is not None:
                     esp[k] = e
-        fitter = Fitter(model, sub_fit, w_E=a.wE, w_F=a.wF, w_mu=a.wmu, l2=a.l2, l2_elec=a.l2_elec,
-                        esp={k: v for k, v in esp.items() if k in sub_fit}, w_esp=a.wesp)
+        fitter = Fitter(
+            model,
+            sub_fit,
+            w_E=a.wE,
+            w_F=a.wF,
+            w_mu=a.wmu,
+            l2=a.l2,
+            l2_elec=a.l2_elec,
+            esp={k: v for k, v in esp.items() if k in sub_fit},
+            w_esp=a.wesp,
+        )
         P0 = model.init_params(hold=tuple(hold))
         frozen = tuple(a.frozen.split(",")) if a.frozen else ()
         P = fitter.fit(P0, maxiter=a.maxiter, frozen=frozen, l1=a.l1, verbose=True)
-        if a.save_params:                        # parameters with their tying keys (pickle of numpy arrays)
+        if a.save_params:  # parameters with their tying keys (pickle of numpy arrays)
             import pickle
+
             keys = {f: model.keys[f] for f in model.fams}
             keys["escale"] = list(model.es_pos)
             if a.qfit >= 0:
@@ -141,18 +166,32 @@ def run(a):
             if a.qbci >= 0:
                 keys["bci"] = {"t": list(model.t_pos), "dc": list(model.dc_pos)}
             keys["ref"] = model.ref_keys
-            pickle.dump({"P": jax.tree_util.tree_map(np.asarray, P), "keys": keys},
-                        open(os.path.join(RES, f"{a.name}_{'-'.join(specs[i].name for i in g)[:60]}.params.pkl"), "wb"))
+            pickle.dump(
+                {"P": jax.tree_util.tree_map(np.asarray, P), "keys": keys},
+                open(os.path.join(RES, f"{a.name}_{'-'.join(specs[i].name for i in g)[:60]}.params.pkl"), "wb"),
+            )
         ev = Fitter(model, sub, w_E=a.wE, w_F=a.wF, w_mu=a.wmu, esp=esp)
         mt, mtr = ev.metrics(P, "test"), ev.metrics(P, "train")
         npar = model.n_params(P)
-        nz = int(sum(np.sum(np.abs(np.asarray(v)) > 1e-3 * SCALES.get(p, 1.0)) for f in model.fams for p, v in P[f].items()
-                     if p in T.REGISTRY[f].linear))
+        nz = int(
+            sum(
+                np.sum(np.abs(np.asarray(v)) > 1e-3 * SCALES.get(p, 1.0))
+                for f in model.fams
+                for p, v in P[f].items()
+                if p in T.REGISTRY[f].linear
+            )
+        )
         for k, i in enumerate(g):
             spec = specs[i]
-            r = {"test": mt[k], "train": mtr[k], "n_params_group": npar, "n_linear_nonzero_group": nz,
-                 "held_out": k in hold, "scans": {}}
-            if k in hold:                        # fraction of the held-out molecule's terms typed by training molecules
+            r = {
+                "test": mt[k],
+                "train": mtr[k],
+                "n_params_group": npar,
+                "n_linear_nonzero_group": nz,
+                "held_out": k in hold,
+                "scans": {},
+            }
+            if k in hold:  # fraction of the held-out molecule's terms typed by training molecules
                 seen = {f: {kk for j in sub_fit for kk in model.I[j][f]["k"]} for f in model.fams}
                 tot = sum(len(model.I[k][f]["k"]) for f in model.fams)
                 cov_ = sum(sum(1 for kk in model.I[k][f]["k"] if kk in seen[f]) for f in model.fams)
@@ -161,13 +200,20 @@ def run(a):
                 for sk, fs in data[i]["scans"].items():
                     try:
                         r["scans"][sk] = scan_metrics(model, k, P, fs, relax=not a.no_relax)
-                    except Exception as exc:                      # a failed relaxation should not lose the run
+                    except Exception as exc:  # a failed relaxation should not lose the run
                         r["scans"][sk] = {"error": repr(exc)[:200]}
             out["molecules"][spec.name] = r
-            sc = [v.get("relaxed_max", np.inf if v.get("relax_ok") is False else v.get("sp_max", np.nan)) for v in r["scans"].values() if "error" not in v]
-            print(f"  {spec.name:20s} E_MAE {mt[k]['E_MAE']:.3f}  F_MAE {mt[k]['F_MAE']:.2f}  "
-                  f"(train {mtr[k]['E_MAE']:.3f}/{mtr[k]['F_MAE']:.2f})  scan max {np.max(sc) if sc else float('nan'):.2f}"
-                  f"  params {npar}{'  HELD OUT coverage %.2f' % r['coverage'] if k in hold else ''}", flush=True)
+            sc = [
+                v.get("relaxed_max", np.inf if v.get("relax_ok") is False else v.get("sp_max", np.nan))
+                for v in r["scans"].values()
+                if "error" not in v
+            ]
+            print(
+                f"  {spec.name:20s} E_MAE {mt[k]['E_MAE']:.3f}  F_MAE {mt[k]['F_MAE']:.2f}  "
+                f"(train {mtr[k]['E_MAE']:.3f}/{mtr[k]['F_MAE']:.2f})  scan max {np.max(sc) if sc else float('nan'):.2f}"
+                f"  params {npar}{'  HELD OUT coverage %.2f' % r['coverage'] if k in hold else ''}",
+                flush=True,
+            )
     out["time_s"] = time.time() - t0
     os.makedirs(RES, exist_ok=True)
     json.dump(out, open(os.path.join(RES, f"{a.name}.json"), "w"), indent=1)
@@ -178,9 +224,16 @@ def l1path(a):
     """Error vs number of active linear parameters along an L1 path (per-molecule fits)."""
     names = mol_list(a.mols)
     specs, data = load(names, with_scans=True)
-    st = BondedSettings(families=families_of(a.families), typing=a.typing,
-                        depth=a.depth, elec_exclude=a.elec, lj_min_sep=a.lj_sep, lj14_scale=a.lj14, flux=a.flux,
-                        elec14_scale=a.elec14)
+    st = BondedSettings(
+        families=families_of(a.families),
+        typing=a.typing,
+        depth=a.depth,
+        elec_exclude=a.elec,
+        lj_min_sep=a.lj_sep,
+        lj14_scale=a.lj14,
+        flux=a.flux,
+        elec14_scale=a.elec14,
+    )
     lams = [float(x) for x in a.lams.split(",")]
     out = {"name": a.name, "args": vars(a), "lams": lams, "molecules": {}}
     for i, spec in enumerate(specs):
@@ -188,14 +241,23 @@ def l1path(a):
         fitter = Fitter(model, {0: {"train": data[i]["train"], "test": data[i]["test"]}}, l2=a.l2)
         P = model.init_params()
         rows = []
-        for lam in lams:                                          # warm start along the path
+        for lam in lams:  # warm start along the path
             P = fitter.fit(P, maxiter=a.maxiter, l1=lam, verbose=False)
             mt = fitter.metrics(P, "test")[0]
-            nz = int(sum(np.sum(np.abs(np.asarray(v)) > 1e-3 * SCALES.get(p, 1.0)) for f in model.fams for p, v in P[f].items()
-                         if p in T.REGISTRY[f].linear))
+            nz = int(
+                sum(
+                    np.sum(np.abs(np.asarray(v)) > 1e-3 * SCALES.get(p, 1.0))
+                    for f in model.fams
+                    for p, v in P[f].items()
+                    if p in T.REGISTRY[f].linear
+                )
+            )
             nlin = int(sum(np.size(v) for f in model.fams for p, v in P[f].items() if p in T.REGISTRY[f].linear))
             rows.append({"lam": lam, "E_MAE": mt["E_MAE"], "F_MAE": mt["F_MAE"], "n_active": nz, "n_linear": nlin})
-            print(f"  {spec.name:20s} l1 {lam:8.1e}  active {nz:4d}/{nlin:4d}  E_MAE {mt['E_MAE']:.3f}  F_MAE {mt['F_MAE']:.2f}", flush=True)
+            print(
+                f"  {spec.name:20s} l1 {lam:8.1e}  active {nz:4d}/{nlin:4d}  E_MAE {mt['E_MAE']:.3f}  F_MAE {mt['F_MAE']:.2f}",
+                flush=True,
+            )
         out["molecules"][spec.name] = rows
     os.makedirs(RES, exist_ok=True)
     json.dump(out, open(os.path.join(RES, f"{a.name}.json"), "w"), indent=1)
@@ -220,8 +282,10 @@ def summarize(names, exclude=("methanethiol",)):
         f = [v["test"]["F_MAE"] for v in ms.values()]
         s = np.array([scan_max(v) for v in ms.values()])
         fin = s[np.isfinite(s)]
-        print(f"{n:28s} mols {len(ms):2d}  E_MAE {np.mean(e):.3f}  F_MAE {np.mean(f):.2f}  scan max {np.mean(fin) if len(fin) else np.nan:.2f} kcal/mol"
-              f"  (relax failures {int(np.sum(np.isinf(s)))})")
+        print(
+            f"{n:28s} mols {len(ms):2d}  E_MAE {np.mean(e):.3f}  F_MAE {np.mean(f):.2f}  scan max {np.mean(fin) if len(fin) else np.nan:.2f} kcal/mol"
+            f"  (relax failures {int(np.sum(np.isinf(s)))})"
+        )
 
 
 if __name__ == "__main__":
@@ -252,7 +316,9 @@ if __name__ == "__main__":
     ap.add_argument("--save_params", action="store_true")
     ap.add_argument("--qfit", type=int, default=-1, help="fit typed pGM charges/covalent dipoles (typing depth)")
     ap.add_argument("--l2_elec", type=float, default=None)
-    ap.add_argument("--qbci", type=int, default=-1, help="fit typed bond-charge increments on the ESP charges (typing depth)")
+    ap.add_argument(
+        "--qbci", type=int, default=-1, help="fit typed bond-charge increments on the ESP charges (typing depth)"
+    )
     ap.add_argument("--wesp", type=float, default=0.0, help="weight of the ESP restraint (relative RMSE / 0.1)^2")
     ap.add_argument("--lams", default="0,1e-3,3e-3,1e-2,3e-2,0.1,0.3,1")
     a = ap.parse_args()

@@ -1,4 +1,5 @@
 """Reweighted ensemble averages and their gradients (top-down refinement)."""
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -53,7 +54,8 @@ def test_cmap_refinement_gradient_on_peptide_frames():
     X = s.ref_xyz[None] + 0.01 * rng.normal(size=(80,) + s.ref_xyz.shape)
 
     def energy(th, R):
-        Q = dict(P); Q["cmap"] = {"cm": th}
+        Q = dict(P)
+        Q["cmap"] = {"cm": th}
         return terms.bonded_energy(0, R, Q)
 
     th0 = P["cmap"]["cm"]

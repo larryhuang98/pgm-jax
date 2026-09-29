@@ -3,6 +3,7 @@ differentiable in positions, parameters and the box.
 
 Strain derivatives are validated against sander's molecular VIRIAL for 512 pGM3P-25 waters
 (scripts/validate_amber.py virial)."""
+
 from __future__ import annotations
 
 import jax
@@ -13,7 +14,7 @@ from .ewald import PeriodicPGM, neighbor_list
 from .lj import PeriodicLJ
 from .system import System
 
-KJMOL_NM3_BAR = 16.605390671738466        # 1 kJ/mol/nm^3 in bar
+KJMOL_NM3_BAR = 16.605390671738466  # 1 kJ/mol/nm^3 in bar
 
 
 def strain_derivative(energy, pos, H, sys: System | None = None):
@@ -25,7 +26,7 @@ def strain_derivative(energy, pos, H, sys: System | None = None):
     if sys is not None:
         w = jnp.asarray(sys.masses)
         mol = jnp.asarray(sys.mol)
-        com = (jax.ops.segment_sum(w[:, None] * pos, mol, sys.nmol) / jax.ops.segment_sum(w, mol, sys.nmol)[:, None])
+        com = jax.ops.segment_sum(w[:, None] * pos, mol, sys.nmol) / jax.ops.segment_sum(w, mol, sys.nmol)[:, None]
 
     def e(eps):
         F = jnp.eye(3) + eps
@@ -48,14 +49,28 @@ class PeriodicModel:
     One neighbour list (rc + skin, or the LJ cutoff if larger) is built at (pos_ref, H) and
     shared; energies accept any positions, parameters and box."""
 
-    def __init__(self, sys: System, H, pos_ref, rc: float = 1.0, b0: float = 3.8, skin: float = 0.0,
-                 lj: bool = True, lj_rc: float | None = None, lj_lrc: bool = False,
-                 k_tol: float = 1e-12, cg_tol: float = 1e-12, elec: str = "qpi", vdw: str = "lj",
-                 gvdw_rep: str = "gauss"):
+    def __init__(
+        self,
+        sys: System,
+        H,
+        pos_ref,
+        rc: float = 1.0,
+        b0: float = 3.8,
+        skin: float = 0.0,
+        lj: bool = True,
+        lj_rc: float | None = None,
+        lj_lrc: bool = False,
+        k_tol: float = 1e-12,
+        cg_tol: float = 1e-12,
+        elec: str = "qpi",
+        vdw: str = "lj",
+        gvdw_rep: str = "gauss",
+    ):
         """elec: "q" | "qp" | "qi" | "qpi" (options.py); vdw: "lj" | "gvdw" | "none" (lj=False: none);
         lj_rc / lj_lrc apply to either van der Waals form."""
         from .options import check_vdw
         from .vdw import PeriodicGVDW
+
         check_vdw(vdw, gvdw_rep)
         self.sys, self.H = sys, np.asarray(H, float)
         lj_rc = rc if lj_rc is None else lj_rc
@@ -82,8 +97,9 @@ class PeriodicModel:
     def strain_derivative(self, pos, params=None, H=None, molecular: bool = True):
         """dE/d eps of the energy function (exact derivative; see periodic.strain_derivative)."""
         H = self.H if H is None else H
-        return strain_derivative(lambda x, h: self.energy(x, params, h)["total"], pos, H,
-                                 self.sys if molecular else None)
+        return strain_derivative(
+            lambda x, h: self.energy(x, params, h)["total"], pos, H, self.sys if molecular else None
+        )
 
     def virial_derivative(self, pos, params=None, H=None, molecular: bool = True):
         """dE/d eps for the pressure: the strain derivative plus, with the LJ long-range

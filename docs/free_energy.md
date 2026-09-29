@@ -14,16 +14,21 @@ from pgm_jax.md.alchemy import Alchemy, FreeEnergyRun, GasPhaseLeg, LambdaWindow
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.simulation import Simulation
 
-sys, P = alchemical_system(sys, solute=0)              # the solute gets its own parameter keys
-alch = Alchemy(sys, solute=0)                          # soft core alpha 0.5, polarizability floor 1e-8
+sys, P = alchemical_system(sys, solute=0)  # the solute gets its own parameter keys
+alch = Alchemy(sys, solute=0)  # soft core alpha 0.5, polarizability floor 1e-8
 sim = Simulation(sys, pos, H, MDSettings(), params=P, alchemy=alch, ensemble="nvt", thermostat="bussi", dt=0.002)
 gas = GasPhaseLeg(alch, sim.positions_nm()[sys.atom_slice(0)], "qpi")
-L = standard_schedule(8)                               # 8 electrostatics + 11 van der Waals windows
-run = FreeEnergyRun(LambdaWindows(sim, L), sample_every=500, exchange_every=500,
-                    meta={"gas_delta_g": gas.delta_g(P), "gas_dudl": [gas.dudl(l, P) for l in L[:, 0]]})
-run.run(1000000, prefix="wat", report=10000, restart=50000)            # 2 ns per window
-r = fe.estimate(fe.load("wat_fe.npz"), discard_ps=200, gas={"delta_g": gas.delta_g(P),
-                "dudl": [gas.dudl(l, P) for l in L[:, 0]]})
+L = standard_schedule(8)  # 8 electrostatics + 11 van der Waals windows
+run = FreeEnergyRun(
+    LambdaWindows(sim, L),
+    sample_every=500,
+    exchange_every=500,
+    meta={"gas_delta_g": gas.delta_g(P), "gas_dudl": [gas.dudl(l, P) for l in L[:, 0]]},
+)
+run.run(1000000, prefix="wat", report=10000, restart=50000)  # 2 ns per window
+r = fe.estimate(
+    fe.load("wat_fe.npz"), discard_ps=200, gas={"delta_g": gas.delta_g(P), "dudl": [gas.dudl(l, P) for l in L[:, 0]]}
+)
 r["dG_hyd_mbar_kcal"], r["dG_hyd_mbar_err_kcal"]
 ```
 

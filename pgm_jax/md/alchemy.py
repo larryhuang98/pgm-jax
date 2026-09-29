@@ -101,6 +101,7 @@ finite-size corrections (Rocklin et al., JCP 139, 184103 (2013)) and is refused;
 recorder does not scale the solute's charges (refused with an alchemical region).
 
 Units: nm, ps, kJ/mol, K, e."""
+
 from __future__ import annotations
 
 import dataclasses as _dc
@@ -121,8 +122,8 @@ from .integrate import KB
 from .io import write_restart
 from .remd import ExchangeStatistics, MDReplicas, _nocount, _stack, _take, exchange_pairs, metropolis
 
-PREFIX = "alch:"                 # tying-key prefix of an alchemical molecule's own parameters
-KCAL = 4.184                     # kJ per kcal
+PREFIX = "alch:"  # tying-key prefix of an alchemical molecule's own parameters
+KCAL = 4.184  # kJ per kcal
 FORMAT = "pgm_jax free energy 1"
 
 
@@ -143,8 +144,14 @@ def alchemical_system(sys: System, solute: int, params=None):
     out = System(mols)
     P0 = sys.params0 if params is None else params
     vals = {qn: dict(zip(sys.table.keys[qn], np.asarray(P0[qn], float).tolist())) for qn in QUANTITIES}
-    P = {qn: jnp.asarray(np.array([vals[qn][key[len(PREFIX):] if key.startswith(PREFIX) else key]
-                                   for key in out.table.keys[qn]], float)) for qn in QUANTITIES}
+    P = {
+        qn: jnp.asarray(
+            np.array(
+                [vals[qn][key[len(PREFIX) :] if key.startswith(PREFIX) else key] for key in out.table.keys[qn]], float
+            )
+        )
+        for qn in QUANTITIES
+    }
     return out, P
 
 
@@ -178,8 +185,15 @@ class Alchemy:
     long-range correction, van der Waals form and electrostatics level are taken from the force
     field the first time the Hamiltonian is bound to one (`check`, called by the integrator)."""
 
-    def __init__(self, sys: System, solute: int, lam=(1.0, 1.0), sc_alpha: float = 0.5, alpha_floor: float = 1e-8,
-                 intramolecular: str = "annihilate"):
+    def __init__(
+        self,
+        sys: System,
+        solute: int,
+        lam=(1.0, 1.0),
+        sc_alpha: float = 0.5,
+        alpha_floor: float = 1e-8,
+        intramolecular: str = "annihilate",
+    ):
         k = int(solute)
         if intramolecular not in ("annihilate", "keep"):
             raise ValueError("intramolecular: 'annihilate' (with a gas-phase leg) or 'keep' (gas-phase correction)")
@@ -209,26 +223,32 @@ class Alchemy:
             shared = np.intersect1d(own, sys.idx[qn][env])
             if shared.size:
                 names = ", ".join(sys.table.keys[qn][i] for i in shared[:4])
-                raise ValueError(f"the solute shares its {qn} parameters ({names}) "
-                                 f"with other molecules: build the system with alchemical_system(sys, {k})")
+                raise ValueError(
+                    f"the solute shares its {qn} parameters ({names}) "
+                    f"with other molecules: build the system with alchemical_system(sys, {k})"
+                )
             m = np.zeros(len(sys.table.keys[qn]), bool)
             m[own] = True
             self.mask[qn] = jnp.asarray(m)
         terms = np.isin(sys.cov_i, atoms)
         own, other = np.unique(sys.idx["cov"][terms]), sys.idx["cov"][~terms]
         if np.intersect1d(own, other).size:
-            raise ValueError(f"the solute shares covalent-dipole parameters with other molecules: build the system "
-                             f"with alchemical_system(sys, {k})")
+            raise ValueError(
+                f"the solute shares covalent-dipole parameters with other molecules: build the system "
+                f"with alchemical_system(sys, {k})"
+            )
         m = np.zeros(len(sys.table.keys["cov"]), bool)
         m[own] = True
         self.mask["cov"] = jnp.asarray(m)
         charge = float(np.sum(np.asarray(sys.expand(None)["q"])[atoms]))
         if abs(charge) > 1e-6:
-            raise NotImplementedError(f"the solute carries a net charge ({charge:+.4f} e): charged solutes need "
-                                      "finite-size corrections of the periodic electrostatics, not implemented")
-        self.bound = None                          # (vdw form, van der Waals cutoff, long-range correction, elec)
-        self._intra = None                         # the solute's intramolecular van der Waals pairs (i, j, weight)
-        self._gas = None                           # gas-phase electrostatics of the solute ("keep")
+            raise NotImplementedError(
+                f"the solute carries a net charge ({charge:+.4f} e): charged solutes need "
+                "finite-size corrections of the periodic electrostatics, not implemented"
+            )
+        self.bound = None  # (vdw form, van der Waals cutoff, long-range correction, elec)
+        self._intra = None  # the solute's intramolecular van der Waals pairs (i, j, weight)
+        self._gas = None  # gas-phase electrostatics of the solute ("keep")
 
     # ------------------------------------------------------------------ binding / checks
     @staticmethod
@@ -246,10 +266,14 @@ class Alchemy:
         if ff.sys.fingerprint() != self.sys.fingerprint():
             raise ValueError("the alchemical region was built for another System")
         if s.vdw not in ("lj", "none"):
-            raise NotImplementedError(f"soft-core van der Waals is implemented for vdw='lj' (and 'none'), not {s.vdw!r}")
+            raise NotImplementedError(
+                f"soft-core van der Waals is implemented for vdw='lj' (and 'none'), not {s.vdw!r}"
+            )
         if getattr(ff, "flux", None) is not None:
-            raise NotImplementedError("an alchemical region with charge flux: lambda scales the fixed charges, "
-                                      "not the flux terms, so the decoupled state would keep charges")
+            raise NotImplementedError(
+                "an alchemical region with charge flux: lambda scales the fixed charges, "
+                "not the flux terms, so the decoupled state would keep charges"
+            )
         b = (s.vdw, float(ff.rc_v), bool(s.lj_lrc), s.elec)
         if self.bound is not None and self.bound != b:
             raise ValueError(f"the alchemical region is bound to other settings {self.bound}, not {b}")
@@ -258,16 +282,21 @@ class Alchemy:
         # nonzero weight); the ordinary rows lose them with the solute's parameters, so they are
         # evaluated here, unscaled
         sp, w = np.asarray(ff.topology.special), np.asarray(ff.topology.special_w)
-        pairs = [(int(i), int(j), float(w[i, c])) for i in self.atoms_np for c, j in enumerate(sp[i])
-                 if i < j < self.sys.n and w[i, c] != 0.0]
+        pairs = [
+            (int(i), int(j), float(w[i, c]))
+            for i in self.atoms_np
+            for c, j in enumerate(sp[i])
+            if i < j < self.sys.n and w[i, c] != 0.0
+        ]
         if pairs and s.vdw != "none":
             ii, jj, ww = (np.array(x) for x in zip(*pairs))
             self._intra = (jnp.asarray(ii, jnp.int32), jnp.asarray(jj, jnp.int32), jnp.asarray(ww, jnp.float64))
         else:
             self._intra = None
-        if self.intramolecular == "keep" and self._gas is None:   # the solute alone in vacuum (dense pGM)
+        if self.intramolecular == "keep" and self._gas is None:  # the solute alone in vacuum (dense pGM)
             from ..channels import ElecChannel
             from ..model import Model
+
             sub, _ = self.sys.sub((self.solute,))
             self._gas = Model([ElecChannel.level(s.elec)]).energy_fn(sub)
 
@@ -279,9 +308,11 @@ class Alchemy:
 
     def describe(self) -> str:
         m = self.sys.molecules[self.solute]
-        return (f"solute molecule {self.solute} ({m.name}, {m.n} atoms), lambda (elec, vdw) = "
-                f"({float(self.lam[0]):g}, {float(self.lam[1]):g}), soft core alpha {self.sc_alpha:g}, "
-                f"polarizability floor {self.alpha_floor:g}, intramolecular electrostatics: {self.intramolecular}")
+        return (
+            f"solute molecule {self.solute} ({m.name}, {m.n} atoms), lambda (elec, vdw) = "
+            f"({float(self.lam[0]):g}, {float(self.lam[1]):g}), soft core alpha {self.sc_alpha:g}, "
+            f"polarizability floor {self.alpha_floor:g}, intramolecular electrostatics: {self.intramolecular}"
+        )
 
     def _lam(self, lam):
         return self.lam if lam is None else jnp.asarray(lam, jnp.float64)
@@ -413,8 +444,10 @@ class Alchemy:
         com = None
         if molecular:
             w = ff.masses
-            com = jax.ops.segment_sum(w[:, None] * pos, ff.mol, self.sys.nmol) / \
-                jax.ops.segment_sum(w, ff.mol, self.sys.nmol)[:, None]
+            com = (
+                jax.ops.segment_sum(w[:, None] * pos, ff.mol, self.sys.nmol)
+                / jax.ops.segment_sum(w, ff.mol, self.sys.nmol)[:, None]
+            )
         W = W + full_strain_derivative(lambda x, h: self.extra_energy(x, h, cand, params, lam), pos, H, ff.mol, com)
         if self.bound[2]:
             P = self.sys.expand(self.params0 if params is None else params)
@@ -439,12 +472,15 @@ class GasPhaseLeg:
     def __init__(self, alchemy: Alchemy, xyz, elec: str = "qpi"):
         from ..channels import ElecChannel
         from ..model import Model
+
         self.alchemy = alchemy
         sub, _ = alchemy.sys.sub((alchemy.solute,))
         self.xyz = jnp.asarray(np.asarray(xyz, float).reshape(sub.n, 3))
         f = Model([ElecChannel.level(elec)]).energy_fn(sub)
         self._e = jax.jit(lambda le, params: f(self.xyz, alchemy.params(params, jnp.stack([le, 1.0])))["total"])
-        self._g = jax.jit(jax.grad(lambda le, params: f(self.xyz, alchemy.params(params, jnp.stack([le, 1.0])))["total"]))
+        self._g = jax.jit(
+            jax.grad(lambda le, params: f(self.xyz, alchemy.params(params, jnp.stack([le, 1.0])))["total"])
+        )
 
     def energy(self, lam_e: float, params=None) -> float:
         """E_gas(lambda_e), kJ/mol."""
@@ -501,8 +537,10 @@ class LambdaWindows(MDReplicas):
         if integ.thermostat is None:
             raise ValueError("lambda windows need a thermostat (ensemble nvt or npt)")
         if batched and sim.ensemble == "npt":
-            raise ValueError("batched windows run NVT only (under vmap the barostat's trial energy would be "
-                             "evaluated every step); use batched=False for NPT")
+            raise ValueError(
+                "batched windows run NVT only (under vmap the barostat's trial energy would be "
+                "evaluated every step); use batched=False for NPT"
+            )
         L = np.asarray(lambdas, float)
         if L.ndim != 2 or L.shape[1] != 2 or len(L) < 2 or np.any(L < 0.0) or np.any(L > 1.0):
             raise ValueError("lambdas: (K >= 2, 2) array of (lambda_elec, lambda_vdw) in [0, 1]")
@@ -511,7 +549,7 @@ class LambdaWindows(MDReplicas):
         self.sim, self.integ, self.batched = sim, integ, bool(batched)
         self.alchemy = integ.alchemy
         self.lambdas = L
-        self.temperatures = np.full(len(L), integ.kT / KB)          # one temperature (MDReplicas interface)
+        self.temperatures = np.full(len(L), integ.kT / KB)  # one temperature (MDReplicas interface)
         self.n, self.dt = len(L), float(sim.dt)
         self.pressure = float(integ.pressure) if sim.ensemble == "npt" else None
         self.time_ps = 0.0
@@ -537,6 +575,7 @@ class LambdaWindows(MDReplicas):
     def _build(self):
         super()._build()
         from .remd import _axes
+
         ax = _axes(self.S)
         self._switch = jax.jit(jax.vmap(self._switch_one, in_axes=(ax,), out_axes=ax))
 
@@ -546,10 +585,10 @@ class LambdaWindows(MDReplicas):
         iteration count, overflow."""
         integ, ff, alch = self.integ, self.sim.ff, self.alchemy
         params = integ.params
-        if hasattr(integ, "flex"):                 # flexible engine: atoms, neighbour-list group centres
+        if hasattr(integ, "flex"):  # flexible engine: atoms, neighbour-list group centres
             pos = st.dyn.position
             centers = integ.flex.list_centers(pos)
-        else:                                      # rigid bodies
+        else:  # rigid bodies
             pos = self.sim.rigid.positions(st.dyn.position)
             centers = st.dyn.position.center
         cand, ovf0 = integ.nb.candidates(st.nbr, centers, st.box, pos)
@@ -559,11 +598,15 @@ class LambdaWindows(MDReplicas):
             return e, it, ovf
 
         E, it, ovf = jax.lax.map(e_ff, lam_e)
-        esc = jax.vmap(lambda le, lv: alch.extra_energy(pos, st.box, cand, params, jnp.stack([le, lv])))(lam_e_all, lam_v)
+        esc = jax.vmap(lambda le, lv: alch.extra_energy(pos, st.box, cand, params, jnp.stack([le, lv])))(
+            lam_e_all, lam_v
+        )
         g = alch.dudl(ff, pos, st.box, cand, st.induction.mu, params, st.lam)
         # lambda-independent terms (restraints, bonded energy of flexible molecules): the same in every
         # window, kept so that u_n(x_n) = beta U of the step
-        const = integ._restraint_energy(pos, st.box, st.bias) + (integ.flex.energy(pos) if hasattr(integ, "flex") else 0.0)
+        const = integ._restraint_energy(pos, st.box, st.bias) + (
+            integ.flex.energy(pos) if hasattr(integ, "flex") else 0.0
+        )
         return E[group] + esc + const, g, jnp.max(it), jnp.any(ovf) | ovf0
 
     def _sampler(self):
@@ -573,6 +616,7 @@ class LambdaWindows(MDReplicas):
         if key not in self._samplers:
             if self.batched:
                 from .remd import _axes
+
                 f = jax.vmap(self._sample_one, in_axes=(_axes(self.S), None, None, None, None))
             else:
                 f = self._sample_one
@@ -584,8 +628,12 @@ class LambdaWindows(MDReplicas):
         k (the potential energy of the step at k = n; P V left out under NPT); dudl (K, 2): dU/dlambda
         (kJ/mol) of each window at its own lambda; the largest CG iteration count of the re-solves."""
         f = self._sampler()
-        args = (jnp.asarray(self.lam_e), jnp.asarray(self.group), jnp.asarray(self.lambdas[:, 1]),
-                jnp.asarray(self.lambdas[:, 0]))
+        args = (
+            jnp.asarray(self.lam_e),
+            jnp.asarray(self.group),
+            jnp.asarray(self.lambdas[:, 1]),
+            jnp.asarray(self.lambdas[:, 0]),
+        )
         if self.batched:
             U, g, it, ovf = f(self.S, *args)
         else:
@@ -604,8 +652,10 @@ class LambdaWindows(MDReplicas):
         e0 = st.epot
         new = self.integ._state_forces(st, True)
         ind = new.induction
-        return new.set(induction=ind.set(hist=jnp.broadcast_to(ind.mu, ind.hist.shape).astype(ind.hist.dtype)),
-                       heat=new.heat + (new.epot - e0))
+        return new.set(
+            induction=ind.set(hist=jnp.broadcast_to(ind.mu, ind.hist.shape).astype(ind.hist.dtype)),
+            heat=new.heat + (new.epot - e0),
+        )
 
     def permute(self, src):
         """Slot k receives the configuration of slot src[k], re-evaluated at slot k's lambda."""
@@ -619,17 +669,24 @@ class LambdaWindows(MDReplicas):
             self.S = _select(changed, self._switch(moved), old)
         else:
             old = list(self.states)
-            self.states = [self._switch_seq(self._exchange_seq(old[k], old[src[k]], 1.0)) if changed[k] else old[k]
-                           for k in range(self.n)]
+            self.states = [
+                self._switch_seq(self._exchange_seq(old[k], old[src[k]], 1.0)) if changed[k] else old[k]
+                for k in range(self.n)
+            ]
 
     # ------------------------------------------------------------------ outputs / checkpoints
     def write_restarts(self, prefix: str):
         """Amber NetCDF restart of every window: prefix_Lkk.rst7."""
         for k in range(self.n):
             sim = self._on(k)
-            write_restart(f"{prefix}_L{k:02d}.rst7", sim.positions_nm() * 10.0, sim.velocities_nm_ps() * 10.0,
-                          np.asarray(sim.state.box) * 10.0, self.time_ps,
-                          title=f"pgm_jax lambda window {k}: {self.lambdas[k].tolist()}")
+            write_restart(
+                f"{prefix}_L{k:02d}.rst7",
+                sim.positions_nm() * 10.0,
+                sim.velocities_nm_ps() * 10.0,
+                np.asarray(sim.state.box) * 10.0,
+                self.time_ps,
+                title=f"pgm_jax lambda window {k}: {self.lambdas[k].tolist()}",
+            )
 
     def state_dict(self) -> dict:
         d = super().state_dict()
@@ -637,7 +694,11 @@ class LambdaWindows(MDReplicas):
         return d
 
     def load_state_dict(self, d: dict):
-        if "lambdas" not in d or np.shape(d["lambdas"]) != self.lambdas.shape or not np.allclose(d["lambdas"], self.lambdas):
+        if (
+            "lambdas" not in d
+            or np.shape(d["lambdas"]) != self.lambdas.shape
+            or not np.allclose(d["lambdas"], self.lambdas)
+        ):
             raise ValueError("checkpoint lambda windows differ from these")
         super().load_state_dict(d)
 
@@ -661,8 +722,16 @@ class FreeEnergyRun:
     speed), prefix_fe.json (acceptance matrix, round trips, speed), prefix.fe.chk (checkpoint:
     windows, samples, statistics, random state; `load`) and prefix_Lkk.rst7."""
 
-    def __init__(self, windows: LambdaWindows, sample_every: int = 500, exchange_every: int = 0, seed: int = 0,
-                 log=_sys.stdout, meta: dict | None = None, param_grad=None):
+    def __init__(
+        self,
+        windows: LambdaWindows,
+        sample_every: int = 500,
+        exchange_every: int = 0,
+        seed: int = 0,
+        log=_sys.stdout,
+        meta: dict | None = None,
+        param_grad=None,
+    ):
         self.windows = windows
         self.param_grad = param_grad
         self.n = windows.n
@@ -670,22 +739,26 @@ class FreeEnergyRun:
         if self.sample_every < 1:
             raise ValueError("sample_every must be >= 1")
         if self.exchange_every < 0 or (self.exchange_every and self.exchange_every % self.sample_every):
-            raise ValueError("exchange_every must be 0 or a multiple of sample_every (exchanges use the sampled energies)")
+            raise ValueError(
+                "exchange_every must be 0 or a multiple of sample_every (exchanges use the sampled energies)"
+            )
         self.rng = np.random.Generator(np.random.PCG64(np.random.SeedSequence([int(seed), 0xA1C4])))
         self.stats = ExchangeStatistics(self.n)
         self.step = 0
         self.log = log
         self.meta = dict(meta or {})
         self.samples = {k: [] for k in ("u", "dudl", "step", "time_ps", "replica", "epot", "cg")}
-        if param_grad is not None:                 # parameter gradients of the end states (fe_grad.py)
+        if param_grad is not None:  # parameter gradients of the end states (fe_grad.py)
             if param_grad.windows is not windows:
                 raise ValueError("param_grad was built for other windows")
             self.samples["dudp"] = []
             self.meta.update(param_grad.meta())
         mode = "batched" if windows.batched else "sequential"
-        self._print(f"# lambda windows: {self.n} ({mode}), T = {windows.temperatures[0]:.2f} K, samples every "
-                    f"{self.sample_every} steps ({self.sample_every * windows.dt:g} ps), "
-                    + (f"Hamiltonian exchange every {self.exchange_every} steps" if self.exchange_every else "no exchanges"))
+        self._print(
+            f"# lambda windows: {self.n} ({mode}), T = {windows.temperatures[0]:.2f} K, samples every "
+            f"{self.sample_every} steps ({self.sample_every * windows.dt:g} ps), "
+            + (f"Hamiltonian exchange every {self.exchange_every} steps" if self.exchange_every else "no exchanges")
+        )
         self._print("# (lambda_elec, lambda_vdw): " + " ".join(f"({a:g},{b:g})" for a, b in windows.lambdas))
 
     def _print(self, s):
@@ -723,9 +796,11 @@ class FreeEnergyRun:
         files = prefix is not None
         logf = open(f"{prefix}_fe.log", "a" if self.step else "w") if (files and report) else None
         if logf is not None and not self.step:
-            logf.write("# lambda (elec, vdw): " + " ".join(f"({a:g},{b:g})" for a, b in w.lambdas) + "\n"
-                       "#       step    time_ps  T_mean_K  T_min_K  T_max_K  cg_mean  cg_samp  acceptance (pairs)"
-                       "   ns/day/window\n")
+            logf.write(
+                "# lambda (elec, vdw): " + " ".join(f"({a:g},{b:g})" for a, b in w.lambdas) + "\n"
+                "#       step    time_ps  T_mean_K  T_min_K  T_max_K  cg_mean  cg_samp  acceptance (pairs)"
+                "   ns/day/window\n"
+            )
         t0, s0, done = time.time(), self.step, 0
         while done < nsteps:
             m = min(block, nsteps - done)
@@ -743,9 +818,12 @@ class FreeEnergyRun:
                 cg = np.mean([o["cg_mean"] for o in obs])
                 acc = self.stats.neighbour_acceptance() if self.exchange_every else np.array([])
                 cgs = self.samples["cg"][-1] if self.samples["cg"] else 0
-                line = (f"  {self.step:10d} {w.time_ps:10.2f} {T.mean():9.2f} {T.min():8.2f} {T.max():8.2f} "
-                        f"{cg:8.2f} {cgs:8d}  " + " ".join("  -  " if np.isnan(a) else f"{a:.3f}" for a in acc)
-                        + f"   {speed:.1f}")
+                line = (
+                    f"  {self.step:10d} {w.time_ps:10.2f} {T.mean():9.2f} {T.min():8.2f} {T.max():8.2f} "
+                    f"{cg:8.2f} {cgs:8d}  "
+                    + " ".join("  -  " if np.isnan(a) else f"{a:.3f}" for a in acc)
+                    + f"   {speed:.1f}"
+                )
                 self._print(line)
                 if logf is not None:
                     logf.write(line + "\n")
@@ -764,10 +842,17 @@ class FreeEnergyRun:
 
     def summary(self, ns_per_day: float | None = None) -> dict:
         st = self.stats
-        out = {"lambdas": self.windows.lambdas.tolist(), "temperature_K": float(self.windows.temperatures[0]),
-               "steps": self.step, "time_ps": self.windows.time_ps, "samples": len(self.samples["u"]),
-               "sample_every": self.sample_every, "exchange_every": self.exchange_every,
-               "exchanges": st.n_exchanges, "batched": bool(self.windows.batched)}
+        out = {
+            "lambdas": self.windows.lambdas.tolist(),
+            "temperature_K": float(self.windows.temperatures[0]),
+            "steps": self.step,
+            "time_ps": self.windows.time_ps,
+            "samples": len(self.samples["u"]),
+            "sample_every": self.sample_every,
+            "exchange_every": self.exchange_every,
+            "exchanges": st.n_exchanges,
+            "batched": bool(self.windows.batched),
+        }
         if self.exchange_every:
             out["neighbour_acceptance"] = [None if np.isnan(a) else float(a) for a in st.neighbour_acceptance()]
             out["round_trips_total"] = int(st.round_trips.sum())
@@ -781,19 +866,38 @@ class FreeEnergyRun:
         """The samples as arrays (the content of prefix_fe.npz)."""
         S, w = self.samples, self.windows
         K = self.n
-        return {"u": np.array(S["u"], float).reshape(-1, K, K), "dudl": np.array(S["dudl"], float).reshape(-1, K, 2),
-                "step": np.array(S["step"], int), "time_ps": np.array(S["time_ps"], float),
-                "replica": np.array(S["replica"], int).reshape(-1, K), "epot": np.array(S["epot"], float).reshape(-1, K),
-                "cg": np.array(S["cg"], int), "lambdas": w.lambdas.copy(), "kT": float(w.integ.kT),
-                "temperature": float(w.temperatures[0]), "dt": w.dt, "sample_every": self.sample_every,
-                "meta": json.dumps(self.meta)} | ({"dudp": np.array(S["dudp"], float).reshape(len(S["u"]), -1, K, len(
-                    self.meta["dudp_names"]))} if S.get("dudp") is not None and "dudp_names" in self.meta else {})
+        return {
+            "u": np.array(S["u"], float).reshape(-1, K, K),
+            "dudl": np.array(S["dudl"], float).reshape(-1, K, 2),
+            "step": np.array(S["step"], int),
+            "time_ps": np.array(S["time_ps"], float),
+            "replica": np.array(S["replica"], int).reshape(-1, K),
+            "epot": np.array(S["epot"], float).reshape(-1, K),
+            "cg": np.array(S["cg"], int),
+            "lambdas": w.lambdas.copy(),
+            "kT": float(w.integ.kT),
+            "temperature": float(w.temperatures[0]),
+            "dt": w.dt,
+            "sample_every": self.sample_every,
+            "meta": json.dumps(self.meta),
+        } | (
+            {"dudp": np.array(S["dudp"], float).reshape(len(S["u"]), -1, K, len(self.meta["dudp_names"]))}
+            if S.get("dudp") is not None and "dudp_names" in self.meta
+            else {}
+        )
 
     def save(self, prefix: str):
         np.savez(f"{prefix}_fe.npz", **self.arrays())
-        d = {"format": FORMAT, "lambdas": self.windows.lambdas.copy(), "step": self.step,
-             "rng": self.rng.bit_generator.state, "stats": self.stats.to_dict(), "samples": self.samples,
-             "meta": self.meta, "windows": self.windows.state_dict()}
+        d = {
+            "format": FORMAT,
+            "lambdas": self.windows.lambdas.copy(),
+            "step": self.step,
+            "rng": self.rng.bit_generator.state,
+            "stats": self.stats.to_dict(),
+            "samples": self.samples,
+            "meta": self.meta,
+            "windows": self.windows.state_dict(),
+        }
         with open(prefix + ".fe.chk", "wb") as fh:
             pickle.dump(d, fh)
         self.windows.write_restarts(prefix)
@@ -805,8 +909,10 @@ class FreeEnergyRun:
         if d.get("format") != FORMAT:
             raise ValueError(f"{path}: not a {FORMAT!r} checkpoint")
         if self.param_grad is not None and "dudp" not in d["samples"] and d["samples"]["u"]:
-            raise ValueError(f"{path}: its samples have no parameter gradients (continue without param_grad, "
-                             "or start new samples with load_windows)")
+            raise ValueError(
+                f"{path}: its samples have no parameter gradients (continue without param_grad, "
+                "or start new samples with load_windows)"
+            )
         self.windows.load_state_dict(d["windows"])
         self.step = int(d["step"])
         self.rng.bit_generator.state = d["rng"]
@@ -828,15 +934,18 @@ class FreeEnergyRun:
             raise ValueError(f"{path}: not a {FORMAT!r} checkpoint")
         wd = dict(d["windows"])
         L, mine = np.asarray(wd["lambdas"], float), self.windows.lambdas
-        if L.shape != mine.shape or not np.allclose(L, mine):              # windows matched by lambda
+        if L.shape != mine.shape or not np.allclose(L, mine):  # windows matched by lambda
             pick = []
             for lam in mine:
                 j = np.nonzero(np.all(np.abs(L - lam) < 1e-12, axis=1))[0]
                 if not len(j):
                     raise ValueError(f"{path}: no window at lambda {lam.tolist()}")
                 pick.append(int(j[0]))
-            wd.update(lambdas=mine.copy(), temperatures=np.asarray(wd["temperatures"])[pick],
-                      states=[wd["states"][j] for j in pick])
+            wd.update(
+                lambdas=mine.copy(),
+                temperatures=np.asarray(wd["temperatures"])[pick],
+                states=[wd["states"][j] for j in pick],
+            )
         self.windows.load_state_dict(wd)
         self.windows.time_ps = 0.0
         self.step = 0

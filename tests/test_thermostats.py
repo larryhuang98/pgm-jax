@@ -1,6 +1,7 @@
 """Thermostats: exact O steps keep the Maxwell distribution (and the auxiliaries' N(0, kT)),
 relax a hot start, Bussi gives canonical kinetic-energy fluctuations, GLE kernels and
 fluctuation-dissipation checks, and short constrained NVT runs conserve the effective energy."""
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -27,8 +28,11 @@ def _run(th, v, aux, n, h=0.002, dof=None, seed=0):
     return v, aux, np.array(out)
 
 
-@pytest.mark.parametrize("th", [Langevin(5.0), Bussi(0.1), GLE.band(), GLE.lowpass(5.0, 50.0)],
-                         ids=["langevin", "bussi", "gle-band", "gle-lowpass"])
+@pytest.mark.parametrize(
+    "th",
+    [Langevin(5.0), Bussi(0.1), GLE.band(), GLE.lowpass(5.0, 50.0)],
+    ids=["langevin", "bussi", "gle-band", "gle-lowpass"],
+)
 def test_o_step_keeps_and_reaches_maxwell(th):
     key = jax.random.PRNGKey(1)
     shape = (20000, 3)
@@ -52,7 +56,7 @@ def test_bussi_canonical_kinetic_energy_fluctuations():
     _, _, r = _run(Bussi(0.01), v, jnp.zeros((0, n_f)), 20000, h=0.002)
     K = r[2000:, 2]
     assert abs(K.mean() / (0.5 * n_f * KT) - 1) < 0.03
-    assert abs(K.var() / (0.5 * n_f * KT ** 2) - 1) < 0.15, K.var() / (0.5 * n_f * KT ** 2)
+    assert abs(K.var() / (0.5 * n_f * KT**2) - 1) < 0.15, K.var() / (0.5 * n_f * KT**2)
 
 
 def test_gle_kernels_and_fdt_check():
@@ -60,11 +64,11 @@ def test_gle_kernels_and_fdt_check():
     K = band.kernel([0.0, 20.0, 1000.0])
     assert abs(K[0] - 0.1) < 1e-12 and abs(K[1] / 3.0 - 1) < 0.03 and K[2] < 0.01
     pure = GLE.band(floor=0.0)
-    assert abs(pure.kernel([0.0])[0]) < 1e-12 and abs(np.linalg.det(pure.A)) < 1e-9     # conserved mode
+    assert abs(pure.kernel([0.0])[0]) < 1e-12 and abs(np.linalg.det(pure.A)) < 1e-9  # conserved mode
     low = GLE.lowpass(2.0, 40.0)
     assert np.allclose(low.kernel([0.0, 40.0]), [2.0, 1.0])
     with pytest.raises(ValueError):
-        GLE([[0.0, 1.0], [-1.0, -0.5]])                          # A + A^T not positive semidefinite
+        GLE([[0.0, 1.0], [-1.0, -0.5]])  # A + A^T not positive semidefinite
     assert isinstance(make_thermostat("bussi", tau=0.5), Bussi) and make_thermostat("gle").n_aux == 2
 
 
@@ -77,6 +81,7 @@ def test_constrained_nvt_runs_conserve_effective_energy():
     from pgm_jax import System
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
     from pgm_jax.md.forcefield import MDSettings
+
     pos, H, w = _water_box()
     wat = water()
     sys = System([wat] * (len(pos) // 3))
@@ -84,9 +89,20 @@ def test_constrained_nvt_runs_conserve_effective_energy():
     tpl = RigidTemplate(wat, w)
     res = {}
     for name in ("nve", "langevin", "bussi", "gle"):
-        sim = FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=0.002, temperature=300.0, log=None,
-                                 ensemble="nve" if name == "nve" else "nvt",
-                                 thermostat="langevin" if name == "nve" else name, tau_t=0.2, seed=4)
+        sim = FlexibleSimulation(
+            sys,
+            [tpl] * sys.nmol,
+            pos,
+            H,
+            s,
+            dt=0.002,
+            temperature=300.0,
+            log=None,
+            ensemble="nve" if name == "nve" else "nvt",
+            thermostat="langevin" if name == "nve" else name,
+            tau_t=0.2,
+            seed=4,
+        )
         sim._advance(100)
         e0 = sim.observables()["econs"]
         dev, T = 0.0, []

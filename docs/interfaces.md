@@ -43,12 +43,13 @@ Nothing beyond pgm_jax for the engine and the i-PI client. The drivers:
 
 ```python
 from pgm_jax.interfaces import PGMEngine
-eng = PGMEngine.from_amber("water.prmtop", "water.rst7", settings=MDSettings())     # rigid-molecule model
-eng = PGMEngine(system, pos_nm, H_nm, settings, templates=[tpl] * n)               # flexible molecules
-eng = PGMEngine.from_simulation(sim)                                               # a native Simulation's model
+
+eng = PGMEngine.from_amber("water.prmtop", "water.rst7", settings=MDSettings())  # rigid-molecule model
+eng = PGMEngine(system, pos_nm, H_nm, settings, templates=[tpl] * n)  # flexible molecules
+eng = PGMEngine.from_simulation(sim)  # a native Simulation's model
 res = eng.compute(pos_nm, cell_nm, virial=True)
-res.energy, res.forces, res.virial, res.terms       # kJ/mol, kJ/mol/nm, dE/deps (kJ/mol), elec / vdw / bonded
-res.induced_dipoles, res.dipole                     # e nm (fetched from the device on access)
+res.energy, res.forces, res.virial, res.terms  # kJ/mol, kJ/mol/nm, dE/deps (kJ/mol), elec / vdw / bonded
+res.induced_dipoles, res.dipole  # e nm (fetched from the device on access)
 ```
 
 - **Models.** Without templates: the model of the rigid-molecule engine (`Simulation`): pGM with
@@ -98,11 +99,14 @@ res.induced_dipoles, res.dipole                     # e nm (fetched from the dev
 
 ```python
 from pgm_jax.interfaces.ase import PGMCalculator, atoms_from_system, rigid_constraints
-atoms = atoms_from_system(eng.sys, pos_nm, H_nm)        # symbols, the system's masses, cell, pbc
-atoms.set_constraint(rigid_constraints(eng.sys))        # rigid-molecule model only
+
+atoms = atoms_from_system(eng.sys, pos_nm, H_nm)  # symbols, the system's masses, cell, pbc
+atoms.set_constraint(rigid_constraints(eng.sys))  # rigid-molecule model only
 atoms.calc = PGMCalculator(eng)
-VelocityVerlet(atoms, 1.0 * units.fs).run(1000)         # or Langevin, NPT, BFGS, NEB, ...
-atoms.get_stress(); atoms.calc.get_property("dipole"); atoms.calc.get_induced_dipoles()
+VelocityVerlet(atoms, 1.0 * units.fs).run(1000)  # or Langevin, NPT, BFGS, NEB, ...
+atoms.get_stress()
+atoms.calc.get_property("dipole")
+atoms.calc.get_induced_dipoles()
 ```
 
 Properties in ASE units (eV, Angstrom, e): `energy`, `free_energy`, `forces`, `stress` (Voigt),
@@ -137,13 +141,20 @@ xyz with the cell), starts the server and reads its output.
 
 ```python
 from pgm_jax.interfaces.openmm import PGMOpenMM
+
 om = PGMOpenMM(eng)
-system = om.system(rigid=True)                   # masses, box, constraints (SETTLE for water), pGM PythonForce, CMMotionRemover
+system = om.system(rigid=True)  # masses, box, constraints (SETTLE for water), pGM PythonForce, CMMotionRemover
 system.addForce(openmm.MonteCarloBarostat(1 * unit.bar, 298 * unit.kelvin, 25))
-sim = app.Simulation(om.topology(), system, openmm.LangevinMiddleIntegrator(298 * unit.kelvin, 1 / unit.picosecond,
-                     0.002 * unit.picoseconds), openmm.Platform.getPlatformByName("CPU"))   # JAX on the GPU
-sim.context.setPositions(om.positions()); sim.context.setPeriodicBoxVectors(*om.box())
-sim.reporters.append(app.DCDReporter("traj.dcd", 1000)); sim.step(100000)
+sim = app.Simulation(
+    om.topology(),
+    system,
+    openmm.LangevinMiddleIntegrator(298 * unit.kelvin, 1 / unit.picosecond, 0.002 * unit.picoseconds),
+    openmm.Platform.getPlatformByName("CPU"),
+)  # JAX on the GPU
+sim.context.setPositions(om.positions())
+sim.context.setPeriodicBoxVectors(*om.box())
+sim.reporters.append(app.DCDReporter("traj.dcd", 1000))
+sim.step(100000)
 ```
 
 `om.force()` alone adds pGM to any System (other forces, e.g. restraints or a CustomCVForce, can be

@@ -73,24 +73,40 @@ on 8 CPU cores (the residuals and their Jacobian for all clusters in one compile
 ## Usage
 
 ```python
-import jax; jax.config.update("jax_enable_x64", True)
+import jax
+
+jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from pgm_jax import read_prmtop_pgm
-from pgm_jax.qmfit import (ClusterModel, FitWeights, ParamMap, QMFit, QMSet, error_table, evaluate,
-                           format_table, rigid_minimize, rigid_water)
+from pgm_jax.qmfit import (
+    ClusterModel,
+    FitWeights,
+    ParamMap,
+    QMFit,
+    QMSet,
+    error_table,
+    evaluate,
+    format_table,
+    rigid_minimize,
+    rigid_water,
+)
 
-data = QMSet.load("data/qm/water_qm.json")                       # records + monomer properties
+data = QMSet.load("data/qm/water_qm.json")  # records + monomer properties
 train, test = data.split(lambda r: "base_4096" in r["id"] or r["id"].startswith("water27") or r["set"] == "smith")
-w = read_prmtop_pgm("p25_512.prmtop")[0]                          # starting parameters
+w = read_prmtop_pgm("p25_512.prmtop")[0]  # starting parameters
 cm = ClusterModel(w, vdw="lj", monomer_xyz_nm=rigid_water(0.9745, 103.64) * 0.1)
-pm = ParamMap(cm.table, [w], {"q": "all", "cov": "all", "radius": "all", "alpha": "all",
-                              "lj_rmin_half": ["OW"], "lj_sqrt_eps": ["OW"]})
-fit = QMFit(cm, pm, train, FitWeights(total=1, elst=0.1, ind=0.1, exch_disp=0.1, nb3=1,
-                                      dipole=1, polarizability=1, prior=0.01))
-res = fit.fit()                                                   # scipy least_squares, exact Jacobian
-P = pm.params(jnp.asarray(res.x))                                 # parameter pytree for every pgm_jax model
-print(format_table(error_table(evaluate(cm, test, P))))           # RMSE / MAE per set, kcal/mol
-E_min, X_min = rigid_minimize(cm, test.records[0]["xyz_A"], P)    # the model's own rigid-body minimum
+pm = ParamMap(
+    cm.table,
+    [w],
+    {"q": "all", "cov": "all", "radius": "all", "alpha": "all", "lj_rmin_half": ["OW"], "lj_sqrt_eps": ["OW"]},
+)
+fit = QMFit(
+    cm, pm, train, FitWeights(total=1, elst=0.1, ind=0.1, exch_disp=0.1, nb3=1, dipole=1, polarizability=1, prior=0.01)
+)
+res = fit.fit()  # scipy least_squares, exact Jacobian
+P = pm.params(jnp.asarray(res.x))  # parameter pytree for every pgm_jax model
+print(format_table(error_table(evaluate(cm, test, P))))  # RMSE / MAE per set, kcal/mol
+E_min, X_min = rigid_minimize(cm, test.records[0]["xyz_A"], P)  # the model's own rigid-body minimum
 ```
 
 - `ClusterModel(mol, vdw="lj" | "gvdw")`: per-cluster components (`components`, `batch`,

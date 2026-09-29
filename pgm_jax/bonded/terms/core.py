@@ -6,17 +6,33 @@ tying keys (`index(top, keyf)` -> (arrays, keys), `params` {name: (per-key shape
 `linear` (names entering the energy linearly), `energy(G, dev, I, p)`).  Every family reads the
 geometry dict G of one frame and the deviations from the shared reference values
 (db = b - b0, dc = cos - cos th0, dth = th - th0).  All energies kJ/mol, lengths nm, angles rad."""
+
 from __future__ import annotations
 
 import jax.numpy as jnp
 import numpy as np
 
 # paper takes experimental dissociation energies; only the anharmonicity depends on them)
-_DE = {("C", "H", 1): 413, ("C", "C", 1): 348, ("C", "C", 2): 614, ("C", "C", 1.5): 518,
-       ("C", "N", 1): 305, ("C", "N", 2): 615, ("C", "N", 1.5): 540, ("C", "O", 1): 358,
-       ("C", "O", 2): 745, ("C", "O", 1.5): 550, ("H", "O", 1): 463, ("H", "N", 1): 391,
-       ("H", "S", 1): 363, ("C", "S", 1): 272, ("C", "F", 1): 485, ("C", "Cl", 1): 328,
-       ("O", "P", 1): 335, ("O", "P", 2): 544}
+_DE = {
+    ("C", "H", 1): 413,
+    ("C", "C", 1): 348,
+    ("C", "C", 2): 614,
+    ("C", "C", 1.5): 518,
+    ("C", "N", 1): 305,
+    ("C", "N", 2): 615,
+    ("C", "N", 1.5): 540,
+    ("C", "O", 1): 358,
+    ("C", "O", 2): 745,
+    ("C", "O", 1.5): 550,
+    ("H", "O", 1): 463,
+    ("H", "N", 1): 391,
+    ("H", "S", 1): 363,
+    ("C", "S", 1): 272,
+    ("C", "F", 1): 485,
+    ("C", "Cl", 1): 328,
+    ("O", "P", 1): 335,
+    ("O", "P", 2): 544,
+}
 
 
 def morse_depth(e1, e2, order):
@@ -53,16 +69,30 @@ def geometry(R, top):
     im = top.impropers
     if len(im):
         c0, a0, b0, d0 = im.T
-        G["imp"] = jnp.stack([_dihedral(R[a0], R[b0], R[c0], R[d0]), _dihedral(R[b0], R[d0], R[c0], R[a0]),
-                              _dihedral(R[d0], R[a0], R[c0], R[b0])], -1)
+        G["imp"] = jnp.stack(
+            [
+                _dihedral(R[a0], R[b0], R[c0], R[d0]),
+                _dihedral(R[b0], R[d0], R[c0], R[a0]),
+                _dihedral(R[d0], R[a0], R[c0], R[b0]),
+            ],
+            -1,
+        )
         th = []
         for p, q in ((a0, b0), (b0, d0), (a0, d0)):
             u, v = R[p] - R[c0], R[q] - R[c0]
-            th.append(jnp.arccos(jnp.clip(jnp.sum(u * v, -1) / (jnp.linalg.norm(u, axis=-1) * jnp.linalg.norm(v, axis=-1)), -1 + 1e-12, 1 - 1e-12)))
+            th.append(
+                jnp.arccos(
+                    jnp.clip(
+                        jnp.sum(u * v, -1) / (jnp.linalg.norm(u, axis=-1) * jnp.linalg.norm(v, axis=-1)),
+                        -1 + 1e-12,
+                        1 - 1e-12,
+                    )
+                )
+            )
         G["pyr"] = 2 * jnp.pi - (th[0] + th[1] + th[2])
     for name in ("pairs13", "pairs14", "pairs15"):
         p = getattr(top, name)
-        if p is None:                  # pairs15 is not built for large molecules
+        if p is None:  # pairs15 is not built for large molecules
             continue
         G["r" + name[-2:]] = jnp.linalg.norm(R[p[:, 0]] - R[p[:, 1]], axis=-1) if len(p) else jnp.zeros(0)
     return G
@@ -71,9 +101,9 @@ def geometry(R, top):
 # ------------------------------------------------------------------ families
 class Family:
     name = ""
-    params: dict = {}        # name -> (per-key shape, default init)
+    params: dict = {}  # name -> (per-key shape, default init)
     linear: tuple = ()
-    needs: tuple = ()        # families whose reference values it uses ("ref" always available)
+    needs: tuple = ()  # families whose reference values it uses ("ref" always available)
 
     def index(self, top, keyf):
         raise NotImplementedError
@@ -101,4 +131,8 @@ _N = jnp.arange(1, 5, dtype=float)
 
 
 def _pair_index(pairs):
-    return {"u": np.asarray(pairs)[:, 0], "v": np.asarray(pairs)[:, 1]} if len(pairs) else {"u": np.zeros(0, int), "v": np.zeros(0, int)}
+    return (
+        {"u": np.asarray(pairs)[:, 0], "v": np.asarray(pairs)[:, 1]}
+        if len(pairs)
+        else {"u": np.zeros(0, int), "v": np.zeros(0, int)}
+    )

@@ -13,6 +13,7 @@ README: charges, covalent dipoles, radii, polarizabilities, Lennard-Jones on O),
 bonded terms fitted so that its gas-phase monomer potential (bonded + all-pair intramolecular pGM)
 is the q-TIP4P/F intramolecular potential (pimd.flexible_water).  NVT at the density of the
 box's restart (from the rigid model's NPT)."""
+
 from __future__ import annotations
 
 import argparse
@@ -26,8 +27,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-if os.environ.get("PIMD_WAIT_GPU"):       # a GPU shared with jobs that retry when it is busy: take it as soon as
+if os.environ.get("PIMD_WAIT_GPU"):  # a GPU shared with jobs that retry when it is busy: take it as soon as
     import ctypes  # it is released (retain the primary context; JAX then uses it)
+
     _cu = ctypes.CDLL("libcuda.so.1")
     if _cu.cuInit(0) != 0:
         sys.exit(75)
@@ -76,8 +78,20 @@ def build(a, log=sys.stdout):
     pos = xyz * 0.1
     n = len(pos) // 3
     s = MDSettings(cutoff=a.cut, dipole_tol=a.tol, precision=a.precision)
-    sim = FlexibleSimulation(System([tpl.pgm] * n), [tpl] * n, pos, H, s, dt=a.dt * 1e-3, ensemble="nvt",
-                             temperature=a.temp, thermostat="bussi", tau_t=0.1, seed=a.seed, log=log)
+    sim = FlexibleSimulation(
+        System([tpl.pgm] * n),
+        [tpl] * n,
+        pos,
+        H,
+        s,
+        dt=a.dt * 1e-3,
+        ensemble="nvt",
+        temperature=a.temp,
+        thermostat="bussi",
+        tau_t=0.1,
+        seed=a.seed,
+        log=log,
+    )
     return sim
 
 
@@ -101,14 +115,15 @@ def rdf_fn(sim, edges):
         iu = jnp.triu_indices(len(O), 1)
         hOO = jnp.histogram(rOO[iu], bins=e)[0]
         rOH = dist(q[O], q[Hy], H)
-        hOH = jnp.histogram(jnp.where(same_oh, -1.0, rOH), bins=e)[0]           # intermolecular O-H
+        hOH = jnp.histogram(jnp.where(same_oh, -1.0, rOH), bins=e)[0]  # intermolecular O-H
         rHH = dist(q[Hy], q[Hy], H)
-        hHH = jnp.histogram(jnp.where(same_hh, -1.0, rHH), bins=e)[0] // 2      # intermolecular H-H pairs
+        hHH = jnp.histogram(jnp.where(same_hh, -1.0, rHH), bins=e)[0] // 2  # intermolecular H-H pairs
         return jnp.stack([hOO, hOH, hHH])
 
     @jax.jit
     def hist(Q, H):
         return jnp.sum(jax.lax.map(lambda q: one(q, H), Q), 0)
+
     return hist, len(O), len(Hy)
 
 
@@ -130,17 +145,30 @@ def run(a):
     sim = build(a, log=sys.stdout)
     if a.load is None:
         sim.minimize(200)
-        if a.classical_ps > 0:                    # classical flexible equilibration (Bussi)
+        if a.classical_ps > 0:  # classical flexible equilibration (Bussi)
             sim.run(int(round(a.classical_ps / (a.dt * 1e-3))), report=1000, prefix=a.prefix + "_classical")
-    pi = PIMDSimulation(sim, beads=a.beads, mode=a.mode, thermostat=a.thermostat, tau0=a.tau0, lam=a.lam,
-                        propagator=a.propagator, contract=a.contract or None, bead_margin=a.bead_margin,
-                        seed=a.seed, ensemble=a.ensemble, pressure=a.press, barostat_interval=a.barostat_interval,
-                        bead_chunk=a.bead_chunk if a.bead_chunk == "auto" else (int(a.bead_chunk) or None),
-                        log=sys.stdout)
+    pi = PIMDSimulation(
+        sim,
+        beads=a.beads,
+        mode=a.mode,
+        thermostat=a.thermostat,
+        tau0=a.tau0,
+        lam=a.lam,
+        propagator=a.propagator,
+        contract=a.contract or None,
+        bead_margin=a.bead_margin,
+        seed=a.seed,
+        ensemble=a.ensemble,
+        pressure=a.press,
+        barostat_interval=a.barostat_interval,
+        bead_chunk=a.bead_chunk if a.bead_chunk == "auto" else (int(a.bead_chunk) or None),
+        log=sys.stdout,
+    )
     if a.load:
         pi.load(a.load)
-        pi.state = pi.state.set(heat=jnp.zeros(()), step=jnp.zeros((), jnp.int32),
-                                eng=pi.state.eng.set(cg_total=jnp.zeros(())))
+        pi.state = pi.state.set(
+            heat=jnp.zeros(()), step=jnp.zeros((), jnp.int32), eng=pi.state.eng.set(cg_total=jnp.zeros(()))
+        )
     nstep = int(round(a.ps / (a.dt * 1e-3)))
     neq = int(round(a.equil_ps / (a.dt * 1e-3)))
     rep = max(1, int(round(a.report_ps / (a.dt * 1e-3))))
@@ -170,8 +198,8 @@ def run(a):
         logf.write("  " + " ".join(f"{o[c]:14.6f}" if isinstance(o[c], float) else f"{o[c]:14d}" for c in cols) + "\n")
         logf.flush()
         samples.append([o[c] for c in cols])
-        com = np.asarray(sim.flex.centers(jnp.mean(pi.state.q, 0)))           # centroid molecular centres
-        if coms:                                                                 # unwrap (minimum image step)
+        com = np.asarray(sim.flex.centers(jnp.mean(pi.state.q, 0)))  # centroid molecular centres
+        if coms:  # unwrap (minimum image step)
             Hb = np.asarray(pi.state.box)
             d = com - last
             d -= np.round(d @ np.linalg.inv(Hb)) @ Hb
@@ -188,10 +216,18 @@ def run(a):
     X = np.array(samples, float)
     nb = 10
     mb = len(X) // nb * nb
-    blocks = X[len(X) - mb:].reshape(nb, -1, X.shape[1]).mean(1)
+    blocks = X[len(X) - mb :].reshape(nb, -1, X.shape[1]).mean(1)
     mean, err = X.mean(0), blocks.std(0, ddof=1) / np.sqrt(nb)
-    summ = {"beads": a.beads, "contract": a.contract, "mode": a.mode, "thermostat": a.thermostat, "dt_fs": a.dt,
-            "ps": a.ps, "ns_per_day": nstep * a.dt * 1e-6 / el * 86400.0, "ms_per_step": el / nstep * 1e3}
+    summ = {
+        "beads": a.beads,
+        "contract": a.contract,
+        "mode": a.mode,
+        "thermostat": a.thermostat,
+        "dt_fs": a.dt,
+        "ps": a.ps,
+        "ns_per_day": nstep * a.dt * 1e-6 / el * 86400.0,
+        "ms_per_step": el / nstep * 1e3,
+    }
     drift = np.polyfit(X[:, cols.index("time_ps")], X[:, cols.index("econs")], 1)[0]
     summ["econs_drift_kJmol_ps"] = float(drift)
     for c in cols:
@@ -209,9 +245,13 @@ def run(a):
         rc = 0.5 * (edges[1:] + edges[:-1])
         shell = 4.0 / 3.0 * np.pi * (edges[1:] ** 3 - edges[:-1] ** 3)
         V = np.mean(vol)
-        g = np.stack([H[0] / (nfr * 0.5 * nO * (nO - 1) / V * shell),
-                      H[1] / (nfr * nO * (nH - 2) / V * shell),
-                      H[2] / (nfr * 0.5 * nH * (nH - 2) / V * shell)])
+        g = np.stack(
+            [
+                H[0] / (nfr * 0.5 * nO * (nO - 1) / V * shell),
+                H[1] / (nfr * nO * (nH - 2) / V * shell),
+                H[2] / (nfr * 0.5 * nH * (nH - 2) / V * shell),
+            ]
+        )
         np.savetxt(a.prefix + ".rdf", np.c_[rc, g.T], header="r (nm)  g_OO  g_OH  g_HH (intermolecular; bead-averaged)")
         for name, gi in zip(("OO", "OH", "HH"), g):
             k = int(np.argmax(gi * (rc > 0.12)))
@@ -226,8 +266,16 @@ def bench(a):
     sim.minimize(100)
     for P in a.beads:
         for c, ch in itertools.product(a.contract, a.chunk):
-            pi = PIMDSimulation(sim, beads=P, contract=c or None, thermostat=a.thermostat, tau0=a.tau0, log=None,
-                                bead_margin=a.bead_margin, bead_chunk=ch or None)
+            pi = PIMDSimulation(
+                sim,
+                beads=P,
+                contract=c or None,
+                thermostat=a.thermostat,
+                tau0=a.tau0,
+                log=None,
+                bead_margin=a.bead_margin,
+                bead_chunk=ch or None,
+            )
             pi._advance(a.warm)
             jax.block_until_ready(pi.state.q)
             cg0 = float(pi.state.eng.cg_total)
@@ -236,10 +284,18 @@ def bench(a):
             jax.block_until_ready(pi.state.q)
             el = time.time() - t0
             o = pi.observables()
-            r = {"beads": P, "contract": c, "chunk": ch, "dt_fs": a.dt, "ms_per_step": el / a.steps * 1e3,
-                 "ns_per_day": a.steps * a.dt * 1e-6 / el * 86400.0,
-                 "cg_per_step": (float(pi.state.eng.cg_total) - cg0) / a.steps,
-                 "temp_K": o["temp_K"], "ke_H_cv_meV": o["ke_H_cv_meV"], "device": str(jax.devices()[0])}
+            r = {
+                "beads": P,
+                "contract": c,
+                "chunk": ch,
+                "dt_fs": a.dt,
+                "ms_per_step": el / a.steps * 1e3,
+                "ns_per_day": a.steps * a.dt * 1e-6 / el * 86400.0,
+                "cg_per_step": (float(pi.state.eng.cg_total) - cg0) / a.steps,
+                "temp_K": o["temp_K"],
+                "ke_H_cv_meV": o["ke_H_cv_meV"],
+                "device": str(jax.devices()[0]),
+            }
             print(json.dumps(r), flush=True)
             out.append(r)
             del pi
@@ -254,6 +310,7 @@ def batch(a):
     import contextlib
     import gc
     import traceback
+
     for line in open(a.file):
         f = line.split()
         if not f or f[0].startswith("#"):

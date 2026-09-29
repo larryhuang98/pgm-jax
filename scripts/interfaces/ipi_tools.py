@@ -2,6 +2,7 @@
 
 i-PI is found through the environment variable IPI_ROOT (a directory holding the `ipi` package and
 `ipi-*.data/scripts/i-pi`, e.g. an unpacked wheel) or an installed `i-pi` on PATH."""
+
 from __future__ import annotations
 
 import glob
@@ -13,7 +14,7 @@ import time
 
 import numpy as np
 
-KJMOL_MEV = 10.364269656262175        # meV per kJ/mol
+KJMOL_MEV = 10.364269656262175  # meV per kJ/mol
 
 
 def ipi_command():
@@ -38,42 +39,80 @@ def cell_abc(H_nm):
 def write_xyz(path, symbols, pos_nm, H_nm):
     a, b, c, al, be, ga = cell_abc(H_nm)
     with open(path, "w") as fh:
-        fh.write(f"{len(symbols)}\n# CELL(abcABC): {a:.10f} {b:.10f} {c:.10f} {al:.8f} {be:.8f} {ga:.8f} "
-                 f"cell{{angstrom}} positions{{angstrom}}\n")
+        fh.write(
+            f"{len(symbols)}\n# CELL(abcABC): {a:.10f} {b:.10f} {c:.10f} {al:.8f} {be:.8f} {ga:.8f} "
+            f"cell{{angstrom}} positions{{angstrom}}\n"
+        )
         for s, x in zip(symbols, np.asarray(pos_nm) * 10.0):
             fh.write(f"{s} {x[0]:.10f} {x[1]:.10f} {x[2]:.10f}\n")
 
 
-def write_input(workdir, symbols, pos_nm, H_nm, masses, *, nbeads=1, steps=1000, dt_fs=0.5, T=298.0,
-                ensemble="nvt", thermostat="pile_g", tau_fs=100.0, address="pgmjax", stride=10,
-                batch_size=1, seed=31415, extra_props=(), traj_stride=0, velocities=None, pile_lambda=None,
-                pressure=None, barostat_tau_fs=200.0, velocity_units="atomic_unit", splitting=None,
-                nm_propagator=None, pressure_output=True):
+def write_input(
+    workdir,
+    symbols,
+    pos_nm,
+    H_nm,
+    masses,
+    *,
+    nbeads=1,
+    steps=1000,
+    dt_fs=0.5,
+    T=298.0,
+    ensemble="nvt",
+    thermostat="pile_g",
+    tau_fs=100.0,
+    address="pgmjax",
+    stride=10,
+    batch_size=1,
+    seed=31415,
+    extra_props=(),
+    traj_stride=0,
+    velocities=None,
+    pile_lambda=None,
+    pressure=None,
+    barostat_tau_fs=200.0,
+    velocity_units="atomic_unit",
+    splitting=None,
+    nm_propagator=None,
+    pressure_output=True,
+):
     """init.xyz + input.xml for i-PI (unix socket `address`).  velocities: (N, 3) in velocity_units
     (i-PI's units; atomic units by default) or None (thermal at T)."""
     os.makedirs(workdir, exist_ok=True)
     write_xyz(os.path.join(workdir, "init.xyz"), symbols, pos_nm, H_nm)
-    props = ["step", "time{picosecond}", "conserved", "temperature{kelvin}", "potential", "kinetic_md",
-             "kinetic_cv"] + (["pressure_cv{bar}"] if pressure_output else []) + ["volume"] + list(extra_props)
+    props = (
+        ["step", "time{picosecond}", "conserved", "temperature{kelvin}", "potential", "kinetic_md", "kinetic_cv"]
+        + (["pressure_cv{bar}"] if pressure_output else [])
+        + ["volume"]
+        + list(extra_props)
+    )
     mass = "[ " + ", ".join(f"{m:.6f}" for m in masses) + " ]"
     vel = f'<velocities mode="thermal" units="kelvin"> {T} </velocities>'
     if velocities is not None:
         v = np.asarray(velocities, float)
-        vel = (f'<velocities mode="manual" units="{velocity_units}"> [ ' +
-               ", ".join(f"{x:.12e}" for x in v.reshape(-1)) + " ] </velocities>")
+        vel = (
+            f'<velocities mode="manual" units="{velocity_units}"> [ '
+            + ", ".join(f"{x:.12e}" for x in v.reshape(-1))
+            + " ] </velocities>"
+        )
     thermo = ""
     if ensemble in ("nvt", "npt"):
         lam = "" if pile_lambda is None else f"<pile_lambda> {pile_lambda} </pile_lambda>"
         thermo = f'<thermostat mode="{thermostat}"><tau units="femtosecond"> {tau_fs} </tau>{lam}</thermostat>'
     baro = ""
     if ensemble == "npt":
-        baro = (f'<barostat mode="isotropic"><tau units="femtosecond"> {barostat_tau_fs} </tau>'
-                f'<thermostat mode="langevin"><tau units="femtosecond"> {tau_fs} </tau></thermostat></barostat>')
+        baro = (
+            f'<barostat mode="isotropic"><tau units="femtosecond"> {barostat_tau_fs} </tau>'
+            f'<thermostat mode="langevin"><tau units="femtosecond"> {tau_fs} </tau></thermostat></barostat>'
+        )
     ens = f'<temperature units="kelvin"> {T} </temperature>'
     if pressure is not None:
         ens += f'<pressure units="bar"> {pressure} </pressure>'
-    traj = (f'<trajectory filename="pos" stride="{traj_stride}" format="xyz" cell_units="angstrom"> x_centroid{{angstrom}} </trajectory>'
-            if traj_stride else "")
+    traj = (
+        f'<trajectory filename="pos" stride="{traj_stride}" format="xyz" cell_units="angstrom"> x_centroid{{angstrom}} </trajectory>'
+        if traj_stride
+        else ""
+    )
     batch = f"<batch_size> {batch_size} </batch_size>" if batch_size > 1 else ""
     split = f' splitting="{splitting}"' if splitting else ""
     nm = f'<normal_modes propagator="{nm_propagator}"/>' if nm_propagator else ""
@@ -121,7 +160,7 @@ def start_server(workdir, address):
         pass
     cmd, root = ipi_command()
     env = dict(os.environ)
-    for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):   # leave the cores to the engine
+    for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):  # leave the cores to the engine
         env[k] = os.environ.get("IPI_THREADS", "1")
     if root:
         env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
@@ -145,11 +184,11 @@ def read_properties(path, hartree_to_kjmol=("conserved", "potential", "kinetic_m
                 break
     data = np.loadtxt(path, ndmin=2)
     out = {}
-    for k, n in enumerate(names[:data.shape[1]]):
+    for k, n in enumerate(names[: data.shape[1]]):
         base = n.split("{")[0].split("(")[0]
         v = data[:, k] * (HARTREE_KJMOL if base in hartree_to_kjmol and "{" not in n else 1.0)
         out[n] = v
-        out.setdefault(n.split("{")[0], v)                  # also without the unit
+        out.setdefault(n.split("{")[0], v)  # also without the unit
     return out
 
 

@@ -4,6 +4,7 @@
 Systems: 4,096 rigid waters (3 constraints each), 216 methanols (fitted template, X-H bonds or every
 bond), ubiquitin in water (tleap system, X-H bonds or every bond: the protein's 1,2xx bonds are one
 cluster, solved iteratively); blocks by cluster size (default) against one padded block."""
+
 import argparse
 import json
 import os
@@ -40,15 +41,20 @@ def bench(label, pairs, d0, m, x, res, **kw):
     X = jnp.asarray(x)
     for _ in range(3):
         X = C.positions(X, X)
-    Y = X + 0.002 * jnp.asarray(rng.normal(size=x.shape))                # ~ one 2 fs drift
+    Y = X + 0.002 * jnp.asarray(rng.normal(size=x.shape))  # ~ one 2 fs drift
     P = jnp.asarray(rng.normal(size=x.shape) * np.sqrt(np.maximum(m, 1e-9))[:, None])
     pos = jax.jit(C.positions)
     mom = jax.jit(lambda q, p: C.momenta(q, p, m))
     z = pos(Y, X)
-    res[label] = {"constraints": C.nc, "atoms": int(len(x)), "blocks": C.describe(),
-                  "shake_ms": timeit(pos, Y, X), "rattle_ms": timeit(mom, z, P),
-                  "violation": float(C.violation(z)),
-                  "rattle_err": float(C.velocity_violation(z, mom(z, P), m))}
+    res[label] = {
+        "constraints": C.nc,
+        "atoms": int(len(x)),
+        "blocks": C.describe(),
+        "shake_ms": timeit(pos, Y, X),
+        "rattle_ms": timeit(mom, z, P),
+        "violation": float(C.violation(z)),
+        "rattle_err": float(C.velocity_violation(z, mom(z, P), m)),
+    }
     print(label, json.dumps(res[label]), flush=True)
 
 
@@ -60,7 +66,9 @@ def main():
     # 4,096 waters
     nw = 4096
     t = np.radians(104.52 / 2)
-    w = np.array([[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]])
+    w = np.array(
+        [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
+    )
     rng = np.random.default_rng(0)
     x = np.concatenate([w + rng.uniform(0, 5, 3) for _ in range(nw)])
     pairs = np.array([(3 * k + i, 3 * k + j) for k in range(nw) for i, j in ((0, 1), (0, 2), (1, 2))])
@@ -78,6 +86,7 @@ def main():
     # ubiquitin in water
     if os.path.exists(a.ubq + ".prmtop"):
         from pgm_jax.protein import amber_template, load_amber
+
         asys = load_amber(a.ubq + ".prmtop", a.ubq + ".inpcrd")
         prot = {k: amber_template(m, a.ubq + ".prmtop") for k, m in enumerate(asys.molecules) if m.kind == "protein"}
         templates = asys.templates(prot)

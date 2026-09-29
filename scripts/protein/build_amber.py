@@ -12,6 +12,7 @@ octahedron; the water is replaced by the pGM water model when the system is load
 With --sequence, tleap's `sequence` builds the chain from its residue library (extended backbone,
 Amber residue names including caps and terminal variants, e.g. "ACE ALA NME" or "NALA ALA CALA").
 Needs AmberTools (AMBERHOME)."""
+
 import argparse
 import os
 import subprocess
@@ -37,7 +38,8 @@ def clean_pdb(src, dst, model=1):
     for ln in open(src):
         rec = ln[:6].strip()
         if rec == "MODEL":
-            cur = int(ln.split()[1]); seen_model = True
+            cur = int(ln.split()[1])
+            seen_model = True
             continue
         if rec == "ENDMDL" and seen_model and cur == model:
             break
@@ -63,11 +65,13 @@ source leaprc.water.{a.water}
 {load}
 addions m Na+ 0
 addions m Cl- 0
-{'solvateoct' if a.box == 'oct' else 'solvatebox'} m {box} {a.buffer}
+{"solvateoct" if a.box == "oct" else "solvatebox"} m {box} {a.buffer}
 saveamberparm m {a.out}.prmtop {a.out}.inpcrd
 savepdb m {a.out}.pdb
 quit
 """
 open(a.out + "_leap.in", "w").write(leap)
-subprocess.run(["tleap", "-f", a.out + "_leap.in"], check=True, stdout=open(a.out + "_leap.log", "w"), stderr=subprocess.STDOUT)
+subprocess.run(
+    ["tleap", "-f", a.out + "_leap.in"], check=True, stdout=open(a.out + "_leap.log", "w"), stderr=subprocess.STDOUT
+)
 print(open(a.out + "_leap.log").read().splitlines()[-1])

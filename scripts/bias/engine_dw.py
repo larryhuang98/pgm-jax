@@ -7,6 +7,7 @@ the rigid-body engine (Simulation, Bussi or Langevin), FES from the bias and by 
 compared with the exact F over F < --fmax.
 
     python scripts/bias/engine_dw.py --method metad --ns 5 --walkers 16 --out runs/bias/engine_dw"""
+
 import argparse
 import json
 import os
@@ -59,15 +60,27 @@ else:
     b = OPES(r, sigma=0.03, pace=500, barrier=25.0)
 bs = BiasSet([b, StaticBias(r, U, name="model"), LowerWall(r, 0.3, 2000.0), UpperWall(r, 1.4, 2000.0)], colvar=250)
 s = MDSettings(precision="double", elec="q", vdw="none", cutoff=1.2, skin=0.1, pme_grid=(8, 8, 8), lj_lrc=False)
-sim = Simulation(sys_, pos, H, s, dt=a.dt, temperature=a.T, thermostat=a.thermostat, gamma=1.0, tau_t=0.5, bias=bs,
-                 seed=a.seed, log=sys.stdout)
+sim = Simulation(
+    sys_,
+    pos,
+    H,
+    s,
+    dt=a.dt,
+    temperature=a.T,
+    thermostat=a.thermostat,
+    gamma=1.0,
+    tau_t=0.5,
+    bias=bs,
+    seed=a.seed,
+    log=sys.stdout,
+)
 wk = Walkers(sim, a.walkers, seed=a.seed)
 n = int(round(a.ns * 1000 / a.dt))
 t0 = time.time()
 wk.run(n, report=n // 20, prefix=a.out)
 wall = time.time() - t0
 ax = np.linspace(0.36, 1.34, 50)
-wall_e = lambda x: 2000.0 * (np.maximum(0.3 - x, 0) ** 2 + np.maximum(x - 1.4, 0) ** 2)     # noqa: E731
+wall_e = lambda x: 2000.0 * (np.maximum(0.3 - x, 0) ** 2 + np.maximum(x - 1.4, 0) ** 2)  # noqa: E731
 Fex = np.array([U([x]) for x in ax]) + wall_e(ax) - 2 * kT * np.log(ax)
 Fex -= Fex.min()
 m = Fex < a.fmax
@@ -94,10 +107,17 @@ for name, Fs in (("bias", FB), ("reweight", FR)):
     R = np.array([A.align_rmsd(f, Fex, m)[0] for f in Fs])
     Fm, e = Fs.mean(0), Fs.std(0, ddof=1) / np.sqrt(len(Fs))
     rm, mm, _ = A.align_rmsd(Fm, Fex, m)
-    res[name] = {"rmsd_mean": float(R.mean()), "rmsd_sem": float(R.std(ddof=1) / np.sqrt(len(R))),
-                 "rmsd_of_average": rm, "max_of_average": mm, "mean_err": float(e[m].mean()),
-                 "chi2_per_point": float(np.mean(((Fm - Fex)[m] / e[m]) ** 2))}
-    print(f"{name}: RMSD per walker {R.mean():.3f} +- {res[name]['rmsd_sem']:.3f}; average of {len(Fs)}: RMSD {rm:.3f}, "
-          f"max {mm:.2f}, mean error bar {e[m].mean():.3f}, chi2/point {res[name]['chi2_per_point']:.2f}")
+    res[name] = {
+        "rmsd_mean": float(R.mean()),
+        "rmsd_sem": float(R.std(ddof=1) / np.sqrt(len(R))),
+        "rmsd_of_average": rm,
+        "max_of_average": mm,
+        "mean_err": float(e[m].mean()),
+        "chi2_per_point": float(np.mean(((Fm - Fex)[m] / e[m]) ** 2)),
+    }
+    print(
+        f"{name}: RMSD per walker {R.mean():.3f} +- {res[name]['rmsd_sem']:.3f}; average of {len(Fs)}: RMSD {rm:.3f}, "
+        f"max {mm:.2f}, mean error bar {e[m].mean():.3f}, chi2/point {res[name]['chi2_per_point']:.2f}"
+    )
 print(f"{a.walkers} walkers x {a.ns} ns in {wall:.0f} s ({res['ns_per_day_aggregate']:.0f} ns/day aggregate)")
 json.dump(res, open(a.out + ".json", "w"), indent=1)

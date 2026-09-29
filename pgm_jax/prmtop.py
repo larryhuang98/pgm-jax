@@ -9,6 +9,7 @@ whose %FORMAT is not a single repeated field (FORCE_FIELD_TYPE's (i2,a78)) is ke
     top.set("BOND_FORCE_CONSTANT", k * 1.1)
     top.write("scaled.prmtop")
 """
+
 from __future__ import annotations
 
 import re
@@ -16,10 +17,40 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-POINTER_NAMES = ("NATOM", "NTYPES", "NBONH", "MBONA", "NTHETH", "MTHETA", "NPHIH", "MPHIA", "NHPARM", "NPARM",
-                 "NNB", "NRES", "NBONA", "NTHETA", "NPHIA", "NUMBND", "NUMANG", "NPTRA", "NATYP", "NPHB",
-                 "IFPERT", "NBPER", "NGPER", "NDPER", "MBPER", "MGPER", "MDPER", "IFBOX", "NMXRS", "IFCAP",
-                 "NUMEXTRA", "NCOPY")
+POINTER_NAMES = (
+    "NATOM",
+    "NTYPES",
+    "NBONH",
+    "MBONA",
+    "NTHETH",
+    "MTHETA",
+    "NPHIH",
+    "MPHIA",
+    "NHPARM",
+    "NPARM",
+    "NNB",
+    "NRES",
+    "NBONA",
+    "NTHETA",
+    "NPHIA",
+    "NUMBND",
+    "NUMANG",
+    "NPTRA",
+    "NATYP",
+    "NPHB",
+    "IFPERT",
+    "NBPER",
+    "NGPER",
+    "NDPER",
+    "MBPER",
+    "MGPER",
+    "MDPER",
+    "IFBOX",
+    "NMXRS",
+    "IFCAP",
+    "NUMEXTRA",
+    "NCOPY",
+)
 
 
 def parse_format(fmt: str):
@@ -34,10 +65,10 @@ def parse_format(fmt: str):
 @dataclass
 class Section:
     name: str
-    fmt: str                                   # e.g. "10I8"
+    fmt: str  # e.g. "10I8"
     values: list
     comments: list = field(default_factory=list)
-    raw: bool = False                          # values are the section's lines, written verbatim
+    raw: bool = False  # values are the section's lines, written verbatim
 
 
 def _parsable(fmt: str) -> bool:
@@ -78,7 +109,7 @@ class Prmtop:
                     cur.fmt = re.search(r"\((.*)\)", line).group(1)
                 elif line.startswith("%COMMENT"):
                     if cur is not None:
-                        cur.comments.append(line[len("%COMMENT"):])      # verbatim
+                        cur.comments.append(line[len("%COMMENT") :])  # verbatim
                 elif cur is not None:
                     raw.append(line)
         finish()
@@ -91,10 +122,10 @@ class Prmtop:
         for ln in lines:
             if kind == "a":
                 for s in range(0, len(ln), width):
-                    out.append(ln[s:s + width])
+                    out.append(ln[s : s + width])
                 continue
             for s in range(0, len(ln), width):
-                t = ln[s:s + width].strip()
+                t = ln[s : s + width].strip()
                 if t:
                     out.append(int(t) if kind == "I" else float(t))
         return out
@@ -162,7 +193,7 @@ class Prmtop:
                 cells.append(f"{float(v):>{width}.{prec}E}")
             else:
                 cells.append(f"{float(v):>{width}.{prec}f}")
-        lines = ["".join(cells[i:i + count]) for i in range(0, len(cells), count)]
+        lines = ["".join(cells[i : i + count]) for i in range(0, len(cells), count)]
         return lines or [""]
 
     def write(self, path: str):

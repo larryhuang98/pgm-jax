@@ -21,6 +21,7 @@ tail, dipole tolerance): PREFIX.min.in (500 minimisation steps: tleap structures
 PREFIX.heat.in (2 ps at 0.5 fs from 0 K: pmemd's tempi would start a constrained system ~1.5x
 too hot) and PREFIX.md.in (the run, continuing from the heating restart).
 """
+
 import argparse
 import json
 import os
@@ -87,13 +88,23 @@ else:
 info["exported"] = {str(k): v for k, v in info["exported"].items()}
 print(json.dumps(info, indent=1, default=float))
 if a.mdin:
-    st = MDSettings(cutoff=a.cut, ewald_beta=a.beta, pme_grid=pmemd_grid(asys.box, a.spacing), pme_order=a.order,
-                    lj_lrc=bool(a.lrc), dipole_tol=a.tol)
+    st = MDSettings(
+        cutoff=a.cut,
+        ewald_beta=a.beta,
+        pme_grid=pmemd_grid(asys.box, a.spacing),
+        pme_order=a.order,
+        lj_lrc=bool(a.lrc),
+        dipole_tol=a.tol,
+    )
     kw = dict(ensemble=a.ensemble, thermostat=a.thermostat, temperature=a.temp)
     open(a.mdin + ".min.in", "w").write(pmemd_mdin(st, asys.box, maxcyc=500, ntpr=100))
-    open(a.mdin + ".heat.in", "w").write(pmemd_mdin(st, asys.box, nstlim=4000, dt=0.0005, tempi=0.0, ntpr=500,
-                                                    ntwr=4000, **{**kw, "ensemble": "nvt"}))
-    open(a.mdin + ".md.in", "w").write(pmemd_mdin(st, asys.box, nstlim=a.nstlim, dt=a.dt, irest=1, ntpr=1000,
-                                                  ntwx=5000, ntwr=50000, **kw))
-    print(f"mdin: {a.mdin}.min.in, .heat.in, .md.in (engine settings: MDSettings(cutoff={a.cut}, ewald_beta={a.beta}, "
-          f"pme_grid={st.pme_grid}, pme_order={a.order}, lj_lrc={bool(a.lrc)}, dipole_tol={a.tol}))")
+    open(a.mdin + ".heat.in", "w").write(
+        pmemd_mdin(st, asys.box, nstlim=4000, dt=0.0005, tempi=0.0, ntpr=500, ntwr=4000, **{**kw, "ensemble": "nvt"})
+    )
+    open(a.mdin + ".md.in", "w").write(
+        pmemd_mdin(st, asys.box, nstlim=a.nstlim, dt=a.dt, irest=1, ntpr=1000, ntwx=5000, ntwr=50000, **kw)
+    )
+    print(
+        f"mdin: {a.mdin}.min.in, .heat.in, .md.in (engine settings: MDSettings(cutoff={a.cut}, ewald_beta={a.beta}, "
+        f"pme_grid={st.pme_grid}, pme_order={a.order}, lj_lrc={bool(a.lrc)}, dipole_tol={a.tol}))"
+    )

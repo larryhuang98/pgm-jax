@@ -73,6 +73,7 @@ not support MTS yet.
 
 Measurements, stability limits and recommended settings: docs/mts.md.  Units: nm, ps, amu,
 kJ/mol, K, e."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -88,24 +89,25 @@ from .forcefield import _PRED
 from .integrate import Integrator, MDState
 from .kernels import erf_kernels_closed
 
-BETA_R = 2.3268                     # erfc(BETA_R) = 1e-3: default beta_short = BETA_R / r_short
+BETA_R = 2.3268  # erfc(BETA_R) = 1e-3: default beta_short = BETA_R / r_short
 
 
 @dataclass(frozen=True)
 class MTS:
     """Multiple time stepping settings (the simulation's dt is the outer step)."""
-    inner: int = 2                   # fast steps per outer step
-    split: str = "short"             # fast group: "short" (short-range pGM model + bonded) | "special" (the
-                                     # topologically close pairs + bonded) | "bonded" (bonded terms)
-    r_short: float = 0.5             # nm: the fast nonbonded pairs are switched off at r_short
-    switch_width: float = 0.1        # nm: the switch starts at r_short - switch_width
-    buffer: float = 0.1              # nm: the fast pair list holds the pairs closer than r_short + buffer
+
+    inner: int = 2  # fast steps per outer step
+    split: str = "short"  # fast group: "short" (short-range pGM model + bonded) | "special" (the
+    # topologically close pairs + bonded) | "bonded" (bonded terms)
+    r_short: float = 0.5  # nm: the fast nonbonded pairs are switched off at r_short
+    switch_width: float = 0.1  # nm: the switch starts at r_short - switch_width
+    buffer: float = 0.1  # nm: the fast pair list holds the pairs closer than r_short + buffer
     beta_short: float | None = None  # nm^-1: fast electrostatics screened by erfc(beta_short r); None: erfc = 1e-3
-                                     # at r_short (BETA_R / r_short)
-    polarization: str = "auto"       # fast induced dipoles: "mutual" | "direct" | "none" | "auto" (mutual with induction)
-    bonded: int = 1                  # bonded (+ restraint) steps per fast step; > 1: a third level
-    o_step: str = "outer"            # thermostat step: "outer" (BAOAB-RESPA) | "inner" (every innermost step)
-    anchor: bool | None = None       # predictor on mu - mu_fast (None: when the fast level has induced dipoles)
+    # at r_short (BETA_R / r_short)
+    polarization: str = "auto"  # fast induced dipoles: "mutual" | "direct" | "none" | "auto" (mutual with induction)
+    bonded: int = 1  # bonded (+ restraint) steps per fast step; > 1: a third level
+    o_step: str = "outer"  # thermostat step: "outer" (BAOAB-RESPA) | "inner" (every innermost step)
+    anchor: bool | None = None  # predictor on mu - mu_fast (None: when the fast level has induced dipoles)
 
     def levels(self) -> list:
         """(groups, steps per step of the enclosing level), outermost first."""
@@ -131,15 +133,16 @@ class MTSState:
     """Multiple-time-stepping part of MDState: the force of every level at the current positions
     (engine form: atomic forces, or rigid-body forces; outermost = slow first), the fast-level
     induced dipoles and energy, and the short-range pair list (None for the bonded split)."""
+
     forces: tuple
-    mu: jnp.ndarray                  # (N, 3) fast-level induced dipoles (e nm)
-    efast: jnp.ndarray               # () fast-level nonbonded energy (kJ/mol)
-    ks: jnp.ndarray                  # (N, ms) partners in the short-range list (compact rows)
-    ws: jnp.ndarray                  # (N, ms) van der Waals weights of the entries
-    within: jnp.ndarray              # (N, ms) valid entries
-    ref: jnp.ndarray                 # (N, 3) atom positions when the list was built (nm)
-    rebuilds: jnp.ndarray            # () int32: rebuilds of the list at fast steps (list too old)
-    overflow: jnp.ndarray            # () bool: the list exceeded its capacity (block repeated)
+    mu: jnp.ndarray  # (N, 3) fast-level induced dipoles (e nm)
+    efast: jnp.ndarray  # () fast-level nonbonded energy (kJ/mol)
+    ks: jnp.ndarray  # (N, ms) partners in the short-range list (compact rows)
+    ws: jnp.ndarray  # (N, ms) van der Waals weights of the entries
+    within: jnp.ndarray  # (N, ms) valid entries
+    ref: jnp.ndarray  # (N, 3) atom positions when the list was built (nm)
+    rebuilds: jnp.ndarray  # () int32: rebuilds of the list at fast steps (list too old)
+    overflow: jnp.ndarray  # () bool: the list exceeded its capacity (block repeated)
 
 
 def _tree_sub(a, b):
@@ -148,13 +151,14 @@ def _tree_sub(a, b):
 
 class _MTSMixin:
     """r-RESPA step for the rigid-body (Integrator) and the flexible (FlexibleIntegrator) engines."""
-    keep_geometry = True             # the full evaluation returns its electrostatic rows (short list)
+
+    keep_geometry = True  # the full evaluation returns its electrostatic rows (short list)
 
     def __init__(self, *args, mts: MTS, **kw):
         if not isinstance(mts, MTS):
             raise TypeError("mts must be an MTS instance")
         self.mts = mts
-        self.ms = None                                   # capacity of the short-range list (sized in init)
+        self.ms = None  # capacity of the short-range list (sized in init)
         ff = args[0] if args else kw.get("ff")
         if ff is not None and getattr(ff, "iel", False):
             raise NotImplementedError("extended-Lagrangian dipoles (iel) with multiple time stepping")
@@ -172,56 +176,73 @@ class _MTSMixin:
             raise ValueError(f"MTS o_step must be 'outer' or 'inner', got {m.o_step!r}")
         flexible = isinstance(self, FlexibleIntegrator)
         if not flexible and (m.split != "short" or m.bonded > 1):
-            raise ValueError("rigid bodies have no bonded terms and no internal motion: use MTS(split='short', bonded=1)")
+            raise ValueError(
+                "rigid bodies have no bonded terms and no internal motion: use MTS(split='short', bonded=1)"
+            )
         if m.split == "bonded" and m.bonded > 1:
             raise ValueError("MTS(split='bonded') has two levels: bonded must be 1")
         self.short = m.split == "short"
-        pairs = m.split != "bonded"                      # a fast pair model (short-range list or special pairs)
+        pairs = m.split != "bonded"  # a fast pair model (short-range list or special pairs)
         pol = m.polarization
         if pol == "auto":
             pol = "mutual" if (pairs and ff.ind) else "none"
         if pol not in ("direct", "mutual", "none"):
             raise ValueError(f"MTS polarization must be 'direct', 'mutual', 'none' or 'auto', got {m.polarization!r}")
         if pol != "none" and not (pairs and ff.ind):
-            raise ValueError(f"MTS polarization {pol!r} needs split 'short' or 'special' and induced dipoles "
-                             "(elec 'qi' or 'qpi')")
+            raise ValueError(
+                f"MTS polarization {pol!r} needs split 'short' or 'special' and induced dipoles (elec 'qi' or 'qpi')"
+            )
         self.pol = pol
         # combinations the fast models do not implement (explicit, no silent fallback)
         if getattr(self, "alchemy", None) is not None:
-            raise NotImplementedError("multiple time stepping with an alchemical region: the fast pair models "
-                                      "do not scale the solute (run the lambda windows without MTS)")
+            raise NotImplementedError(
+                "multiple time stepping with an alchemical region: the fast pair models "
+                "do not scale the solute (run the lambda windows without MTS)"
+            )
         if flexible and getattr(self, "vsites", None) is not None:
-            raise NotImplementedError("multiple time stepping of the flexible engine with virtual sites: the RESPA "
-                                      "drifts do not rebuild the sites (use the rigid engine for rigid molecules "
-                                      "with sites, or no MTS)")
+            raise NotImplementedError(
+                "multiple time stepping of the flexible engine with virtual sites: the RESPA "
+                "drifts do not rebuild the sites (use the rigid engine for rigid molecules "
+                "with sites, or no MTS)"
+            )
         if getattr(ff, "flux", None) is not None and pairs:
-            raise NotImplementedError("charge flux with MTS(split='short' | 'special'): the fast pair models use "
-                                      "fixed charges; use split='bonded'")
+            raise NotImplementedError(
+                "charge flux with MTS(split='short' | 'special'): the fast pair models use "
+                "fixed charges; use split='bonded'"
+            )
         if pol != "none" and getattr(ff, "alpha_mask", False):
-            raise NotImplementedError("the fast induction model divides by the polarizabilities; atoms with "
-                                      "alpha = 0 (e.g. virtual sites) need MTS(polarization='none')")
+            raise NotImplementedError(
+                "the fast induction model divides by the polarizabilities; atoms with "
+                "alpha = 0 (e.g. virtual sites) need MTS(polarization='none')"
+            )
         anchor = m.anchor
         if anchor is None:
             anchor = pol != "none" and s.predictor in _PRED
         if anchor and not (pol != "none" and s.predictor in _PRED):
-            raise ValueError("the anchored predictor needs fast induced dipoles (polarization 'mutual' or 'direct') "
-                             f"and predictor mu3 or mu4 (got {pol!r}, {s.predictor!r})")
+            raise ValueError(
+                "the anchored predictor needs fast induced dipoles (polarization 'mutual' or 'direct') "
+                f"and predictor mu3 or mu4 (got {pol!r}, {s.predictor!r})"
+            )
         self.anchor = bool(anchor)
         if self.short:
             r_on = m.r_short - m.switch_width
             if not (m.switch_width > 0 and r_on > 0 and m.buffer > 0):
-                raise ValueError(f"MTS needs 0 < switch_width < r_short and buffer > 0 (got {m.r_short}, "
-                                 f"{m.switch_width}, {m.buffer})")
+                raise ValueError(
+                    f"MTS needs 0 < switch_width < r_short and buffer > 0 (got {m.r_short}, "
+                    f"{m.switch_width}, {m.buffer})"
+                )
             if m.r_short + m.buffer > ff.rc_e + 1e-12:
-                raise ValueError(f"MTS r_short + buffer = {m.r_short + m.buffer:g} nm exceeds the electrostatics "
-                                 f"cutoff {ff.rc_e:g} nm (the short-range list is taken from its rows)")
+                raise ValueError(
+                    f"MTS r_short + buffer = {m.r_short + m.buffer:g} nm exceeds the electrostatics "
+                    f"cutoff {ff.rc_e:g} nm (the short-range list is taken from its rows)"
+                )
             if s.vdw != "none" and m.r_short > ff.rc_v + 1e-12:
                 raise ValueError(f"MTS r_short {m.r_short:g} nm exceeds the van der Waals cutoff {ff.rc_v:g} nm")
             self.r_on, self.r_off, self.r_list = r_on, float(m.r_short), float(m.r_short + m.buffer)
             self.beta_s = float(BETA_R / m.r_short if m.beta_short is None else m.beta_short)
             if not self.beta_s > 0:
                 raise ValueError(f"MTS beta_short must be positive, got {m.beta_short}")
-        if m.split == "special":                        # rows of the special-pair model: flexible molecules
+        if m.split == "special":  # rows of the special-pair model: flexible molecules
             flex_rows = [np.asarray(r).ravel() for _, r in self.flex.groups]
             if not flex_rows:
                 raise ValueError("MTS(split='special') needs flexible molecules (FlexibleTemplate)")
@@ -239,11 +260,15 @@ class _MTSMixin:
             hs.append(f"{'+'.join(groups)} {steps * 1000:g} fs")
         what = f"; fast pairs: the special pairs, {self.pol} induction" if self.mts.split == "special" else ""
         if self.short:
-            what = (f"; fast pairs < {self.r_off:g} nm (switch from {self.r_on:g}), "
-                    f"{self.pol} induction, list buffer {m.buffer:g} nm "
-                    f"(capacity {self.ms})")
-        return (f"multiple time stepping (r-RESPA): {', '.join(hs)}{what}; O step {m.o_step}; "
-                f"predictor {'anchored on the fast dipoles' if self.anchor else 'on the outer steps'}")
+            what = (
+                f"; fast pairs < {self.r_off:g} nm (switch from {self.r_on:g}), "
+                f"{self.pol} induction, list buffer {m.buffer:g} nm "
+                f"(capacity {self.ms})"
+            )
+        return (
+            f"multiple time stepping (r-RESPA): {', '.join(hs)}{what}; O step {m.o_step}; "
+            f"predictor {'anchored on the fast dipoles' if self.anchor else 'on the outer steps'}"
+        )
 
     # ------------------------------------------------------------------ engine-specific pieces
     def _atoms(self, x):
@@ -292,10 +317,10 @@ class _MTSMixin:
         N = ff.n
         P = ff._atoms(self.params)
         p, vjp_p = jax.vjp(lambda y: ff.perm_dipoles(y, H, P["cov"]), pos)
-        at = (lambda v: v) if rows is None else (lambda v: v[rows])            # noqa: E731
+        at = (lambda v: v) if rows is None else (lambda v: v[rows])  # noqa: E731
         full = (lambda v: v) if rows is None else (lambda v: jnp.zeros((N,) + v.shape[1:], v.dtype).at[rows].set(v))  # noqa: E731
         pr = at(pos)
-        x = [pr[:, c][:, None] - pos[:, c][ks] for c in range(3)]       # float64 differences, minimum image
+        x = [pr[:, c][:, None] - pos[:, c][ks] for c in range(3)]  # float64 differences, minimum image
         for c in (2, 1, 0):
             n = jnp.round(x[c] / H[c, c])
             x = [x[j] - n * H[c, j] if j <= c else x[j] for j in range(3)]
@@ -318,23 +343,23 @@ class _MTSMixin:
         pc = p.astype(cd)
         pk = [pc[:, c][ks] for c in range(3)]
         pi = [at(pc)[:, c][:, None] for c in range(3)]
-        rowsum = lambda v: jnp.sum(v, axis=1)                       # noqa: E731
+        rowsum = lambda v: jnp.sum(v, axis=1)  # noqa: E731
         alpha = at(P["alpha"])[:, None]
-        corr = 0.0                          # polarization energy not in the pair sum (units of KE)
-        if self.pol != "none":              # nu0 = alpha E_short, E_short = -dU_pair/dd at d = p
+        corr = 0.0  # polarization energy not in the pair sum (units of KE)
+        if self.pol != "none":  # nu0 = alpha E_short, E_short = -dU_pair/dd at d = p
             pkx = pk[0] * x[0] + pk[1] * x[1] + pk[2] * x[2]
             cf = -qk * SA1 - SA2 * pkx
             gp = jnp.stack([rowsum(cf * x[c] + SA1 * pk[c]) for c in range(3)], -1).astype(jnp.float64)
-            mu = nu0 = -alpha * gp                  # (row atoms, 3)
+            mu = nu0 = -alpha * gp  # (row atoms, 3)
             corr = 0.5 * jnp.sum(nu0 * nu0 / alpha)
-        if self.pol == "mutual":            # nu1 = alpha T nu0 (one mutual iteration); mu = nu0 + nu1
+        if self.pol == "mutual":  # nu1 = alpha T nu0 (one mutual iteration); mu = nu0 + nu1
             n0 = nu0.astype(cd)
             n0f = full(n0)
             nk = [n0f[:, c][ks] for c in range(3)]
             ni = [n0[:, c][:, None] for c in range(3)]
             nkx = nk[0] * x[0] + nk[1] * x[1] + nk[2] * x[2]
             gm = jnp.stack([rowsum(-SA2 * nkx * x[c] + SA1 * nk[c]) for c in range(3)], -1).astype(jnp.float64)
-            mu = nu0 - alpha * gm           # T nu0 = -gm
+            mu = nu0 - alpha * gm  # T nu0 = -gm
             corr = corr - jnp.sum(nu0 * gm)
         if self.pol != "none":
             mc = mu.astype(cd)
@@ -353,14 +378,14 @@ class _MTSMixin:
         e = qi * qk * A0 + t * A1 - A2 * dix * dkx + A1 * didk
         rad = -qi * qk * A1 - t * A2 + A3 * dix * dkx - A2 * didk
         non = [A1 * (qi * dk[c] - qk * di[c]) - A2 * (di[c] * dkx + dk[c] * dix) for c in range(3)]
-        if self.pol != "none":              # no mu_i-mu_k term (the induction model's own dipole terms below)
+        if self.pol != "none":  # no mu_i-mu_k term (the induction model's own dipole terms below)
             mix = mi[0] * x[0] + mi[1] * x[1] + mi[2] * x[2]
             mkx = mk[0] * x[0] + mk[1] * x[1] + mk[2] * x[2]
             mimk = mi[0] * mk[0] + mi[1] * mk[1] + mi[2] * mk[2]
             e = e + A2 * mix * mkx - A1 * mimk
             rad = rad - A3 * mix * mkx + A2 * mimk
             non = [non[c] + A2 * (mi[c] * mkx + mk[c] * mix) for c in range(3)]
-        if self.pol == "mutual":            # + the nu0_i-nu0_k pair term (-1/2 nu0 T nu0)
+        if self.pol == "mutual":  # + the nu0_i-nu0_k pair term (-1/2 nu0 T nu0)
             nix = ni[0] * x[0] + ni[1] * x[1] + ni[2] * x[2]
             ninj = ni[0] * nk[0] + ni[1] * nk[1] + ni[2] * nk[2]
             e = e - A2 * nix * nkx + A1 * ninj
@@ -371,7 +396,7 @@ class _MTSMixin:
         radial = S * (KE * rad + glj) + dS * E
         SK = S * KE
         g = jnp.stack([rowsum(radial * x[c] + SK * non[c]) for c in range(3)], -1).astype(jnp.float64)
-        cfd = -qk * SA1 - SA2 * dkx          # dU/dd_i (total dipoles) for the covalent-dipole frames
+        cfd = -qk * SA1 - SA2 * dkx  # dU/dd_i (total dipoles) for the covalent-dipole frames
         gd = KE * jnp.stack([rowsum(cfd * x[c] + SA1 * dk[c]) for c in range(3)], -1).astype(jnp.float64)
         forces = -(full(g) + vjp_p(full(gd))[0])
         energy = 0.5 * jnp.sum(rowsum(S * E).astype(jnp.float64)) + KE * corr
@@ -387,8 +412,12 @@ class _MTSMixin:
         if vdw == "gvdw":
             sa, sc, b = (P[n].astype(cd) for n in ("gvdw_sqrt_a", "gvdw_sqrt_c6", "gvdw_b"))
             R = P["radius"].astype(cd)
-            return (at(sa)[:, None] * sa[k], at(sc)[:, None] * sc[k], 0.5 * (at(b)[:, None] + b[k]),
-                    1.0 / jnp.sqrt(2.0 * (at(R)[:, None] ** 2 + R[k] ** 2)))
+            return (
+                at(sa)[:, None] * sa[k],
+                at(sc)[:, None] * sc[k],
+                0.5 * (at(b)[:, None] + b[k]),
+                1.0 / jnp.sqrt(2.0 * (at(R)[:, None] ** 2 + R[k] ** 2)),
+            )
         if vdw == "none":
             return ()
         raise ValueError(f"multiple time stepping: unknown van der Waals form {vdw!r}")
@@ -433,8 +462,9 @@ class _MTSMixin:
         k, x, within, wv, ovf2, _ = self.ff._rows(pos, st.box, cand)
         r = jnp.sqrt(jnp.where(within, x[0] * x[0] + x[1] * x[1] + x[2] * x[2], 1.0))
         ks, ws, valid, ovf3 = self._compact(k, r, within, wv)
-        return m.set(ks=ks, ws=ws, within=valid, ref=pos, rebuilds=m.rebuilds + 1,
-                     overflow=m.overflow | ovf | ovf2 | ovf3)
+        return m.set(
+            ks=ks, ws=ws, within=valid, ref=pos, rebuilds=m.rebuilds + 1, overflow=m.overflow | ovf | ovf2 | ovf3
+        )
 
     def _fresh(self, st, pos, m):
         """The list, rebuilt if an atom pair may have come from beyond r_short + buffer to within
@@ -465,7 +495,7 @@ class _MTSMixin:
             finally:
                 ff.mc = saved
             r2 = xx[0] * xx[0] + xx[1] * xx[1] + xx[2] * xx[2]
-            return jnp.max(jnp.sum(within & (r2 < self.r_list ** 2), axis=1))
+            return jnp.max(jnp.sum(within & (r2 < self.r_list**2), axis=1))
 
         c = int(jax.jit(count)(pos, box, cand))
         ms = int(np.ceil((c * 1.1 + 8) / 8.0) * 8)
@@ -506,7 +536,7 @@ class _MTSMixin:
             F = F + Fs
         if "bonded" in groups:
             F = F + self._bonded_forces(pos, st.box)
-        forces = m.forces[:j] + (self._engine_forces(x, F),) + m.forces[j + 1:]
+        forces = m.forces[:j] + (self._engine_forces(x, F),) + m.forces[j + 1 :]
         return st.set(mts=m.set(forces=forces, mu=mu, efast=efast))
 
     def _with_result(self, st: MDState, F, res, nbr, fast: tuple | None = None) -> MDState:
@@ -528,16 +558,24 @@ class _MTSMixin:
             ks = ws = valid = None
             ovf = z
         placeholder = tuple(jax.tree_util.tree_map(jnp.zeros_like, F) for _ in range(self.nlev))
-        m = MTSState(forces=placeholder, mu=jnp.zeros_like(pos) if old is None else old.mu,
-                     efast=jnp.zeros((), jnp.float64) if old is None else old.efast, ks=ks, ws=ws, within=valid,
-                     ref=pos, rebuilds=rebuilds, overflow=ovf if old is None else (old.overflow | ovf))
+        m = MTSState(
+            forces=placeholder,
+            mu=jnp.zeros_like(pos) if old is None else old.mu,
+            efast=jnp.zeros((), jnp.float64) if old is None else old.efast,
+            ks=ks,
+            ws=ws,
+            within=valid,
+            ref=pos,
+            rebuilds=rebuilds,
+            overflow=ovf if old is None else (old.overflow | ovf),
+        )
         if fast is None:
             s = st.set(mts=m)
             for j in range(self.nlev - 1, 0, -1):
                 s = self._eval_fast(s, j)
             m = s.mts
             fast = m.forces[1:]
-            if self.anchor:                          # the solve just pushed mu: keep the history as mu - mu_fast
+            if self.anchor:  # the solve just pushed mu: keep the history as mu - mu_fast
                 ind = st.induction
                 st = st.set(induction=ind.set(hist=ind.hist.at[0].add(-m.mu)))
         slow = F
@@ -553,8 +591,9 @@ class _MTSMixin:
         ind = st.induction
         if self.anchor:
             ind = ind.set(hist=ind.hist + m.mu[None])
-        F, res, nbr = self._forces(st.dyn.position, st.box, ind, st.nbr, bias=st.bias,
-                                   field=self.field_at(st, st.step + 1))
+        F, res, nbr = self._forces(
+            st.dyn.position, st.box, ind, st.nbr, bias=st.bias, field=self.field_at(st, st.step + 1)
+        )
         if self.anchor:
             ri = res.induction
             res = res._replace(induction=ri.set(hist=ri.hist - m.mu[None]))
@@ -581,8 +620,13 @@ class _MTSMixin:
         else:
             n = self.levels[j + 1][1]
             hs = h / n
-            loop = lambda s, count: s if count == 0 else jax.lax.fori_loop(          # noqa: E731
-                0, count, lambda _, c: self._level(c, j + 1, hs, False), s)
+            loop = lambda s, count: (
+                s
+                if count == 0
+                else jax.lax.fori_loop(  # noqa: E731
+                    0, count, lambda _, c: self._level(c, j + 1, hs, False), s
+                )
+            )
             if o_mid and n % 2 == 0:
                 st = self._o(loop(st, n // 2), self.dt)
                 st = loop(st, n // 2)
@@ -601,7 +645,7 @@ class _MTSMixin:
         return st
 
     def _run(self, st: MDState, n) -> MDState:
-        if st.mts is None:          # e.g. a checkpoint of an ordinary run: split forces, restart the predictor
+        if st.mts is None:  # e.g. a checkpoint of an ordinary run: split forces, restart the predictor
             s = self._state_forces(st, False)
             st = s.set(induction=s.induction.set(count=jnp.ones_like(s.induction.count)))
         return super()._run(st, n)
@@ -652,18 +696,32 @@ def mts_stats(sim) -> dict:
 def add_mts_arguments(ap, dt_help: str = "--dt") -> None:
     """--mts and friends for the MD scripts (the time step given by `dt_help` is the outer step)."""
     g = ap.add_argument_group("multiple time stepping (r-RESPA; docs/mts.md)")
-    g.add_argument("--mts", type=int, default=0, help=f"fast steps per outer step (0: off; {dt_help} is then the outer step)")
-    g.add_argument("--mts-split", default="short", choices=["short", "special", "bonded"],
-                   help="fast group: short (short-range pGM model + bonded), special (the special pairs + bonded; "
-                   "flexible engine), bonded (bonded terms; flexible engine)")
+    g.add_argument(
+        "--mts", type=int, default=0, help=f"fast steps per outer step (0: off; {dt_help} is then the outer step)"
+    )
+    g.add_argument(
+        "--mts-split",
+        default="short",
+        choices=["short", "special", "bonded"],
+        help="fast group: short (short-range pGM model + bonded), special (the special pairs + bonded; "
+        "flexible engine), bonded (bonded terms; flexible engine)",
+    )
     g.add_argument("--mts-rs", type=float, default=0.5, help="nm: fast nonbonded pairs switched off at this distance")
     g.add_argument("--mts-width", type=float, default=0.1, help="nm: switch width")
     g.add_argument("--mts-buffer", type=float, default=0.1, help="nm: buffer of the short-range pair list")
-    g.add_argument("--mts-beta", type=float, default=None, help="1/nm: screening of the fast electrostatics "
-                   "(default: erfc(beta r_short) = 1e-3)")
-    g.add_argument("--mts-pol", default="auto", choices=["auto", "mutual", "direct", "none"], help="fast-level induced dipoles")
+    g.add_argument(
+        "--mts-beta",
+        type=float,
+        default=None,
+        help="1/nm: screening of the fast electrostatics (default: erfc(beta r_short) = 1e-3)",
+    )
+    g.add_argument(
+        "--mts-pol", default="auto", choices=["auto", "mutual", "direct", "none"], help="fast-level induced dipoles"
+    )
     g.add_argument("--mts-bonded", type=int, default=1, help="bonded steps per fast step (> 1: three levels)")
-    g.add_argument("--mts-o", default="outer", choices=["outer", "inner"], help="thermostat step at the outer or innermost level")
+    g.add_argument(
+        "--mts-o", default="outer", choices=["outer", "inner"], help="thermostat step at the outer or innermost level"
+    )
     g.add_argument("--mts-anchor", type=int, default=-1, help="predictor anchored on the fast dipoles: 1, 0, -1 (auto)")
 
 
@@ -671,7 +729,15 @@ def mts_from_args(a) -> MTS | None:
     """MTS settings from add_mts_arguments' options (None without --mts)."""
     if not a.mts:
         return None
-    return MTS(inner=a.mts, split=a.mts_split, r_short=a.mts_rs, switch_width=a.mts_width, buffer=a.mts_buffer,
-               beta_short=a.mts_beta,
-               polarization=a.mts_pol, bonded=a.mts_bonded, o_step=a.mts_o,
-               anchor=None if a.mts_anchor < 0 else bool(a.mts_anchor))
+    return MTS(
+        inner=a.mts,
+        split=a.mts_split,
+        r_short=a.mts_rs,
+        switch_width=a.mts_width,
+        buffer=a.mts_buffer,
+        beta_short=a.mts_beta,
+        polarization=a.mts_pol,
+        bonded=a.mts_bonded,
+        o_step=a.mts_o,
+        anchor=None if a.mts_anchor < 0 else bool(a.mts_anchor),
+    )

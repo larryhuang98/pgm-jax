@@ -17,6 +17,7 @@ elec, vdw, bonded, restraint) and "cg_iterations".
 
 A stress asked for after the forces of the same configuration costs one strain derivative at the
 converged dipoles (no second dipole solve).  Positions wrapped atom by atom are fine."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -27,8 +28,8 @@ from ase.stress import full_3x3_to_voigt_6_stress
 
 from .engine import GasPhaseEngine
 
-KJMOL = units.kJ / units.mol          # eV per kJ/mol
-NM = 10.0                              # Angstrom per nm
+KJMOL = units.kJ / units.mol  # eV per kJ/mol
+NM = 10.0  # Angstrom per nm
 
 
 class PGMCalculator(Calculator):
@@ -42,8 +43,8 @@ class PGMCalculator(Calculator):
         self._res = None
 
     def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
-        if atoms is not None:                    # Calculator.calculate: self.atoms = atoms.copy(), but without
-            self.atoms = _light_copy(atoms)      # deep-copying the constraints (most of ASE's cost per step)
+        if atoms is not None:  # Calculator.calculate: self.atoms = atoms.copy(), but without
+            self.atoms = _light_copy(atoms)  # deep-copying the constraints (most of ASE's cost per step)
         a = self.atoms
         if len(a) != self.engine.n:
             raise ValueError(f"the engine has {self.engine.n} atoms, the Atoms object {len(a)}")
@@ -69,8 +70,8 @@ class PGMCalculator(Calculator):
         if want_stress and "stress" not in r:
             W = res.virial if res.virial is not None else self.engine.virial_of_last(res)
             W = 0.5 * (W + W.T)
-            V = abs(np.linalg.det(np.asarray(self.atoms.get_cell()))) / NM ** 3
-            r["stress"] = full_3x3_to_voigt_6_stress(W / V) * (KJMOL / NM ** 3)
+            V = abs(np.linalg.det(np.asarray(self.atoms.get_cell()))) / NM**3
+            r["stress"] = full_3x3_to_voigt_6_stress(W / V) * (KJMOL / NM**3)
         if any(p in properties for p in ("dipole", "induced_dipoles")):
             self._dipoles()
 
@@ -140,8 +141,10 @@ class FixRigidMolecules(FixConstraint):
         return np.unique(np.concatenate([v.ravel() for v in self.pairs.values()])) if self.pairs else np.zeros(0, int)
 
     def todict(self):
-        return {"name": "FixRigidMolecules", "kwargs": {"blocks": [b.tolist() for b in self.blocks],
-                                                        "tolerance": self.tolerance}}
+        return {
+            "name": "FixRigidMolecules",
+            "kwargs": {"blocks": [b.tolist() for b in self.blocks], "tolerance": self.tolerance},
+        }
 
     def index_shuffle(self, atoms, ind):
         raise NotImplementedError("FixRigidMolecules does not support slicing")
@@ -157,11 +160,13 @@ class FixRigidMolecules(FixConstraint):
     def _setup(self, atoms):
         if self.bondlengths is None:
             x = atoms.positions
-            self.bondlengths = {c: np.linalg.norm(self._mic(x[P[..., 0]] - x[P[..., 1]], atoms.cell, atoms.pbc), axis=-1)
-                                for c, P in self.pairs.items()}
+            self.bondlengths = {
+                c: np.linalg.norm(self._mic(x[P[..., 0]] - x[P[..., 1]], atoms.cell, atoms.pbc), axis=-1)
+                for c, P in self.pairs.items()
+            }
         m = atoms.get_masses()
         self._groups = []
-        for c, P in self.pairs.items():                        # P: (M, c, 2)
+        for c, P in self.pairs.items():  # P: (M, c, 2)
             ds = self.bondlengths[c]
             a, b = P[..., 0], P[..., 1]
             # C_kl = e(a_k, l) / m_a_k - e(b_k, l) / m_b_k,  e(i, l) = [i == a_l] - [i == b_l]
@@ -188,10 +193,10 @@ class FixRigidMolecules(FixConstraint):
         n = len(atoms)
         for a, b, d, Cm in self._groups:
             r0 = old[a] - old[b]
-            s0 = self._mic(r0, atoms.cell, atoms.pbc)          # (M, c, 3) constrained directions
+            s0 = self._mic(r0, atoms.cell, atoms.pbc)  # (M, c, 3) constrained directions
             u0 = new[a] - new[b] - r0 + s0
             lam = np.zeros(d.shape)
-            G = Cm[..., None] * s0[:, None, :, :]              # (M, c, c, 3): d u_k / d lam_l
+            G = Cm[..., None] * s0[:, None, :, :]  # (M, c, c, 3): d u_k / d lam_l
             for it in range(self.maxiter):
                 u = u0 + np.einsum("mkl,mklx->mkx", np.broadcast_to(lam[:, None, :], Cm.shape), G)
                 f = np.sum(u * u, -1) - d * d
@@ -229,8 +234,10 @@ def rigid_blocks(sys):
     for k, m in enumerate(sys.molecules):
         off = int(sys.offsets[k])
         if m.n > 3:
-            raise ValueError(f"molecule {k} ({m.name}) has {m.n} atoms: rigid molecules of more than three atoms "
-                             "cannot be held by distance constraints here; use flexible templates")
+            raise ValueError(
+                f"molecule {k} ({m.name}) has {m.n} atoms: rigid molecules of more than three atoms "
+                "cannot be held by distance constraints here; use flexible templates"
+            )
         blocks.append([(off + i, off + j) for i in range(m.n) for j in range(i + 1, m.n)])
     return blocks
 

@@ -8,6 +8,7 @@ replicas advanced together by jax.vmap (md/remd.MDReplicas, all at T) give ~R ti
     python scripts/validate_eps_gradient.py -o runs/fit/v_m --coords runs/fit/base64.rst7 --cutoff 0.45 \
         --skin 0.08 --params q --start=-0.1 --nrep 8 --segments 20 --seg-ps 100
 """
+
 from __future__ import annotations
 
 import argparse
@@ -43,11 +44,31 @@ def main():
     ew = {k: v for k, v in elec_cutoff_settings(a.cutoff).items() if k != "elec_cutoff"}
     if a.ewald_beta:
         ew["ewald_beta"] = a.ewald_beta
-    st = MDSettings(cutoff=a.cutoff, skin=a.skin, pme_order=6, lj_lrc=True, dipole_tol=a.md_tol, precision=a.precision,
-                    pme_grid=(a.nfft,) * 3 if a.nfft else None, **ew)
+    st = MDSettings(
+        cutoff=a.cutoff,
+        skin=a.skin,
+        pme_order=6,
+        lj_lrc=True,
+        dipole_tol=a.md_tol,
+        precision=a.precision,
+        pme_grid=(a.nfft,) * 3 if a.nfft else None,
+        **ew,
+    )
     th = S["theta0"]
-    sim = Simulation(S["sys"], S["pos"], S["H"], st, dt=a.dt / 1000.0, ensemble="nvt", temperature=a.T, thermostat="bussi",
-                     tau_t=1.0, seed=a.seed, params=S["space"](jnp.asarray(th)), log=None)
+    sim = Simulation(
+        S["sys"],
+        S["pos"],
+        S["H"],
+        st,
+        dt=a.dt / 1000.0,
+        ensemble="nvt",
+        temperature=a.T,
+        thermostat="bussi",
+        tau_t=1.0,
+        seed=a.seed,
+        params=S["space"](jnp.asarray(th)),
+        log=None,
+    )
     st = dataclasses.replace(st, pme_grid=tuple(int(k) for k in sim.ff.pme.K))
     an = FrameAnalyzer(S["sys"], np.asarray(sim.state.box), st, S["space"], rdf=S["rdf"], tol=a.tol, chunk=a.nrep)
     every = max(1, int(round(a.every / sim.dt)))
@@ -56,8 +77,11 @@ def main():
     sim._advance(int(round(a.equil / sim.dt)))
     rep = MDReplicas(sim, a.T + 1e-6 * np.arange(a.nrep), batched=True, seed=a.seed + 7)
     rep.advance(int(round(a.equil_rep / sim.dt)))
-    print(f"# {S['sys'].nmol} molecules, NVT, {a.nrep} replicas, theta {th.tolist()}, V {float(np.abs(np.linalg.det(np.asarray(sim.state.box)))):.4f} nm^3; "
-          f"equilibrated in {time.time() - t0:.0f} s", flush=True)
+    print(
+        f"# {S['sys'].nmol} molecules, NVT, {a.nrep} replicas, theta {th.tolist()}, V {float(np.abs(np.linalg.det(np.asarray(sim.state.box)))):.4f} nm^3; "
+        f"equilibrated in {time.time() - t0:.0f} s",
+        flush=True,
+    )
     nper = int(round(a.seg_ps / a.every))
     for seg in range(len(done), a.segments):
         t1 = time.time()
@@ -69,12 +93,15 @@ def main():
             ta0 = time.time()
             out.append(an.analyze(jnp.asarray(th), frames))
             ta += time.time() - ta0
-        fr = {k: np.stack([o[k] for o in out], axis=1) for k in out[0]}       # (rep, time, ...)
+        fr = {k: np.stack([o[k] for o in out], axis=1) for k in out[0]}  # (rep, time, ...)
         fr = {k: v.reshape((-1,) + v.shape[2:]) for k, v in fr.items()}
         fr["rep"] = np.repeat(np.arange(a.nrep), nper)
         np.savez(f"{a.out}_frames{seg:03d}.npz", theta=th, **fr)
-        print(f"segment {seg}: {nper} x {a.nrep} frames, U/N {fr['U'].mean() / S['sys'].nmol:.3f} kJ/mol, "
-              f"D {fr['D'].mean() / 0.020819434:.4f} D, MD+analysis {time.time() - t1:.0f} s (analysis {ta:.0f} s)", flush=True)
+        print(
+            f"segment {seg}: {nper} x {a.nrep} frames, U/N {fr['U'].mean() / S['sys'].nmol:.3f} kJ/mol, "
+            f"D {fr['D'].mean() / 0.020819434:.4f} D, MD+analysis {time.time() - t1:.0f} s (analysis {ta:.0f} s)",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

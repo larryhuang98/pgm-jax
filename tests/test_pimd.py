@@ -2,6 +2,7 @@
 estimators against the exact discretised harmonic oscillator, thermostat mode temperatures, RPMD
 energy conservation, the pGM bead engine (vmapped beads = beads one by one, contraction forces =
 -dU/dq, contraction to P beads = no contraction) and the flexible-water fit."""
+
 import math
 
 import jax
@@ -39,40 +40,44 @@ T = 300.0
 def exact_ho(P, w, T=T):
     """<V> = <K> per degree of freedom of the P-bead discretised harmonic oscillator (kJ/mol)."""
     r = RingPolymer(P, T)
-    return 0.5 * KB * T * float(np.sum(w ** 2 / (r.omega ** 2 + w ** 2)))
+    return 0.5 * KB * T * float(np.sum(w**2 / (r.omega**2 + w**2)))
 
 
 def test_normal_modes_and_contraction():
     for P in (1, 2, 5, 8):
         C, idx = normal_modes(P)
         assert np.allclose(C.T @ C, np.eye(P), atol=1e-12)
-        S = 2 * np.eye(P) - np.roll(np.eye(P), 1, 0) - np.roll(np.eye(P), -1, 0)      # sum (q_k - q_k+1)^2
+        S = 2 * np.eye(P) - np.roll(np.eye(P), 1, 0) - np.roll(np.eye(P), -1, 0)  # sum (q_k - q_k+1)^2
         lam = np.diag(C.T @ S @ C)
         assert np.allclose(C.T @ S @ C, np.diag(lam), atol=1e-12)
         assert np.allclose(lam, 4 * np.sin(np.pi * idx / P) ** 2, atol=1e-12)
         r = RingPolymer(P, T)
         x = jnp.asarray(np.random.default_rng(P).normal(size=(P, 4, 3)))
         assert np.allclose(r.from_nm(r.to_nm(x)), x, atol=1e-13)
-        assert np.allclose(np.asarray(r.spring(x, jnp.ones((4, 1)))).sum(),
-                           0.5 * r.omega_P ** 2 * float(jnp.sum((x - jnp.roll(x, -1, 0)) ** 2)))
+        assert np.allclose(
+            np.asarray(r.spring(x, jnp.ones((4, 1)))).sum(),
+            0.5 * r.omega_P**2 * float(jnp.sum((x - jnp.roll(x, -1, 0)) ** 2)),
+        )
     for P, Pc in ((8, 1), (8, 3), (8, 4), (16, 5), (6, 6)):
         Tm = contraction_matrix(P, Pc)
         assert np.allclose(Tm @ Tm.T, Pc / P * np.eye(Pc), atol=1e-12)
-        assert np.allclose(Tm.sum(1), 1.0)                                  # a rigid shift stays a shift
+        assert np.allclose(Tm.sum(1), 1.0)  # a rigid shift stays a shift
         if Pc == P:
             assert np.allclose(Tm, np.eye(P))
     j = np.arange(16)
-    q = 0.3 + np.cos(2 * np.pi * j / 16) - 0.5 * np.sin(2 * np.pi * j / 16)      # a smooth (l <= 1) path
+    q = 0.3 + np.cos(2 * np.pi * j / 16) - 0.5 * np.sin(2 * np.pi * j / 16)  # a smooth (l <= 1) path
     jc = np.arange(5)
-    assert np.allclose(contraction_matrix(16, 5) @ q, 0.3 + np.cos(2 * np.pi * jc / 5) - 0.5 * np.sin(2 * np.pi * jc / 5))
+    assert np.allclose(
+        contraction_matrix(16, 5) @ q, 0.3 + np.cos(2 * np.pi * jc / 5) - 0.5 * np.sin(2 * np.pi * jc / 5)
+    )
 
 
 def test_potential_engine_contraction():
     """Contracted soft potential: forces are -dU/dq, P' = P is no contraction, P' = 1 gives every bead
     the centroid force (the model of scripts/pimd_openmm.py, checked there against OpenMM)."""
     P, n = 8, 5
-    stiff = lambda x, box: jnp.sum(1e4 * x[:, 0] ** 2 + 3e5 * x[:, 0] ** 4)                 # noqa: E731
-    soft = lambda x, box: jnp.sum(50.0 * jnp.sum(x * x, -1) + 400.0 * x[:, 1] ** 3)        # noqa: E731
+    stiff = lambda x, box: jnp.sum(1e4 * x[:, 0] ** 2 + 3e5 * x[:, 0] ** 4)  # noqa: E731
+    soft = lambda x, box: jnp.sum(50.0 * jnp.sum(x * x, -1) + 400.0 * x[:, 1] ** 3)  # noqa: E731
     q = 0.05 * jax.random.normal(jax.random.PRNGKey(0), (P, n, 3))
     box = jnp.eye(3)
     full = PotentialEngine(lambda x, b: stiff(x, b) + soft(x, b)).compute(q, box, None)
@@ -101,7 +106,7 @@ def test_free_ring_polymer_propagation(kind):
     st1 = integ.run(st, n)
     q1, p1 = r.to_nm(st1.q), r.to_nm(st1.p)
     w = r.omega[:, None, None]
-    e = lambda q, p: 0.5 * p * p / m + 0.5 * m * w * w * q * q                        # noqa: E731
+    e = lambda q, p: 0.5 * p * p / m + 0.5 * m * w * w * q * q  # noqa: E731
     assert np.allclose(e(q1, p1), e(q0, p0), rtol=1e-10, atol=1e-12)
     if kind == "exact":
         t = n * dt
@@ -116,7 +121,7 @@ def test_harmonic_oscillator_estimators(thermostat):
     against the exact P-bead values; the exact quantum limit is approached as 1/P^2."""
     w, m, n = 100.0, 1.0, 64
     for P in (1, 8):
-        eng = PotentialEngine(lambda x, box: 0.5 * m * w ** 2 * jnp.sum(x * x))
+        eng = PotentialEngine(lambda x, box: 0.5 * m * w**2 * jnp.sum(x * x))
         integ = PIMDIntegrator(eng, np.full(n, m), P, T, 0.0005, "pimd", thermostat, tau0=0.02)
         st = integ.run(integ.init(jnp.zeros((n, 3)), jnp.eye(3), jax.random.PRNGKey(P)), 2000)
         est = jax.jit(integ.estimators)
@@ -126,16 +131,17 @@ def test_harmonic_oscillator_estimators(thermostat):
             st = integ._run(st, 25)
             e = integ.estimators(st)
             return st, jnp.stack([e["epot"], e["prim"].sum(), e["cv"].sum()])
+
         st, X = jax.jit(lambda s: jax.lax.scan(body, s, None, length=400))(st)
         X = np.asarray(X) / (3 * n)
         ref = exact_ho(P, w)
         for k in range(3):
             assert abs(X[:, k].mean() / ref - 1) < 0.025, (P, k, X[:, k].mean(), ref)
         if P == 1:
-            assert np.allclose(X[:, 1:], 0.5 * KB * T)                     # both estimators are kT/2 exactly
+            assert np.allclose(X[:, 1:], 0.5 * KB * T)  # both estimators are kT/2 exactly
         del est
     q = 0.25 * HBAR * w / math.tanh(HBAR * w / (2 * KB * T))
-    assert abs(exact_ho(64, w) - q) < 0.02 * abs(exact_ho(8, w) - q)       # 1/P^2 convergence
+    assert abs(exact_ho(64, w) - q) < 0.02 * abs(exact_ho(8, w) - q)  # 1/P^2 convergence
 
 
 def test_free_particle_mode_temperatures():
@@ -153,13 +159,14 @@ def test_free_particle_mode_temperatures():
         e = integ.estimators(st)
         qn = r.to_nm(st.q)
         return st, (e["t_modes"], jnp.mean(qn * qn, axis=(1, 2)))
+
     st, (tm, q2) = jax.jit(lambda s: jax.lax.scan(body, s, None, length=300))(st)
     tm, q2 = np.asarray(tm).mean(0), np.asarray(q2).mean(0)
     assert np.all(np.abs(tm / T - 1) < 0.03), tm
     assert np.all(np.abs(q2[1:] / (r.kT_P / (m * r.omega[1:] ** 2)) - 1) < 0.05), q2
     integ.set_thermostat("trpmd")
     st1 = integ.run(st, 200)
-    assert np.allclose(np.asarray(st1.p).sum(0), np.asarray(st.p).sum(0), atol=1e-10)    # centroid momentum
+    assert np.allclose(np.asarray(st1.p).sum(0), np.asarray(st.p).sum(0), atol=1e-10)  # centroid momentum
 
 
 def test_rpmd_energy_conservation():
@@ -167,7 +174,8 @@ def test_rpmd_energy_conservation():
     P, n = 8, 16
 
     def V(x, box):
-        return jnp.sum(0.5 * 1e4 * x * x + 2e5 * x ** 4)
+        return jnp.sum(0.5 * 1e4 * x * x + 2e5 * x**4)
+
     integ = PIMDIntegrator(PotentialEngine(V), np.full(n, 1.008), P, T, 0.0002, "rpmd")
     st = integ.init(0.01 * jax.random.normal(jax.random.PRNGKey(1), (n, 3)), jnp.eye(3), jax.random.PRNGKey(2))
     est = jax.jit(integ.estimators)
@@ -203,15 +211,16 @@ def _water_box(n_side=2, L=1.5, seed=0):
                 R = np.linalg.qr(rng.normal(size=(3, 3)))[0]
                 c = (np.array([i, j, k]) + 0.5) * L / n_side + rng.normal(scale=0.02, size=3)
                 pos.append((x - x.mean(0)) @ R.T + c)
-    n = n_side ** 3
+    n = n_side**3
     return tpl, System([tpl.pgm] * n), np.concatenate(pos), np.eye(3) * L
 
 
 def _sim(**kw):
     tpl, sys, pos, H = _water_box()
     s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=0.5, skin=0.05, lj_lrc=False, max_iter=200)
-    return FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=0.0002, ensemble="nvt", temperature=T,
-                              thermostat="bussi", log=None, **kw)
+    return FlexibleSimulation(
+        sys, [tpl] * sys.nmol, pos, H, s, dt=0.0002, ensemble="nvt", temperature=T, thermostat="bussi", log=None, **kw
+    )
 
 
 def test_pgm_beads_match_single_evaluations():
@@ -243,13 +252,13 @@ def test_contraction_forces_and_identity():
     sim = _sim()
     P = 4
     full = PIMDSimulation(sim, beads=P, log=None, seed=2)
-    same = PIMDSimulation(sim, beads=P, contract=P, log=None, seed=2)          # P' = P: no contraction
+    same = PIMDSimulation(sim, beads=P, contract=P, log=None, seed=2)  # P' = P: no contraction
     assert same.engine.Pc is None and np.allclose(same.state.f, full.state.f)
     for Pc in (1, 2):
         rpc = PIMDSimulation(sim, beads=P, contract=Pc, log=None, seed=2)
         st = rpc.state
         eng = rpc.engine
-        f = lambda q: eng.compute(q, st.box, st.eng)                            # noqa: E731
+        f = lambda q: eng.compute(q, st.box, st.eng)  # noqa: E731
         d = jnp.asarray(np.random.default_rng(Pc).normal(size=st.q.shape))
         h = 1e-5
         dU = (float(f(st.q + h * d)[1]) - float(f(st.q - h * d)[1])) / (2 * h)
@@ -278,8 +287,18 @@ def test_pgm_npt_barostat():
     """Monte Carlo trial energy = the U of the force evaluation at the same state; at 3 kbar the box
     of a dilute water system shrinks, with accepted moves."""
     sim = _sim()
-    pi = PIMDSimulation(sim, beads=2, log=None, seed=4, ensemble="npt", pressure=3000.0, barostat_interval=5,
-                        thermostat="pile-g", tau0=0.05, bead_margin=0.05)
+    pi = PIMDSimulation(
+        sim,
+        beads=2,
+        log=None,
+        seed=4,
+        ensemble="npt",
+        pressure=3000.0,
+        barostat_interval=5,
+        thermostat="pile-g",
+        tau0=0.05,
+        bead_margin=0.05,
+    )
     st = pi.state
     U, _ = jax.jit(pi.engine.energy)(st.q, st.box, st.eng)
     assert abs(float(U) - float(st.upot)) < 1e-7 * abs(float(st.upot))

@@ -69,6 +69,7 @@ on V, and the molecular virial includes it (autodiff of the energy with respect 
 Units: V/nm for fields (1 V/nm = 1e9 V/m; 1 V/nm acting on 1 e is 96.485 kJ/mol/nm), e nm for
 dipoles, kJ/mol for energies.  In the force field's internal units a field is in e/nm^2 (energy
 KE M . F): F = E [V/nm] x VNM_TO_INTERNAL."""
+
 from __future__ import annotations
 
 import math
@@ -79,13 +80,13 @@ import numpy as np
 
 from ..units import KE
 
-FARADAY_KJ = 96.48533212331002             # kJ/mol per (e V): e N_A
-VNM_TO_INTERNAL = FARADAY_KJ / KE          # e/nm^2 per V/nm (0.694468)
-E_CHARGE = 1.602176634e-19                 # C
-EPS0 = 8.8541878128e-12                    # F/m
-EPS_FACTOR = 4.0 * math.pi * KE / FARADAY_KJ   # eps - 1 = EPS_FACTOR <M.e> / (V |E|); M e nm, V nm^3, E V/nm:
-                                               # e / (eps0 x 1 nm) = 18.0951 (the model's KE: equal to 1e-9)
-C_CM_PS = 0.0299792458                     # speed of light, cm/ps
+FARADAY_KJ = 96.48533212331002  # kJ/mol per (e V): e N_A
+VNM_TO_INTERNAL = FARADAY_KJ / KE  # e/nm^2 per V/nm (0.694468)
+E_CHARGE = 1.602176634e-19  # C
+EPS0 = 8.8541878128e-12  # F/m
+EPS_FACTOR = 4.0 * math.pi * KE / FARADAY_KJ  # eps - 1 = EPS_FACTOR <M.e> / (V |E|); M e nm, V nm^3, E V/nm:
+# e / (eps0 x 1 nm) = 18.0951 (the model's KE: equal to 1e-9)
+C_CM_PS = 0.0299792458  # speed of light, cm/ps
 
 
 @dataclass(frozen=True)
@@ -96,10 +97,11 @@ class ExternalField:
     changed with Simulation.set_field without recompiling); omega: angular frequency (rad/ps; 0 for a
     static field); phase: rad.  `ExternalField.from_wavenumber(E0, 500.0)` gives omega from a
     wavenumber in cm^-1."""
+
     E0: tuple = (0.0, 0.0, 0.0)
     omega: float = 0.0
     phase: float = 0.0
-    kind: str = "E"                  # "E": constant field E0; "D": constant displacement D/eps0 = E0 (V/nm)
+    kind: str = "E"  # "E": constant field E0; "D": constant displacement D/eps0 = E0 (V/nm)
 
     def __post_init__(self):
         if self.kind not in ("E", "D"):
@@ -141,7 +143,7 @@ class ExternalField:
         r = self.rate(E0, t)
         if self.kind == "E":
             return field_energy(r, M)
-        return KE * V / (4.0 * jnp.pi) * VNM_TO_INTERNAL ** 2 * jnp.dot(self.value(E0, t) - EPS_FACTOR * M / V, r)
+        return KE * V / (4.0 * jnp.pi) * VNM_TO_INTERNAL**2 * jnp.dot(self.value(E0, t) - EPS_FACTOR * M / V, r)
 
     def energy(self, value, M, V):
         """Energy (kJ/mol) of the field term for the field (or D/eps0) `value` (V/nm), the dipole M
@@ -162,8 +164,10 @@ class ExternalField:
         what = "external field E0" if self.kind == "E" else "constant displacement D/eps0"
         s = f"{what} = ({e[0]:g}, {e[1]:g}, {e[2]:g}) V/nm (|.| {np.linalg.norm(e):g})"
         if self.time_dependent:
-            s += (f" x cos({self.omega:g} t + {self.phase:g}) (omega in rad/ps: "
-                  f"{self.omega / (2 * math.pi * C_CM_PS):.6g} cm^-1, period {2 * math.pi / self.omega if self.omega else math.inf:.6g} ps)")
+            s += (
+                f" x cos({self.omega:g} t + {self.phase:g}) (omega in rad/ps: "
+                f"{self.omega / (2 * math.pi * C_CM_PS):.6g} cm^-1, period {2 * math.pi / self.omega if self.omega else math.inf:.6g} ps)"
+            )
         return s
 
 

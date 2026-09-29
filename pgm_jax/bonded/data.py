@@ -1,5 +1,6 @@
 """Reference data of the bonded study: molecules (topology + pGM parameters) and DFT-labelled
 frames (MACE-OFF sampling, wB97M-D3(BJ)/def2-TZVPPD labels), in pGM-JAX units."""
+
 from __future__ import annotations
 
 import glob
@@ -23,13 +24,18 @@ def mol_spec(name: str, with_pgm: bool = True) -> MolSpec:
     if with_pgm:
         pgm = load_molecule(os.path.join(DATA, "params", f"{name}.json"))
         assert pgm.elements == d["elements"], name
-    return MolSpec(name, d["elements"], [tuple(b) for b in d["bonds"]], d["bond_orders"], d["charge"],
-                   fr["minima"][0] * 0.1, pgm)
+    return MolSpec(
+        name, d["elements"], [tuple(b) for b in d["bonds"]], d["bond_orders"], d["charge"], fr["minima"][0] * 0.1, pgm
+    )
 
 
 def frames(name: str, key: str) -> FrameSet | None:
     """DFT-labelled frames of one set ("train500", "test298", "scan0", ..., "scan2d"), all chunks."""
-    pat = os.path.join(DATA, "dft", f"{name}__{key}__*.npz") if key != "scan2d" else os.path.join(DATA, "dft", f"{name}__scan2d_*__*.npz")
+    pat = (
+        os.path.join(DATA, "dft", f"{name}__{key}__*.npz")
+        if key != "scan2d"
+        else os.path.join(DATA, "dft", f"{name}__scan2d_*__*.npz")
+    )
     files = sorted(glob.glob(pat))
     if not files:
         return None
@@ -38,8 +44,12 @@ def frames(name: str, key: str) -> FrameSet | None:
         z = np.load(f)
         if len(z["index"]) == 0:
             continue
-        X.append(z["X"] * 0.1); E.append(z["energy_Eh"] * EH); F.append(-z["gradient_Eh_bohr"] * EH / BOHR_NM)
-        D.append(z["dipole_au"] * BOHR_NM); idx.append(z["index"]); src += [os.path.basename(f)] * len(z["index"])
+        X.append(z["X"] * 0.1)
+        E.append(z["energy_Eh"] * EH)
+        F.append(-z["gradient_Eh_bohr"] * EH / BOHR_NM)
+        D.append(z["dipole_au"] * BOHR_NM)
+        idx.append(z["index"])
+        src += [os.path.basename(f)] * len(z["index"])
     extra = {"index": np.concatenate(idx), "src": np.array(src)}
     if key.startswith("scan") and key != "scan2d":
         s = np.load(os.path.join(DATA, "frames", f"{name}_scan.npz"))
@@ -73,7 +83,7 @@ def esp_data(name, n_points=800, seed=0):
         return None
     lines = open(p).read().split("\n")
     na, npt = int(lines[0].split()[0]), int(lines[0].split()[1])
-    R = np.array([[float(v) for v in ln.split()[:3]] for ln in lines[1:1 + na]]) * BOHR_NM
-    E = np.array([[float(v) for v in ln.split()[:4]] for ln in lines[1 + na:1 + na + npt]])
+    R = np.array([[float(v) for v in ln.split()[:3]] for ln in lines[1 : 1 + na]]) * BOHR_NM
+    E = np.array([[float(v) for v in ln.split()[:4]] for ln in lines[1 + na : 1 + na + npt]])
     k = np.random.default_rng(seed).choice(npt, size=min(n_points, npt), replace=False)
     return R, E[k, 1:] * BOHR_NM, E[k, 0]

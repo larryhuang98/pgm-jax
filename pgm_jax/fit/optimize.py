@@ -27,6 +27,7 @@ the covariance if the tolerances are read as Gaussian errors of the targets (and
 prior), i.e. the full parameter uncertainty given model error; C_theta is the part due to
 finite sampling only.  A block bootstrap (resampling the blocks of frames, recomputing y, J and the
 step) checks C_theta including the noise of J."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -43,6 +44,7 @@ class Target:
     """An observable (estimators.LIQUID / GAS) with a target value and a tolerance sigma (same
     units; arrays for rdf).  fit=False: evaluated and propagated, not fitted.  weight multiplies
     the squared residuals (e.g. 1 / number of rdf bins).  For rdf, `r_range` selects the bins."""
+
     name: str
     value: object = None
     sigma: object = 1.0
@@ -55,30 +57,42 @@ class Target:
 @dataclass
 class Estimate:
     """Observables of one run at theta0 with their Jacobian and statistical errors."""
+
     theta: np.ndarray
-    names: list            # one per component
+    names: list  # one per component
     y: np.ndarray
-    J: np.ndarray          # (m, n)
-    cov_y: np.ndarray      # (m, m) jackknife
-    J_err: np.ndarray      # (m, n) jackknife standard errors of J
-    target: np.ndarray     # (m,) nan where none
-    tol: np.ndarray        # (m,)
-    weight: np.ndarray     # (m,)
-    fit: np.ndarray        # (m,) bool
-    loo: dict = None       # leave-one-block-out y (B, m) and J (B, m, n)
+    J: np.ndarray  # (m, n)
+    cov_y: np.ndarray  # (m, m) jackknife
+    J_err: np.ndarray  # (m, n) jackknife standard errors of J
+    target: np.ndarray  # (m,) nan where none
+    tol: np.ndarray  # (m,)
+    weight: np.ndarray  # (m,)
+    fit: np.ndarray  # (m,) bool
+    loo: dict = None  # leave-one-block-out y (B, m) and J (B, m, n)
 
     @property
     def err(self):
         return np.sqrt(np.clip(np.diag(self.cov_y), 0.0, None))
 
     def as_dict(self) -> dict:
-        return {"theta": self.theta.tolist(), "names": self.names, "y": self.y.tolist(), "err": self.err.tolist(),
-                "J": self.J.tolist(), "J_err": self.J_err.tolist(), "target": [None if not np.isfinite(t) else t for t in self.target.tolist()],
-                "tol": self.tol.tolist(), "fit": self.fit.tolist(), "cov_y": self.cov_y.tolist()}
+        return {
+            "theta": self.theta.tolist(),
+            "names": self.names,
+            "y": self.y.tolist(),
+            "err": self.err.tolist(),
+            "J": self.J.tolist(),
+            "J_err": self.J_err.tolist(),
+            "target": [None if not np.isfinite(t) else t for t in self.target.tolist()],
+            "tol": self.tol.tolist(),
+            "fit": self.fit.tolist(),
+            "cov_y": self.cov_y.tolist(),
+        }
 
 
 class Objective:
-    def __init__(self, targets: list[Target], space, gas=None, prior_center=None, rdf_r=None, conservative: bool = True):
+    def __init__(
+        self, targets: list[Target], space, gas=None, prior_center=None, rdf_r=None, conservative: bool = True
+    ):
         self.targets, self.space, self.gas = targets, space, gas
         self.conservative = bool(conservative)
         self.prior_center = np.zeros(space.n) if prior_center is None else np.asarray(prior_center, float)
@@ -169,13 +183,24 @@ class Objective:
         else:
             yl, Jl = None, None
             cov, J_err = np.zeros((len(y), len(y))), np.zeros_like(J)
-        return Estimate(theta0, names, y, J, cov, J_err, tg, tol, w, fit,
-                        {"y": yl, "J": Jl} if keep_loo and yl is not None else None)
+        return Estimate(
+            theta0,
+            names,
+            y,
+            J,
+            cov,
+            J_err,
+            tg,
+            tol,
+            w,
+            fit,
+            {"y": yl, "J": Jl} if keep_loo and yl is not None else None,
+        )
 
     # ------------------------------------------------------------------ fitting
     def scales(self, est: Estimate):
         """s_i = sqrt(tol^2 + stat^2) and the row factors sqrt(w)/s of the fitted components."""
-        s = np.sqrt(est.tol ** 2 + np.diag(est.cov_y))
+        s = np.sqrt(est.tol**2 + np.diag(est.cov_y))
         return s, np.where(est.fit, np.sqrt(est.weight) / s, 0.0)
 
     def chi2(self, y, est: Estimate, theta):
@@ -187,7 +212,7 @@ class Objective:
     def _lm(self, Jw, c, th, radius):
         """argmin_x |c + Jw x|^2 + |(th + x - prior)/sigma_prior|^2 subject to |x / sigma_prior| <= radius
         (Levenberg-Marquardt damping found by bisection); returns (x, lambda)."""
-        Pinv = np.diag(1.0 / self.prior_sigma ** 2)
+        Pinv = np.diag(1.0 / self.prior_sigma**2)
         A = Jw.T @ Jw + Pinv
         g = Jw.T @ c + Pinv @ (th - self.prior_center)
         # damping in the metric of the trust region (|d / sigma_prior|): the exact solution of the
@@ -212,6 +237,7 @@ class Objective:
         if self.gas is None:
             return None
         if getattr(self, "_gas_jit", None) is None:
+
             def f(th):
                 g = self.gas(th)
                 out = []
@@ -219,6 +245,7 @@ class Objective:
                     v = jnp.atleast_1d(g[t.name]) if t.name in GAS else jnp.zeros(len(np.atleast_1d(self._n_of(t))))
                     out.append(v)
                 return jnp.concatenate(out)
+
             self._gas_jit = (jax.jit(f), jax.jit(jax.jacfwd(f)))
         th = jnp.asarray(theta, float)
         return np.asarray(self._gas_jit[0](th)), np.asarray(self._gas_jit[1](th))
@@ -260,8 +287,14 @@ class Objective:
         if use_gas:
             y_pred = np.where(is_gas, self.gas_rows(th + d)[0], y_pred)
         size = float(np.linalg.norm(d / self.prior_sigma))
-        return {"delta": d, "lambda": lam, "y_pred": y_pred, "chi2_pred": self.chi2(y_pred, est, th + d),
-                "size": size, "at_boundary": lam > 0.0}
+        return {
+            "delta": d,
+            "lambda": lam,
+            "y_pred": y_pred,
+            "chi2_pred": self.chi2(y_pred, est, th + d),
+            "size": size,
+            "at_boundary": lam > 0.0,
+        }
 
     def covariance(self, est: Estimate) -> dict:
         """C_theta (sampling), the posterior-like G, and derived standard errors / correlations."""
@@ -270,10 +303,14 @@ class Objective:
         Jw = (est.J * f[:, None])[fit]
         S = f[fit]
         Sy = est.cov_y[np.ix_(fit, fit)]
-        G = np.linalg.inv(Jw.T @ Jw + np.diag(1.0 / self.prior_sigma ** 2))
+        G = np.linalg.inv(Jw.T @ Jw + np.diag(1.0 / self.prior_sigma**2))
         C = G @ Jw.T @ (S[:, None] * Sy * S[None, :]) @ Jw @ G
-        return {"C_theta": C, "G": G, "theta_err": np.sqrt(np.clip(np.diag(C), 0, None)),
-                "theta_err_posterior": np.sqrt(np.diag(G))}
+        return {
+            "C_theta": C,
+            "G": G,
+            "theta_err": np.sqrt(np.clip(np.diag(C), 0, None)),
+            "theta_err_posterior": np.sqrt(np.diag(G)),
+        }
 
     def propagate(self, est: Estimate, C):
         """Standard deviations of every observable (all components of est) implied by C."""
@@ -293,5 +330,9 @@ class Objective:
             th.append(est.theta + st["delta"])
             ys.append(y)
         th, ys = np.array(th), np.array(ys)
-        return {"theta_sd": th.std(0, ddof=1), "theta_cov": np.cov(th.T).reshape(self.space.n, self.space.n),
-                "y_sd": ys.std(0, ddof=1), "n": n}
+        return {
+            "theta_sd": th.std(0, ddof=1),
+            "theta_cov": np.cov(th.T).reshape(self.space.n, self.space.n),
+            "y_sd": ys.std(0, ddof=1),
+            "n": n,
+        }

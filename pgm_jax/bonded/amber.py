@@ -26,6 +26,7 @@ per 1-4 pair computes the 1-4 interactions), and CMAP.  Terms of other atoms (wa
 every other section (pGM's POL_GAUSS_*, LJ, exclusions) are kept, so the result runs in
 sander / pmemd(-pgm) with the fitted bonded terms.
 """
+
 from __future__ import annotations
 
 import math
@@ -37,7 +38,7 @@ from ..prmtop import Prmtop
 from . import terms as T
 
 KCAL = 4.184
-_A2 = 100.0                                      # A^2 per nm^2
+_A2 = 100.0  # A^2 per nm^2
 
 
 def read_bonded(path: str) -> dict:
@@ -53,10 +54,14 @@ def read_bonded(path: str) -> dict:
     B = np.concatenate([i("BONDS_INC_HYDROGEN"), i("BONDS_WITHOUT_HYDROGEN")]).reshape(-1, 3)
     A = np.concatenate([i("ANGLES_INC_HYDROGEN"), i("ANGLES_WITHOUT_HYDROGEN")]).reshape(-1, 4)
     D = np.concatenate([i("DIHEDRALS_INC_HYDROGEN"), i("DIHEDRALS_WITHOUT_HYDROGEN")]).reshape(-1, 5)
-    out = {"bonds": [(a // 3, b // 3, bk[t - 1], br[t - 1]) for a, b, t in B],
-           "angles": [(a // 3, b // 3, c // 3, ak[t - 1], at[t - 1]) for a, b, c, t in A],
-           "dihedrals": [(a // 3, b // 3, abs(c) // 3, abs(d) // 3, dk[t - 1], int(round(dn[t - 1])), dp[t - 1], d < 0)
-                         for a, b, c, d, t in D]}
+    out = {
+        "bonds": [(a // 3, b // 3, bk[t - 1], br[t - 1]) for a, b, t in B],
+        "angles": [(a // 3, b // 3, c // 3, ak[t - 1], at[t - 1]) for a, b, c, t in A],
+        "dihedrals": [
+            (a // 3, b // 3, abs(c) // 3, abs(d) // 3, dk[t - 1], int(round(dn[t - 1])), dp[t - 1], d < 0)
+            for a, b, c, d, t in D
+        ],
+    }
     out["cmap"], out["cmap_grids"] = _read_cmap(top)
     return out
 
@@ -88,10 +93,13 @@ def _local(amb: dict, offset: int, n: int) -> dict:
         return amb
     ok = lambda atoms: all(offset <= a < offset + n for a in atoms)
     sh = lambda atoms: tuple(a - offset for a in atoms)
-    return {"bonds": [sh(e[:2]) + tuple(e[2:]) for e in amb["bonds"] if ok(e[:2])],
-            "angles": [sh(e[:3]) + tuple(e[3:]) for e in amb["angles"] if ok(e[:3])],
-            "dihedrals": [sh(e[:4]) + tuple(e[4:]) for e in amb["dihedrals"] if ok(e[:4])],
-            "cmap": [sh(e[:5]) + (e[5],) for e in amb["cmap"] if ok(e[:5])], "cmap_grids": amb["cmap_grids"]}
+    return {
+        "bonds": [sh(e[:2]) + tuple(e[2:]) for e in amb["bonds"] if ok(e[:2])],
+        "angles": [sh(e[:3]) + tuple(e[3:]) for e in amb["angles"] if ok(e[:3])],
+        "dihedrals": [sh(e[:4]) + tuple(e[4:]) for e in amb["dihedrals"] if ok(e[:4])],
+        "cmap": [sh(e[:5]) + (e[5],) for e in amb["cmap"] if ok(e[:5])],
+        "cmap_grids": amb["cmap_grids"],
+    }
 
 
 def with_amber_impropers(spec, path: str, offset: int = 0):
@@ -99,6 +107,7 @@ def with_amber_impropers(spec, path: str, offset: int = 0):
     improper_amber evaluates exactly Amber's dihedrals.  Call before building the BondedModel.
     offset: index of the molecule's first atom in the prmtop (a molecule of a solvated system)."""
     from .topology import build_topology
+
     if spec.top is None:
         spec.top = build_topology(spec.elements, spec.bonds, (spec.bonds, spec.bond_orders), spec.ref_xyz * 10.0)
     amb = _local(read_bonded(path), offset, len(spec.elements))
@@ -176,8 +185,11 @@ def init_from_prmtop(model, P: dict, prmtops: dict) -> dict:
                 for *q, t in amb["cmap"]:
                     kk = by_q.get(tuple(q))
                     if kk is not None:
-                        _assign(acc, (cf, "cm", int(Im[cf]["k"][kk])),
-                                fit_cmap_fourier(amb["cmap_grids"][t], T.REGISTRY[cf].order))
+                        _assign(
+                            acc,
+                            (cf, "cm", int(Im[cf]["k"][kk])),
+                            fit_cmap_fourier(amb["cmap_grids"][t], T.REGISTRY[cf].order),
+                        )
     for (fam, name, idx), vals in acc.items():
         v = np.asarray(P[fam][name]).copy()
         v[idx] = np.mean(np.asarray(vals), axis=0)
@@ -228,9 +240,18 @@ def _common(values, default):
     return max(set(v), key=v.count) if v else default
 
 
-def export_bonded(prmtop_in: str, prmtop_out: str, terms, P: dict, m: int = 0, offset: int = 0,
-                  scee: float | None = None, scnb: float | None = None, resolution: int = 24,
-                  zero: float = 1e-10) -> dict:
+def export_bonded(
+    prmtop_in: str,
+    prmtop_out: str,
+    terms,
+    P: dict,
+    m: int = 0,
+    offset: int = 0,
+    scee: float | None = None,
+    scnb: float | None = None,
+    resolution: int = 24,
+    zero: float = 1e-10,
+) -> dict:
     """Write prmtop_out = prmtop_in with the bonded terms of molecule m (atoms offset .. offset + n
     of the prmtop) replaced by the model's.  Families: bond_harm, angle_harm, torsion_amber,
     improper_amber, cmap (terms.PROTEIN).  scee / scnb: 1-4 scale factors of the new dihedral types
@@ -246,7 +267,7 @@ def export_bonded(prmtop_in: str, prmtop_out: str, terms, P: dict, m: int = 0, o
     pt = Prmtop.read(prmtop_in)
     Z = pt.get("ATOMIC_NUMBER")
     el = {1: "H", 6: "C", 7: "N", 8: "O", 16: "S", 15: "P"}
-    got = [el.get(int(z), "?") for z in Z[offset:offset + n]]
+    got = [el.get(int(z), "?") for z in Z[offset : offset + n]]
     if len(got) != n or got != [e if e in el.values() else "?" for e in mol.elements]:
         raise ValueError("the prmtop atoms at the offset are not the molecule's (elements differ)")
     isH = Z == 1
@@ -259,12 +280,14 @@ def export_bonded(prmtop_in: str, prmtop_out: str, terms, P: dict, m: int = 0, o
         kept = [(tuple(e[:width]), (e[width], e[width + 1])) for e in old[kind] if not ours(e[:width])]
         entries = kept + new
         types, table = _dedupe([p for _, p in entries])
-        pt.set(flag_k, [t[0] for t in table]); pt.set(flag_x, [t[1] for t in table])
+        pt.set(flag_k, [t[0] for t in table])
+        pt.set(flag_x, [t[1] for t in table])
         rows_h, rows_n = [], []
         for (atoms, _), t in zip(entries, types):
             row = [3 * a for a in atoms] + [t]
             (rows_h if any(isH[a] for a in atoms) else rows_n).extend(row)
-        pt.set(sec_h, rows_h); pt.set(sec_n, rows_n)
+        pt.set(sec_h, rows_h)
+        pt.set(sec_n, rows_n)
         counts[kind] = (len(new), len(kept), len(table))
         return len(rows_h) // (width + 1), len(rows_n) // (width + 1), len(table)
 
@@ -274,25 +297,39 @@ def export_bonded(prmtop_in: str, prmtop_out: str, terms, P: dict, m: int = 0, o
             new_b.append(((int(i) + offset, int(j) + offset), (float(K) / (2.0 * KCAL * _A2), float(b0) * 10.0)))
     elif any(ours(e[:2]) for e in old["bonds"]):
         raise ValueError("the model has no bond_harm terms for the molecule's bonds")
-    nbh, nba, nbt = write_simple("bonds", "BOND_FORCE_CONSTANT", "BOND_EQUIL_VALUE",
-                                 "BONDS_INC_HYDROGEN", "BONDS_WITHOUT_HYDROGEN", 2, new_b)
+    nbh, nba, nbt = write_simple(
+        "bonds", "BOND_FORCE_CONSTANT", "BOND_EQUIL_VALUE", "BONDS_INC_HYDROGEN", "BONDS_WITHOUT_HYDROGEN", 2, new_b
+    )
     new_a = []
     if "angle_harm" in par:
         for (i, j, k), K, th in zip(top.angles, par["angle_harm"]["Ka"], par["th0"]):
             new_a.append(((int(i) + offset, int(j) + offset, int(k) + offset), (float(K) / (2.0 * KCAL), float(th))))
     elif any(ours(e[:3]) for e in old["angles"]):
         raise ValueError("the model has no angle_harm terms for the molecule's angles")
-    nah, naa, nat = write_simple("angles", "ANGLE_FORCE_CONSTANT", "ANGLE_EQUIL_VALUE",
-                                 "ANGLES_INC_HYDROGEN", "ANGLES_WITHOUT_HYDROGEN", 3, new_a)
+    nah, naa, nat = write_simple(
+        "angles",
+        "ANGLE_FORCE_CONSTANT",
+        "ANGLE_EQUIL_VALUE",
+        "ANGLES_INC_HYDROGEN",
+        "ANGLES_WITHOUT_HYDROGEN",
+        3,
+        new_a,
+    )
 
     # ---------------------------------------------------------------- dihedrals
-    old_types = list(zip(pt.get("DIHEDRAL_FORCE_CONSTANT"), pt.get("DIHEDRAL_PERIODICITY"), pt.get("DIHEDRAL_PHASE"),
-                         pt.get("SCEE_SCALE_FACTOR") if "SCEE_SCALE_FACTOR" in pt else [1.2] * len(pt.get("DIHEDRAL_PHASE")),
-                         pt.get("SCNB_SCALE_FACTOR") if "SCNB_SCALE_FACTOR" in pt else [2.0] * len(pt.get("DIHEDRAL_PHASE"))))
+    old_types = list(
+        zip(
+            pt.get("DIHEDRAL_FORCE_CONSTANT"),
+            pt.get("DIHEDRAL_PERIODICITY"),
+            pt.get("DIHEDRAL_PHASE"),
+            pt.get("SCEE_SCALE_FACTOR") if "SCEE_SCALE_FACTOR" in pt else [1.2] * len(pt.get("DIHEDRAL_PHASE")),
+            pt.get("SCNB_SCALE_FACTOR") if "SCNB_SCALE_FACTOR" in pt else [2.0] * len(pt.get("DIHEDRAL_PHASE")),
+        )
+    )
     scee = _common([t[3] for t in old_types], 1.2) if scee is None else scee
     scnb = _common([t[4] for t in old_types], 2.0) if scnb is None else scnb
     raw = np.concatenate([pt.get("DIHEDRALS_INC_HYDROGEN"), pt.get("DIHEDRALS_WITHOUT_HYDROGEN")]).reshape(-1, 5)
-    kept = []                                          # (atoms signed as in the prmtop, type params)
+    kept = []  # (atoms signed as in the prmtop, type params)
     for a, b, c, d, t in raw:
         if not ours((a // 3, b // 3, abs(c) // 3, abs(d) // 3)):
             kept.append(((int(a), int(b), int(c), int(d)), tuple(float(x) for x in old_types[t - 1])))
@@ -303,15 +340,18 @@ def export_bonded(prmtop_in: str, prmtop_out: str, terms, P: dict, m: int = 0, o
             i, j, k, l = (int(x) + offset for x in (i, j, k, l))
             pair = (min(i, l), max(i, l))
             do14 = top.graph_distance(i - offset, l - offset) == 3 and pair not in seen14
-            terms_ = [(abs(float(K)) / KCAL, float(nn + 1), 0.0 if K >= 0 else math.pi)
-                      for nn, K in enumerate(Kn) if abs(float(K)) > zero]
+            terms_ = [
+                (abs(float(K)) / KCAL, float(nn + 1), 0.0 if K >= 0 else math.pi)
+                for nn, K in enumerate(Kn)
+                if abs(float(K)) > zero
+            ]
             if not terms_ and do14:
-                terms_ = [(0.0, 1.0, 0.0)]           # carries the 1-4 interaction
+                terms_ = [(0.0, 1.0, 0.0)]  # carries the 1-4 interaction
             for q, (PK, per, ph) in enumerate(terms_):
                 flag14 = do14 and q == 0
                 if flag14:
                     seen14.add(pair)
-                a, b, c, d = (i, j, k, l) if (flag14 or k != 0) else (l, k, j, i)   # -0 does not exist
+                a, b, c, d = (i, j, k, l) if (flag14 or k != 0) else (l, k, j, i)  # -0 does not exist
                 new_d.append(((3 * a, 3 * b, 3 * c if flag14 else -3 * c, 3 * d), (PK, per, ph, scee, scnb)))
     elif any(not e[7] and ours(e[:4]) for e in old["dihedrals"]):
         raise ValueError("the model has no torsion_amber terms for the molecule's proper dihedrals")
@@ -325,15 +365,21 @@ def export_bonded(prmtop_in: str, prmtop_out: str, terms, P: dict, m: int = 0, o
             new_d.append(((3 * a, 3 * b, -3 * c, -3 * d), (abs(K) / KCAL, 2.0, math.pi if K >= 0 else 0.0, scee, scnb)))
     entries = kept + new_d
     types, table = _dedupe([p for _, p in entries])
-    for flag, col in (("DIHEDRAL_FORCE_CONSTANT", 0), ("DIHEDRAL_PERIODICITY", 1), ("DIHEDRAL_PHASE", 2),
-                      ("SCEE_SCALE_FACTOR", 3), ("SCNB_SCALE_FACTOR", 4)):
+    for flag, col in (
+        ("DIHEDRAL_FORCE_CONSTANT", 0),
+        ("DIHEDRAL_PERIODICITY", 1),
+        ("DIHEDRAL_PHASE", 2),
+        ("SCEE_SCALE_FACTOR", 3),
+        ("SCNB_SCALE_FACTOR", 4),
+    ):
         if flag in pt or col < 3:
             pt.set(flag, [t[col] for t in table])
     rows_h, rows_n = [], []
     for (atoms, _), t in zip(entries, types):
         idx = [abs(x) // 3 for x in atoms]
         (rows_h if any(isH[a] for a in idx) else rows_n).extend(list(atoms) + [t])
-    pt.set("DIHEDRALS_INC_HYDROGEN", rows_h); pt.set("DIHEDRALS_WITHOUT_HYDROGEN", rows_n)
+    pt.set("DIHEDRALS_INC_HYDROGEN", rows_h)
+    pt.set("DIHEDRALS_WITHOUT_HYDROGEN", rows_n)
     n_dtypes = len(table)
     counts["dihedrals"] = (len(new_d), len(kept), n_dtypes)
 
@@ -363,12 +409,28 @@ def export_bonded(prmtop_in: str, prmtop_out: str, terms, P: dict, m: int = 0, o
             pt.set(name, list(t), fmt="8F9.5", comments=[f"map {k + 1} (pgm_jax export)"], after=after)
             after = name
         pt.remove("CMAP_INDEX")
-        pt.set("CMAP_INDEX", [x for (q, _), t in zip(entries, types) for x in [a + 1 for a in q] + [t]],
-               fmt="6I8", after=after)
+        pt.set(
+            "CMAP_INDEX",
+            [x for (q, _), t in zip(entries, types) for x in [a + 1 for a in q] + [t]],
+            fmt="6I8",
+            after=after,
+        )
         counts["cmap"] = (len(new_c), len(kept_c), len(table))
 
     nph, npa = len(rows_h) // 5, len(rows_n) // 5
-    pt.set_pointers(NBONH=nbh, MBONA=nba, NBONA=nba, NUMBND=nbt, NTHETH=nah, MTHETA=naa, NTHETA=naa, NUMANG=nat,
-                    NPHIH=nph, MPHIA=npa, NPHIA=npa, NPTRA=n_dtypes)
+    pt.set_pointers(
+        NBONH=nbh,
+        MBONA=nba,
+        NBONA=nba,
+        NUMBND=nbt,
+        NTHETH=nah,
+        MTHETA=naa,
+        NTHETA=naa,
+        NUMANG=nat,
+        NPHIH=nph,
+        MPHIA=npa,
+        NPHIA=npa,
+        NPTRA=n_dtypes,
+    )
     pt.write(prmtop_out)
     return counts

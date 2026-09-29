@@ -5,6 +5,7 @@ runs/bonded/nnb/summary.json.
 
     python scripts/bonded/nnb_summary.py
 """
+
 import glob
 import json
 import os
@@ -32,11 +33,18 @@ def baseline(mol, form):
 
 
 summary = {"loo": {}, "permol": {}}
-RUNS = {"nnb_table10": "loo_geometry_vT3*.json",        # typed table + residual, resid_l2 10, geometry ref
-        "nnb_table1": "loo_geometry_vT1*.json",          # typed table + residual, resid_l2 1
-        "nnb_predicted": "loo_predicted_[ab].json"}       # network only, predicted ref
-LABELS = ["NNB, table + residual (shrinkage 10)", "NNB, table + residual (shrinkage 1)",
-          "NNB, network only (predicted ref)", "class II, element-typed", "class I, element-typed"]
+RUNS = {
+    "nnb_table10": "loo_geometry_vT3*.json",  # typed table + residual, resid_l2 10, geometry ref
+    "nnb_table1": "loo_geometry_vT1*.json",  # typed table + residual, resid_l2 1
+    "nnb_predicted": "loo_predicted_[ab].json",
+}  # network only, predicted ref
+LABELS = [
+    "NNB, table + residual (shrinkage 10)",
+    "NNB, table + residual (shrinkage 1)",
+    "NNB, network only (predicted ref)",
+    "class II, element-typed",
+    "class I, element-typed",
+]
 loo = {k: merged(p) for k, p in RUNS.items()}
 mols = list(dict.fromkeys(sum((list(v) for v in loo.values()), [])))
 cols = {k: [] for k in list(RUNS) + ["class_ii", "class_i"]}
@@ -65,5 +73,7 @@ if per:
     print("|---|---|---|")
     for m, r in per.items():
         summary["permol"][m] = {k: (v["E_MAE"], v["F_MAE"]) for k, v in r.items()}
-        print(f"| {m} | {r['nnb']['E_MAE']:.2f} / {r['nnb']['F_MAE']:.2f} | {r['paper']['E_MAE']:.2f} / {r['paper']['F_MAE']:.2f} |")
+        print(
+            f"| {m} | {r['nnb']['E_MAE']:.2f} / {r['nnb']['F_MAE']:.2f} | {r['paper']['E_MAE']:.2f} / {r['paper']['F_MAE']:.2f} |"
+        )
 json.dump(summary, open(os.path.join(NNB, "summary.json"), "w"), indent=1)

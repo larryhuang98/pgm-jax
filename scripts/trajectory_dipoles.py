@@ -15,6 +15,7 @@ charges of the prmtop's CHARGE section (what a charge-only analysis with cpptraj
 the same topology computes; for a pGM water box built by tleap these are TIP3P's charges, not the
 model's) and their mean molecular dipole.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -84,9 +85,19 @@ def main(argv=None):
     S = System(mols)
     it = frames(a.traj)
     t, pos, H = next(it)
-    st = MDSettings(cutoff=a.cut / 10, skin=0.1, ewald_beta=a.ew_coeff * 10, pme_order=a.order,
-                    pme_grid=tuple(a.nfft) if a.nfft else None, pme_spacing=a.pme_spacing / 10,
-                    dipole_tol=a.tol, max_iter=500, precision=a.precision, predictor="none", vdw="none")
+    st = MDSettings(
+        cutoff=a.cut / 10,
+        skin=0.1,
+        ewald_beta=a.ew_coeff * 10,
+        pme_order=a.order,
+        pme_grid=tuple(a.nfft) if a.nfft else None,
+        pme_spacing=a.pme_spacing / 10,
+        dipole_tol=a.tol,
+        max_iter=500,
+        precision=a.precision,
+        predictor="none",
+        vdw="none",
+    )
     ff = PGMForceField(S, H, st)
     nb = AtomNeighbors(S.n, H, st.pair_cutoff, st.skin)
     cd = CellDipole(ff)
@@ -116,13 +127,25 @@ def main(argv=None):
     half = 0.5 * np.min(np.abs(np.diag(H)))
     if ext > min(half, 1.0):
         sys.exit(f"an atom is {ext:.3f} nm from its molecule's first atom: molecules are split (unwrap first)")
-    meta = {"temperature_K": a.temp, "ensemble": "npt", "thermostat": "external_trajectory", "dt_ps": float("nan"),
-            "interval": a.stride, "n_atoms": S.n, "n_molecules": S.nmol, "net_charge": round(float(Qk.sum()), 6),
-            "charged_molecules": int(np.sum(np.abs(Qk) > 1e-6)), "elec": st.elec, "alpha_every": a.alpha_every}
-    head = ["pgm_jax cell dipole series (scripts/trajectory_dipoles.py; scripts/dielectric.py)",
-            f"from {a.prmtop} and {', '.join(a.traj)}; induced dipoles solved by pgm_jax at every frame",
-            "cell dipole M: M_q + M_perm + M_ind in e nm; mol_dipole: mean |dipole| of the molecules (e nm);",
-            "alpha_nm3: cell electronic polarizability (every alpha_every-th sample, nan otherwise); temp_K: the target"]
+    meta = {
+        "temperature_K": a.temp,
+        "ensemble": "npt",
+        "thermostat": "external_trajectory",
+        "dt_ps": float("nan"),
+        "interval": a.stride,
+        "n_atoms": S.n,
+        "n_molecules": S.nmol,
+        "net_charge": round(float(Qk.sum()), 6),
+        "charged_molecules": int(np.sum(np.abs(Qk) > 1e-6)),
+        "elec": st.elec,
+        "alpha_every": a.alpha_every,
+    }
+    head = [
+        "pgm_jax cell dipole series (scripts/trajectory_dipoles.py; scripts/dielectric.py)",
+        f"from {a.prmtop} and {', '.join(a.traj)}; induced dipoles solved by pgm_jax at every frame",
+        "cell dipole M: M_q + M_perm + M_ind in e nm; mol_dipole: mean |dipole| of the molecules (e nm);",
+        "alpha_nm3: cell electronic polarizability (every alpha_every-th sample, nan otherwise); temp_K: the target",
+    ]
     head += [f"{k} = {v}" for k, v in meta.items()] + ["columns = " + " ".join(DIP_COLUMNS)]
     nbr = nb.allocate(jnp.asarray(pos), None, jnp.asarray(H))
     ind = ff.init_induction()
@@ -143,8 +166,11 @@ def main(argv=None):
             al = float(alpha(P, HH, nbr)) if k % a.alpha_every == 0 else float("nan")
             vol = abs(float(np.linalg.det(H)))
             m = np.asarray(comps).reshape(-1)
-            fh.write(f"{j:10d} {t:14.6f} {a.temp:9.3f} {vol:14.8f} " + " ".join(f"{x:17.10e}" for x in m)
-                     + f" {float(mmol):14.8e} {al:14.8e}\n")
+            fh.write(
+                f"{j:10d} {t:14.6f} {a.temp:9.3f} {vol:14.8f} "
+                + " ".join(f"{x:17.10e}" for x in m)
+                + f" {float(mmol):14.8e} {al:14.8e}\n"
+            )
             if qpc is not None:
                 pc.append(np.sum(qpc[:, None] * pos, axis=0))
                 V.append(vol)
@@ -158,9 +184,11 @@ def main(argv=None):
         sel = T >= T[0] + a.skip
         one = np.nonzero(mol == 0)[0]
         mu1 = np.linalg.norm(np.sum(qpc[one, None] * pos[one], axis=0)) / DEBYE_E_NM
-        print(f"# prmtop CHARGE point charges (molecule 0: {np.round(qpc[one], 4).tolist()} e): dipole of molecule 0 "
-              f"in the last frame {mu1:.4f} D; eps = 1 + fluctuation = "
-              f"{1 + D.fluctuation(pc[sel], V[sel], a.temp):.2f} ({sel.sum()} frames after {a.skip:g} ps)")
+        print(
+            f"# prmtop CHARGE point charges (molecule 0: {np.round(qpc[one], 4).tolist()} e): dipole of molecule 0 "
+            f"in the last frame {mu1:.4f} D; eps = 1 + fluctuation = "
+            f"{1 + D.fluctuation(pc[sel], V[sel], a.temp):.2f} ({sel.sum()} frames after {a.skip:g} ps)"
+        )
 
 
 def _chain(first, rest):

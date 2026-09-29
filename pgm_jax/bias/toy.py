@@ -15,6 +15,7 @@ BAOAB (Leimkuhler-Matthews) with the exact O step; each step: B, A, O, A, the bi
 due (at the new positions, so the forces of the step already include the new hill), forces, B.
 The samples hold the bias energy before that step's update (as the MD drivers' COLVAR).
 Units nm, ps, amu, kJ/mol, K."""
+
 from __future__ import annotations
 
 from typing import NamedTuple
@@ -27,18 +28,30 @@ from .core import KB, as_bias_set
 
 
 class ToyState(NamedTuple):
-    pos: jnp.ndarray        # (W, N, 3)
+    pos: jnp.ndarray  # (W, N, 3)
     mom: jnp.ndarray
     force: jnp.ndarray
-    epot: jnp.ndarray       # (W,) U + V
-    key: jnp.ndarray        # (W, 2)
+    epot: jnp.ndarray  # (W,) U + V
+    key: jnp.ndarray  # (W, 2)
     step: jnp.ndarray
-    bias: object            # BiasState (shared) or batched BiasState (independent walkers) or None
+    bias: object  # BiasState (shared) or batched BiasState (independent walkers) or None
 
 
 class ToyLangevin:
-    def __init__(self, potential, pos0, mass=40.0, temperature: float = 300.0, dt: float = 0.005, gamma: float = 5.0,
-                 bias=None, walkers: int = 1, shared: bool = False, seed: int = 0, active_axes=(0, 1, 2)):
+    def __init__(
+        self,
+        potential,
+        pos0,
+        mass=40.0,
+        temperature: float = 300.0,
+        dt: float = 0.005,
+        gamma: float = 5.0,
+        bias=None,
+        walkers: int = 1,
+        shared: bool = False,
+        seed: int = 0,
+        active_axes=(0, 1, 2),
+    ):
         self.U = potential
         pos0 = np.asarray(pos0, float)
         if pos0.ndim == 2:
@@ -49,7 +62,7 @@ class ToyLangevin:
         self.T = float(temperature)
         self.dt, self.gamma = float(dt), float(gamma)
         self.mask = np.zeros(3)
-        self.mask[list(active_axes)] = 1.0         # frozen Cartesian axes (2D models)
+        self.mask[list(active_axes)] = 1.0  # frozen Cartesian axes (2D models)
         self.bias = as_bias_set(bias)
         if self.bias is not None:
             self.bias.bind(self.T)
@@ -82,7 +95,7 @@ class ToyLangevin:
 
     def _deposit(self, st: ToyState) -> ToyState:
         b = self.bias
-        if self.shared:                           # walkers deposit one after the other into one bias
+        if self.shared:  # walkers deposit one after the other into one bias
             bs = st.bias
             for w in range(self.W):
                 bs = b.deposit(bs, st.pos[w], None, st.step)
@@ -149,6 +162,7 @@ class ToyLangevin:
         def body(st, _):
             st = jax.lax.fori_loop(0, sample - 1, lambda _, s: self._step(s), st)
             return self._step(st, True)
+
         return jax.lax.scan(body, st, None, length=nchunk)
 
 
@@ -156,9 +170,11 @@ class ToyLangevin:
 def double_well(barrier: float = 20.0, x0: float = 1.0, k_perp: float = 500.0, tilt: float = 0.0):
     """U = barrier ((x/x0)^2 - 1)^2 + tilt x / x0 + k_perp / 2 (y^2 + z^2) for one particle (pos (1, 3));
     the exact FES of the CV x is U(x, 0, 0)."""
+
     def U(pos):
         x = pos[0, 0] / x0
         return barrier * (x * x - 1.0) ** 2 + tilt * x + 0.5 * k_perp * (pos[0, 1] ** 2 + pos[0, 2] ** 2)
+
     U.fes = lambda x: barrier * ((np.asarray(x) / x0) ** 2 - 1.0) ** 2 + tilt * np.asarray(x) / x0
     return U
 
@@ -174,6 +190,7 @@ MB_y0 = np.array([0.0, 0.5, 1.5, 1.0])
 def mueller_brown(scale: float = 0.1, k_perp: float = 500.0):
     """Mueller-Brown potential (x, y in nm) times `scale` (kJ/mol), harmonic in z; exact FES of the
     CVs (x, y) is the scaled potential."""
+
     def mb(x, y, xp=jnp):
         d = xp.asarray(x)[..., None] - MB_x0
         e = xp.asarray(y)[..., None] - MB_y0
@@ -181,6 +198,7 @@ def mueller_brown(scale: float = 0.1, k_perp: float = 500.0):
 
     def U(pos):
         return mb(pos[0, 0], pos[0, 1]) + 0.5 * k_perp * pos[0, 2] ** 2
+
     U.fes = lambda x, y: mb(x, y, np)
     return U
 
@@ -198,5 +216,6 @@ def ring(coeffs=((1, 6.0), (2, -4.0), (3, 3.0)), radius: float = 1.0, k_r: float
         x, y, z = pos[0, 0], pos[0, 1], pos[0, 2]
         r = jnp.sqrt(x * x + y * y)
         return ang(jnp.arctan2(y, x)) + 0.5 * k_r * (r - radius) ** 2 + 0.5 * k_z * z * z
+
     U.fes = lambda t: ang(np.asarray(t), np)
     return U

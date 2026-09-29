@@ -74,6 +74,7 @@ a step are written after that step's exchange, so the replica of a frame is the 
 exchange-log line of that step or the last line before it (`read_exchange_log`).
 
 Units: K, kJ/mol, nm, ps."""
+
 from __future__ import annotations
 
 import json
@@ -149,9 +150,9 @@ class ExchangeStatistics:
         self.n = int(n)
         self.attempts = np.zeros((n, n), int)
         self.accepts = np.zeros((n, n), int)
-        self.replica = np.arange(n)                 # replica (walker) at each temperature
-        self.last_end = np.full(n, -1)              # per replica: last end visited (0 lowest, 1 highest)
-        self.phase = np.zeros(n, int)               # per replica: 1 after T_0, 2 after T_0 then T_max
+        self.replica = np.arange(n)  # replica (walker) at each temperature
+        self.last_end = np.full(n, -1)  # per replica: last end visited (0 lowest, 1 highest)
+        self.phase = np.zeros(n, int)  # per replica: 1 after T_0, 2 after T_0 then T_max
         self.round_trips = np.zeros(n, int)
         self.transits = np.zeros(n, int)
         self.n_exchanges = 0
@@ -263,12 +264,16 @@ class MDReplicas:
         if getattr(integ, "mts", None) is not None:
             raise ValueError("replica exchange with multiple time stepping (mts=) is not supported yet")
         if getattr(integ, "bias", None) is not None and integ.bias.dynamic:
-            raise NotImplementedError("replica exchange with a time-dependent bias (metadynamics / OPES: the bias "
-                                      "would have to stay with its slot and enter the criterion); static biases "
-                                      "are part of every replica's energy and work")
+            raise NotImplementedError(
+                "replica exchange with a time-dependent bias (metadynamics / OPES: the bias "
+                "would have to stay with its slot and enter the criterion); static biases "
+                "are part of every replica's energy and work"
+            )
         if batched and sim.ensemble == "npt":
-            raise ValueError("batched replicas run NVT only (under vmap the barostat's trial energy would be "
-                             "evaluated every step); use batched=False for NPT")
+            raise ValueError(
+                "batched replicas run NVT only (under vmap the barostat's trial energy would be "
+                "evaluated every step); use batched=False for NPT"
+            )
         T = np.asarray(temperatures, float)
         if T.ndim != 1 or len(T) < 2 or np.any(np.diff(T) <= 0) or T[0] <= 0:
             raise ValueError("temperatures: at least two, positive and increasing")
@@ -280,10 +285,14 @@ class MDReplicas:
         self._template = base.nbr
         states = []
         for Tk, key in zip(T, jax.random.split(jax.random.PRNGKey(int(seed)), self.n)):
-            st = integ.init(base.dyn.position, base.box, key)             # momenta drawn at the engine's kT
+            st = integ.init(base.dyn.position, base.box, key)  # momenta drawn at the engine's kT
             s = float(np.sqrt(KB * Tk / integ.kT))
-            st = st.set(dyn=st.dyn.set(momentum=jax.tree_util.tree_map(lambda p: p * s, st.dyn.momentum)),
-                        aux=st.aux * s, kT=jnp.asarray(KB * Tk, jnp.float64), nbr=base.nbr)
+            st = st.set(
+                dyn=st.dyn.set(momentum=jax.tree_util.tree_map(lambda p: p * s, st.dyn.momentum)),
+                aux=st.aux * s,
+                kT=jnp.asarray(KB * Tk, jnp.float64),
+                nbr=base.nbr,
+            )
             states.append(st)
         self._exchange_seq = jax.jit(self._exchange_one)
         if self.batched:
@@ -308,12 +317,20 @@ class MDReplicas:
     def _exchange_one(self, dst, src, s):
         """dst's slot with src's configuration: momenta and thermostat auxiliaries scaled by
         s = sqrt(T_dst / T_src); the energy change of the slot is booked as heat."""
-        ke = lambda st: self.integ.kinetic(st)[0]                                        # noqa: E731
+        ke = lambda st: self.integ.kinetic(st)[0]  # noqa: E731
         e0 = ke(dst) + dst.epot + 0.5 * jnp.sum(dst.aux * dst.aux)
         mom = jax.tree_util.tree_map(lambda p: p * s, src.dyn.momentum)
-        new = dst.set(dyn=dst.dyn.set(position=src.dyn.position, momentum=mom, force=src.dyn.force),
-                      box=src.box, induction=src.induction, nbr=src.nbr, epot=src.epot, elec=src.elec,
-                      vdw=src.vdw, iters=src.iters, aux=src.aux * s)
+        new = dst.set(
+            dyn=dst.dyn.set(position=src.dyn.position, momentum=mom, force=src.dyn.force),
+            box=src.box,
+            induction=src.induction,
+            nbr=src.nbr,
+            epot=src.epot,
+            elec=src.elec,
+            vdw=src.vdw,
+            iters=src.iters,
+            aux=src.aux * s,
+        )
         e1 = ke(new) + new.epot + 0.5 * jnp.sum(new.aux * new.aux)
         return new.set(heat=dst.heat + (e1 - e0))
 
@@ -355,9 +372,14 @@ class MDReplicas:
         """Amber NetCDF restart of every slot: prefix_Tkk.rst7."""
         for k in range(self.n):
             sim = self._on(k)
-            write_restart(f"{prefix}_T{k:02d}.rst7", sim.positions_nm() * 10.0, sim.velocities_nm_ps() * 10.0,
-                          np.asarray(sim.state.box) * 10.0, self.time_ps,
-                          title=f"pgm_jax REMD T={self.temperatures[k]:g} K")
+            write_restart(
+                f"{prefix}_T{k:02d}.rst7",
+                sim.positions_nm() * 10.0,
+                sim.velocities_nm_ps() * 10.0,
+                np.asarray(sim.state.box) * 10.0,
+                self.time_ps,
+                title=f"pgm_jax REMD T={self.temperatures[k]:g} K",
+            )
 
     # ------------------------------------------------------------------ dynamics
     def advance(self, n: int):
@@ -412,22 +434,28 @@ class MDReplicas:
                 break
             step0 = int(np.asarray(start.step)[0])
             start = self._resize(start, nb_bad, row_bad)
-            sim._print(f"# {'neighbour list' if nb_bad else 'row capacity'} overflow in steps {step0}-{step0 + n} "
-                       f"(replicas): resized (rows {sim.ff.mc or sim.nb.cap}, list "
-                       f"{self._template.idx.shape[1]}), repeating")
+            sim._print(
+                f"# {'neighbour list' if nb_bad else 'row capacity'} overflow in steps {step0}-{step0 + n} "
+                f"(replicas): resized (rows {sim.ff.mc or sim.nb.cap}, list "
+                f"{self._template.idx.shape[1]}), repeating"
+            )
         else:
             raise RuntimeError("neighbour list keeps overflowing")
         new = new.set(dyn=new.dyn.set(position=self._wrap(new.dyn.position, new.box)))
         e = np.asarray(new.epot)
         if not np.all(np.isfinite(e)):
-            raise FloatingPointError(f"energy is not finite at step {int(np.asarray(new.step)[0])} "
-                                     f"(replicas {np.nonzero(~np.isfinite(e))[0].tolist()})")
+            raise FloatingPointError(
+                f"energy is not finite at step {int(np.asarray(new.step)[0])} "
+                f"(replicas {np.nonzero(~np.isfinite(e))[0].tolist()})"
+            )
         self.S = new
         if self._extent is not None and sim.nb.kind == "molecule":
             ext = float(self._extent(new.dyn.position))
             if ext > sim.r_list:
-                raise RuntimeError(f"an atom is {ext:.3f} nm from its group's centre, beyond the neighbour-list "
-                                   f"radius {sim.r_list:.3f} nm; increase r_margin")
+                raise RuntimeError(
+                    f"an atom is {ext:.3f} nm from its group's centre, beyond the neighbour-list "
+                    f"radius {sim.r_list:.3f} nm; increase r_margin"
+                )
 
     def _resize(self, start, nb_bad: bool, row_bad: bool):
         """Static sizes that fit every replica (the largest of each), one neighbour-list layout for
@@ -459,13 +487,18 @@ class MDReplicas:
             self.S = self._exchange(self.S, _take(self.S, jnp.asarray(src)), jnp.asarray(scale))
         else:
             old = list(self.states)
-            self.states = [old[k] if src[k] == k else self._exchange_seq(old[k], old[src[k]], scale[k])
-                           for k in range(self.n)]
+            self.states = [
+                old[k] if src[k] == k else self._exchange_seq(old[k], old[src[k]], scale[k]) for k in range(self.n)
+            ]
 
     # ------------------------------------------------------------------ checkpoints
     def state_dict(self) -> dict:
-        return {"temperatures": self.temperatures.copy(), "time_ps": self.time_ps, "batched": self.batched,
-                "states": [jax.tree_util.tree_map(np.asarray, self.state(k).set(nbr=None)) for k in range(self.n)]}
+        return {
+            "temperatures": self.temperatures.copy(),
+            "time_ps": self.time_ps,
+            "batched": self.batched,
+            "states": [jax.tree_util.tree_map(np.asarray, self.state(k).set(nbr=None)) for k in range(self.n)],
+        }
 
     def load_state_dict(self, d: dict):
         """Replica states from a checkpoint (either mode); neighbour lists are rebuilt and the static
@@ -485,7 +518,7 @@ class MDReplicas:
             S = _stack([s.set(nbr=self._template) for s in states])
             self.S = S
             self._build()
-            self.S = S.set(nbr=self._forces(S).nbr)       # every replica's own list, one layout
+            self.S = S.set(nbr=self._forces(S).nbr)  # every replica's own list, one layout
         else:
             self.states = [s.set(nbr=nbr) for s, nbr in zip(states, lists)]
         self.time_ps = float(d["time_ps"])
@@ -504,8 +537,9 @@ class ReplicaExchange:
     `seed`), or a ready replica engine with the MDReplicas interface (then `temperatures` is not
     given).  Exchanges are attempted every `exchange_every` steps."""
 
-    def __init__(self, sim, temperatures=None, exchange_every: int = 500, batched: bool = True, seed: int = 0,
-                 log=sys.stdout):
+    def __init__(
+        self, sim, temperatures=None, exchange_every: int = 500, batched: bool = True, seed: int = 0, log=sys.stdout
+    ):
         if hasattr(sim, "integ"):
             if temperatures is None:
                 raise ValueError("give the temperatures of the replicas")
@@ -524,10 +558,12 @@ class ReplicaExchange:
         self.step = 0
         self.log = log
         mode = "batched" if getattr(self.replicas, "batched", False) else "sequential"
-        self._print(f"# replica exchange: {self.n} replicas ({mode}), T = "
-                    f"{' '.join(f'{t:.2f}' for t in self.T)} K, exchanges every {self.every} steps "
-                    f"({self.every * self.replicas.dt:g} ps)"
-                    f"{'' if self.replicas.pressure is None else ', NPT (P V in the criterion)'}")
+        self._print(
+            f"# replica exchange: {self.n} replicas ({mode}), T = "
+            f"{' '.join(f'{t:.2f}' for t in self.T)} K, exchanges every {self.every} steps "
+            f"({self.every * self.replicas.dt:g} ps)"
+            f"{'' if self.replicas.pressure is None else ', NPT (P V in the criterion)'}"
+        )
 
     def _print(self, s):
         if self.log is not None:
@@ -558,8 +594,15 @@ class ReplicaExchange:
         return "".join(out)
 
     # ------------------------------------------------------------------ running
-    def run(self, nsteps: int, report: int = 1000, traj: int = 0, restart: int = 0, prefix: str | None = "remd",
-            append: bool = False):
+    def run(
+        self,
+        nsteps: int,
+        report: int = 1000,
+        traj: int = 0,
+        restart: int = 0,
+        prefix: str | None = "remd",
+        append: bool = False,
+    ):
         """nsteps steps of every replica, exchanges every `exchange_every` steps; per-temperature
         logs every `report` steps, trajectories every `traj`, checkpoints every `restart` (0: off;
         prefix None: no files)."""
@@ -568,13 +611,18 @@ class ReplicaExchange:
         files = prefix is not None
         mode = "a" if append else "w"
         logs = [open(f"{prefix}_T{k:02d}.log", mode) for k in range(n)] if (files and report) else None
-        trajs = [NetCDFTrajectory(f"{prefix}_T{k:02d}.nc", rep.frames()[0].shape[1], append=append)
-                 for k in range(n)] if (files and traj) else None
+        trajs = (
+            [NetCDFTrajectory(f"{prefix}_T{k:02d}.nc", rep.frames()[0].shape[1], append=append) for k in range(n)]
+            if (files and traj)
+            else None
+        )
         xlog = open(f"{prefix}_remd.log", mode) if files else None
         if xlog is not None and not append:
-            xlog.write(f"# replica exchange, T (K) = {' '.join(f'{t:.4f}' for t in self.T)}\n"
-                       f"# step, replica at T_0 .. T_{n - 1} from this step on, outcome per pair (i, i+1): "
-                       f"+ accepted, . rejected, - not tried\n")
+            xlog.write(
+                f"# replica exchange, T (K) = {' '.join(f'{t:.4f}' for t in self.T)}\n"
+                f"# step, replica at T_0 .. T_{n - 1} from this step on, outcome per pair (i, i+1): "
+                f"+ accepted, . rejected, - not tried\n"
+            )
         cols = None
         t0, s0 = time.time(), self.step
         done = 0
@@ -586,8 +634,11 @@ class ReplicaExchange:
             if self.step % self.every == 0:
                 pairs, acc = self.exchange()
                 if xlog is not None:
-                    xlog.write(f"{self.step:12d} " + " ".join(f"{r:3d}" for r in self.stats.replica)
-                               + f"  {self._outcome(pairs, acc)}\n")
+                    xlog.write(
+                        f"{self.step:12d} "
+                        + " ".join(f"{r:3d}" for r in self.stats.replica)
+                        + f"  {self._outcome(pairs, acc)}\n"
+                    )
                     xlog.flush()
             speed = (self.step - s0) * rep.dt / 1000.0 / max(time.time() - t0, 1e-9) * 86400.0
             if report and self.step % report == 0:
@@ -600,13 +651,20 @@ class ReplicaExchange:
                             cols = list(obs)
                         if logs[k].tell() == 0:
                             logs[k].write(f"# T = {self.T[k]:.4f} K\n# " + " ".join(f"{c:>14s}" for c in cols) + "\n")
-                        logs[k].write("  " + " ".join(f"{obs[c]:14.6f}" if isinstance(obs[c], float) else f"{obs[c]:14d}"
-                                                      for c in cols) + "\n")
+                        logs[k].write(
+                            "  "
+                            + " ".join(
+                                f"{obs[c]:14.6f}" if isinstance(obs[c], float) else f"{obs[c]:14d}" for c in cols
+                            )
+                            + "\n"
+                        )
                         logs[k].flush()
                 acc = self.stats.neighbour_acceptance()
-                self._print(f"# step {self.step} ({rep.time_ps:.1f} ps): acceptance "
-                            f"{' '.join('  -  ' if np.isnan(a) else f'{a:.3f}' for a in acc)}, round trips "
-                            f"{int(self.stats.round_trips.sum())}, {speed:.1f} ns/day per replica")
+                self._print(
+                    f"# step {self.step} ({rep.time_ps:.1f} ps): acceptance "
+                    f"{' '.join('  -  ' if np.isnan(a) else f'{a:.3f}' for a in acc)}, round trips "
+                    f"{int(self.stats.round_trips.sum())}, {speed:.1f} ns/day per replica"
+                )
             if trajs is not None and self.step % traj == 0:
                 X, B = rep.frames()
                 for k in range(n):
@@ -627,14 +685,22 @@ class ReplicaExchange:
     def summary(self, ns_per_day: float | None = None) -> dict:
         st = self.stats
         acc = st.acceptance()
-        out = {"temperatures_K": self.T.tolist(), "exchange_every": self.every, "steps": self.step,
-               "time_ps": self.replicas.time_ps, "exchanges": st.n_exchanges,
-               "neighbour_acceptance": [None if np.isnan(a) else float(a) for a in st.neighbour_acceptance()],
-               "acceptance_matrix": [[None if np.isnan(a) else float(a) for a in row] for row in acc],
-               "attempts": st.attempts.tolist(), "accepts": st.accepts.tolist(),
-               "round_trips": st.round_trips.tolist(), "round_trips_total": int(st.round_trips.sum()),
-               "transits": st.transits.tolist(), "replica_at_temperature": st.replica.tolist(),
-               "batched": bool(getattr(self.replicas, "batched", False))}
+        out = {
+            "temperatures_K": self.T.tolist(),
+            "exchange_every": self.every,
+            "steps": self.step,
+            "time_ps": self.replicas.time_ps,
+            "exchanges": st.n_exchanges,
+            "neighbour_acceptance": [None if np.isnan(a) else float(a) for a in st.neighbour_acceptance()],
+            "acceptance_matrix": [[None if np.isnan(a) else float(a) for a in row] for row in acc],
+            "attempts": st.attempts.tolist(),
+            "accepts": st.accepts.tolist(),
+            "round_trips": st.round_trips.tolist(),
+            "round_trips_total": int(st.round_trips.sum()),
+            "transits": st.transits.tolist(),
+            "replica_at_temperature": st.replica.tolist(),
+            "batched": bool(getattr(self.replicas, "batched", False)),
+        }
         if ns_per_day is not None:
             out["ns_per_day_per_replica"] = ns_per_day
             out["ns_per_day_aggregate"] = ns_per_day * self.n
@@ -644,9 +710,15 @@ class ReplicaExchange:
     def save(self, prefix: str):
         """prefix.remd.chk: every replica state, replica map, statistics and exchange random state
         (continue with `load`); prefix_Tkk.rst7 Amber restarts when the engine writes them."""
-        d = {"format": FORMAT, "temperatures": self.T.copy(), "exchange_every": self.every, "step": self.step,
-             "rng": self.rng.bit_generator.state, "stats": self.stats.to_dict(),
-             "replicas": self.replicas.state_dict()}
+        d = {
+            "format": FORMAT,
+            "temperatures": self.T.copy(),
+            "exchange_every": self.every,
+            "step": self.step,
+            "rng": self.rng.bit_generator.state,
+            "stats": self.stats.to_dict(),
+            "replicas": self.replicas.state_dict(),
+        }
         with open(prefix + ".remd.chk", "wb") as fh:
             pickle.dump(d, fh)
         if hasattr(self.replicas, "write_restarts"):

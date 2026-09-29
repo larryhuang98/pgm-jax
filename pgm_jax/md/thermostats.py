@@ -41,6 +41,7 @@ Rule for new thermostats: A and B may depend on the configuration only, never on
 rates, predictor errors or solver history.  The dipoles must not become thermal variables:
 thermalized dipoles add (kT/2) ln det(alpha^-1 - T(x)) to the free energy.
 """
+
 from __future__ import annotations
 
 import jax
@@ -51,6 +52,7 @@ import scipy.linalg
 
 class Thermostat:
     """Base class.  n_aux auxiliary momenta per degree of freedom."""
+
     name = "none"
     n_aux = 0
 
@@ -95,9 +97,9 @@ class Bussi(Thermostat):
         k1, k2 = jax.random.split(key)
         K = jnp.maximum(0.5 * jnp.sum(v * v), 1e-30)
         c = np.exp(-h / self.tau)
-        f = 0.5 * dof * kT / (dof * K)                               # K0 / (N_f K)
+        f = 0.5 * dof * kT / (dof * K)  # K0 / (N_f K)
         r1 = jax.random.normal(k1, (), jnp.float64)
-        rest = 2.0 * jax.random.gamma(k2, (dof - 1.0) / 2.0, dtype=jnp.float64)   # chi^2 with N_f - 1 dof
+        rest = 2.0 * jax.random.gamma(k2, (dof - 1.0) / 2.0, dtype=jnp.float64)  # chi^2 with N_f - 1 dof
         a2 = c + (1.0 - c) * f * (r1 * r1 + rest) + 2.0 * r1 * jnp.sqrt(c * (1.0 - c) * f)
         alpha = jnp.sign(r1 + jnp.sqrt(c / ((1.0 - c) * f))) * jnp.sqrt(a2)
         return alpha * v, aux
@@ -109,6 +111,7 @@ class Bussi(Thermostat):
 class GLE(Thermostat):
     """Markovian GLE with drift matrix A ((1 + n_aux) square, first index = the momentum).  The
     noise matrix follows from fluctuation-dissipation; A + A^T must be positive semidefinite."""
+
     name = "gle"
 
     def __init__(self, A, label: str = "gle"):
@@ -133,10 +136,12 @@ class GLE(Thermostat):
         a2 = peak * width
         if floor < 0 or floor >= a2 / width:
             raise ValueError("need 0 <= floor < peak")
-        gq = 0.0 if floor == 0 else center ** 2 / (a2 / floor - width)
+        gq = 0.0 if floor == 0 else center**2 / (a2 / floor - width)
         a = np.sqrt(a2)
-        return cls([[0.0, a, 0.0], [-a, width, center], [0.0, -center, gq]],
-                   label=f"GLE band (peak {peak:g}/ps at {center:g} rad/ps, width {width:g}, floor {floor:g}/ps)")
+        return cls(
+            [[0.0, a, 0.0], [-a, width, center], [0.0, -center, gq]],
+            label=f"GLE band (peak {peak:g}/ps at {center:g} rad/ps, width {width:g}, floor {floor:g}/ps)",
+        )
 
     @classmethod
     def lowpass(cls, gamma0: float = 1.0, cutoff: float = 50.0) -> GLE:
@@ -161,7 +166,7 @@ class GLE(Thermostat):
         if key not in self._cache:
             T = scipy.linalg.expm(-self.A * h)
             w, V = np.linalg.eigh(np.eye(len(T)) - T @ T.T)
-            S = V @ np.diag(np.sqrt(np.maximum(w, 0.0)))               # S S^T = I - T T^T
+            S = V @ np.diag(np.sqrt(np.maximum(w, 0.0)))  # S S^T = I - T T^T
             self._cache[key] = (T, S)
         return self._cache[key]
 
@@ -180,7 +185,7 @@ class GLE(Thermostat):
 
 
 def make_thermostat(spec, gamma: float = 1.0, tau: float = 1.0) -> Thermostat:
-    """"langevin" (friction gamma), "bussi" (time constant tau), "gle" / "gle-band" (slow-band
+    """ "langevin" (friction gamma), "bussi" (time constant tau), "gle" / "gle-band" (slow-band
     GLE), "gle-lowpass", or a Thermostat instance."""
     if isinstance(spec, Thermostat):
         return spec

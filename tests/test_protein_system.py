@@ -1,5 +1,6 @@
 """Proteins from Amber topologies: molecules, backbone and residues, pGM electrostatics from a
 residue library, Amber-form bonded terms from ff19SB, a solvated peptide in MD with constraints."""
+
 import os
 
 import jax
@@ -13,7 +14,10 @@ from pgm_jax.md.forcefield import MDSettings  # noqa: E402
 from pgm_jax.protein import ResidueLibrary, amber_template, load_amber  # noqa: E402
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
-PRM, CRD = os.path.join(DATA, "pep_wat.prmtop"), os.path.join(DATA, "pep_wat.inpcrd")   # ACE-ALA-SER-NME, TIP3P, NaCl (ff19SB)
+PRM, CRD = (
+    os.path.join(DATA, "pep_wat.prmtop"),
+    os.path.join(DATA, "pep_wat.inpcrd"),
+)  # ACE-ALA-SER-NME, TIP3P, NaCl (ff19SB)
 
 
 def test_load_molecules_and_library(tmp_path):
@@ -24,9 +28,9 @@ def test_load_molecules_and_library(tmp_path):
     top = prot.spec.top
     assert top.cmaps.shape == (2, 5) and int(top.residue.max()) + 1 == 4
     names = prot.atom_names
-    for q in top.cmaps:                                       # C(i-1) N CA C N(i+1) by Amber's names
+    for q in top.cmaps:  # C(i-1) N CA C N(i+1) by Amber's names
         assert [names[a] for a in q] == ["C", "N", "CA", "C", "N"]
-    assert abs(float(np.sum(prot.molecule.q))) < 1e-4       # neutral peptide
+    assert abs(float(np.sum(prot.molecule.q))) < 1e-4  # neutral peptide
     # waters share one Molecule; the system keeps the prmtop order
     wat = [m.molecule for m in asys.molecules if m.kind == "water"]
     assert all(w is wat[0] for w in wat)
@@ -63,8 +67,18 @@ def test_solvated_peptide_md_with_constraints():
     asys = load_amber(PRM, CRD)
     tpl = amber_template(asys.molecules[0], PRM)
     s = MDSettings(precision="mixed", cutoff=0.8, skin=0.1, dipole_tol=1e-5)
-    sim = FlexibleSimulation(asys.system(), asys.templates({0: tpl}), asys.system_positions(), asys.box, s,
-                             dt=0.002, ensemble="nvt", constraints="h-bonds", hmr=3.024, log=None)
+    sim = FlexibleSimulation(
+        asys.system(),
+        asys.templates({0: tpl}),
+        asys.system_positions(),
+        asys.box,
+        s,
+        dt=0.002,
+        ensemble="nvt",
+        constraints="h-bonds",
+        hmr=3.024,
+        log=None,
+    )
     n_h_prot = sum(e == "H" for e in asys.molecules[0].spec.elements)
     n_w = sum(m.kind == "water" for m in asys.molecules)
     assert sim.constraints.nc == n_h_prot + 3 * n_w

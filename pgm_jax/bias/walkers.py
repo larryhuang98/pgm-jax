@@ -22,6 +22,7 @@ Walkers start from the simulation's current configuration with momenta drawn fro
 random streams.  Outputs: prefix_wNN.colvar per walker; hills in prefix.hills (shared) or
 prefix_wNN.hills; prefix_walkers.log (per report: mean temperature, epot and bias of the walkers);
 checkpoint prefix.walkers.chk (all states; `load`)."""
+
 from __future__ import annotations
 
 import pickle
@@ -79,6 +80,7 @@ class Walkers(MDReplicas):
     # ------------------------------------------------------------------ compiled pieces
     def _axes(self):
         from ..md.remd import _axes
+
         return _unbatched_bias(self.S) if self.shared else _axes(self.S)
 
     def _build(self):
@@ -95,8 +97,9 @@ class Walkers(MDReplicas):
         self._extent = jax.jit(lambda P: jnp.max(jax.vmap(flex.extent)(P))) if flex is not None else None
         bias = integ.bias
         if self.shared:
-            self._energies = jax.jit(jax.vmap(lambda x, box, bs: bias.energies(bs, integ._bias_atoms(x), box),
-                                              in_axes=(0, 0, None)))
+            self._energies = jax.jit(
+                jax.vmap(lambda x, box, bs: bias.energies(bs, integ._bias_atoms(x), box), in_axes=(0, 0, None))
+            )
         else:
             self._energies = jax.jit(jax.vmap(lambda x, box, bs: bias.energies(bs, integ._bias_atoms(x), box)))
 
@@ -105,11 +108,14 @@ class Walkers(MDReplicas):
         outside vmap (the walkers share the step counter), so the steps between updates carry no
         conditional (md/integrate.strided_loop)."""
         from ..md.integrate import strided_loop
+
         integ = self.integ
         ax = self._axes()
         W = self.n
         S = S.set(max_iters=jnp.zeros(W, jnp.int32), resid=jnp.zeros(W), overflow=jnp.zeros(W, bool))
-        step = jax.vmap(lambda s: integ._book_field(s, integ._step(s)), in_axes=(ax,), out_axes=ax)   # E(t) work (efield.py)
+        step = jax.vmap(
+            lambda s: integ._book_field(s, integ._step(s)), in_axes=(ax,), out_axes=ax
+        )  # E(t) work (efield.py)
         if integ.bias.stride == 0:
             return jax.lax.fori_loop(0, n, lambda _, s: step(s), S)
         post = jax.vmap(integ._bias_post, in_axes=(ax,), out_axes=ax)
@@ -121,7 +127,9 @@ class Walkers(MDReplicas):
         W = self.n
         z = jnp.zeros(W)
         S = S.set(max_iters=jnp.zeros(W, jnp.int32), resid=z, overflow=jnp.zeros(W, bool))
-        step = jax.vmap(lambda s: integ._book_field(s, integ._step(s)), in_axes=(ax,), out_axes=ax)   # E(t) work (efield.py)
+        step = jax.vmap(
+            lambda s: integ._book_field(s, integ._step(s)), in_axes=(ax,), out_axes=ax
+        )  # E(t) work (efield.py)
         grad = jax.vmap(jax.value_and_grad(bias.energy, argnums=1), in_axes=(None, 0, 0))
         to_engine = jax.vmap(integ._map_atom_forces)
         atoms = jax.vmap(integ._bias_atoms)
@@ -146,8 +154,12 @@ class Walkers(MDReplicas):
                 dF = to_engine(S.dyn.position, S.box, g0 - g1)
                 de = e1 - e0
                 F = jax.tree_util.tree_map(jnp.add, S.dyn.force, dF)
-                return S.set(bias=new._replace(work=new.work + jnp.sum(de)), dyn=S.dyn.set(force=F),
-                             epot=S.epot + de, heat=S.heat + de)
+                return S.set(
+                    bias=new._replace(work=new.work + jnp.sum(de)),
+                    dyn=S.dyn.set(force=F),
+                    epot=S.epot + de,
+                    heat=S.heat + de,
+                )
 
             return jax.lax.cond(bias.due(t), dep, lambda s: s, S)
 
@@ -186,12 +198,12 @@ class Walkers(MDReplicas):
         if self.shared:
             rows, bs = bias.drain(self.S.bias)
             for w in range(self.n):
-                self._rows[w].append(rows[w::self.n])
+                self._rows[w].append(rows[w :: self.n])
             self.S = self.S.set(bias=bs)
         else:
             log, nlog = np.asarray(self.S.bias.log), np.asarray(self.S.bias.nlog)
             for w in range(self.n):
-                self._rows[w].append(log[w, :nlog[w]])
+                self._rows[w].append(log[w, : nlog[w]])
             self.S = self.S.set(bias=self.S.bias._replace(nlog=jnp.zeros(self.n, jnp.int32)))
 
     def advance(self, n: int):
@@ -221,22 +233,32 @@ class Walkers(MDReplicas):
         return T.set(bias=self.bias_state(k))
 
     # ------------------------------------------------------------------ driver
-    def run(self, nsteps: int, report: int = 1000, restart: int = 0, prefix: str = "walkers", append: bool = False,
-            log=sys.stdout):
+    def run(
+        self,
+        nsteps: int,
+        report: int = 1000,
+        restart: int = 0,
+        prefix: str = "walkers",
+        append: bool = False,
+        log=sys.stdout,
+    ):
         """Advance every walker nsteps; files as in the module docstring."""
         bias, sim = self.integ.bias, self.sim
         block = int(np.gcd.reduce([x for x in (report, restart, nsteps) if x > 0]))
         outs = []
         for w in range(self.n):
             st = self.bias_state(w)
-            outs.append(BiasOutput(bias, f"{prefix}_w{w:02d}", self.dt, sim.T0, append=append, state=st,
-                                   hills=not self.shared))
+            outs.append(
+                BiasOutput(bias, f"{prefix}_w{w:02d}", self.dt, sim.T0, append=append, state=st, hills=not self.shared)
+            )
         shared_out = None
         if self.shared:
             shared_out = BiasOutput(bias, prefix, self.dt, sim.T0, append=append, state=self.S.bias, colvar=False)
         lf = open(prefix + "_walkers.log", "a" if append else "w")
         if not append:
-            lf.write("#       step       time_ps     temp_mean     epot_mean     ebias_mean      bias_work    ns_day_agg\n")
+            lf.write(
+                "#       step       time_ps     temp_mean     epot_mean     ebias_mean      bias_work    ns_day_agg\n"
+            )
         t0, done = time.time(), 0
         for w in range(self.n):
             self.rows(w)
@@ -255,8 +277,10 @@ class Walkers(MDReplicas):
                 work = float(np.sum(np.asarray(self.S.bias.work)))
                 el = max(time.time() - t0, 1e-9)
                 nsd = done * self.dt / 1000.0 / el * 86400.0 * self.n
-                line = (f"{step:12d} {step * self.dt:13.4f} {np.mean(T):13.3f} {float(np.mean(np.asarray(self.S.epot))):13.3f} "
-                        f"{float(eb.mean()):14.4f} {work:14.4f} {nsd:13.2f}")
+                line = (
+                    f"{step:12d} {step * self.dt:13.4f} {np.mean(T):13.3f} {float(np.mean(np.asarray(self.S.epot))):13.3f} "
+                    f"{float(eb.mean()):14.4f} {work:14.4f} {nsd:13.2f}"
+                )
                 lf.write(line + "\n")
                 lf.flush()
                 if log is not None:
@@ -268,8 +292,12 @@ class Walkers(MDReplicas):
             self.save(prefix + ".walkers.chk")
 
     def save(self, path: str):
-        d = {"n": self.n, "shared": self.shared, "time_ps": self.time_ps,
-             "states": [jax.tree_util.tree_map(np.asarray, self.state(k).set(nbr=None)) for k in range(self.n)]}
+        d = {
+            "n": self.n,
+            "shared": self.shared,
+            "time_ps": self.time_ps,
+            "states": [jax.tree_util.tree_map(np.asarray, self.state(k).set(nbr=None)) for k in range(self.n)],
+        }
         with open(path, "wb") as fh:
             pickle.dump(d, fh)
 

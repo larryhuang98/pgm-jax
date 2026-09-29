@@ -8,6 +8,7 @@ Delta G(alpha_L/C7ax: phi > 0 vs phi < 0).
 
 Each PREFIX is a walker set: PREFIX_wNN.colvar (+ PREFIX_wNN.hills for independent metaD walkers,
 PREFIX.hills for shared ones) and PREFIX.json for the umbrella centres."""
+
 import argparse
 import glob
 import json
@@ -26,7 +27,9 @@ ap.add_argument("--us", nargs="*", default=[], help="umbrella walker sets (PREFI
 ap.add_argument("--metad", nargs="*", default=[])
 ap.add_argument("--opes", nargs="*", default=[])
 ap.add_argument("--plain", nargs="*", default=[])
-ap.add_argument("--remd", nargs="*", default=[], help="REMD prefixes (PREFIX_T00.nc, PREFIX.json with the phi/psi atoms)")
+ap.add_argument(
+    "--remd", nargs="*", default=[], help="REMD prefixes (PREFIX_T00.nc, PREFIX.json with the phi/psi atoms)"
+)
 ap.add_argument("--T", type=float, default=300.0)
 ap.add_argument("--biasfactor", type=float, default=6.0)
 ap.add_argument("--skip", type=float, default=0.2, help="fraction of each biased run discarded")
@@ -74,7 +77,7 @@ if a.us:
         for f in walkers(prefix):
             _, c = read_table(f)
             x = c["phi"]
-            samples.append(x[int(a.us_skip * len(x)):])
+            samples.append(x[int(a.us_skip * len(x)) :])
     meta = {"centers": centers, "kappa": kappa}
     F, fk = A.wham(samples, meta["centers"], np.full(len(samples), meta["kappa"]), ax, kT, period=P)
     Fb = []
@@ -88,10 +91,18 @@ if a.us:
     pphi = np.exp(-F / kT)
     dg = -kT * np.log(pphi[ax > 0].sum() / pphi[ax <= 0].sum())
     dgb = [-kT * np.log(np.exp(-f / kT)[ax > 0].sum() / np.exp(-f / kT)[ax <= 0].sum()) for f in Fb]
-    res["wham"] = {"F": F.tolist(), "err": err.tolist(), "dG_aL": dg, "dG_aL_err": float(np.std(dgb, ddof=1) / np.sqrt(a.blocks)),
-                   "samples_per_window": int(np.mean([len(x) for x in samples])), "windows": len(samples)}
-    print(f"WHAM ({len(samples)} windows, {res['wham']['samples_per_window']} samples each): dG(phi>0) = {dg:.2f} +- "
-          f"{res['wham']['dG_aL_err']:.2f} kJ/mol; mean error bar of F(phi) (F < {a.fmax}) {err[F < a.fmax].mean():.3f}")
+    res["wham"] = {
+        "F": F.tolist(),
+        "err": err.tolist(),
+        "dG_aL": dg,
+        "dG_aL_err": float(np.std(dgb, ddof=1) / np.sqrt(a.blocks)),
+        "samples_per_window": int(np.mean([len(x) for x in samples])),
+        "windows": len(samples),
+    }
+    print(
+        f"WHAM ({len(samples)} windows, {res['wham']['samples_per_window']} samples each): dG(phi>0) = {dg:.2f} +- "
+        f"{res['wham']['dG_aL_err']:.2f} kJ/mol; mean error bar of F(phi) (F < {a.fmax}) {err[F < a.fmax].mean():.3f}"
+    )
     Fref, eref = F, err
 else:
     Fref = eref = None
@@ -109,12 +120,13 @@ def dihedral_np(X, idx):
 
 if a.remd:
     from pgm_jax.md.io import read_trajectory
+
     Sphi, Spsi = [], []
     for prefix in a.remd:
         meta = json.load(open(prefix + ".json"))
         files = sorted(glob.glob(prefix + "_T00*.nc"))
         X = np.concatenate([read_trajectory(f)[0] for f in files])
-        X = X[int(0.1 * len(X)):]
+        X = X[int(0.1 * len(X)) :]
         Sphi.append(dihedral_np(X, meta["phi"]))
         Spsi.append(dihedral_np(X, meta["psi"]))
     phi_r, psi_r = np.concatenate(Sphi), np.concatenate(Spsi)
@@ -124,11 +136,18 @@ if a.remd:
     with np.errstate(invalid="ignore"):
         er = np.nanstd(np.where(np.isfinite(blocks), blocks, np.nan), 0, ddof=1) / np.sqrt(5)
     dgb = [dG(b, np.zeros(len(b))) for b in np.array_split(phi_r, 5)]
-    res["remd"] = {"F": Fr.tolist(), "err": er.tolist(), "frames": int(len(phi_r)), "dG_aL": dG(phi_r, np.zeros(len(phi_r))),
-                   "dG_aL_err": float(np.std(dgb, ddof=1) / np.sqrt(5)),
-                   "F2": A.histogram_fes(np.stack([phi_r, psi_r], 1), None, [ax2, ax2], kT, [P, P]).tolist()}
+    res["remd"] = {
+        "F": Fr.tolist(),
+        "err": er.tolist(),
+        "frames": int(len(phi_r)),
+        "dG_aL": dG(phi_r, np.zeros(len(phi_r))),
+        "dG_aL_err": float(np.std(dgb, ddof=1) / np.sqrt(5)),
+        "F2": A.histogram_fes(np.stack([phi_r, psi_r], 1), None, [ax2, ax2], kT, [P, P]).tolist(),
+    }
     refs["remd"] = (Fr, er, a.fmax_remd)
-    print(f"REMD 300 K ({len(phi_r)} frames): dG(phi>0) = {res['remd']['dG_aL']:.2f} +- {res['remd']['dG_aL_err']:.2f} kJ/mol")
+    print(
+        f"REMD 300 K ({len(phi_r)} frames): dG(phi>0) = {res['remd']['dG_aL']:.2f} +- {res['remd']['dG_aL_err']:.2f} kJ/mol"
+    )
     if Fref is not None:
         m = (Fref < a.fmax) & np.isfinite(Fr)
         r, mx, _ = A.align_rmsd(Fr, Fref, m)
@@ -138,27 +157,43 @@ if a.remd:
 
 def compare(name, Fs1, dgs, Fs2=None, Fbias=None):
     Fs1 = np.array(Fs1)
-    out = {"runs": len(Fs1), "dG_aL_runs": [float(x) for x in dgs], "dG_aL": float(np.mean(dgs)),
-           "dG_aL_err": float(np.std(dgs, ddof=1) / np.sqrt(len(dgs))) if len(dgs) > 1 else None}
+    out = {
+        "runs": len(Fs1),
+        "dG_aL_runs": [float(x) for x in dgs],
+        "dG_aL": float(np.mean(dgs)),
+        "dG_aL_err": float(np.std(dgs, ddof=1) / np.sqrt(len(dgs))) if len(dgs) > 1 else None,
+    }
     for rname, (Fr, er, fmax) in refs.items():
         m = (Fr < fmax) & np.isfinite(Fr) & np.isfinite(er)
         al = np.array([A.align_rmsd(f, Fr, m)[2] for f in Fs1])
         Fm = al.mean(0)
         em = al.std(0, ddof=1) / np.sqrt(len(al)) if len(al) > 1 else np.zeros_like(Fm)
         r, mx, _ = A.align_rmsd(Fm, Fr, m)
-        tot = np.sqrt(em ** 2 + er ** 2)
-        o = {"region_F_below": fmax, "bins": int(m.sum()), "F_mean": Fm.tolist(), "F_err": em.tolist(), "rmsd": r, "max": mx,
-             "rmsd_runs": [A.align_rmsd(f, Fr, m)[0] for f in Fs1],
-             "chi2_per_bin": float(np.mean(((Fm - Fr)[m] / np.maximum(tot[m], 1e-6)) ** 2)), "mean_err": float(tot[m].mean())}
+        tot = np.sqrt(em**2 + er**2)
+        o = {
+            "region_F_below": fmax,
+            "bins": int(m.sum()),
+            "F_mean": Fm.tolist(),
+            "F_err": em.tolist(),
+            "rmsd": r,
+            "max": mx,
+            "rmsd_runs": [A.align_rmsd(f, Fr, m)[0] for f in Fs1],
+            "chi2_per_bin": float(np.mean(((Fm - Fr)[m] / np.maximum(tot[m], 1e-6)) ** 2)),
+            "mean_err": float(tot[m].mean()),
+        }
         if Fbias is not None:
             fb = np.array(Fbias)
             o["rmsd_bias"] = A.align_rmsd(np.mean([A.align_rmsd(f, Fr, m)[2] for f in fb], 0), Fr, m)[0]
         out["vs_" + rname] = o
-        print(f"{name} vs {rname} ({int(m.sum())} bins, F < {fmax:g}): F(phi) RMSD {r:.3f} kJ/mol (max {mx:.2f}; per run {np.mean(o['rmsd_runs']):.3f}), "
-              f"chi2/bin {o['chi2_per_bin']:.2f}, mean error {o['mean_err']:.3f}"
-              + (f"; from the final bias RMSD {o['rmsd_bias']:.3f}" if Fbias is not None else ""))
-    print(f"{name}: dG(phi>0) {out['dG_aL']:.2f} +- {out['dG_aL_err'] if out['dG_aL_err'] is not None else float('nan'):.2f} "
-          f"({len(Fs1)} runs)")
+        print(
+            f"{name} vs {rname} ({int(m.sum())} bins, F < {fmax:g}): F(phi) RMSD {r:.3f} kJ/mol (max {mx:.2f}; per run {np.mean(o['rmsd_runs']):.3f}), "
+            f"chi2/bin {o['chi2_per_bin']:.2f}, mean error {o['mean_err']:.3f}"
+            + (f"; from the final bias RMSD {o['rmsd_bias']:.3f}" if Fbias is not None else "")
+        )
+    print(
+        f"{name}: dG(phi>0) {out['dG_aL']:.2f} +- {out['dG_aL_err'] if out['dG_aL_err'] is not None else float('nan'):.2f} "
+        f"({len(Fs1)} runs)"
+    )
     if Fs2 is not None:
         out["F2_mean"] = np.array(Fs2).mean(0).tolist()
     res[name] = out
@@ -171,8 +206,9 @@ def fes2_from_hills(hills, factor):
     pts, shape = A.mesh(ax, ax)
     V = np.zeros(len(pts))
     for i in range(0, len(C), 512):
-        V += A._hill_values(C[i:i + 512], hills["height"][i:i + 512], [hills["sigma_phi"][0], hills["sigma_psi"][0]],
-                            [P, P], pts).sum(0)
+        V += A._hill_values(
+            C[i : i + 512], hills["height"][i : i + 512], [hills["sigma_phi"][0], hills["sigma_psi"][0]], [P, P], pts
+        ).sum(0)
     F = -factor * V.reshape(shape)
     return F - F.min()
 
@@ -195,8 +231,12 @@ for kind, prefixes in (("metad", a.metad), ("opes", a.opes), ("plain", a.plain))
                 if kind == "metad":
                     hf = prefix + ".hills" if shared else f.replace(".colvar", ".hills")
                     _, h = read_table(hf)
-                    hills = {"step": h["step"], "center": np.stack([h["c_phi"], h["c_psi"]], 1), "height": h["height"],
-                             "sigma": np.array([h["sigma_phi"][0], h["sigma_psi"][0]])}
+                    hills = {
+                        "step": h["step"],
+                        "center": np.stack([h["c_phi"], h["c_psi"]], 1),
+                        "height": h["height"],
+                        "sigma": np.array([h["sigma_phi"][0], h["sigma_psi"][0]]),
+                    }
                     hs, ct = A.metad_ct(hills, a.biasfactor, kT, [P, P], fine)
                     last = np.append(hs[1:] != hs[:-1], True)
                     lw = A.ct_weights(c["step"], c["bias0_metad"], hs[last], ct[last], kT)

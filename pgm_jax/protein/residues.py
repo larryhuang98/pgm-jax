@@ -4,15 +4,45 @@ orders (carbonyls, carboxylates, amides, guanidinium, aromatic rings), water and
 Bond orders enter the neural bonded model (atom and edge features) and the backbone detection
 (carbonyl carbons); they are resonance-averaged where Amber's residue has one protonation state
 for several Lewis structures (1.5 for carboxylates, guanidinium and aromatic rings)."""
+
 from __future__ import annotations
 
 WATER = {"WAT", "HOH", "TIP3", "TP3", "SOL", "T3P", "OPC", "SPC", "PGM"}
-IONS = {"NA", "Na+", "CL", "Cl-", "K", "K+", "MG", "Mg2+", "CA", "Ca2+", "ZN", "Zn2+", "Li+", "LI", "Rb+", "Cs+", "F-",
-        "Br-", "I-"}
+IONS = {
+    "NA",
+    "Na+",
+    "CL",
+    "Cl-",
+    "K",
+    "K+",
+    "MG",
+    "Mg2+",
+    "CA",
+    "Ca2+",
+    "ZN",
+    "Zn2+",
+    "Li+",
+    "LI",
+    "Rb+",
+    "Cs+",
+    "F-",
+    "Br-",
+    "I-",
+}
 
 _RING6 = [("CG", "CD1"), ("CD1", "CE1"), ("CE1", "CZ"), ("CZ", "CE2"), ("CE2", "CD2"), ("CD2", "CG")]
-_TRP = [("CG", "CD1"), ("CD1", "NE1"), ("NE1", "CE2"), ("CE2", "CD2"), ("CD2", "CG"), ("CE2", "CZ2"), ("CZ2", "CH2"),
-        ("CH2", "CZ3"), ("CZ3", "CE3"), ("CE3", "CD2")]
+_TRP = [
+    ("CG", "CD1"),
+    ("CD1", "NE1"),
+    ("NE1", "CE2"),
+    ("CE2", "CD2"),
+    ("CD2", "CG"),
+    ("CE2", "CZ2"),
+    ("CZ2", "CH2"),
+    ("CH2", "CZ3"),
+    ("CZ3", "CE3"),
+    ("CE3", "CD2"),
+]
 _HIS = [("CG", "ND1"), ("ND1", "CE1"), ("CE1", "NE2"), ("NE2", "CD2"), ("CD2", "CG")]
 
 # side-chain bond orders by residue name (backbone and termini: backbone_order)
@@ -39,17 +69,36 @@ def base_name(resname: str) -> str:
     return r
 
 
-_PLAIN = {"ALA", "GLY", "SER", "THR", "CYS", "CYX", "CYM", "VAL", "LEU", "ILE", "MET", "PRO", "LYS", "LYN", "ACE", "NME",
-          "NHE", "HYP"}
+_PLAIN = {
+    "ALA",
+    "GLY",
+    "SER",
+    "THR",
+    "CYS",
+    "CYX",
+    "CYM",
+    "VAL",
+    "LEU",
+    "ILE",
+    "MET",
+    "PRO",
+    "LYS",
+    "LYN",
+    "ACE",
+    "NME",
+    "NHE",
+    "HYP",
+}
 
 
-def bond_order(res_a: str, name_a: str, res_b: str, name_b: str, same_residue: bool,
-               terminal_carboxylate: bool = False) -> float:
+def bond_order(
+    res_a: str, name_a: str, res_b: str, name_b: str, same_residue: bool, terminal_carboxylate: bool = False
+) -> float:
     """Order of the bond between atoms (residue name, atom name); 1 unless listed.  The backbone
     carbonyl C=O is 2 (1.5 for both C-O bonds of a C-terminal carboxylate)."""
     a, b = name_a.strip(), name_b.strip()
     if not same_residue:
-        return 1.0                                        # peptide C-N, disulfide S-S
+        return 1.0  # peptide C-N, disulfide S-S
     if {a, b} in ({"C", "O"}, {"C", "OXT"}):
         return 1.5 if terminal_carboxylate else 2.0
     table = SIDE_CHAIN.get(base_name(res_a), {})

@@ -8,6 +8,7 @@ so neither needs dx/dR.  JAX gets both automatically as long as the solve is eit
 differentiable linear solve (quadratic F) or wrapped in `lax.custom_root` (general F).
 `variational` makes the first derivatives cost one solve while keeping higher derivatives exact.
 """
+
 from __future__ import annotations
 
 import jax

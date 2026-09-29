@@ -23,6 +23,7 @@ gas: the isolated molecule with the gas-phase model the template was fitted with
 bonded terms, pGM with every pair, intramolecular van der Waals, the flux), 256 independent copies
 (vmap), BAOAB Langevin 5/ps, dt 0.5 fs, 20 ps + 100 ps sampled every 50 fs: <U_gas> and <|mu|>;
 with the liquid's <U>/N it gives the heat of vaporization <U_gas> - <U_liq>/N + RT."""
+
 import argparse
 import json
 import os
@@ -81,10 +82,21 @@ if a.cmd == "liquid":
     st = MDSettings()
     nvt = FlexibleSimulation(sys_, [tpl] * N, pos, H, st, dt=dt, ensemble="nvt", temperature=T, gamma=5.0, log=None)
     nvt._advance(4000)
-    sim = FlexibleSimulation(sys_, [tpl] * N, nvt.positions_nm(), np.asarray(nvt.state.box), st, dt=dt,
-                             ensemble="npt", temperature=T, gamma=1.0, barostat_interval=25,
-                             vel_nm_ps=nvt.velocities_nm_ps(), log=sys.stdout)
-    for _ in range(int(round(a.equil_ps / 0.5))):         # 0.5 ps blocks (an overflow repeats one block)
+    sim = FlexibleSimulation(
+        sys_,
+        [tpl] * N,
+        nvt.positions_nm(),
+        np.asarray(nvt.state.box),
+        st,
+        dt=dt,
+        ensemble="npt",
+        temperature=T,
+        gamma=1.0,
+        barostat_interval=25,
+        vel_nm_ps=nvt.velocities_nm_ps(),
+        log=sys.stdout,
+    )
+    for _ in range(int(round(a.equil_ps / 0.5))):  # 0.5 ps blocks (an overflow repeats one block)
         sim._advance(1000)
     dip = mol_dipole_fn(sim)
     fl = sim.ff.flux
@@ -93,16 +105,21 @@ if a.cmd == "liquid":
         P0 = sim.ff._atoms(None)
         qshift = jax.jit(lambda x, H: jnp.mean(jnp.abs(sim.ff.charges_at(x, H, P0)["q"] - P0["q"])))
         dbond = jax.jit(lambda x, H: fl.deviations(x, H))
-    rec = {k: [] for k in ("time_ps", "density", "epot_per_mol", "mol_dipole_D", "temp_K", "cg_iter", "dq_mean", "db_mean")}
+    rec = {
+        k: [] for k in ("time_ps", "density", "epot_per_mol", "mol_dipole_D", "temp_K", "cg_iter", "dq_mean", "db_mean")
+    }
     every = int(round(0.5 / dt))
     t0, s0, cg0 = time.time(), int(sim.state.step), float(sim.state.cg_total)
     for _ in range(int(round(a.prod_ps / 0.5))):
         sim._advance(every)
         o = sim.observables()
         x, Hb, mu = sim.state.dyn.position, sim.state.box, sim.state.induction.mu
-        rec["time_ps"].append(round(o["time_ps"], 3)); rec["density"].append(o["density_g_cm3"])
-        rec["epot_per_mol"].append(o["epot"] / N); rec["temp_K"].append(o["temp_K"])
-        rec["mol_dipole_D"].append(float(dip(x, Hb, mu)) / DEBYE_E_NM); rec["cg_iter"].append(o["cg_iter"])
+        rec["time_ps"].append(round(o["time_ps"], 3))
+        rec["density"].append(o["density_g_cm3"])
+        rec["epot_per_mol"].append(o["epot"] / N)
+        rec["temp_K"].append(o["temp_K"])
+        rec["mol_dipole_D"].append(float(dip(x, Hb, mu)) / DEBYE_E_NM)
+        rec["cg_iter"].append(o["cg_iter"])
         rec["dq_mean"].append(float(qshift(x, Hb)) if qshift else 0.0)
         rec["db_mean"].append(float(jnp.mean(dbond(x, Hb))) if qshift else 0.0)
     wall = time.time() - t0
@@ -113,13 +130,25 @@ if a.cmd == "liquid":
         b = np.array([x.mean() for x in np.array_split(v, nb)])
         return float(v.mean()), float(b.std(ddof=1) / np.sqrt(nb))
 
-    out = {"template": a.template, "flux": tpl.settings.get("flux", 0), "n_mol": N, "T": T, "dt_ps": dt,
-           "equil_ps": a.equil_ps, "prod_ps": a.prod_ps, "record": rec,
-           "density": mean_se(rec["density"]), "epot_per_mol": mean_se(rec["epot_per_mol"]),
-           "mol_dipole_D": mean_se(rec["mol_dipole_D"]), "temp_K": mean_se(rec["temp_K"]),
-           "dq_mean_e": float(np.mean(rec["dq_mean"])), "db_mean_nm": float(np.mean(rec["db_mean"])),
-           "cg_per_step": (float(sim.state.cg_total) - cg0) / steps, "ns_per_day": steps * dt / 1000.0 / (wall / 86400.0),
-           "device": str(jax.devices()[0])}
+    out = {
+        "template": a.template,
+        "flux": tpl.settings.get("flux", 0),
+        "n_mol": N,
+        "T": T,
+        "dt_ps": dt,
+        "equil_ps": a.equil_ps,
+        "prod_ps": a.prod_ps,
+        "record": rec,
+        "density": mean_se(rec["density"]),
+        "epot_per_mol": mean_se(rec["epot_per_mol"]),
+        "mol_dipole_D": mean_se(rec["mol_dipole_D"]),
+        "temp_K": mean_se(rec["temp_K"]),
+        "dq_mean_e": float(np.mean(rec["dq_mean"])),
+        "db_mean_nm": float(np.mean(rec["db_mean"])),
+        "cg_per_step": (float(sim.state.cg_total) - cg0) / steps,
+        "ns_per_day": steps * dt / 1000.0 / (wall / 86400.0),
+        "device": str(jax.devices()[0]),
+    }
     print({k: v for k, v in out.items() if k != "record"}, flush=True)
     json.dump(out, open(stem + "_liquid.json", "w"), indent=1)
     np.savez(stem + "_liquid.npz", pos=sim.positions_nm(), vel=sim.velocities_nm_ps(), box=np.asarray(sim.state.box))
@@ -129,22 +158,40 @@ elif a.cmd == "nve":
     N = len(z["pos"]) // tpl.n
     sys_ = System([tpl.pgm] * N)
     out = {"template": a.template, "flux": tpl.settings.get("flux", 0), "nve": []}
-    runs = (("0.5 fs, mixed, tol 1e-5", "mixed", 1e-5, a.nve_ps),
-            ("0.5 fs, double, tol 1e-8", "double", 1e-8, a.nve_ps / 5 if a.double_ps is None else a.double_ps))
+    runs = (
+        ("0.5 fs, mixed, tol 1e-5", "mixed", 1e-5, a.nve_ps),
+        ("0.5 fs, double, tol 1e-8", "double", 1e-8, a.nve_ps / 5 if a.double_ps is None else a.double_ps),
+    )
     for label, prec, tol, ps in [r for r in runs if r[3] > 0]:
-        s = FlexibleSimulation(sys_, [tpl] * N, z["pos"], z["box"], MDSettings(precision=prec, dipole_tol=tol), dt=dt,
-                               ensemble="nve", vel_nm_ps=z["vel"], log=None)
+        s = FlexibleSimulation(
+            sys_,
+            [tpl] * N,
+            z["pos"],
+            z["box"],
+            MDSettings(precision=prec, dipole_tol=tol),
+            dt=dt,
+            ensemble="nve",
+            vel_nm_ps=z["vel"],
+            log=None,
+        )
         every = int(round(0.1 / dt))
         t, E = [], []
         for _ in range(int(round(ps / 0.1))):
             s._advance(every)
             o = s.observables()
-            t.append(o["time_ps"]); E.append(o["etot"])
+            t.append(o["time_ps"])
+            E.append(o["etot"])
         t, E = np.array(t), np.array(E)
         fit = np.polyfit(t, E, 1)
-        r = {"label": label, "dof": s.integ.dof, "drift_kT_per_ns_per_dof": float(fit[0] * 1000.0 / (KB * T) / s.integ.dof),
-             "rms_fluct_kT": float(np.std(E - np.polyval(fit, t)) / (KB * T)), "cg_per_step": float(s.state.cg_total) / int(s.state.step),
-             "time_ps": t.tolist(), "etot": E.tolist()}
+        r = {
+            "label": label,
+            "dof": s.integ.dof,
+            "drift_kT_per_ns_per_dof": float(fit[0] * 1000.0 / (KB * T) / s.integ.dof),
+            "rms_fluct_kT": float(np.std(E - np.polyval(fit, t)) / (KB * T)),
+            "cg_per_step": float(s.state.cg_total) / int(s.state.step),
+            "time_ps": t.tolist(),
+            "etot": E.tolist(),
+        }
         out["nve"].append(r)
         print(label, {k: v for k, v in r.items() if k not in ("time_ps", "etot")}, flush=True)
     json.dump(out, open(stem + f"_nve{'' if a.nve_ps > 0 else '_double'}.json", "w"), indent=1)
@@ -186,17 +233,27 @@ elif a.cmd == "gas":
         key, k = jax.random.split(key)
         c, (e, d) = run(c, jax.random.split(k, nrep))
         if b * 100 * dt >= 20.0:
-            U.append(np.asarray(e)); D.append(np.asarray(d))
-    U, D = np.array(U), np.array(D)                         # (samples, replicas)
+            U.append(np.asarray(e))
+            D.append(np.asarray(d))
+    U, D = np.array(U), np.array(D)  # (samples, replicas)
     se = lambda v: float(np.std(v.mean(0), ddof=1) / np.sqrt(v.shape[1]))
-    out = {"template": a.template, "flux": tpl.settings.get("flux", 0), "T": T, "replicas": nrep, "prod_ps": a.prod_ps,
-           "U_gas": [float(U.mean()), se(U)], "mol_dipole_D": [float(D.mean()) / DEBYE_E_NM, se(D) / DEBYE_E_NM],
-           "wall_s": time.time() - t0}
+    out = {
+        "template": a.template,
+        "flux": tpl.settings.get("flux", 0),
+        "T": T,
+        "replicas": nrep,
+        "prod_ps": a.prod_ps,
+        "U_gas": [float(U.mean()), se(U)],
+        "mol_dipole_D": [float(D.mean()) / DEBYE_E_NM, se(D) / DEBYE_E_NM],
+        "wall_s": time.time() - t0,
+    }
     liq = stem + "_liquid.json"
     if os.path.exists(liq):
         L = json.load(open(liq))
-        out["dHvap_kJ_mol"] = [out["U_gas"][0] - L["epot_per_mol"][0] + KB * T,
-                               float(np.hypot(out["U_gas"][1], L["epot_per_mol"][1]))]
+        out["dHvap_kJ_mol"] = [
+            out["U_gas"][0] - L["epot_per_mol"][0] + KB * T,
+            float(np.hypot(out["U_gas"][1], L["epot_per_mol"][1])),
+        ]
         out["dHvap_kcal_mol"] = [v / 4.184 for v in out["dHvap_kJ_mol"]]
     print(out, flush=True)
     json.dump(out, open(stem + "_gas.json", "w"), indent=1)
@@ -209,15 +266,28 @@ else:
     pos = np.concatenate([z["pos"] + s for s in shifts])
     vel = np.concatenate([z["vel"]] * len(shifts))
     H = z["box"] * k
-    N = n0 * k ** 3
+    N = n0 * k**3
     sys_ = System([tpl.pgm] * N)
     res = {}
     sims = {}
     for label, t in (("flux", tpl), ("no flux", no_flux(tpl))):
         st = MDSettings() if not a.fixed_iter else MDSettings(dipole_tol=0.0, max_iter=a.fixed_iter)
-        sims[label] = FlexibleSimulation(sys_, [t] * N, pos, H, st, dt=dt, ensemble="nvt", temperature=T,
-                                         gamma=1.0, thermostat=a.thermostat, tau_t=1.0, vel_nm_ps=vel, log=None)
-        sims[label]._advance(500)                           # compile
+        sims[label] = FlexibleSimulation(
+            sys_,
+            [t] * N,
+            pos,
+            H,
+            st,
+            dt=dt,
+            ensemble="nvt",
+            temperature=T,
+            gamma=1.0,
+            thermostat=a.thermostat,
+            tau_t=1.0,
+            vel_nm_ps=vel,
+            log=None,
+        )
+        sims[label]._advance(500)  # compile
     for rnd in range(3):
         for label, sim in sims.items():
             jax.block_until_ready(sim.state.dyn.position)
@@ -227,14 +297,33 @@ else:
             jax.block_until_ready(sim.state.dyn.position)
             w = time.time() - t0
             st_ = int(sim.state.step) - s0
-            res.setdefault(label, []).append({"ms_per_step": 1000.0 * w / st_, "cg_per_step": (float(sim.state.cg_total) - c0) / st_})
+            res.setdefault(label, []).append(
+                {"ms_per_step": 1000.0 * w / st_, "cg_per_step": (float(sim.state.cg_total) - c0) / st_}
+            )
             print(rnd, label, res[label][-1], flush=True)
-    summ = {lab: {"ms_per_step": float(np.min([r["ms_per_step"] for r in v])),
-                  "cg_per_step": float(np.mean([r["cg_per_step"] for r in v]))} for lab, v in res.items()}
+    summ = {
+        lab: {
+            "ms_per_step": float(np.min([r["ms_per_step"] for r in v])),
+            "cg_per_step": float(np.mean([r["cg_per_step"] for r in v])),
+        }
+        for lab, v in res.items()
+    }
     for lab in summ:
         summ[lab]["ns_per_day"] = dt * 86400.0 / (summ[lab]["ms_per_step"] * 1e-3) / 1000.0
-    out = {"template": a.template, "n_mol": N, "n_atoms": N * tpl.n, "thermostat": a.thermostat,
-           "fixed_iter": a.fixed_iter, "rounds": res, "summary": summ,
-           "overhead": summ["flux"]["ms_per_step"] / summ["no flux"]["ms_per_step"] - 1.0, "device": str(jax.devices()[0])}
+    out = {
+        "template": a.template,
+        "n_mol": N,
+        "n_atoms": N * tpl.n,
+        "thermostat": a.thermostat,
+        "fixed_iter": a.fixed_iter,
+        "rounds": res,
+        "summary": summ,
+        "overhead": summ["flux"]["ms_per_step"] / summ["no flux"]["ms_per_step"] - 1.0,
+        "device": str(jax.devices()[0]),
+    }
     print(json.dumps({k: v for k, v in out.items() if k != "rounds"}), flush=True)
-    json.dump(out, open(stem + f"_speed{k}_{a.thermostat}{'_it%d' % a.fixed_iter if a.fixed_iter else ''}.json", "w"), indent=1)
+    json.dump(
+        out,
+        open(stem + f"_speed{k}_{a.thermostat}{'_it%d' % a.fixed_iter if a.fixed_iter else ''}.json", "w"),
+        indent=1,
+    )

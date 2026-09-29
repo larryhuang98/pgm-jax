@@ -1,5 +1,6 @@
 """Write runs/bonded/dft_tasks.txt (one line per Slurm task: name key start end) for every frame
 set that exists and has no DFT file yet, and the Slurm array script runs/bonded/dft.sh."""
+
 import glob
 import os
 import sys
@@ -38,7 +39,9 @@ for f in sorted(glob.glob(os.path.join(FR, "*.npz"))):
     for key, n in sets:
         for lo in range(0, n, chunk):
             line = f"{name} {key} {lo} {min(lo + chunk, n)}"
-            fresh = (key.startswith("scan") and os.environ.get("RESCAN")) or retry  # redone scans / retries: ignore history
+            fresh = (
+                key.startswith("scan") and os.environ.get("RESCAN")
+            ) or retry  # redone scans / retries: ignore history
             if key in os.environ.get("SKIPKEYS", "").split(",") or line in running:
                 continue
             if not os.path.exists(os.path.join(DFT, f"{name}__{key}__{lo}.npz")) and (fresh or line not in submitted):
@@ -60,4 +63,6 @@ export OMP_NUM_THREADS=8
 ~/miniconda3/envs/psi4/bin/python scripts/bonded/dft_labels.py $SLURM_ARRAY_TASK_ID --threads 8 --memory {os.environ.get("PMEM", "5")} --tasks {ROOT}/runs/bonded/dft_tasks_{sys.argv[1]}.txt
 rm -rf $PSI_SCRATCH
 """)
-    os.rename(os.path.join(ROOT, "runs/bonded/dft_tasks.txt"), os.path.join(ROOT, f"runs/bonded/dft_tasks_{sys.argv[1]}.txt"))
+    os.rename(
+        os.path.join(ROOT, "runs/bonded/dft_tasks.txt"), os.path.join(ROOT, f"runs/bonded/dft_tasks_{sys.argv[1]}.txt")
+    )

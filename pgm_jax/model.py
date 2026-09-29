@@ -7,6 +7,7 @@ channel and every subsystem; None means the initial values.  Energies are differ
 coordinates and parameters; compiled functions are cached by topology, so changing parameter
 values never recompiles.  For periodic systems see periodic.PeriodicModel.
 """
+
 from __future__ import annotations
 
 import itertools
@@ -21,10 +22,10 @@ from .system import System
 
 @dataclass
 class Model:
-    channels: list      # channel objects (with .energy(pos, sys, params)) or factories sys -> channel
+    channels: list  # channel objects (with .energy(pos, sys, params)) or factories sys -> channel
 
     def __post_init__(self):
-        self._jit_cache = {}                         # System signature -> jitted batched energy
+        self._jit_cache = {}  # System signature -> jitted batched energy
 
     def build(self, sys: System):
         return [c if hasattr(c, "energy") else c(sys) for c in self.channels]
@@ -49,7 +50,7 @@ class Model:
         if key not in self._jit_cache:
             self._jit_cache[key] = jax.jit(jax.vmap(self.energy_fn(sys), in_axes=(0, None)))
         f = self._jit_cache[key]
-        outs = [f(jnp.asarray(coords[s:s + batch]), params) for s in range(0, len(coords), batch)]
+        outs = [f(jnp.asarray(coords[s : s + batch]), params) for s in range(0, len(coords), batch)]
         return {k: np.concatenate([np.asarray(o[k]) for o in outs]) for k in outs[0]}
 
     def nbody(self, sys: System, coords, params=None, order: int | None = None, batch: int = 1024):

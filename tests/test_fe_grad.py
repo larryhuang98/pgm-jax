@@ -5,6 +5,7 @@ states: exponential averaging; MBAR with the sampled mixture) on stored frames, 
 an exactly known case (a lone rigid solute: zero variance, the gradient of E_gas(0) - E_gas(1)),
 harmonic oscillators with analytic df/dtheta and calibrated jackknife errors, the driver's outputs
 and the fitting-target API."""
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -37,8 +38,16 @@ def direction(space, P, seed=0):
 
 
 # ----------------------------------------------------------------------------- dU/dP
-@pytest.mark.parametrize("mode,lam", [("annihilate", (1.0, 1.0)), ("annihilate", (0.5, 1.0)),
-                                      ("annihilate", (0.0, 0.4)), ("keep", (0.4, 1.0)), ("keep", (0.0, 0.0))])
+@pytest.mark.parametrize(
+    "mode,lam",
+    [
+        ("annihilate", (1.0, 1.0)),
+        ("annihilate", (0.5, 1.0)),
+        ("annihilate", (0.0, 0.4)),
+        ("keep", (0.4, 1.0)),
+        ("keep", (0.0, 0.0)),
+    ],
+)
 def test_dudp_matches_finite_differences_with_resolved_dipoles(mode, lam):
     """Hellmann-Feynman for parameters: dU/dP at the converged dipoles (autodiff at fixed mu) equals the
     central difference of the energy with the dipoles re-solved, along a random direction of the
@@ -59,7 +68,9 @@ def test_dudp_matches_finite_differences_with_resolved_dipoles(mode, lam):
         v = direction(space, P, seed)
         h = 1e-5
         fd = (float(U(p0 + h * v)[0]) - float(U(p0 - h * v)[0])) / (2 * h)
-        print(f"[fe_grad] HF {mode} {tuple(np.asarray(lam).tolist())}: FD {fd:.8f} autodiff {g @ v:.8f} rel {abs(fd - g @ v) / abs(fd):.1e}")
+        print(
+            f"[fe_grad] HF {mode} {tuple(np.asarray(lam).tolist())}: FD {fd:.8f} autodiff {g @ v:.8f} rel {abs(fd - g @ v) / abs(fd):.1e}"
+        )
         assert abs(fd - g @ v) < 1e-6 * max(1.0, abs(fd)), (mode, lam, fd, g @ v)
     # parameters the Hamiltonian does not see there have zero derivative
     solq = space.select(("q", "cov"), solute=True)
@@ -73,8 +84,18 @@ def windows(batched=True, seed=1, mode="annihilate"):
     if mode == "keep":
         pos = sim.positions_nm()
         alch = Alchemy(sim.sys, 0, intramolecular="keep")
-        sim = Simulation(sim.sys, pos, np.asarray(sim.state.box), settings(dipole_tol=1e-9), dt=0.001, log=None,
-                         params=P, alchemy=alch, thermostat="bussi", ensemble="nvt")
+        sim = Simulation(
+            sim.sys,
+            pos,
+            np.asarray(sim.state.box),
+            settings(dipole_tol=1e-9),
+            dt=0.001,
+            log=None,
+            params=P,
+            alchemy=alch,
+            thermostat="bussi",
+            ensemble="nvt",
+        )
     L = standard_schedule(3, [0.5, 0.0])
     return LambdaWindows(sim, L, batched=batched, seed=seed), P
 
@@ -114,33 +135,50 @@ def test_estimators_are_derivatives_of_reweighted_free_energies(mode):
     space = pg.space
     ff, alch = w.sim.ff, w.alchemy
     K = w.n
-    E = jax.jit(lambda st, p, lam: alch.energy(ff, *(lambda f: (f[0], st.box, f[1]))(fg._frame(w, st)),
-                                               st.induction, space.unflatten(p, P), lam)[0])
+    E = jax.jit(
+        lambda st, p, lam: alch.energy(
+            ff, *(lambda f: (f[0], st.box, f[1]))(fg._frame(w, st)), st.induction, space.unflatten(p, P), lam
+        )[0]
+    )
     v = direction(space, P, 7)
-    h = 3e-5                                  # truncation (h^2: 5e-4 at h = 1e-4) vs float64 roundoff / h
+    h = 3e-5  # truncation (h^2: 5e-4 at h = 1e-4) vs float64 roundoff / h
     p0 = space.flatten(P)
-    us, gs, dU = [], [], []                   # dU[s, sign, t, n]: U_t(x_n; p0 + sign h v)
+    us, gs, dU = [], [], []  # dU[s, sign, t, n]: U_t(x_n; p0 + sign h v)
     for _ in range(8):
         w.advance(5)
         u, _, _ = w.sample()
-        us.append(u.T)                        # (n, k) -> stored as [k, n] like FreeEnergyRun: u[k, n]
+        us.append(u.T)  # (n, k) -> stored as [k, n] like FreeEnergyRun: u[k, n]
         gs.append(pg.sample())
-        dU.append([[[float(E(w.state(n), p0 + sg * h * v, jnp.asarray(w.lambdas[k]))) for n in range(K)]
-                    for k in (0, K - 1)] for sg in (1.0, -1.0)])
-    u = np.array([x.T for x in us])           # (S, K, K): u[s, k, n]
+        dU.append(
+            [
+                [
+                    [float(E(w.state(n), p0 + sg * h * v, jnp.asarray(w.lambdas[k]))) for n in range(K)]
+                    for k in (0, K - 1)
+                ]
+                for sg in (1.0, -1.0)
+            ]
+        )
+    u = np.array([x.T for x in us])  # (S, K, K): u[s, k, n]
     G = np.array(gs)
     dU = np.array(dU)
     kT = float(w.integ.kT)
-    S = {"u": u, "dudp": G, "lambdas": w.lambdas, "kT": kT, "time_ps": np.arange(1, 9, dtype=float),
-         "meta": {"dudp_targets": [0, K - 1], "dudp_names": space.names}}
+    S = {
+        "u": u,
+        "dudp": G,
+        "lambdas": w.lambdas,
+        "kT": kT,
+        "time_ps": np.arange(1, 9, dtype=float),
+        "meta": {"dudp_targets": [0, K - 1], "dudp_names": space.names},
+    }
     r = fg.gradient_estimate(S, n_blocks=2)
     # end states, exponential averaging from the own window's samples
     U0 = u * kT
-    zw = lambda a: -kT * np.log(np.mean(np.exp(-a / kT)))                      # noqa: E731
+    zw = lambda a: -kT * np.log(np.mean(np.exp(-a / kT)))  # noqa: E731
 
     def end(sg):
         i = 0 if sg > 0 else 1
         return zw(dU[:, i, 1, K - 1] - U0[:, K - 1, K - 1]) - zw(dU[:, i, 0, 0] - U0[:, 0, 0])
+
     fd_end = (end(1) - end(-1)) / (2 * h)
     print(f"[fe_grad] reweighting {mode}: end FD {fd_end:.8f} estimator {r['solv']['end'].grad @ v:.8f}")
     assert abs(fd_end - r["solv"]["end"].grad @ v) < 1e-5 * max(100.0, abs(fd_end)), (fd_end, r["solv"]["end"].grad @ v)
@@ -155,9 +193,13 @@ def test_estimators_are_derivatives_of_reweighted_free_energies(mode):
         i = 0 if sg > 0 else 1
         fk = [-logsumexp(-dU[:, i, t, :].T.reshape(-1) / kT - logden) for t in (0, 1)]
         return kT * (fk[1] - fk[0])
+
     fd_mbar = (mb(1) - mb(-1)) / (2 * h)
     print(f"[fe_grad] reweighting {mode}: MBAR FD {fd_mbar:.8f} estimator {r['solv']['mbar'].grad @ v:.8f}")
-    assert abs(fd_mbar - r["solv"]["mbar"].grad @ v) < 1e-5 * max(100.0, abs(fd_mbar)), (fd_mbar, r["solv"]["mbar"].grad @ v)
+    assert abs(fd_mbar - r["solv"]["mbar"].grad @ v) < 1e-5 * max(100.0, abs(fd_mbar)), (
+        fd_mbar,
+        r["solv"]["mbar"].grad @ v,
+    )
     assert abs(r["solv"]["mbar"].value - kT * (f[-1] - f[0])) < 1e-8
 
 
@@ -171,8 +213,12 @@ def test_gas_leg_gradient_and_exact_sampled_case():
     sysA, P = alchemical_system(System([w]), 0)
     alch = Alchemy(sysA, 0)
     t = np.radians(104.52 / 2)
-    xyz = np.array([[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0],
-                    [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]) + 2.1
+    xyz = (
+        np.array(
+            [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
+        )
+        + 2.1
+    )
     gas = GasPhaseLeg(alch, xyz, "qpi")
     space = fg.ParamSpace(sysA.table)
     dg, gg = fg.gas_leg_gradient(gas, P, space)
@@ -183,10 +229,32 @@ def test_gas_leg_gradient_and_exact_sampled_case():
     fd = (gas.delta_g(Pp) - gas.delta_g(Pm)) / (2 * h)
     assert abs(fd - gg @ v) < 1e-6 * max(1.0, abs(fd))
     H = np.eye(3) * 4.2
-    s = MDSettings(precision="double", cutoff=1.2, skin=0.1, ewald_beta=3.0, pme_grid=(64, 64, 64), pme_order=8,
-                   dipole_tol=1e-12, max_iter=200, peek=0.0, lj_lrc=False)
-    sim = Simulation(sysA, xyz, H, s, dt=0.001, log=None, params=P, alchemy=alch, thermostat="bussi",
-                     ensemble="nvt", neighbor_list="atom", temperature=298.0)
+    s = MDSettings(
+        precision="double",
+        cutoff=1.2,
+        skin=0.1,
+        ewald_beta=3.0,
+        pme_grid=(64, 64, 64),
+        pme_order=8,
+        dipole_tol=1e-12,
+        max_iter=200,
+        peek=0.0,
+        lj_lrc=False,
+    )
+    sim = Simulation(
+        sysA,
+        xyz,
+        H,
+        s,
+        dt=0.001,
+        log=None,
+        params=P,
+        alchemy=alch,
+        thermostat="bussi",
+        ensemble="nvt",
+        neighbor_list="atom",
+        temperature=298.0,
+    )
     L = np.array([[1.0, 1.0], [0.5, 1.0], [0.0, 1.0]])
     win = LambdaWindows(sim, L, seed=2)
     run = FreeEnergyRun(win, sample_every=5, exchange_every=5, log=None, param_grad=fg.ParamGradients(win))
@@ -197,8 +265,10 @@ def test_gas_leg_gradient_and_exact_sampled_case():
         # the solution "leg" here is the same molecule in vacuum: DeltaG_solv = DeltaG_gas, hydration 0
         assert abs(solv.value - dg) < 2e-3 and abs(hyd.value) < 2e-3
         scale = np.abs(gg).max()
-        print(f"[fe_grad] lone solute {est}: DeltaG {solv.value:.6f} exact {dg:.6f}; max |grad - exact| "
-              f"{np.abs(solv.grad - gg).max():.2e} of max |exact| {scale:.1f}; max grad error bar {np.abs(solv.grad_err).max():.1e}")
+        print(
+            f"[fe_grad] lone solute {est}: DeltaG {solv.value:.6f} exact {dg:.6f}; max |grad - exact| "
+            f"{np.abs(solv.grad - gg).max():.2e} of max |exact| {scale:.1f}; max grad error bar {np.abs(solv.grad_err).max():.1e}"
+        )
         assert np.abs(solv.grad - gg).max() < 1e-3 * scale, (est, np.abs(solv.grad - gg).max(), scale)
         assert np.abs(solv.grad_err).max() < 1e-6 * scale and solv.value_err < 1e-6
 
@@ -224,11 +294,16 @@ def test_harmonic_oscillators_analytic_gradient_and_calibrated_errors():
         X[0] = e[0]
         for i in range(1, n):
             X[i] = phi * X[i - 1] + np.sqrt(1 - phi * phi) * e[i]
-        u = 0.5 * Kk[None, :, None] * X[:, None, :] ** 2                   # u[s, k, n]
+        u = 0.5 * Kk[None, :, None] * X[:, None, :] ** 2  # u[s, k, n]
         du = 0.5 * (c * Kk)[None, :, None] * X[:, None, :] ** 2
-        S = {"u": u, "dudp": du[:, [0, K - 1], :, None], "lambdas": np.stack([np.linspace(1, 0, K)] * 2, 1),
-             "kT": 1.0, "time_ps": np.arange(1, n + 1, dtype=float),
-             "meta": {"dudp_targets": [0, K - 1], "dudp_names": ["q:theta"]}}
+        S = {
+            "u": u,
+            "dudp": du[:, [0, K - 1], :, None],
+            "lambdas": np.stack([np.linspace(1, 0, K)] * 2, 1),
+            "kT": 1.0,
+            "time_ps": np.arange(1, n + 1, dtype=float),
+            "meta": {"dudp_targets": [0, K - 1], "dudp_names": ["q:theta"]},
+        }
         r = fg.gradient_estimate(S, n_blocks=10)
         for est in res:
             res[est].append(r["solv"][est].grad[0])
@@ -237,13 +312,17 @@ def test_harmonic_oscillators_analytic_gradient_and_calibrated_errors():
         verrs.append(r["solv"]["mbar"].value_err)
     for est in res:
         a = np.array(res[est])
-        print(f"[fe_grad] harmonic {est}: mean {a.mean():.5f} +- {a.std() / np.sqrt(len(a)):.5f} exact {exact_g:.5f}; "
-              f"mean error bar / spread {np.mean(errs[est]) / a.std():.3f}")
+        print(
+            f"[fe_grad] harmonic {est}: mean {a.mean():.5f} +- {a.std() / np.sqrt(len(a)):.5f} exact {exact_g:.5f}; "
+            f"mean error bar / spread {np.mean(errs[est]) / a.std():.3f}"
+        )
         assert abs(a.mean() - exact_g) < 3 * a.std() / np.sqrt(len(a)), (est, a.mean(), exact_g)
         assert 0.7 < np.mean(errs[est]) / a.std() < 1.4, (est, np.mean(errs[est]), a.std())
     vals = np.array(vals)
-    print(f"[fe_grad] harmonic value: mean {vals.mean():.5f} +- {vals.std() / np.sqrt(len(vals)):.5f} exact {exact_f:.5f}; "
-          f"error bar / spread {np.mean(verrs) / vals.std():.3f}")
+    print(
+        f"[fe_grad] harmonic value: mean {vals.mean():.5f} +- {vals.std() / np.sqrt(len(vals)):.5f} exact {exact_f:.5f}; "
+        f"error bar / spread {np.mean(verrs) / vals.std():.3f}"
+    )
     assert abs(vals.mean() - exact_f) < 3 * vals.std() / np.sqrt(len(vals))
     assert 0.7 < np.mean(verrs) / vals.std() < 1.4
 
@@ -279,6 +358,7 @@ def test_run_outputs_restart_and_fitting_target(tmp_path):
 
     def theta_fn(th):
         return fg.scaled_params(space, P, {"charge": jnp.exp(th[0])})
+
     with pytest.raises(ValueError):
         t.value_and_grad(theta_fn, jnp.array([0.1]))
     r = t.value_and_grad(theta_fn, jnp.array([0.0]))
@@ -287,7 +367,9 @@ def test_run_outputs_restart_and_fitting_target(tmp_path):
     assert abs(r["dchi2"][0] - 2 * (r["value"] + 20.0) / 4.0 * proj) < 1e-8 * max(1.0, abs(proj))
     est = t.estimate(theta_fn, jnp.array([0.0]), unit="kcal/mol")
     assert est["J"].shape == (1, 1) and est["loo"]["J"].shape == (2, 1, 1) and est["loo"]["y"].shape == (2, 1)
-    assert abs(est["J"][0, 0] - proj / 4.184) < 1e-8 * max(1.0, abs(proj)) and abs(est["target"][0] + 20.0 / 4.184) < 1e-12
+    assert (
+        abs(est["J"][0, 0] - proj / 4.184) < 1e-8 * max(1.0, abs(proj)) and abs(est["target"][0] + 20.0 / 4.184) < 1e-12
+    )
     # original (non-alchemical) table: the solute's copy and the solvent's key both follow P0
     sys0 = alch_sim()[3][2]
     amap = fg.alchemical_map(sys0, w.alchemy.sys)
@@ -333,11 +415,22 @@ def test_flexible_solute_keep_sampler():
     from test_alchemy import flex_box
 
     from pgm_jax.md.flexible import FlexibleSimulation
+
     tpl, sys0, tpls, X, H = flex_box()
     sysA, P = alchemical_system(sys0, 0)
-    mk = lambda: FlexibleSimulation(sysA, tpls, X, H, settings(dipole_tol=1e-9), dt=0.001, log=None, params=P,   # noqa: E731
-                                    alchemy=Alchemy(sysA, 0, intramolecular="keep"), constraints="h-bonds",
-                                    thermostat="bussi")
+    mk = lambda: FlexibleSimulation(
+        sysA,
+        tpls,
+        X,
+        H,
+        settings(dipole_tol=1e-9),
+        dt=0.001,
+        log=None,
+        params=P,  # noqa: E731
+        alchemy=Alchemy(sysA, 0, intramolecular="keep"),
+        constraints="h-bonds",
+        thermostat="bussi",
+    )
     L = standard_schedule(2, [0.4, 0.0])
     wb, ws = LambdaWindows(mk(), L, seed=1), LambdaWindows(mk(), L, batched=False, seed=1)
     wb.advance(6)
@@ -355,7 +448,7 @@ def test_flexible_solute_keep_sampler():
     assert np.allclose(Gb[1, 1], g, rtol=1e-7, atol=1e-6)
     sq = gb.space.select(("q",), solute=True)
     se = gb.space.select(("lj_sqrt_eps",), solute=True)
-    assert np.abs(Gb[1][:, sq]).max() > 1.0 and np.abs(Gb[1][:, se]).max() > 1e-3     # gas-phase elec, intra LJ
+    assert np.abs(Gb[1][:, sq]).max() > 1.0 and np.abs(Gb[1][:, se]).max() > 1e-3  # gas-phase elec, intra LJ
     # the gas-phase part at (0, 0) equals dE_gas/dq of the lone solute at its geometry
     gas = GasPhaseLeg(alch, np.asarray(Y)[:6], "qpi")
     gg = np.asarray(gb.space.flatten(jax.grad(lambda Q: gas._e(jnp.asarray(1.0), Q))(P)))

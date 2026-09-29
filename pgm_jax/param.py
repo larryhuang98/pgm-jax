@@ -11,6 +11,7 @@
                          `reorder` applies the mapping (needs networkx).
 Units in Molecule are nm / e / e nm / nm^3; prmtop units are Angstrom / e / e Angstrom / Angstrom^3.
 """
+
 from __future__ import annotations
 
 import json
@@ -22,7 +23,23 @@ import numpy as np
 from .system import Molecule
 
 ANG = 0.1
-Z2EL = {1: "H", 3: "Li", 6: "C", 7: "N", 8: "O", 9: "F", 11: "Na", 15: "P", 16: "S", 17: "Cl", 19: "K", 35: "Br", 37: "Rb", 53: "I", 55: "Cs"}
+Z2EL = {
+    1: "H",
+    3: "Li",
+    6: "C",
+    7: "N",
+    8: "O",
+    9: "F",
+    11: "Na",
+    15: "P",
+    16: "S",
+    17: "Cl",
+    19: "K",
+    35: "Br",
+    37: "Rb",
+    53: "I",
+    55: "Cs",
+}
 
 
 def _prmtop_sections(path: str) -> dict[str, list[str]]:
@@ -48,14 +65,14 @@ def _prmtop_sections(path: str) -> dict[str, list[str]]:
         toks = []
         for ln in lines:
             for s in range(0, len(ln), width):
-                t = ln[s:s + width].strip()
+                t = ln[s : s + width].strip()
                 if t:
                     toks.append(t)
         out[k] = toks
     return out
 
 
-AMBER_CHARGE = 18.2223                 # prmtop CHARGE unit: e -> sqrt(kcal A / mol)
+AMBER_CHARGE = 18.2223  # prmtop CHARGE unit: e -> sqrt(kcal A / mol)
 
 
 def prmtop_extra_points(s) -> dict:
@@ -63,13 +80,16 @@ def prmtop_extra_points(s) -> dict:
     (global indices) from the bond graph by Amber's rules (md/vsites.py amber_extra_points).
     Custom frames (pmemd's VIRTUAL_SITE_FRAMES) are not read: they raise."""
     from .md.vsites import amber_extra_points
+
     if "VIRTUAL_SITE_FRAMES" in s:
-        raise NotImplementedError("prmtop has VIRTUAL_SITE_FRAMES (pmemd custom extra-point frames): not supported; "
-                                  "define the sites with Molecule.vsites (md/vsites.py)")
-    trip = lambda sec: np.array([int(x) for x in s.get(sec, [])], int).reshape(-1, 3)          # noqa: E731
+        raise NotImplementedError(
+            "prmtop has VIRTUAL_SITE_FRAMES (pmemd custom extra-point frames): not supported; "
+            "define the sites with Molecule.vsites (md/vsites.py)"
+        )
+    trip = lambda sec: np.array([int(x) for x in s.get(sec, [])], int).reshape(-1, 3)  # noqa: E731
     bh, bx = trip("BONDS_INC_HYDROGEN"), trip("BONDS_WITHOUT_HYDROGEN")
     req = [float(x) for x in s.get("BOND_EQUIL_VALUE", [])]
-    as_list = lambda b: [(i // 3, j // 3, t - 1) for i, j, t in b]                              # noqa: E731
+    as_list = lambda b: [(i // 3, j // 3, t - 1) for i, j, t in b]  # noqa: E731
     eps = amber_extra_points(s["AMBER_ATOM_TYPE"], as_list(bh), as_list(bx), req)
     mass = np.array([float(x) for x in s["MASS"]])
     for e in eps:
@@ -78,8 +98,9 @@ def prmtop_extra_points(s) -> dict:
     return eps
 
 
-def read_prmtop_pgm(path: str, first_residue_only: bool = True, charges: str = "pgm",
-                    point_radius: float | None = None) -> list[Molecule]:
+def read_prmtop_pgm(
+    path: str, first_residue_only: bool = True, charges: str = "pgm", point_radius: float | None = None
+) -> list[Molecule]:
     """Molecules (one per residue) from an Amber pGM prmtop: pGM multipoles, radii and
     polarizabilities, covalent dipoles, LJ from the type-pair tables (converted to per-type
     R* and sqrt(eps); NBFIX-style pairs that break Lorentz-Berthelot raise), bonds, masses.
@@ -106,6 +127,7 @@ def read_prmtop_pgm(path: str, first_residue_only: bool = True, charges: str = "
         cdip = [float(x) for x in s["POL_GAUSS_COVALENT_DIPOLES_LIST"]]
     elif charges == "amber":
         from .md.vsites import POINT_RADIUS
+
         q = np.array([float(x) for x in s["CHARGE"]]) / AMBER_CHARGE
         rad = np.full(len(names), (POINT_RADIUS if point_radius is None else float(point_radius)) / ANG)
         alp = np.zeros(len(names))
@@ -115,8 +137,11 @@ def read_prmtop_pgm(path: str, first_residue_only: bool = True, charges: str = "
     start = np.concatenate([[0], np.cumsum(nptr)])
     mass = np.array([float(x) for x in s["MASS"]])
     rh, se = _prmtop_lj(s)
-    bonds = [(int(a) // 3, int(b) // 3) for sec in ("BONDS_INC_HYDROGEN", "BONDS_WITHOUT_HYDROGEN")
-             for a, b in zip(s.get(sec, [])[0::3], s.get(sec, [])[1::3])]
+    bonds = [
+        (int(a) // 3, int(b) // 3)
+        for sec in ("BONDS_INC_HYDROGEN", "BONDS_WITHOUT_HYDROGEN")
+        for a, b in zip(s.get(sec, [])[0::3], s.get(sec, [])[1::3])
+    ]
     eps = prmtop_extra_points(s)
     mols = []
     nres = len(res_lab) if not first_residue_only else 1
@@ -126,23 +151,42 @@ def read_prmtop_pgm(path: str, first_residue_only: bool = True, charges: str = "
         for i in range(a0, a1):
             for k in range(start[i], start[i + 1]):
                 if not a0 <= catm[k] < a1:
-                    raise ValueError(f"atom {i + 1} has a covalent dipole to atom {catm[k] + 1} of another residue: "
-                                     "read multi-residue molecules with protein.load_amber(electrostatics='prmtop')")
+                    raise ValueError(
+                        f"atom {i + 1} has a covalent dipole to atom {catm[k] + 1} of another residue: "
+                        "read multi-residue molecules with protein.load_amber(electrostatics='prmtop')"
+                    )
                 cov.append((i - a0, catm[k] - a0, cdip[k] * ANG))
         if "ATOMIC_NUMBER" in s:
             el = [Z2EL[int(z)] if a not in eps else "EP" for a, z in zip(range(a0, a1), s["ATOMIC_NUMBER"][a0:a1])]
         else:
-            el = [re.sub(r"\d+", "", n)[:1].upper() if a not in eps else "EP" for a, n in zip(range(a0, a1), names[a0:a1])]
+            el = [
+                re.sub(r"\d+", "", n)[:1].upper() if a not in eps else "EP" for a, n in zip(range(a0, a1), names[a0:a1])
+            ]
         bd = [(i - a0, j - a0) for i, j in bonds if a0 <= i < a1 and a0 <= j < a1]
         vs = []
         for e in range(a0, a1):
             if e in eps:
                 if not all(a0 <= a < a1 for a in eps[e].atoms):
-                    raise ValueError(f"extra point {e + 1}: frame atoms {[a + 1 for a in eps[e].atoms]} outside its residue")
+                    raise ValueError(
+                        f"extra point {e + 1}: frame atoms {[a + 1 for a in eps[e].atoms]} outside its residue"
+                    )
                 vs.append(eps[e].shifted(-a0))
-        mols.append(Molecule(name=res_lab[r], elements=el, types=types[a0:a1], q=q[a0:a1].copy(),
-                             radius=rad[a0:a1] * ANG, alpha=alp[a0:a1] * ANG ** 3, cov=cov,
-                             lj_rmin_half=rh[a0:a1], lj_sqrt_eps=se[a0:a1], bonds=bd, masses=mass[a0:a1], vsites=vs))
+        mols.append(
+            Molecule(
+                name=res_lab[r],
+                elements=el,
+                types=types[a0:a1],
+                q=q[a0:a1].copy(),
+                radius=rad[a0:a1] * ANG,
+                alpha=alp[a0:a1] * ANG**3,
+                cov=cov,
+                lj_rmin_half=rh[a0:a1],
+                lj_sqrt_eps=se[a0:a1],
+                bonds=bd,
+                masses=mass[a0:a1],
+                vsites=vs,
+            )
+        )
     return mols
 
 
@@ -156,39 +200,63 @@ def _prmtop_lj(s) -> tuple[np.ndarray, np.ndarray]:
     B = np.array([float(x) for x in s["LENNARD_JONES_BCOEF"]])[nbi]
     a, b = np.diag(A), np.diag(B)
     ok = (a > 0) & (b > 0)
-    rmin = np.where(ok, (2 * np.where(ok, a, 1) / np.where(ok, b, 1)) ** (1 / 6), 0.0)      # A
-    eps = np.where(ok, b ** 2 / (4 * np.where(ok, a, 1)), 0.0)                              # kcal/mol
+    rmin = np.where(ok, (2 * np.where(ok, a, 1) / np.where(ok, b, 1)) ** (1 / 6), 0.0)  # A
+    eps = np.where(ok, b**2 / (4 * np.where(ok, a, 1)), 0.0)  # kcal/mol
     rm = rmin[:, None] / 2 + rmin[None, :] / 2
     ee = np.sqrt(eps[:, None] * eps[None, :])
-    A_lb, B_lb = ee * rm ** 12, 2 * ee * rm ** 6
+    A_lb, B_lb = ee * rm**12, 2 * ee * rm**6
     if not (np.allclose(A, A_lb, rtol=1e-6, atol=1e-8) and np.allclose(B, B_lb, rtol=1e-6, atol=1e-8)):
         raise ValueError("prmtop LJ pairs are not Lorentz-Berthelot combinations of the type diagonals (NBFIX?)")
     return (rmin / 2 * ANG)[ti], np.sqrt(eps * 4.184)[ti]
 
 
 def molecule_to_dict(m: Molecule) -> dict:
-    return {"name": m.name, "elements": m.elements, "types": m.types, "q": m.q.tolist(), "radius_nm": m.radius.tolist(),
-            "alpha_nm3": m.alpha.tolist(), "cov": [[int(i), int(j), float(c)] for i, j, c in m.cov],
-            "lj_rmin_half_nm": m.lj_rmin_half.tolist(), "lj_sqrt_eps": m.lj_sqrt_eps.tolist(),
-            "bonds": [[int(i), int(j)] for i, j in m.bonds], "masses": m.masses.tolist(), "keys": m.keys,
-            "gvdw_sqrt_a": m.gvdw_sqrt_a.tolist(), "gvdw_sqrt_c6": m.gvdw_sqrt_c6.tolist(), "gvdw_b": m.gvdw_b.tolist(),
-            "quad": [[int(i), int(j), int(k), float(t)] for i, j, k, t in m.quad],
-            "extra": {k: np.asarray(v).tolist() for k, v in m.extra.items()},
-            "vsites": [vs.to_list() for vs in m.vsites]}
+    return {
+        "name": m.name,
+        "elements": m.elements,
+        "types": m.types,
+        "q": m.q.tolist(),
+        "radius_nm": m.radius.tolist(),
+        "alpha_nm3": m.alpha.tolist(),
+        "cov": [[int(i), int(j), float(c)] for i, j, c in m.cov],
+        "lj_rmin_half_nm": m.lj_rmin_half.tolist(),
+        "lj_sqrt_eps": m.lj_sqrt_eps.tolist(),
+        "bonds": [[int(i), int(j)] for i, j in m.bonds],
+        "masses": m.masses.tolist(),
+        "keys": m.keys,
+        "gvdw_sqrt_a": m.gvdw_sqrt_a.tolist(),
+        "gvdw_sqrt_c6": m.gvdw_sqrt_c6.tolist(),
+        "gvdw_b": m.gvdw_b.tolist(),
+        "quad": [[int(i), int(j), int(k), float(t)] for i, j, k, t in m.quad],
+        "extra": {k: np.asarray(v).tolist() for k, v in m.extra.items()},
+        "vsites": [vs.to_list() for vs in m.vsites],
+    }
 
 
 def molecule_from_dict(d: dict) -> Molecule:
     """Also reads the older format (no LJ, bonds, masses, keys: defaults are used)."""
     from .md.vsites import VirtualSite
-    return Molecule(name=d["name"], elements=d["elements"], types=d["types"], q=np.array(d["q"]),
-                    radius=np.array(d["radius_nm"]), alpha=np.array(d["alpha_nm3"]),
-                    cov=[(int(i), int(j), float(c)) for i, j, c in d["cov"]],
-                    lj_rmin_half=d.get("lj_rmin_half_nm"), lj_sqrt_eps=d.get("lj_sqrt_eps"),
-                    bonds=[(int(i), int(j)) for i, j in d.get("bonds", [])], masses=d.get("masses"),
-                    keys=d.get("keys", {}), extra={k: np.array(v) for k, v in d.get("extra", {}).items()},
-                    gvdw_sqrt_a=d.get("gvdw_sqrt_a"), gvdw_sqrt_c6=d.get("gvdw_sqrt_c6"), gvdw_b=d.get("gvdw_b"),
-                    quad=[(int(i), int(j), int(k), float(t)) for i, j, k, t in d.get("quad", [])],
-                    vsites=[VirtualSite.from_list(v) for v in d.get("vsites", [])])
+
+    return Molecule(
+        name=d["name"],
+        elements=d["elements"],
+        types=d["types"],
+        q=np.array(d["q"]),
+        radius=np.array(d["radius_nm"]),
+        alpha=np.array(d["alpha_nm3"]),
+        cov=[(int(i), int(j), float(c)) for i, j, c in d["cov"]],
+        lj_rmin_half=d.get("lj_rmin_half_nm"),
+        lj_sqrt_eps=d.get("lj_sqrt_eps"),
+        bonds=[(int(i), int(j)) for i, j in d.get("bonds", [])],
+        masses=d.get("masses"),
+        keys=d.get("keys", {}),
+        extra={k: np.array(v) for k, v in d.get("extra", {}).items()},
+        gvdw_sqrt_a=d.get("gvdw_sqrt_a"),
+        gvdw_sqrt_c6=d.get("gvdw_sqrt_c6"),
+        gvdw_b=d.get("gvdw_b"),
+        quad=[(int(i), int(j), int(k), float(t)) for i, j, k, t in d.get("quad", [])],
+        vsites=[VirtualSite.from_list(v) for v in d.get("vsites", [])],
+    )
 
 
 def save_molecule(m: Molecule, path: str) -> None:
@@ -213,7 +281,7 @@ def read_pol_table(path: str = PGM_POL_TABLE) -> dict[str, tuple[float, float]]:
         t = lines[k].split()
         tab[t[0].lower()] = (float(t[1]), float(t[2]))
         k += 1
-    for ln in lines[k + 1:]:
+    for ln in lines[k + 1 :]:
         t = ln.split()
         if not t or t[0] != "EQ":
             break
@@ -231,36 +299,60 @@ def read_pyresp_chg(path: str) -> dict:
             sec[cur] = []
         elif cur and ln.strip() and not ln.split()[0].isalpha() and ln.split()[0] not in ("atm.no", "dip.no"):
             sec[cur].append(ln.split())
-    out = {"crd": np.array([[float(x) for x in r[1:4]] for r in sec["ATOM CRD"]]),
-           "q": np.array([float(r[3]) for r in sec["ATOM CHRG"]]),
-           "Z": [int(r[1]) for r in sec["ATOM CHRG"]],
-           "cov": [(int(r[1]) - 1, int(r[2]) - 1, float(r[4])) for r in sec.get("PERM DIP LOCAL", [])]}
+    out = {
+        "crd": np.array([[float(x) for x in r[1:4]] for r in sec["ATOM CRD"]]),
+        "q": np.array([float(r[3]) for r in sec["ATOM CHRG"]]),
+        "Z": [int(r[1]) for r in sec["ATOM CHRG"]],
+        "cov": [(int(r[1]) - 1, int(r[2]) - 1, float(r[4])) for r in sec.get("PERM DIP LOCAL", [])],
+    }
     for k, key in (("PERM DIP GLOBAL", "p_global"), ("IND DIP GLOBAL", "mu_global")):
         if k in sec:
             out[key] = np.array([[float(x) for x in r[1:4]] for r in sec[k]])
     return out
 
 
-def molecule_from_pyresp(name: str, elements: list[str], types: list[str], chg_path: str,
-                         table: dict | None = None, n_atoms: int | None = None) -> Molecule:
+def molecule_from_pyresp(
+    name: str,
+    elements: list[str],
+    types: list[str],
+    chg_path: str,
+    table: dict | None = None,
+    n_atoms: int | None = None,
+) -> Molecule:
     """pGM molecule from a py_resp fit.  The covalent dipole convention is the same as ours:
     p_i = sum_k c_k unit(r_ref(k) - r_i).  Bonds from the fit geometry; no LJ (zeros).
     Multi-conformer fits list every conformer; `n_atoms` keeps the first (they are equivalenced)."""
     table = table or read_pol_table()
     c = read_pyresp_chg(chg_path)
     if n_atoms is not None and len(c["q"]) > n_atoms:
-        c = {"crd": c["crd"][:n_atoms], "q": c["q"][:n_atoms], "Z": c["Z"][:n_atoms],
-             "cov": [x for x in c["cov"] if x[0] < n_atoms and x[1] < n_atoms]}
-    al = np.array([table[t.lower()][0] for t in types]) * BOHR_NM ** 3
+        c = {
+            "crd": c["crd"][:n_atoms],
+            "q": c["q"][:n_atoms],
+            "Z": c["Z"][:n_atoms],
+            "cov": [x for x in c["cov"] if x[0] < n_atoms and x[1] < n_atoms],
+        }
+    al = np.array([table[t.lower()][0] for t in types]) * BOHR_NM**3
     rad = np.array([table[t.lower()][1] for t in types]) * BOHR_NM
     cov = [(i, j, p * BOHR_NM) for i, j, p in c["cov"]]
     bonds = bonds_from_geometry(elements, c["crd"] * BOHR_NM * 10.0)
-    return Molecule(name=name, elements=list(elements), types=list(types), q=c["q"], radius=rad, alpha=al, cov=cov,
-                    bonds=bonds)
+    return Molecule(
+        name=name, elements=list(elements), types=list(types), q=c["q"], radius=rad, alpha=al, cov=cov, bonds=bonds
+    )
 
 
 # ------------------------------------------------------------------- atom mapping --
-COV_RADII_A = {"H": 0.31, "C": 0.76, "N": 0.71, "O": 0.66, "F": 0.57, "S": 1.05, "Cl": 1.02, "P": 1.07, "Br": 1.20, "I": 1.39}
+COV_RADII_A = {
+    "H": 0.31,
+    "C": 0.76,
+    "N": 0.71,
+    "O": 0.66,
+    "F": 0.57,
+    "S": 1.05,
+    "Cl": 1.02,
+    "P": 1.07,
+    "Br": 1.20,
+    "I": 1.39,
+}
 
 
 def bonds_from_geometry(elements, xyz_A, scale: float = 1.2) -> list[tuple[int, int]]:
@@ -274,6 +366,7 @@ def bonds_from_geometry(elements, xyz_A, scale: float = 1.2) -> list[tuple[int, 
 
 def bond_graph(elements, xyz_A, scale: float = 1.2):
     import networkx as nx
+
     g = nx.Graph()
     for k, e in enumerate(elements):
         g.add_node(k, el=e)
@@ -286,6 +379,7 @@ def map_atoms(ref_el, ref_xyz_A, el, xyz_A) -> np.ndarray:
     Among isomorphisms, the first one found; parameters are symmetric under automorphisms
     (checked in evoff's scripts/param_s66.py check), so the choice does not matter."""
     from networkx.algorithms import isomorphism as iso
+
     g0, g1 = bond_graph(ref_el, ref_xyz_A), bond_graph(el, xyz_A)
     gm = iso.GraphMatcher(g0, g1, node_match=lambda a, b: a["el"] == b["el"])
     m = next(gm.isomorphisms_iter(), None)
@@ -302,9 +396,18 @@ def reorder(m: Molecule, perm: np.ndarray) -> Molecule:
     keys = {qn: (ks if qn == "cov" else [ks[k] for k in inv]) for qn, ks in m.keys.items()}
     if m.vsites:
         raise NotImplementedError(f"{m.name}: reorder of a molecule with virtual sites")
-    return Molecule(name=m.name, elements=[m.elements[k] for k in inv], types=[m.types[k] for k in inv],
-                    q=m.q[inv], radius=m.radius[inv], alpha=m.alpha[inv],
-                    cov=[(int(perm[i]), int(perm[j]), c) for i, j, c in m.cov],
-                    lj_rmin_half=m.lj_rmin_half[inv], lj_sqrt_eps=m.lj_sqrt_eps[inv],
-                    bonds=[(int(perm[i]), int(perm[j])) for i, j in m.bonds], masses=m.masses[inv], keys=keys,
-                    extra={k: np.asarray(v)[inv] for k, v in m.extra.items()})
+    return Molecule(
+        name=m.name,
+        elements=[m.elements[k] for k in inv],
+        types=[m.types[k] for k in inv],
+        q=m.q[inv],
+        radius=m.radius[inv],
+        alpha=m.alpha[inv],
+        cov=[(int(perm[i]), int(perm[j]), c) for i, j, c in m.cov],
+        lj_rmin_half=m.lj_rmin_half[inv],
+        lj_sqrt_eps=m.lj_sqrt_eps[inv],
+        bonds=[(int(perm[i]), int(perm[j])) for i, j in m.bonds],
+        masses=m.masses[inv],
+        keys=keys,
+        extra={k: np.asarray(v)[inv] for k, v in m.extra.items()},
+    )

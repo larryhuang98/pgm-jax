@@ -1,6 +1,7 @@
 """Families explored in the bonded study beyond class II: out-of-plane alternatives (F7), the
 torsion x out-of-plane coupling (F8), the twist of 3-coordinated centres (F9), topological pair
 potentials (F2) and the electronic-structure-inspired families (F12+)."""
+
 from __future__ import annotations
 
 import jax
@@ -16,6 +17,7 @@ class TorsionOOP(Family):
     whose central atom is a planar (improper) centre.  Lets the out-of-plane stiffness of a
     conjugated centre (amide N, carbonyl C) fall as the torsion leaves planarity (resonance lost,
     centre pyramidalises), which a separable torsion + improper cannot do."""
+
     name = "torsion_oop"
     params = {"K": ((), 0.0)}
     linear = ("K",)
@@ -26,7 +28,8 @@ class TorsionOOP(Family):
         for t, (i, j, k, l) in enumerate(top.propers):
             for c in (int(j), int(k)):
                 if c in centre:
-                    t_.append(t); m_.append(centre[c])
+                    t_.append(t)
+                    m_.append(centre[c])
                     keys.append("toop|" + keyf(top.propers[t], "torsion") + "|" + keyf([c], "atom"))
         return {"t": np.array(t_, int), "m": np.array(m_, int)}, keys
 
@@ -42,7 +45,8 @@ def _twist_pairs(top):
     shared end atom is 3-coordinated: its two other substituents l1, l2 define one twist angle."""
     nb = {}
     for a, b in np.asarray(top.bonds):
-        nb.setdefault(int(a), set()).add(int(b)); nb.setdefault(int(b), set()).add(int(a))
+        nb.setdefault(int(a), set()).add(int(b))
+        nb.setdefault(int(b), set()).add(int(a))
     groups = {}
     for t, (i, j, k, l) in enumerate(np.asarray(top.propers).tolist()):
         if len(nb[k]) == 3:
@@ -65,6 +69,7 @@ class Twist(Family):
     lone pair / pi orbital, not the individual substituents, so the resonance barrier is not
     relieved by pyramidalisation as it is with separable dihedral terms.  Odd n only when the two
     substituents differ in type."""
+
     name = "twist"
     params = {"K": ((4,), 0.0)}
     linear = ("K",)
@@ -77,7 +82,8 @@ class Twist(Family):
             keys.append("tw|" + "-".join(keyf([x], "atom") for x in (i, j, k)) + "|" + "-".join(sorted([c1, c2])))
             mask.append([1, 1, 1, 1] if c1 != c2 else [0, 1, 0, 1])
         swap = np.array([keyf([l1], "atom") > keyf([l2], "atom") for *_, l1, l2 in tp], bool)
-        t1 = np.array([x[0] for x in tp], int); t2 = np.array([x[1] for x in tp], int)
+        t1 = np.array([x[0] for x in tp], int)
+        t2 = np.array([x[1] for x in tp], int)
         a, b = np.where(swap, t2, t1), np.where(swap, t1, t2)
         return {"u": a, "v": b, "mask": np.array(mask, float).reshape(-1, 4)}, keys
 
@@ -116,7 +122,7 @@ class _PairFamily(Family):
 class Pair13Harm(_PairFamily):
     name = "pair13_harm"
     which = "13"
-    params = {"K": ((), 0.0), "r0": ((), None)}         # r0 from the reference geometry
+    params = {"K": ((), 0.0), "r0": ((), None)}  # r0 from the reference geometry
     linear = ("K",)
 
     def energy(self, G, dev, I, p):
@@ -149,6 +155,7 @@ class Pair14Exp(_PairFamily):
 # Built from a few physical quantities (pi-orbital axes, donor/acceptor bond orbitals, hybridisation,
 # signed volumes, Gaussian overlaps) instead of springs plus pairwise couplings.
 
+
 def _unit(v, eps=1e-20):
     """Normalise along the last axis; finite (zero) for a zero vector, with finite gradients."""
     return v * jax.lax.rsqrt(jnp.sum(v * v, -1, keepdims=True) + eps)
@@ -157,7 +164,8 @@ def _unit(v, eps=1e-20):
 def _neighbours(top):
     nb = [[] for _ in range(top.n)]
     for a, b in np.asarray(top.bonds):
-        nb[int(a)].append(int(b)); nb[int(b)].append(int(a))
+        nb[int(a)].append(int(b))
+        nb[int(b)].append(int(a))
     return [sorted(x) for x in nb]
 
 
@@ -176,7 +184,7 @@ def pi_axes(R, c, nb3, deg):
     x = jnp.sum(a3 * u[:, 0], -1)
     p3 = jnp.clip((1.0 - 3.0 * x * x) / (1.0 - x * x), 0.0, 1.0)
     a2 = _unit(jnp.cross(u[:, 0], u[:, 1]))
-    three = (jnp.asarray(deg) == 3)
+    three = jnp.asarray(deg) == 3
     return jnp.where(three[:, None], a3, a2), jnp.where(three, p3, 1.0)
 
 
@@ -186,6 +194,7 @@ class Conjugation(Family):
     E = K (1 - (a_i . a_j)^2 p_i p_j).  One term gives the rotation barrier (cos^2 of the angle
     between the pi axes), the planarity of the centres (pyramidalisation lowers p) and their
     coupling (at the barrier the axes are perpendicular and pyramidalisation costs nothing)."""
+
     name = "conj"
     params = {"K": ((), 0.0)}
     linear = ("K",)
@@ -215,6 +224,7 @@ class Volume(Family):
     """Signed volume of a 3-coordinated centre, V = u1 . (u2 x u3) of the bond unit vectors:
     E = A V^2 + B V^4.  A > 0: planar centre; A < 0 < B: pyramidal double well whose barrier (the
     planar inversion state, A^2 / 4B) is fitted, e.g. amine inversion."""
+
     name = "volume"
     params = {"A": ((), 0.0), "B": ((), 0.0)}
     linear = ("A", "B")
@@ -222,8 +232,9 @@ class Volume(Family):
     def index(self, top, keyf):
         nb = _neighbours(top)
         cs = [c for c in range(top.n) if len(nb[c]) == 3]
-        return {"c": np.array(cs, int), "nb": np.array([nb[c] for c in cs], int).reshape(-1, 3)}, \
-               ["vol|" + keyf([c], "atom") for c in cs]
+        return {"c": np.array(cs, int), "nb": np.array([nb[c] for c in cs], int).reshape(-1, 3)}, [
+            "vol|" + keyf([c], "atom") for c in cs
+        ]
 
     def energy(self, G, dev, I, p):
         if len(I["c"]) == 0:
@@ -241,6 +252,7 @@ class HyperconjSigma(Family):
     (tied by bond type); a torsion i-j-k-l gets E = -(D_ij A_kl + D_kl A_ij) ((1 - cos phi)/2)^2,
     largest antiperiplanar.  Torsion profiles of a new molecule follow from its bond types instead
     of per-torsion Fourier coefficients."""
+
     name = "hc_sigma"
     params = {"D": ((), 1.0), "A": ((), 0.0)}
     linear = ("A",)
@@ -250,8 +262,9 @@ class HyperconjSigma(Family):
         t = np.asarray(top.propers).reshape(-1, 4)
         b1 = np.array([bidx[tuple(sorted((int(i), int(j))))] for i, j, _, _ in t], int)
         b2 = np.array([bidx[tuple(sorted((int(k), int(l))))] for _, _, k, l in t], int)
-        return {"i": np.arange(len(top.bonds)), "t": np.arange(len(t)), "b1": b1, "b2": b2}, \
-               ["hc|" + keyf(b, "bond") for b in top.bonds]
+        return {"i": np.arange(len(top.bonds)), "t": np.arange(len(t)), "b1": b1, "b2": b2}, [
+            "hc|" + keyf(b, "bond") for b in top.bonds
+        ]
 
     def energy(self, G, dev, I, p):
         if len(I["t"]) == 0:
@@ -266,6 +279,7 @@ class HyperconjLone(Family):
     """n -> sigma* (anomeric-type) hyperconjugation: the p-type lone pair of a 2- or 3-coordinated
     N, O or S (axis as for conj) donates into a bond k-l of an sp3 neighbour k:
     E = K (a_j . u_perp)^2, u_perp the k->l direction perpendicular to the j-k bond."""
+
     name = "hc_lone"
     params = {"K": ((), 0.0)}
     linear = ("K",)
@@ -305,7 +319,11 @@ def _half_bonds(top):
         hb += [(int(i), int(j)), (int(j), int(i))]
     pos = {h: k for k, h in enumerate(hb)}
     ang = np.asarray(top.angles).reshape(-1, 3)
-    return hb, np.array([pos[(int(c), int(a))] for a, c, b in ang], int), np.array([pos[(int(c), int(b))] for a, c, b in ang], int)
+    return (
+        hb,
+        np.array([pos[(int(c), int(a))] for a, c, b in ang], int),
+        np.array([pos[(int(c), int(b))] for a, c, b in ang], int),
+    )
 
 
 def _overlap_sq(lm1, lm2, cth):
@@ -322,10 +340,13 @@ def _hyb_init(G, top):
     cth = np.asarray(G["cos"])
     ok = cth < -0.05
     M = np.zeros((int(ok.sum()), len(hb)))
-    M[np.arange(len(M)), h1[ok]] = 1.0; M[np.arange(len(M)), h2[ok]] += 1.0
+    M[np.arange(len(M)), h1[ok]] = 1.0
+    M[np.arange(len(M)), h2[ok]] += 1.0
     y = -2.0 * np.log(-cth[ok])
     lm = np.linalg.lstsq(M, y, rcond=None)[0] if len(M) else np.zeros(len(hb))
-    used = np.zeros(len(hb), bool); used[h1[ok]] = True; used[h2[ok]] = True
+    used = np.zeros(len(hb), bool)
+    used[h1[ok]] = True
+    used[h2[ok]] = True
     return np.where(used, lm, np.log(3.0))
 
 
@@ -336,14 +357,16 @@ class AngleHybrid(Family):
     (k_a + k_b)/2 Delta_ab^2, zero when the two hybrids are orthogonal, cos theta0 = -1/sqrt(m_a m_b).
     Reference angles of a new molecule follow from its substituents (Bent's rule) instead of one
     theta0 per angle type."""
+
     name = "angle_hyb"
     params = {"lm": ((), None), "k": ((), 500.0)}
     linear = ()
 
     def index(self, top, keyf):
         hb, h1, h2 = _half_bonds(top)
-        return {"i": np.arange(len(hb)), "h1": h1, "h2": h2}, \
-               ["hyb|" + keyf([c], "atom") + ">" + keyf([a], "atom") for c, a in hb]
+        return {"i": np.arange(len(hb)), "h1": h1, "h2": h2}, [
+            "hyb|" + keyf([c], "atom") + ">" + keyf([a], "atom") for c, a in hb
+        ]
 
     def init_from_geometry(self, G, I, top):
         return {"lm": _hyb_init(G, top)}
@@ -361,6 +384,7 @@ class AngleHybridSC(Family):
     E(R) = min_z sum_ab k_ab Delta_ab(z, theta)^2 + kappa sum_a (z_a - z0_a)^2 (kappa >= 20 kJ/mol),
     solved by Gauss-Newton steps (gradients by the envelope theorem, as for induced dipoles).
     Rehybridisation couples all angles at a centre (angle-angle terms emerge with physical signs)."""
+
     name = "angle_hybsc"
     params = {"lm": ((), None), "k": ((), 500.0), "lkap": ((), 5.0)}
     linear = ()
@@ -371,11 +395,11 @@ class AngleHybridSC(Family):
         nb = _neighbours(top)
         centres = [c for c in range(top.n) if len(nb[c]) >= 2]
         pos = {h: k for k, h in enumerate(hb)}
-        slot = np.full((len(centres), 4), -1, int)            # directed-bond index per centre slot
+        slot = np.full((len(centres), 4), -1, int)  # directed-bond index per centre slot
         for r, c in enumerate(centres):
             for s_, a in enumerate(nb[c][:4]):
                 slot[r, s_] = pos[(c, a)]
-        pairs = []                                               # (centre row, slot a, slot b, angle index)
+        pairs = []  # (centre row, slot a, slot b, angle index)
         ang = np.asarray(top.angles).reshape(-1, 3)
         crow = {c: r for r, c in enumerate(centres)}
         for m_, (a, c, b) in enumerate(ang):
@@ -384,8 +408,9 @@ class AngleHybridSC(Family):
         pr = np.array(pairs, int).reshape(-1, 4)
         # per-centre stiffness of the relaxation kappa is tied by centre type: stored on each directed
         # bond of the centre (one key per directed bond, the centre's value is the mean)
-        return {"i": np.arange(len(hb)), "slot": slot, "pr": pr, "h1": h1, "h2": h2}, \
-               ["hybsc|" + keyf([c], "atom") + ">" + keyf([a], "atom") for c, a in hb]
+        return {"i": np.arange(len(hb)), "slot": slot, "pr": pr, "h1": h1, "h2": h2}, [
+            "hybsc|" + keyf([c], "atom") + ">" + keyf([a], "atom") for c, a in hb
+        ]
 
     def init_from_geometry(self, G, I, top):
         return {"lm": _hyb_init(G, top)}
@@ -398,12 +423,12 @@ class AngleHybridSC(Family):
         sl = np.maximum(slot, 0)
         z0 = jnp.where(mask, p["lm"][sl], 0.0)
         kap = 20.0 + jnp.exp(jnp.sum(jnp.where(mask, p["lkap"][sl], 0.0), 1) / jnp.maximum(mask.sum(1), 1))
-        kk = 0.5 * (jnp.abs(p["k"][I["h1"]]) + jnp.abs(p["k"][I["h2"]]))      # stiffness >= 0
+        kk = 0.5 * (jnp.abs(p["k"][I["h1"]]) + jnp.abs(p["k"][I["h2"]]))  # stiffness >= 0
         cth = G["cos"][pr[:, 3]]
         rows, sa, sb = pr[:, 0], pr[:, 1], pr[:, 2]
         fm = jnp.asarray(mask, float)
 
-        def resid(zf):                       # E = |r|^2: Gauss-Newton normal matrix J^T J >= kappa I
+        def resid(zf):  # E = |r|^2: Gauss-Newton normal matrix J^T J >= kappa I
             z = zf.reshape(z0.shape)
             m1, m2 = jnp.exp(z[rows, sa]), jnp.exp(z[rows, sb])
             d = (1.0 + jnp.sqrt(m1 * m2) * cth) / jnp.sqrt((1.0 + m1) * (1.0 + m2))
@@ -420,13 +445,14 @@ class AngleHybridSC(Family):
             return zs - jnp.clip(dz, -0.5, 0.5), None
 
         zstar, _ = jax.lax.scan(step, jax.lax.stop_gradient(z0).reshape(-1), None, length=self.newton_steps)
-        r = resid(jax.lax.stop_gradient(zstar))           # envelope theorem: no derivative through z*
+        r = resid(jax.lax.stop_gradient(zstar))  # envelope theorem: no derivative through z*
         return jnp.sum(r * r)
 
 
 class _TanhPair(Family):
     """Distance-only short-range term for topological pairs: E = sum_n C_n s^n, s = tanh((r - r0)/w),
     n = 1..4 (bounded at any distance)."""
+
     which = "13"
     width = 0.05
     params = {"C": ((4,), 0.0), "r0": ((), None)}
@@ -440,7 +466,7 @@ class _TanhPair(Family):
         if len(I["i"]) == 0:
             return 0.0
         s = jnp.tanh((G["r" + self.which][I["i"]] - p["r0"]) / self.width)
-        return jnp.sum(p["C"] * jnp.stack([s, s * s, s ** 3, s ** 4], -1))
+        return jnp.sum(p["C"] * jnp.stack([s, s * s, s**3, s**4], -1))
 
 
 @register
@@ -461,6 +487,7 @@ class _OverlapPair(Family):
     """Exchange-type repulsion from the overlap of the pGM Gaussian densities of a topological pair:
     E = A exp(-(b_ij r)^2), b_ij = 1/sqrt(2 (R_i^2 + R_j^2)) with the pGM radii (the same widths as the
     electrostatics); one amplitude per pair type."""
+
     which = "13"
     needs_radius = True
     params = {"A": ((), 0.0)}
@@ -473,7 +500,7 @@ class _OverlapPair(Family):
     def energy(self, G, dev, I, p):
         if len(I["i"]) == 0:
             return 0.0
-        return jnp.sum(p["A"] * jnp.exp(-(I["bij"] * G["r" + self.which][I["i"]]) ** 2))
+        return jnp.sum(p["A"] * jnp.exp(-((I["bij"] * G["r" + self.which][I["i"]]) ** 2)))
 
 
 @register

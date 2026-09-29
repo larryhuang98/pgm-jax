@@ -3,6 +3,7 @@ of MACE-OFF's training data (SPICE).  One task = one line of runs/bonded/dft_tas
     <name> <npz key> <start> <end>
     python scripts/bonded/dft_labels.py TASK_INDEX --threads 8
 Writes data/bonded/dft/<name>__<key>__<start>.npz; skips frames already done."""
+
 import argparse
 import json
 import os
@@ -26,19 +27,28 @@ if os.path.exists(out):
     raise SystemExit(0)
 src = "scan2d" if key.startswith("scan2d") else ("scan" if key.startswith("scan") else "md")
 if src == "scan2d":
-    fn = os.path.join(ROOT, "data/bonded/frames", f"{name}_{key}.npz"); X = np.load(fn)["X"]
+    fn = os.path.join(ROOT, "data/bonded/frames", f"{name}_{key}.npz")
+    X = np.load(fn)["X"]
 else:
     X = np.load(os.path.join(ROOT, "data/bonded/frames", f"{name}_{src}.npz"))[key]
 mol_info = json.load(open(os.path.join(ROOT, "data/bonded/molecules", f"{name}.json")))
 el, charge = mol_info["elements"], mol_info["charge"]
 
-os.chdir(os.environ.get("PSI_SCRATCH", "/tmp"))            # psi4 leaves psi.<pid>.clean files in the cwd
+os.chdir(os.environ.get("PSI_SCRATCH", "/tmp"))  # psi4 leaves psi.<pid>.clean files in the cwd
 import psi4  # noqa: E402
 
-psi4.set_memory(f"{a.memory} GB"); psi4.set_num_threads(a.threads)
+psi4.set_memory(f"{a.memory} GB")
+psi4.set_num_threads(a.threads)
 psi4.core.set_output_file(f"/tmp/larry_psi4_{os.getpid()}.out", False)
-psi4.set_options({"basis": "def2-tzvppd", "scf_type": "df", "d_convergence": 1e-8, "dft_spherical_points": 590,
-                  "dft_radial_points": 99})
+psi4.set_options(
+    {
+        "basis": "def2-tzvppd",
+        "scf_type": "df",
+        "d_convergence": 1e-8,
+        "dft_spherical_points": 590,
+        "dft_radial_points": 99,
+    }
+)
 E, G, D, idx, T = [], [], [], [], []
 for i in range(lo, min(hi, len(X))):
     t0 = time.time()
@@ -47,14 +57,27 @@ for i in range(lo, min(hi, len(X))):
     mol = psi4.geometry("\n".join(lines + ["symmetry c1", "no_reorient", "no_com"]))
     try:
         g, wfn = psi4.gradient("wb97m-d3bj", molecule=mol, return_wfn=True)
-    except Exception as exc:                        # SCF failure: record and move on
+    except Exception as exc:  # SCF failure: record and move on
         print("frame", i, "failed", repr(exc)[:120], flush=True)
         continue
     psi4.oeprop(wfn, "DIPOLE")
     dip = wfn.variable("SCF DIPOLE") if wfn.has_variable("SCF DIPOLE") else wfn.variable("CURRENT DIPOLE")
-    E.append(wfn.energy()); G.append(np.array(g)); D.append(np.array(dip).ravel()); idx.append(i); T.append(time.time() - t0)
-np.savez(out, name=name, key=key, index=np.array(idx), X=X[np.array(idx, int)], energy_Eh=np.array(E),
-         gradient_Eh_bohr=np.array(G), dipole_au=np.array(D), time_s=np.array(T),
-         level="wB97M-D3(BJ)/def2-TZVPPD")
+    E.append(wfn.energy())
+    G.append(np.array(g))
+    D.append(np.array(dip).ravel())
+    idx.append(i)
+    T.append(time.time() - t0)
+np.savez(
+    out,
+    name=name,
+    key=key,
+    index=np.array(idx),
+    X=X[np.array(idx, int)],
+    energy_Eh=np.array(E),
+    gradient_Eh_bohr=np.array(G),
+    dipole_au=np.array(D),
+    time_s=np.array(T),
+    level="wB97M-D3(BJ)/def2-TZVPPD",
+)
 os.system(f"rm -f /tmp/larry_psi4_{os.getpid()}.out")
 print(name, key, lo, hi, "done", len(idx), "frames, mean", np.mean(T) if T else 0, "s", flush=True)

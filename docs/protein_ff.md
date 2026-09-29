@@ -52,17 +52,27 @@ from pgm_jax.protein import ResidueLibrary, amber_template, load_amber
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate
 from pgm_jax.md.forcefield import MDSettings
 
-asys = load_amber("runs/protein/ubq.prmtop", "runs/protein/ubq.inpcrd",
-                  electrostatics=ResidueLibrary.load("pgm_residues.json"))   # or "placeholder"
+asys = load_amber(
+    "runs/protein/ubq.prmtop", "runs/protein/ubq.inpcrd", electrostatics=ResidueLibrary.load("pgm_residues.json")
+)  # or "placeholder"
 k = [i for i, m in enumerate(asys.molecules) if m.kind == "protein"][0]
-tpl = amber_template(asys.molecules[k], "runs/protein/ubq.prmtop")          # ff19SB-form bonded + CMAP
+tpl = amber_template(asys.molecules[k], "runs/protein/ubq.prmtop")  # ff19SB-form bonded + CMAP
 # or, with a trained network:  net, P = NNBonded.load("nnb.pkl")
 #                              tpl = FlexibleTemplate.from_network(net, P, asys.molecules[k].spec, lj14_scale=0.5)
-sim = FlexibleSimulation(asys.system(), asys.templates({k: tpl}), asys.system_positions(), asys.box,
-                         MDSettings(dipole_tol=1e-4), dt=0.002, ensemble="npt",   # 4 fs: see below
-                         constraints="h-bonds", hmr=3.024,     # or asys.hmr({"water": 4.0, "protein": 3.024})
-                         thermostat="bussi", tau_t=1.0)   # fastest with pGM (docs/thermostat_ideas.md)
-sim.minimize(300)            # after minimization, equilibrate with thermostat="langevin" (faster warm-up)
+sim = FlexibleSimulation(
+    asys.system(),
+    asys.templates({k: tpl}),
+    asys.system_positions(),
+    asys.box,
+    MDSettings(dipole_tol=1e-4),
+    dt=0.002,
+    ensemble="npt",  # 4 fs: see below
+    constraints="h-bonds",
+    hmr=3.024,  # or asys.hmr({"water": 4.0, "protein": 3.024})
+    thermostat="bussi",
+    tau_t=1.0,
+)  # fastest with pGM (docs/thermostat_ideas.md)
+sim.minimize(300)  # after minimization, equilibrate with thermostat="langevin" (faster warm-up)
 sim.run(500000, report=5000, traj=5000, prefix="ubq")
 ```
 
@@ -74,10 +84,11 @@ nonbonded settings, so both codes simulate the same system:
 
 ```python
 from pgm_jax.protein import pmemd_grid, pmemd_mdin, write_pgm_prmtop
-templates = asys.templates({k: tpl})                       # exactly what FlexibleSimulation gets
+
+templates = asys.templates({k: tpl})  # exactly what FlexibleSimulation gets
 write_pgm_prmtop(asys, "ubq_pgm.prmtop", templates, hmr=3.024)
-st = MDSettings(pme_grid=pmemd_grid(asys.box))             # a PME grid both codes accept
-open("min.in", "w").write(pmemd_mdin(st, asys.box, maxcyc=500))                      # tleap clashes
+st = MDSettings(pme_grid=pmemd_grid(asys.box))  # a PME grid both codes accept
+open("min.in", "w").write(pmemd_mdin(st, asys.box, maxcyc=500))  # tleap clashes
 open("heat.in", "w").write(pmemd_mdin(st, asys.box, nstlim=4000, dt=0.0005, tempi=0.0))
 open("md.in", "w").write(pmemd_mdin(st, asys.box, nstlim=500000, dt=0.002, irest=1))
 ```
@@ -177,10 +188,11 @@ built from the current positions, released in stages:
 
 ```python
 from pgm_jax.md.restraints import KCAL_A2, DihedralRestraint, harmonic
-x0, H0 = sim.positions_nm(), sim.state.box                   # e.g. after minimize()
-for k in (10.0, 5.0, 1.0, 0.1):                              # kcal/mol/A^2 on the heavy atoms
-    sim.set_restraints(asys.position_restraints(k * KCAL_A2, "heavy", x0, H0))   # scaling "com"
-    sim.run(25000, report=5000, prefix=f"eq_k{k:g}")         # log column erestraint
+
+x0, H0 = sim.positions_nm(), sim.state.box  # e.g. after minimize()
+for k in (10.0, 5.0, 1.0, 0.1):  # kcal/mol/A^2 on the heavy atoms
+    sim.set_restraints(asys.position_restraints(k * KCAL_A2, "heavy", x0, H0))  # scaling "com"
+    sim.run(25000, report=5000, prefix=f"eq_k{k:g}")  # log column erestraint
 sim.set_restraints(None)
 # a phi restraint (IUPAC sign, rad): atoms in system order, e.g. from prot.atom_names
 sim.set_restraints(DihedralRestraint([[c0, n1, ca1, c1]], harmonic(np.radians(-63.0)), k=50.0))
@@ -246,8 +258,8 @@ from pgm_jax.bonded import terms as T
 from pgm_jax.bonded.model import BondedModel, BondedSettings
 from pgm_jax.bonded.fit import Fitter
 
-st = BondedSettings(families=("nnb",), nn_basis=T.PROTEIN, lj14_scale=0.5)     # Amber forms + CMAP, residue context on
-model = BondedModel(fragment_specs, st)                     # capped dipeptides / tripeptides with pGM parameters
+st = BondedSettings(families=("nnb",), nn_basis=T.PROTEIN, lj14_scale=0.5)  # Amber forms + CMAP, residue context on
+model = BondedModel(fragment_specs, st)  # capped dipeptides / tripeptides with pGM parameters
 P = Fitter(model, data).fit(model.init_params(), adam_steps=3000, maxiter=4000)
 model.nnb.save("nnb.pkl", P["nnb"])
 ```
@@ -262,14 +274,14 @@ Resample when `n_eff` drops.
 from pgm_jax.ensemble import KARPLUS, Reweighting, backbone_torsions, karplus
 from pgm_jax.md.io import read_trajectory
 
-frames, _, _ = read_trajectory("prod.nc", atoms=protein_atoms)          # Amber NetCDF, A
-X = frames * 0.1                                                         # nm
+frames, _, _ = read_trajectory("prod.nc", atoms=protein_atoms)  # Amber NetCDF, A
+X = frames * 0.1  # nm
 # theta: the parameters being refined (here the CMAP coefficients); terms: the BondedTerms of the protein
 rw = Reweighting(lambda th, R: terms.bonded_energy(0, R, with_cmap(P, th)), th0, X, temperature=298.0)
-phi, psi = backbone_torsions(X, terms.mols[0].top)                       # (frames, residues), IUPAC sign
+phi, psi = backbone_torsions(X, terms.mols[0].top)  # (frames, residues), IUPAC sign
 J = karplus(phi, *KARPLUS["3J_HNHA_Vogeli2007"])
-loss, grad = rw.chi2_and_grad(th, [(J, J_exp, 0.5)])                     # (values, target, sigma)
-print(rw.n_eff(th))                                                      # resample when this drops
+loss, grad = rw.chi2_and_grad(th, [(J, J_exp, 0.5)])  # (values, target, sigma)
+print(rw.n_eff(th))  # resample when this drops
 ```
 
 ## Checks and numbers

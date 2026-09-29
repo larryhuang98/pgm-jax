@@ -32,6 +32,7 @@ Molecules are kept whole: positions are never wrapped atom by atom, only whole m
 shifted by lattice vectors.  Virtual sites (Molecule.vsites, md/vsites.py) are not integrated: they
 are rebuilt from their parents every step and their forces are spread to their parents.
 Units: nm, ps, amu, kJ/mol, K."""
+
 from __future__ import annotations
 
 import pickle
@@ -65,6 +66,7 @@ class FlexibleTemplate:
 
     def __init__(self, specs, settings: dict, P: dict, index: int = 0):
         from ..bonded.model import BondedSettings
+
         self.specs = [replace(s, top=None) for s in specs]
         self.settings = dict(settings)
         self.P = jax.tree_util.tree_map(np.asarray, P)
@@ -101,13 +103,25 @@ class FlexibleTemplate:
         settings: the BondedSettings the network was trained with (lj14_scale, lj_min_sep, elec, ...)."""
         from ..bonded.model import BondedSettings
         from ..bonded.topology import build_topology
+
         if spec.top is None:
             spec.top = build_topology(spec.elements, spec.bonds, (spec.bonds, spec.bond_orders), spec.ref_xyz * 10.0)
         C = net.coefficients(P, net.prepare(spec))
         c = net.config
-        st = BondedSettings(families=("nnb",), nn_width=c.width, nn_layers=c.layers, nn_ref=c.ref, nn_basis=c.basis,
-                            nn_b_span=c.b_span, nn_th_span=c.th_span, nn_out_scale=c.out_scale,
-                            nn_pgm_features=c.pgm_features, nn_table_depth=c.table_depth, nn_context=c.context, **settings)
+        st = BondedSettings(
+            families=("nnb",),
+            nn_width=c.width,
+            nn_layers=c.layers,
+            nn_ref=c.ref,
+            nn_basis=c.basis,
+            nn_b_span=c.b_span,
+            nn_th_span=c.th_span,
+            nn_out_scale=c.out_scale,
+            nn_pgm_features=c.pgm_features,
+            nn_table_depth=c.table_depth,
+            nn_context=c.context,
+            **settings,
+        )
         return cls([spec], asdict(st), {"nnb": {"coef": [C]}}, 0)
 
     @property
@@ -127,6 +141,7 @@ class FlexibleTemplate:
         """The bonded terms (BondedTerms: no gas-phase nonbonded setup, any molecule size)."""
         if self._terms is None:
             from ..bonded.model import BondedSettings, BondedTerms
+
             self._terms = BondedTerms([replace(s) for s in self.specs], BondedSettings(**self.settings))
         return self._terms
 
@@ -136,6 +151,7 @@ class FlexibleTemplate:
         intramolecular van der Waals), for reference energies of isolated molecules."""
         if self._model is None:
             from ..bonded.model import BondedModel, BondedSettings
+
             self._model = BondedModel([replace(s) for s in self.specs], BondedSettings(**self.settings))
         return self._model
 
@@ -175,9 +191,13 @@ class FlexibleTemplate:
                     cons.append((int(i), int(j), float(b0)))
         elif constraints != "none":
             raise ValueError("constraints: 'none' | 'h-bonds' | 'all-bonds'")
-        return MoleculeRule(bonds=[tuple(int(x) for x in b) for b in top.bonds], vdw="graph",
-                            lj_min_sep=int(self.settings.get("lj_min_sep", 4)),
-                            lj14_scale=float(self.settings.get("lj14_scale", 0.0)), constraints=tuple(cons))
+        return MoleculeRule(
+            bonds=[tuple(int(x) for x in b) for b in top.bonds],
+            vdw="graph",
+            lj_min_sep=int(self.settings.get("lj_min_sep", 4)),
+            lj14_scale=float(self.settings.get("lj14_scale", 0.0)),
+            constraints=tuple(cons),
+        )
 
     has_bonded = True
 
@@ -186,8 +206,10 @@ class FlexibleTemplate:
         st = self.terms.s
         for name in ("elec", "vdw", "gvdw_rep"):
             if getattr(st, name) != getattr(settings, name) and not (name == "gvdw_rep" and st.vdw != "gvdw"):
-                raise ValueError(f"template {self.name} was fitted with {name}={getattr(st, name)!r}, "
-                                 f"the MD settings have {getattr(settings, name)!r}")
+                raise ValueError(
+                    f"template {self.name} was fitted with {name}={getattr(st, name)!r}, "
+                    f"the MD settings have {getattr(settings, name)!r}"
+                )
 
     def bonded_energy(self, R, P=None):
         return self.terms.bonded_energy(self.index, R, jax.tree_util.tree_map(jnp.asarray, self.P if P is None else P))
@@ -208,6 +230,7 @@ class RigidTemplate:
     held by a constraint (from the geometry `xyz`, nm), no bonded terms, no intramolecular van der
     Waals (Amber's rigid water).  Virtual sites of the molecule (TIP4P's M site, TIP5P's lone pairs)
     come on top of the three atoms: they are placed, not constrained."""
+
     has_bonded = False
 
     def __init__(self, molecule, xyz=None, name: str | None = None):
@@ -217,8 +240,9 @@ class RigidTemplate:
         sites = {vs.site for vs in molecule.vsites}
         self.real_atoms = [a for a in range(self.n) if a not in sites]
         if len(self.real_atoms) > 3:
-            raise ValueError("RigidTemplate holds up to three atoms (plus virtual sites) by distances; "
-                             "use a FlexibleTemplate")
+            raise ValueError(
+                "RigidTemplate holds up to three atoms (plus virtual sites) by distances; use a FlexibleTemplate"
+            )
         x = np.asarray(xyz if xyz is not None else molecule.extra.get("xyz"), float) if self.n > 1 else np.zeros((1, 3))
         self.xyz = x.reshape(self.n, 3)
 
@@ -232,7 +256,7 @@ class RigidTemplate:
 
     def md_rule(self, constraints: str = "none") -> MoleculeRule:
         ra = self.real_atoms
-        pairs = [(i, j) for k, i in enumerate(ra) for j in ra[k + 1:]]
+        pairs = [(i, j) for k, i in enumerate(ra) for j in ra[k + 1 :]]
         cons = tuple((i, j, float(np.linalg.norm(self.xyz[i] - self.xyz[j]))) for i, j in pairs)
         return MoleculeRule(bonds=[], vdw="none", constraints=cons)
 
@@ -252,7 +276,8 @@ def _unwrap_bonded(x, H, bonds):
     Hinv = np.linalg.inv(H)
     nbr = [[] for _ in range(n)]
     for i, j in bonds:
-        nbr[int(i)].append(int(j)); nbr[int(j)].append(int(i))
+        nbr[int(i)].append(int(j))
+        nbr[int(j)].append(int(i))
     out = np.array(x, float)
     seen = np.zeros(n, bool)
     for s0 in range(n):
@@ -279,8 +304,9 @@ class FlexibleMolecules:
     neighbour-list-group centres, whole-molecule wrapping.  `templates[k]` belongs to
     `sys.molecules[k]` (same atom order); `topology` is the system's MDTopology."""
 
-    def __init__(self, sys: System, pos, H, templates, topology: MDTopology, masses=None,
-                 vsites: VirtualSites | None = None):
+    def __init__(
+        self, sys: System, pos, H, templates, topology: MDTopology, masses=None, vsites: VirtualSites | None = None
+    ):
         if len(templates) != sys.nmol:
             raise ValueError("one template per molecule")
         pos, H = np.asarray(pos, float), np.asarray(H, float)
@@ -294,7 +320,7 @@ class FlexibleMolecules:
         self.vsites = vsites
         if vsites is None:
             self.mass = jnp.asarray(m)[:, None]
-        else:                  # the integrator's masses: 1 at the sites, whose momenta are held at 0 (`real`)
+        else:  # the integrator's masses: 1 at the sites, whose momenta are held at 0 (`real`)
             self.real = jnp.asarray(vsites.real, jnp.float64)[:, None]
             self.mass = jnp.asarray(np.where(vsites.real, m, 1.0))[:, None]
         self.mmol = jax.ops.segment_sum(self.masses, self.mol, self.nmol)
@@ -310,8 +336,9 @@ class FlexibleMolecules:
             if tpl.has_bonded and molk.vsites:
                 sites = {vs.site for vs in molk.vsites}
                 if any(int(a) in sites for b in bonds for a in b):
-                    raise ValueError(f"template {tpl.name}: bonded terms involve virtual sites; "
-                                     "sites carry no bonded terms")
+                    raise ValueError(
+                        f"template {tpl.name}: bonded terms involve virtual sites; sites carry no bonded terms"
+                    )
             if tpl.has_bonded:
                 groups.setdefault(id(tpl), (tpl, []))[1].append(np.arange(sl.start, sl.stop))
         self.groups = [(tpl, jnp.asarray(np.array(rows))) for tpl, rows in groups.values()]
@@ -362,8 +389,15 @@ class FlexibleIntegrator(Integrator):
     Degrees of freedom: 3 per real atom minus one per constraint, minus 3 when the total momentum
     is conserved (NVE, Bussi; drawn momenta then have no net momentum, given ones are kept)."""
 
-    def __init__(self, ff: PGMForceField, flex: FlexibleMolecules, neighbors, dt: float = 0.0005,
-                 constraints: Constraints | None = None, **kw):
+    def __init__(
+        self,
+        ff: PGMForceField,
+        flex: FlexibleMolecules,
+        neighbors,
+        dt: float = 0.0005,
+        constraints: Constraints | None = None,
+        **kw,
+    ):
         self.flex = flex
         self.vsites = getattr(flex, "vsites", None)
         self.cons = constraints if (constraints is not None and constraints.nc) else None
@@ -379,15 +413,16 @@ class FlexibleIntegrator(Integrator):
         nbr = self.nb.update(nbr, pos, centers, box, force_rebuild)
         cand, ovf = self.nb.candidates(nbr, centers, box, pos)
         if self.alchemy is None:
-            res = self.ff.compute(pos, box, cand, induction, self.params, keep_geometry=self.keep_geometry,
-                                  efield=field)
-        else:                                      # Hamiltonian at the state's coupling lam (alchemy.py)
+            res = self.ff.compute(
+                pos, box, cand, induction, self.params, keep_geometry=self.keep_geometry, efield=field
+            )
+        else:  # Hamiltonian at the state's coupling lam (alchemy.py)
             res = self.alchemy.compute(self.ff, pos, box, cand, induction, self.params, lam)
         e_in, g_in = jax.value_and_grad(self.flex.energy)(pos)
         energy = dict(res.energy)
         energy["total"] = res.energy["total"] + e_in
         res = self._add_restraints(res._replace(energy=energy, overflow=res.overflow | ovf), pos, box, bias)
-        if self.vsites is not None:                          # site forces to the parents
+        if self.vsites is not None:  # site forces to the parents
             return self.vsites.spread(pos, box, res.forces - g_in), res, nbr
         return res.forces - g_in, res, nbr
 
@@ -404,7 +439,7 @@ class FlexibleIntegrator(Integrator):
     def init(self, pos, box, key, momentum=None, bias=None) -> MDState:
         box = jnp.asarray(box, jnp.float64)
         pos = jnp.asarray(pos, jnp.float64)
-        if self.cons is not None:                          # start on the constraint surface
+        if self.cons is not None:  # start on the constraint surface
             for _ in range(3):
                 pos = self.cons.positions(pos, pos)
         pos = self.place(pos, box)
@@ -412,7 +447,7 @@ class FlexibleIntegrator(Integrator):
         key, split = jax.random.split(key)
         zero = jnp.zeros_like(pos)
         dyn = Dynamics(pos, zero, zero, self.flex.mass, key)
-        if momentum is None and self.vsites is not None:     # real atoms only, zero total momentum
+        if momentum is None and self.vsites is not None:  # real atoms only, zero total momentum
             real = self.flex.real
             p = jnp.sqrt(self.flex.mass * self.kT) * jax.random.normal(split, pos.shape, jnp.float64) * real
             dyn = dyn.set(momentum=(p - jnp.sum(p, 0) / self.n_real) * real)
@@ -421,7 +456,7 @@ class FlexibleIntegrator(Integrator):
         else:
             p = jnp.asarray(momentum, jnp.float64)
             dyn = dyn.set(momentum=p if self.vsites is None else p * self.flex.real)
-        if self.momentum_conserved and momentum is None:   # drawn momenta: the 3 centre-of-mass dof carry no energy
+        if self.momentum_conserved and momentum is None:  # drawn momenta: the 3 centre-of-mass dof carry no energy
             m = self.flex.masses[:, None]
             dyn = dyn.set(momentum=dyn.momentum - m * jnp.sum(dyn.momentum, 0) / jnp.sum(m))
         if self.cons is not None:
@@ -429,10 +464,26 @@ class FlexibleIntegrator(Integrator):
         z = jnp.zeros((), jnp.float64)
         zi = jnp.zeros((), jnp.int32)
         dyn, aux = self._init_aux(dyn)
-        st = MDState(dyn=dyn, box=box, induction=self.ff.init_induction(), nbr=nbr, epot=z, elec=z, vdw=z,
-                     iters=zi, max_iters=zi, resid=z, step=zi, mc=jnp.zeros(4, jnp.int32),
-                     mc_dv=jnp.asarray(0.01 * float(volume(box)), jnp.float64), overflow=jnp.zeros((), bool),
-                     aux=aux, heat=z, cg_total=z, bias=self._init_bias(bias))
+        st = MDState(
+            dyn=dyn,
+            box=box,
+            induction=self.ff.init_induction(),
+            nbr=nbr,
+            epot=z,
+            elec=z,
+            vdw=z,
+            iters=zi,
+            max_iters=zi,
+            resid=z,
+            step=zi,
+            mc=jnp.zeros(4, jnp.int32),
+            mc_dv=jnp.asarray(0.01 * float(volume(box)), jnp.float64),
+            overflow=jnp.zeros((), bool),
+            aux=aux,
+            heat=z,
+            cg_total=z,
+            bias=self._init_bias(bias),
+        )
         return self.forces(field_state(st, self.efield), False)
 
     def _scaled(self, dyn: Dynamics):
@@ -441,10 +492,10 @@ class FlexibleIntegrator(Integrator):
         sm = jnp.sqrt(dyn.mass)
         q = dyn.position
         if self.cons is None:
-            project = lambda u: u                                      # noqa: E731
+            project = lambda u: u  # noqa: E731
         else:
-            project = lambda u: self.cons.momenta(q, u * sm, self.flex.masses) / sm   # noqa: E731
-        mask = None if self.vsites is None else jnp.broadcast_to(self.flex.real, dyn.momentum.shape)   # sites: no noise
+            project = lambda u: self.cons.momenta(q, u * sm, self.flex.masses) / sm  # noqa: E731
+        mask = None if self.vsites is None else jnp.broadcast_to(self.flex.real, dyn.momentum.shape)  # sites: no noise
         return dyn.momentum / sm, mask, (lambda v: dyn.set(momentum=v * sm)), project
 
     # ------------------------------------------------------------------ constrained steps (g-BAOAB)
@@ -476,13 +527,14 @@ class FlexibleIntegrator(Integrator):
         if self.ensemble == "nve":
             dyn = self._drift(dyn, dt, project=False)
         else:
-            dyn = self._drift(dyn, dt / 2)                  # projected: the O step books the heat of P p
+            dyn = self._drift(dyn, dt / 2)  # projected: the O step books the heat of P p
             dyn, aux, heat = self._o_step(dyn, aux, heat, dt, self.thermostat_kT(st))
             dyn = self._drift(dyn, dt / 2, project=False)
         if self.vsites is not None:
             dyn = dyn.set(position=self.vsites.place(dyn.position, st.box))
-        F, res, nbr = self._forces(dyn.position, st.box, st.induction, st.nbr, lam=st.lam, bias=st.bias,
-                                   field=self.field_at(st, st.step + 1))
+        F, res, nbr = self._forces(
+            dyn.position, st.box, st.induction, st.nbr, lam=st.lam, bias=st.bias, field=self.field_at(st, st.step + 1)
+        )
         st = self._with_result(st.set(dyn=dyn, aux=aux, heat=heat), F, res, nbr)
         st = st.set(dyn=self._kick(st.dyn, dt / 2), step=st.step + 1)
         if self.ensemble == "npt":
@@ -511,10 +563,15 @@ class FlexibleIntegrator(Integrator):
         ovf = ovf | ovf0
         kT = self.thermostat_kT(st)
         e_0 = st.epot
-        if self.ff.shadow:                         # iEL/0-SCF: converged energies at both volumes
+        if self.ff.shadow:  # iEL/0-SCF: converged energies at both volumes
             c0 = self.flex.list_centers(pos)
-            e_0 = self.ff.energy(pos, H, self.nb.candidates(st.nbr, c0, H, pos)[0], st.induction, self.params,
-                                 efield=field)[0] + self.flex.energy(pos) + self._restraint_energy(pos, H, st.bias)
+            e_0 = (
+                self.ff.energy(
+                    pos, H, self.nb.candidates(st.nbr, c0, H, pos)[0], st.induction, self.params, efield=field
+                )[0]
+                + self.flex.energy(pos)
+                + self._restraint_energy(pos, H, st.bias)
+            )
         w = (e_n - e_0) + self.pressure * dV - self.nmol * kT * jnp.log(jnp.maximum(Vn, 1e-12) / V)
         accept = (Vn > 0) & (jnp.log(jax.random.uniform(k2, dtype=jnp.float64)) < -w / kT)
         st = st.set(dyn=st.dyn.set(rng=key), overflow=st.overflow | ovf)
@@ -528,7 +585,9 @@ class FlexibleIntegrator(Integrator):
         mc = st.mc + jnp.array([1, 0, 1, 0], jnp.int32) + accept.astype(jnp.int32) * jnp.array([0, 1, 0, 1], jnp.int32)
         adapt = mc[2] >= 10
         rate = mc[3] / jnp.maximum(mc[2], 1)
-        dv = jnp.where(adapt & (rate < 0.25), st.mc_dv / 1.1, jnp.where(adapt & (rate > 0.75), st.mc_dv * 1.1, st.mc_dv))
+        dv = jnp.where(
+            adapt & (rate < 0.25), st.mc_dv / 1.1, jnp.where(adapt & (rate > 0.75), st.mc_dv * 1.1, st.mc_dv)
+        )
         dv = jnp.minimum(dv, 0.3 * volume(st.box))
         mc = jnp.where(adapt, mc.at[2].set(0).at[3].set(0), mc)
         return st.set(mc=mc, mc_dv=dv)
@@ -562,13 +621,37 @@ class FlexibleSimulation(Simulation):
     keywords of md/constraints.Constraints (n_iter, dense_max, tol, bucket); efield: an external
     electric field (md/efield.py: ExternalField or three numbers in V/nm)."""
 
-    def __init__(self, sys: System, templates, pos_nm, H_nm, settings: MDSettings = MDSettings(),
-                 dt: float = 0.0005, ensemble: str = "nvt", temperature: float = 298.0, gamma: float = 1.0,
-                 pressure: float = 1.0, barostat_interval: int = 100, seed: int = 0, vel_nm_ps=None,
-                 params=None, log=None, neighbor_list: str = "auto", r_margin: float = 0.05,
-                 constraints: str = "none", hmr=None, max_single: int | None = None,
-                 thermostat="langevin", tau_t: float = 1.0, restraints=None, alchemy=None, mts=None, bias=None,
-                 constraint_options: dict | None = None, efield=None):
+    def __init__(
+        self,
+        sys: System,
+        templates,
+        pos_nm,
+        H_nm,
+        settings: MDSettings = MDSettings(),
+        dt: float = 0.0005,
+        ensemble: str = "nvt",
+        temperature: float = 298.0,
+        gamma: float = 1.0,
+        pressure: float = 1.0,
+        barostat_interval: int = 100,
+        seed: int = 0,
+        vel_nm_ps=None,
+        params=None,
+        log=None,
+        neighbor_list: str = "auto",
+        r_margin: float = 0.05,
+        constraints: str = "none",
+        hmr=None,
+        max_single: int | None = None,
+        thermostat="langevin",
+        tau_t: float = 1.0,
+        restraints=None,
+        alchemy=None,
+        mts=None,
+        bias=None,
+        constraint_options: dict | None = None,
+        efield=None,
+    ):
         H = reduce_box(H_nm)
         check_box(H, settings.pair_cutoff + settings.skin)
         self.sys, self.settings, self.log = sys, settings, log
@@ -581,39 +664,62 @@ class FlexibleSimulation(Simulation):
         masses = hmr_masses(sys, hmr)
         self.vsites = VirtualSites.of(sys)
         self.flex = FlexibleMolecules(sys, pos_nm, H, templates, self.topology, masses, self.vsites)
-        self.rigid = self.flex                                   # wrap() / positions() used by the base driver
-        self.ff = PGMForceField(sys, H, settings, topology=self.topology, flux=ChargeFlux.from_templates(sys, templates))
+        self.rigid = self.flex  # wrap() / positions() used by the base driver
+        self.ff = PGMForceField(
+            sys, H, settings, topology=self.topology, flux=ChargeFlux.from_templates(sys, templates)
+        )
         self.ff.masses = jnp.asarray(masses)
-        self.constraints = Constraints(self.topology.constraints, self.topology.constraint_d0, masses,
-                                       **(constraint_options or {}))
+        self.constraints = Constraints(
+            self.topology.constraints, self.topology.constraint_d0, masses, **(constraint_options or {})
+        )
         self.r_list = self._r_list = self.flex.r_max + r_margin
         self._nb_mode = neighbor_list
         self._make_neighbors(H)
         pos0 = self.flex.pos0
         self._size_lists(pos0, H)
         integ, extra = FlexibleIntegrator, {}
-        if mts is not None:                                  # multiple time stepping: dt is the outer step
+        if mts is not None:  # multiple time stepping: dt is the outer step
             from .mts import MTSFlexibleIntegrator
+
             integ, extra = MTSFlexibleIntegrator, {"mts": mts}
-        self.integ = integ(self.ff, self.flex, self.nb, dt, constraints=self.constraints, ensemble=ensemble,
-                           temperature=temperature, gamma=gamma, pressure=pressure,
-                           barostat_interval=barostat_interval, params=params,
-                           thermostat=thermostat, tau_t=tau_t, restraints=restraints, alchemy=alchemy, bias=bias,
-                           efield=efield, **extra)
+        self.integ = integ(
+            self.ff,
+            self.flex,
+            self.nb,
+            dt,
+            constraints=self.constraints,
+            ensemble=ensemble,
+            temperature=temperature,
+            gamma=gamma,
+            pressure=pressure,
+            barostat_interval=barostat_interval,
+            params=params,
+            thermostat=thermostat,
+            tau_t=tau_t,
+            restraints=restraints,
+            alchemy=alchemy,
+            bias=bias,
+            efield=efield,
+            **extra,
+        )
         self.dt, self.ensemble, self.T0 = dt, ensemble, temperature
         mom = None if vel_nm_ps is None else self.flex.mass * jnp.asarray(vel_nm_ps)
         self.state = self.integ.init(pos0, H, jax.random.PRNGKey(seed), mom)
         self.time_ps = 0.0
         nflex = sum(1 for t in templates if t.has_bonded)
-        self._print(f"# pgm_jax MD: {sys.nmol} molecules ({nflex} flexible), {sys.n} atoms"
-                    f"{'' if self.vsites is None else f' ({self.vsites.n_sites} virtual sites)'}, "
-                    f"{self.topology.n_group} list groups, {self.constraints.nc} constraints, {ensemble.upper()}"
-                    f"{'' if self.integ.thermostat is None else ' (' + self.integ.thermostat.describe() + ')'}, "
-                    f"dt {dt * 1000:g} fs, {settings.precision} precision, PME grid {self.ff.pme.K} order "
-                    f"{settings.pme_order}, {settings.describe_cutoffs()}, {self.nb.kind} neighbour list (group radius "
-                    f"{self.r_list:.3f} nm), {settings.describe_induction()}, device {jax.devices()[0]}")
+        self._print(
+            f"# pgm_jax MD: {sys.nmol} molecules ({nflex} flexible), {sys.n} atoms"
+            f"{'' if self.vsites is None else f' ({self.vsites.n_sites} virtual sites)'}, "
+            f"{self.topology.n_group} list groups, {self.constraints.nc} constraints, {ensemble.upper()}"
+            f"{'' if self.integ.thermostat is None else ' (' + self.integ.thermostat.describe() + ')'}, "
+            f"dt {dt * 1000:g} fs, {settings.precision} precision, PME grid {self.ff.pme.K} order "
+            f"{settings.pme_order}, {settings.describe_cutoffs()}, {self.nb.kind} neighbour list (group radius "
+            f"{self.r_list:.3f} nm), {settings.describe_induction()}, device {jax.devices()[0]}"
+        )
         if self.constraints.nc:
-            self._print(f"# constraints ({constraints}): {self.constraints.describe()}; {self.integ.dof} degrees of freedom")
+            self._print(
+                f"# constraints ({constraints}): {self.constraints.describe()}; {self.integ.dof} degrees of freedom"
+            )
         if self.integ.restraints is not None:
             self._print(f"# restraints: {self.integ.restraints.describe()}")
         if self.ff.flux is not None:
@@ -664,7 +770,7 @@ class FlexibleSimulation(Simulation):
         self._size_lists(pos, box)
         self.integ.compile()
         self.state = self.integ.init(pos, box, jax.random.PRNGKey(seed), bias=st.bias)
-        if st.efield is not None:                              # keep a field amplitude set with set_field
+        if st.efield is not None:  # keep a field amplitude set with set_field
             self.state = self.integ.forces(self.state.set(efield=st.efield), False)
         out = {"steps": it + 1, "accepted": n_acc, "energy": E, "fmax": float(jnp.max(jnp.linalg.norm(F, axis=1)))}
         self._print(f"# minimised: {out}")
@@ -676,8 +782,9 @@ class FlexibleSimulation(Simulation):
         if mode == "auto":
             mode = "molecule" if MoleculeNeighbors.fits(H, s.pair_cutoff, s.skin, self._r_list) else "atom"
         if mode == "molecule":
-            self.nb = MoleculeNeighbors(self.topology.group, self.topology.n_group, self._r_list, H, s.pair_cutoff,
-                                        s.skin)
+            self.nb = MoleculeNeighbors(
+                self.topology.group, self.topology.n_group, self._r_list, H, s.pair_cutoff, s.skin
+            )
         else:
             self.nb = AtomNeighbors(self.sys.n, H, s.pair_cutoff, s.skin)
         self._nb_volume = float(volume(jnp.asarray(H)))
@@ -695,8 +802,10 @@ class FlexibleSimulation(Simulation):
         super()._advance(n)
         ext = float(self.flex.extent(self.state.dyn.position))
         if self.nb.kind == "molecule" and ext > self.r_list:
-            raise RuntimeError(f"an atom is {ext:.3f} nm from its group's centre, beyond the neighbour-list "
-                               f"radius {self.r_list:.3f} nm; increase r_margin")
+            raise RuntimeError(
+                f"an atom is {ext:.3f} nm from its group's centre, beyond the neighbour-list "
+                f"radius {self.r_list:.3f} nm; increase r_margin"
+            )
 
     def half_step_kinetic(self, st=None):
         """Kinetic energy (kJ/mol) as the mean of the two half-step values around the current step,
@@ -718,7 +827,8 @@ class FlexibleSimulation(Simulation):
                     F = cons.momenta(st.dyn.position, F, flex.masses)
                 if integ.vsites is not None:
                     F = F * flex.real
-                return integ.kinetic(st)[0] + integ.dt ** 2 / 8.0 * jnp.sum(F * F / flex.mass)
+                return integ.kinetic(st)[0] + integ.dt**2 / 8.0 * jnp.sum(F * F / flex.mass)
+
             self._half_ke_jit = jax.jit(f)
         return float(self._half_ke_jit(self.state if st is None else st))
 
@@ -727,13 +837,14 @@ class FlexibleSimulation(Simulation):
         out["temp_com"] = out.pop("temp_trans")
         out["temp_internal"] = out.pop("temp_rot")
         kh = self.half_step_kinetic()
-        if kh is not None:                      # at large dt the better kinetic temperature
+        if kh is not None:  # at large dt the better kinetic temperature
             out["temp_half"] = 2.0 * kh / (self.integ.dof * KB)
         if self.constraints.nc:
             st = self.state
             out["shake_err"] = float(self.constraints.violation(st.dyn.position))
-            out["rattle_err"] = float(self.constraints.velocity_violation(st.dyn.position, st.dyn.momentum,
-                                                                          self.flex.masses))
+            out["rattle_err"] = float(
+                self.constraints.velocity_violation(st.dyn.position, st.dyn.momentum, self.flex.masses)
+            )
         return out
 
     def _pressure(self, st):
@@ -741,10 +852,13 @@ class FlexibleSimulation(Simulation):
         c = self.flex.list_centers(pos)
         idx = self.nb.candidates(st.nbr, c, st.box, pos)[0]
         if self.integ.alchemy is None:
-            W = self.ff.strain_derivative(pos, st.box, idx, st.induction.mu, self.integ.params,
-                                          efield=self.integ.field_at(st, st.step))
+            W = self.ff.strain_derivative(
+                pos, st.box, idx, st.induction.mu, self.integ.params, efield=self.integ.field_at(st, st.step)
+            )
         else:
-            W = self.integ.alchemy.strain_derivative(self.ff, pos, st.box, idx, st.induction.mu, self.integ.params, st.lam)
+            W = self.integ.alchemy.strain_derivative(
+                self.ff, pos, st.box, idx, st.induction.mu, self.integ.params, st.lam
+            )
         W = W + self.integ.restraint_strain(pos, st.box, st.bias)
         ke_t = self.integ.kinetic(st)[1]
         return (2.0 * ke_t - jnp.trace(W)) / (3.0 * volume(st.box)) * 16.605390671738466
@@ -766,8 +880,9 @@ class FlexibleSimulation(Simulation):
 
 
 # ----------------------------------------------------------------------------- building a box
-def liquid_box(tpl: FlexibleTemplate, n_mol: int, density: float, seed: int = 0, min_dist: float = 0.22,
-               tries: int = 200):
+def liquid_box(
+    tpl: FlexibleTemplate, n_mol: int, density: float, seed: int = 0, min_dist: float = 0.22, tries: int = 200
+):
     """n_mol copies of the template's reference geometry, randomly rotated, on a cubic lattice of
     the given density (g/cm^3; start below the liquid density and let NPT compress).  Returns
     positions (n_mol * n_atoms, 3) nm and the box H (3, 3) nm; copies are re-drawn until no two
@@ -780,8 +895,8 @@ def liquid_box(tpl: FlexibleTemplate, n_mol: int, density: float, seed: int = 0,
     k = int(np.ceil(n_mol ** (1.0 / 3.0)))
     a = L / k
     sites = np.array([(i, j, l) for i in range(k) for j in range(k) for l in range(k)], float) * a + a / 2
-    if n_mol < k ** 3:                                  # spread over the whole box, not the first n_mol sites
-        sites = sites[np.sort(rng.choice(k ** 3, n_mol, replace=False))]
+    if n_mol < k**3:  # spread over the whole box, not the first n_mol sites
+        sites = sites[np.sort(rng.choice(k**3, n_mol, replace=False))]
     H = np.eye(3) * L
     placed = []
 
@@ -789,9 +904,13 @@ def liquid_box(tpl: FlexibleTemplate, n_mol: int, density: float, seed: int = 0,
         q = rng.normal(size=4)
         q /= np.linalg.norm(q)
         w, x, y, z = q
-        return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-                         [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-                         [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+        return np.array(
+            [
+                [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+            ]
+        )
 
     for s in sites:
         for _ in range(tries):
@@ -800,7 +919,7 @@ def liquid_box(tpl: FlexibleTemplate, n_mol: int, density: float, seed: int = 0,
             for other in placed:
                 d = y[:, None, :] - other[None, :, :]
                 d -= np.round(d / L) * L
-                if np.min(np.sum(d * d, -1)) < min_dist ** 2:
+                if np.min(np.sum(d * d, -1)) < min_dist**2:
                     ok = False
                     break
             if ok:

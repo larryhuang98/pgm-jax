@@ -1,6 +1,7 @@
 """Ensemble-gradient fitting (pgm_jax/fit): per-frame derivatives against finite differences with
 the induced dipoles re-solved, the fluctuation formulas, gas-phase properties, the LM step and the
 parameter covariance, and one iteration of LiquidFit end to end."""
+
 import json
 
 import jax
@@ -122,11 +123,17 @@ def test_batched_frames_equal_single_frames():
 def _synthetic_samples(F=400, n=3, seed=0, T=300.0):
     rng = np.random.default_rng(seed)
     x = rng.normal(size=(F, n))
-    fr = {"U": -1000 + 30 * x[:, 0] + rng.normal(size=F), "dU": 50 * x + rng.normal(size=(F, n)),
-          "V": 15.0 + 0.1 * rng.normal(size=F) + 0.05 * x[:, 1], "M": rng.normal(size=(F, 3)) * 0.3 + 0.1 * x[:, :1],
-          "dM": rng.normal(size=(F, 3, n)) * 0.1, "alpha": 0.6 + 0.01 * rng.normal(size=F),
-          "dalpha": 0.02 + 0.001 * rng.normal(size=(F, n)), "D": 0.05 + 0.001 * rng.normal(size=F),
-          "dD": 0.01 + 0.001 * rng.normal(size=(F, n))}
+    fr = {
+        "U": -1000 + 30 * x[:, 0] + rng.normal(size=F),
+        "dU": 50 * x + rng.normal(size=(F, n)),
+        "V": 15.0 + 0.1 * rng.normal(size=F) + 0.05 * x[:, 1],
+        "M": rng.normal(size=(F, 3)) * 0.3 + 0.1 * x[:, :1],
+        "dM": rng.normal(size=(F, 3, n)) * 0.1,
+        "alpha": 0.6 + 0.01 * rng.normal(size=F),
+        "dalpha": 0.02 + 0.001 * rng.normal(size=(F, n)),
+        "D": 0.05 + 0.001 * rng.normal(size=F),
+        "dD": 0.01 + 0.001 * rng.normal(size=(F, n)),
+    }
     return fr, LiquidSamples(fr, T, 512, 9000.0, nblocks=8)
 
 
@@ -135,13 +142,25 @@ def test_jacobians_are_the_fluctuation_formulas():
     beta = 1.0 / (KB * s.T)
     th0 = np.zeros(3)
     gas = lambda th: {"gas_energy": 5.0 + 2.0 * th[0], "gas_dipole": 1.8 + th[1], "gas_polarizability": 1.4 + th[2]}
-    obj = Objective([Target("density", 1.0), Target("hvap", 10.0), Target("eps", 70.0), Target("liquid_dipole", fit=False),
-                     Target("gas_dipole", 1.855)], ParameterSpace(_space_table(), [Param("q"), Param("cov"), Param("alpha")]),
-                    gas=gas)
+    obj = Objective(
+        [
+            Target("density", 1.0),
+            Target("hvap", 10.0),
+            Target("eps", 70.0),
+            Target("liquid_dipole", fit=False),
+            Target("gas_dipole", 1.855),
+        ],
+        ParameterSpace(_space_table(), [Param("q"), Param("cov"), Param("alpha")]),
+        gas=gas,
+    )
     est = obj.estimate(s, th0)
     dU = fr["dU"]
-    cov = lambda a: np.mean((a - a.mean(0))[:, None] * (dU - dU.mean(0)) if a.ndim == 1 else
-                            (a - a.mean(0))[:, :, None] * (dU - dU.mean(0))[:, None, :], axis=0)
+    cov = lambda a: np.mean(
+        (a - a.mean(0))[:, None] * (dU - dU.mean(0))
+        if a.ndim == 1
+        else (a - a.mean(0))[:, :, None] * (dU - dU.mean(0))[:, None, :],
+        axis=0,
+    )
     V, M = fr["V"], fr["M"]
     rho = 9000.0 / V * 1.66053906660e-3
     d_rho = -beta * cov(rho)
@@ -156,8 +175,9 @@ def test_jacobians_are_the_fluctuation_formulas():
     dMavg = fr["dM"].mean(0) - beta * cov(M)
     dV = -beta * cov(V)
     fl_num = M2.mean() - np.sum(M.mean(0) ** 2)
-    d_eps = 4 * np.pi * ((fr["dalpha"] / V[:, None]).mean(0) - beta * cov(aV)) + \
-        c * ((dM2avg - 2 * M.mean(0) @ dMavg) / V.mean() - fl_num / V.mean() ** 2 * dV)
+    d_eps = 4 * np.pi * ((fr["dalpha"] / V[:, None]).mean(0) - beta * cov(aV)) + c * (
+        (dM2avg - 2 * M.mean(0) @ dMavg) / V.mean() - fl_num / V.mean() ** 2 * dV
+    )
     eps = 1 + 4 * np.pi * aV.mean() + c * fl_num / V.mean()
     d_D = (fr["dD"].mean(0) - beta * cov(fr["D"])) / DEBYE_E_NM
     assert np.isclose(est.y[2], eps) and np.isclose(est.y[0], rho.mean())
@@ -187,7 +207,9 @@ def test_gas_phase_properties_and_the_md_monomer_energy():
     differences; values against the gas-phase ElecChannel."""
     m = water()
     t = np.radians(104.52 / 2)
-    x = np.array([[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]])
+    x = np.array(
+        [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
+    )
     sys = System([m])
     space = ParameterSpace.scales(sys.table, ["q", "cov", "alpha", "radius"])
     gp = GasPhase(m, x, sys.table, space)
@@ -213,9 +235,18 @@ def test_gas_phase_properties_and_the_md_monomer_energy():
 
 def _linear_estimate(obj, theta, y, J, cov, target, tol):
     m = len(y)
-    return Estimate(np.asarray(theta, float), [f"y{i}" for i in range(m)], np.asarray(y, float), np.asarray(J, float),
-                    np.asarray(cov, float), np.zeros_like(J), np.asarray(target, float), np.asarray(tol, float),
-                    np.ones(m), np.ones(m, bool))
+    return Estimate(
+        np.asarray(theta, float),
+        [f"y{i}" for i in range(m)],
+        np.asarray(y, float),
+        np.asarray(J, float),
+        np.asarray(cov, float),
+        np.zeros_like(J),
+        np.asarray(target, float),
+        np.asarray(tol, float),
+        np.ones(m),
+        np.ones(m, bool),
+    )
 
 
 def test_lm_step_trust_region_and_covariance_calibration():
@@ -228,26 +259,26 @@ def test_lm_step_trust_region_and_covariance_calibration():
     rng = np.random.default_rng(3)
     J = np.array([[1.0, 0.3], [0.2, -2.0], [0.5, 0.5]])
     sig = np.array([0.1, 0.2, 0.05])
-    Sy = np.diag(sig ** 2)
+    Sy = np.diag(sig**2)
     Sy[0, 2] = Sy[2, 0] = 0.3 * sig[0] * sig[2]
     true = np.array([0.03, -0.02])
     t = J @ true
     L = np.linalg.cholesky(Sy)
     ths = []
     for _ in range(4000):
-        y = L @ rng.normal(size=3)                     # measured at theta = 0
+        y = L @ rng.normal(size=3)  # measured at theta = 0
         est = _linear_estimate(obj, np.zeros(2), y, J, Sy, t, np.zeros(3))
         ths.append(obj.step(est, radius=np.inf)["delta"])
     ths = np.array(ths)
     C = obj.covariance(est)["C_theta"]
-    W = np.diag(1 / sig ** 2)
+    W = np.diag(1 / sig**2)
     C_ref = np.linalg.inv(J.T @ W @ J) @ J.T @ W @ Sy @ W @ J @ np.linalg.inv(J.T @ W @ J)
     assert np.allclose(C, C_ref, rtol=1e-4)
     assert np.allclose(np.cov(ths.T), C, rtol=0.1, atol=1e-9)
     assert np.allclose(ths.mean(0), true, atol=4 * np.sqrt(np.diag(C) / len(ths)))
     st = obj.step(est, radius=1e-5)
     assert st["size"] <= 1e-5 * (1 + 1e-6) and st["at_boundary"]
-    est0 = _linear_estimate(obj, np.zeros(2), np.zeros(3), J, np.diag(sig ** 2), t, np.zeros(3))
+    est0 = _linear_estimate(obj, np.zeros(2), np.zeros(3), J, np.diag(sig**2), t, np.zeros(3))
     assert np.allclose(obj.covariance(est0)["C_theta"], np.linalg.inv(J.T @ W @ J), rtol=1e-4)
 
 
@@ -255,17 +286,55 @@ def test_one_iteration_of_liquid_fit(tmp_path):
     """End to end on the small box (CPU, a few frames): JSON record with observables, Jacobian,
     step, predictions and uncertainties; resume picks up the next parameters."""
     from pgm_jax.fit.liquid import LiquidFit
+
     sys, pos, H = small_box(1)
     space = ParameterSpace.scales(sys.table, ["q", "lj_eps"])
     k = [i for i, m in enumerate(sys.molecules) if m.name == "WAT"][0]
     gas = GasPhase(sys.molecules[k], pos[sys.atom_slice(k)], sys.table, space)
     rdf = RDFSpec.by_type(sys, "OW", rmax=0.8, nbins=16)
-    obj = Objective([Target("density", 1.0, 0.01), Target("hvap", 10.0, 0.1), Target("eps", 70.0, 5.0),
-                     Target("gas_dipole", 2.0, 0.01), Target("rdf", None, fit=False)], space, gas=gas, rdf_r=rdf.r)
-    st = settings(cutoff=0.6, skin=0.1, pme_grid=(16, 16, 16), pme_order=6, ewald_beta=5.0, dipole_tol=1e-6,
-                  precision="double", peek=0.65, max_iter=100)
-    fit = LiquidFit(sys, pos, H, space, obj, settings=st, dt=0.001, equil_ps=0.02, prod_ps=0.08, every_ps=0.01,
-                    chunk=4, nblocks=4, rdf=rdf, prefix=str(tmp_path / "fit"), exact_every=2, bootstrap=5, log=None, tol=1e-8)
+    obj = Objective(
+        [
+            Target("density", 1.0, 0.01),
+            Target("hvap", 10.0, 0.1),
+            Target("eps", 70.0, 5.0),
+            Target("gas_dipole", 2.0, 0.01),
+            Target("rdf", None, fit=False),
+        ],
+        space,
+        gas=gas,
+        rdf_r=rdf.r,
+    )
+    st = settings(
+        cutoff=0.6,
+        skin=0.1,
+        pme_grid=(16, 16, 16),
+        pme_order=6,
+        ewald_beta=5.0,
+        dipole_tol=1e-6,
+        precision="double",
+        peek=0.65,
+        max_iter=100,
+    )
+    fit = LiquidFit(
+        sys,
+        pos,
+        H,
+        space,
+        obj,
+        settings=st,
+        dt=0.001,
+        equil_ps=0.02,
+        prod_ps=0.08,
+        every_ps=0.01,
+        chunk=4,
+        nblocks=4,
+        rdf=rdf,
+        prefix=str(tmp_path / "fit"),
+        exact_every=2,
+        bootstrap=5,
+        log=None,
+        tol=1e-8,
+    )
     th = fit.run(np.zeros(2), 1)
     d = json.load(open(tmp_path / "fit.json"))
     r = d["records"][0]
@@ -280,19 +349,48 @@ def test_nvt_replicas_are_ordered_by_replica(tmp_path):
     """NVT with batched replicas: frames of each replica contiguous (blocks never mix replicas),
     replicas independent (different trajectories), estimates finite."""
     from pgm_jax.fit.liquid import LiquidFit
+
     sys, pos, H = small_box(2)
     space = ParameterSpace.scales(sys.table, ["q"])
     obj = Objective([Target("energy", None, fit=False), Target("eps", None, fit=False)], space)
-    st = settings(cutoff=0.6, skin=0.1, pme_grid=(16, 16, 16), pme_order=6, ewald_beta=5.0, dipole_tol=1e-6,
-                  precision="double", peek=0.65, max_iter=100)
-    fit = LiquidFit(sys, pos, H, space, obj, settings=st, dt=0.001, equil_ps=0.01, prod_ps=0.03, every_ps=0.01,
-                    chunk=2, nblocks=2, prefix=str(tmp_path / "rep"), bootstrap=0, log=None, tol=1e-8,
-                    ensemble="nvt", replicas=2, equil_rep_ps=0.01, fixed=True)
+    st = settings(
+        cutoff=0.6,
+        skin=0.1,
+        pme_grid=(16, 16, 16),
+        pme_order=6,
+        ewald_beta=5.0,
+        dipole_tol=1e-6,
+        precision="double",
+        peek=0.65,
+        max_iter=100,
+    )
+    fit = LiquidFit(
+        sys,
+        pos,
+        H,
+        space,
+        obj,
+        settings=st,
+        dt=0.001,
+        equil_ps=0.01,
+        prod_ps=0.03,
+        every_ps=0.01,
+        chunk=2,
+        nblocks=2,
+        prefix=str(tmp_path / "rep"),
+        bootstrap=0,
+        log=None,
+        tol=1e-8,
+        ensemble="nvt",
+        replicas=2,
+        equil_rep_ps=0.01,
+        fixed=True,
+    )
     frames, _, info = fit.simulate(np.zeros(1), seed=3)
     assert info["frames"] == 6 and frames["U"].shape == (6,)
-    assert np.allclose(frames["V"], frames["V"][0])                              # NVT
+    assert np.allclose(frames["V"], frames["V"][0])  # NVT
     a, b = frames["U"][:3], frames["U"][3:]
-    assert not np.allclose(a, b)                                                 # independent replicas
+    assert not np.allclose(a, b)  # independent replicas
     assert np.all(np.abs(np.diff(a)) > 0)
 
 
@@ -303,8 +401,8 @@ def test_rdf_histogram_matches_numpy():
     o = pos[s.a]
     d = o[:, None, :] - o[None, :, :]
     Hn = np.asarray(H)
-    for c in (2, 1, 0):                                         # minimum image, reduced box
-        d = d - np.round(d[..., c:c + 1] / Hn[c, c]) * Hn[c]
+    for c in (2, 1, 0):  # minimum image, reduced box
+        d = d - np.round(d[..., c : c + 1] / Hn[c, c]) * Hn[c]
     r = np.linalg.norm(d, axis=-1)[np.triu_indices(len(o), 1)]
     cnt, edges = np.histogram(r, bins=s.nbins, range=(0, s.rmax))
     V = abs(np.linalg.det(Hn))
@@ -314,20 +412,22 @@ def test_rdf_histogram_matches_numpy():
 
 def test_thermal_expansion_and_compressibility_gradients():
     fr, s = _synthetic_samples()
-    obj = Objective([Target("alpha_p", None, fit=False), Target("kappa_t", None, fit=False)],
-                    ParameterSpace(_space_table(), [Param("q"), Param("cov"), Param("alpha")]))
+    obj = Objective(
+        [Target("alpha_p", None, fit=False), Target("kappa_t", None, fit=False)],
+        ParameterSpace(_space_table(), [Param("q"), Param("cov"), Param("alpha")]),
+    )
     est = obj.estimate(s, np.zeros(3))
     beta, kT, p = s.beta, KB * s.T, 1.0 / 16.605390671738466
     V, U, dU = fr["V"], fr["U"], fr["dU"]
     Hh = U + p * V
     m = lambda a: a.mean(0)
     cov = lambda a: m((a - m(a))[:, None] * (dU - m(dU)))
-    a_p = (m(V * Hh) - m(V) * m(Hh)) / (KB * s.T ** 2 * m(V))
+    a_p = (m(V * Hh) - m(V) * m(Hh)) / (KB * s.T**2 * m(V))
     k_t = (m(V * V) - m(V) ** 2) / (kT * m(V)) / 16.605390671738466
     dVH = m(V[:, None] * dU) - beta * cov(V * Hh)
     dV = -beta * cov(V)
     dH = m(dU) - beta * cov(Hh)
-    da = (dVH - dV * m(Hh) - m(V) * dH) / (KB * s.T ** 2 * m(V)) - a_p * dV / m(V)
+    da = (dVH - dV * m(Hh) - m(V) * dH) / (KB * s.T**2 * m(V)) - a_p * dV / m(V)
     dV2 = -beta * cov(V * V)
     dk = ((dV2 - 2 * m(V) * dV) / (kT * m(V)) - (m(V * V) - m(V) ** 2) / (kT * m(V) ** 2) * dV) / 16.605390671738466
     assert np.isclose(est.y[0], a_p) and np.isclose(est.y[1], k_t)

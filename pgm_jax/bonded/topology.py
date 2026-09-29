@@ -21,6 +21,7 @@ Peptides (found from the graph, no atom names needed; `peptide_backbone`):
   cmaps          (k, 5) C(i-1), N, CA, C, N(i+1) for every residue with both backbone torsions
                  phi = C(i-1)-N-CA-C and psi = N-CA-C-N(i+1)
 """
+
 from __future__ import annotations
 
 from collections import deque
@@ -28,13 +29,14 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-DENSE_MAX = 1000                     # atoms: dense graph-distance matrix and pairs15 up to this size
+DENSE_MAX = 1000  # atoms: dense graph-distance matrix and pairs15 up to this size
 
 
 def _neighbours(n, bonds):
     nbr = [[] for _ in range(n)]
     for i, j in bonds:
-        nbr[int(i)].append(int(j)); nbr[int(j)].append(int(i))
+        nbr[int(i)].append(int(j))
+        nbr[int(j)].append(int(i))
     return nbr
 
 
@@ -86,7 +88,8 @@ def _ring_bonds(bonds, nbr):
             for v in nbr[u]:
                 if {u, v} == {i, j} or v in seen:
                     continue
-                seen.add(v); stack.append(v)
+                seen.add(v)
+                stack.append(v)
         if j in seen:
             ring.add(frozenset((i, j)))
     return ring
@@ -181,9 +184,9 @@ class Topology:
     angles: np.ndarray
     propers: np.ndarray
     impropers: np.ndarray
-    dist: np.ndarray                     # (n, n) graph distances, or None above DENSE_MAX atoms
-    rigid_torsion: np.ndarray            # (nt,) bool: central bond in a ring or of order > 1
-    classes: list                         # symmetry class per atom (tying key base)
+    dist: np.ndarray  # (n, n) graph distances, or None above DENSE_MAX atoms
+    rigid_torsion: np.ndarray  # (nt,) bool: central bond in a ring or of order > 1
+    classes: list  # symmetry class per atom (tying key base)
     bond_bond: np.ndarray = field(default=None)
     bond_angle: np.ndarray = field(default=None)
     angle_angle: np.ndarray = field(default=None)
@@ -192,11 +195,11 @@ class Topology:
     aat: np.ndarray = field(default=None)
     pairs13: np.ndarray = field(default=None)
     pairs14: np.ndarray = field(default=None)
-    pairs15: np.ndarray = field(default=None)     # None above DENSE_MAX atoms
-    amber_impropers: np.ndarray = field(default=None)   # (k, 4) Amber-ordered impropers (centre third), from a prmtop
-    residue: np.ndarray = field(default=None)     # (n,) residue index (peptide_backbone)
-    backbone: np.ndarray = field(default=None)    # (k, 3) N, CA, C of every backbone unit
-    cmaps: np.ndarray = field(default=None)       # (m, 5) C(i-1), N, CA, C, N(i+1)
+    pairs15: np.ndarray = field(default=None)  # None above DENSE_MAX atoms
+    amber_impropers: np.ndarray = field(default=None)  # (k, 4) Amber-ordered impropers (centre third), from a prmtop
+    residue: np.ndarray = field(default=None)  # (n,) residue index (peptide_backbone)
+    backbone: np.ndarray = field(default=None)  # (k, 3) N, CA, C of every backbone unit
+    cmaps: np.ndarray = field(default=None)  # (m, 5) C(i-1), N, CA, C, N(i+1)
     near: dict = field(default=None, repr=False)  # {(i, j): d} for pairs within 3 bonds
 
     # ------------------------------------------------------------------ keys
@@ -235,11 +238,12 @@ def build_topology(elements, bonds, bond_orders=None, xyz=None, classes=None, de
     bidx = {tuple(b): k for k, b in enumerate(bonds)}
     bond_of = lambda i, j: bidx[tuple(sorted((i, j)))]
 
-    angles = [(i, j, k) for j in range(n) for a, i in enumerate(sorted(nbr[j])) for k in sorted(nbr[j])[a + 1:]]
+    angles = [(i, j, k) for j in range(n) for a, i in enumerate(sorted(nbr[j])) for k in sorted(nbr[j])[a + 1 :]]
     angles = np.array(angles, int).reshape(-1, 3)
     aidx = {}
     for m, (i, j, k) in enumerate(angles):
-        aidx[(i, j, k)] = m; aidx[(k, j, i)] = m
+        aidx[(i, j, k)] = m
+        aidx[(k, j, i)] = m
 
     propers, rigid = [], []
     for j, k in bonds:
@@ -259,7 +263,7 @@ def build_topology(elements, bonds, bond_orders=None, xyz=None, classes=None, de
             continue
         a, b, d = sorted(nbr[c])
         planar = True
-        if xyz is not None:            # sum of the three angles at the centre ~ 360 degrees
+        if xyz is not None:  # sum of the three angles at the centre ~ 360 degrees
             x = np.asarray(xyz)
             ang = 0.0
             for p, q in ((a, b), (b, d), (a, d)):
@@ -270,29 +274,43 @@ def build_topology(elements, bonds, bond_orders=None, xyz=None, classes=None, de
             impropers.append((c, a, b, d))
     impropers = np.array(impropers, int).reshape(-1, 4)
 
-    top = Topology(n=n, elements=list(elements), bonds=bonds, angles=angles, propers=propers,
-                   impropers=impropers, dist=D, rigid_torsion=np.array(rigid, bool),
-                   classes=classes or atom_classes(elements, [tuple(b) for b in bonds]), near=near)
+    top = Topology(
+        n=n,
+        elements=list(elements),
+        bonds=bonds,
+        angles=angles,
+        propers=propers,
+        impropers=impropers,
+        dist=D,
+        rigid_torsion=np.array(rigid, bool),
+        classes=classes or atom_classes(elements, [tuple(b) for b in bonds]),
+        near=near,
+    )
     top.bond_bond = np.array([(bond_of(i, j), bond_of(j, k)) for i, j, k in angles], int).reshape(-1, 2)
-    top.bond_angle = np.array([(bond_of(a_[0], a_[1]), m) for m, (i, j, k) in enumerate(angles)
-                               for a_ in ((i, j), (j, k))], int).reshape(-1, 2)
+    top.bond_angle = np.array(
+        [(bond_of(a_[0], a_[1]), m) for m, (i, j, k) in enumerate(angles) for a_ in ((i, j), (j, k))], int
+    ).reshape(-1, 2)
     by_centre = {}
     for m, (i, j, k) in enumerate(angles):
         by_centre.setdefault(int(j), []).append(m)
     aa = []
-    for ms in by_centre.values():                       # angle pairs share their centre
+    for ms in by_centre.values():  # angle pairs share their centre
         for p, m1 in enumerate(ms):
             i1, _, k1 = angles[m1]
-            for m2 in ms[p + 1:]:
+            for m2 in ms[p + 1 :]:
                 i2, _, k2 = angles[m2]
                 if len({i1, k1} & {i2, k2}) == 1:
                     aa.append((m1, m2))
     top.angle_angle = np.array(sorted(aa), int).reshape(-1, 2)
-    top.torsion_bond = np.array([(t, bond_of(*p)) for t, (i, j, k, l) in enumerate(propers)
-                                 for p in ((i, j), (j, k), (k, l))], int).reshape(-1, 2)
-    top.torsion_angle = np.array([(t, aidx[a_]) for t, (i, j, k, l) in enumerate(propers)
-                                  for a_ in ((i, j, k), (j, k, l))], int).reshape(-1, 2)
-    top.aat = np.array([(t, aidx[(i, j, k)], aidx[(j, k, l)]) for t, (i, j, k, l) in enumerate(propers)], int).reshape(-1, 3)
+    top.torsion_bond = np.array(
+        [(t, bond_of(*p)) for t, (i, j, k, l) in enumerate(propers) for p in ((i, j), (j, k), (k, l))], int
+    ).reshape(-1, 2)
+    top.torsion_angle = np.array(
+        [(t, aidx[a_]) for t, (i, j, k, l) in enumerate(propers) for a_ in ((i, j, k), (j, k, l))], int
+    ).reshape(-1, 2)
+    top.aat = np.array([(t, aidx[(i, j, k)], aidx[(j, k, l)]) for t, (i, j, k, l) in enumerate(propers)], int).reshape(
+        -1, 3
+    )
     for name, d in (("pairs13", 2), ("pairs14", 3)):
         pp = sorted(p for p, dd in near.items() if dd == d)
         setattr(top, name, np.array(pp, int).reshape(-1, 2))

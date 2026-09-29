@@ -11,13 +11,15 @@ to make them for a new molecule.  The fit uses pGM electrostatics with all pairs
 pairs on, i.e. exactly the model the MD engine runs, so the template is MD-ready.  With --flux the
 charges and covalent dipoles depend on the bond lengths (BondedSettings.flux; md/flux.py runs it in
 MD); --wmu weights the gas-phase dipoles in the loss, which the flux parameters mostly affect."""
+
 import argparse
 import os
 import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "scripts/bonded"))
 import jax
 
 jax.config.update("jax_enable_x64", True)
@@ -50,8 +52,10 @@ fit = Fitter(model, {0: {"train": data[0]["train"], "test": data[0]["test"]}}, w
 t0 = time.time()
 P = fit.fit(model.init_params(), maxiter=a.maxiter, verbose=False)
 m = fit.metrics(P, "test")[0]
-print(f"{a.name}: {len(fams)} families, fit {time.time() - t0:.0f} s; 298 K test frames: "
-      + ", ".join(f"{k} {v:.3f}" for k, v in m.items() if isinstance(v, float)))
+print(
+    f"{a.name}: {len(fams)} families, fit {time.time() - t0:.0f} s; 298 K test frames: "
+    + ", ".join(f"{k} {v:.3f}" for k, v in m.items() if isinstance(v, float))
+)
 out = a.out or os.path.join(ROOT, f"runs/flex/{a.name}.flex")
 os.makedirs(os.path.dirname(out), exist_ok=True)
 FlexibleTemplate.from_fit(model, P).save(out)

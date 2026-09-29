@@ -12,6 +12,7 @@ Amber maps are rougher (ff19SB's alanine map: rms 0.43 kcal/mol from order 3, 0.
 C(i-1), N, CA, C, N(i+1) of Topology.cmaps (found from the bond graph); the tying key is the
 oriented quintuple ("cmap" kind), so typed fits get one map per residue environment.
 Units: kJ/mol, rad."""
+
 from __future__ import annotations
 
 import jax.numpy as jnp
@@ -54,12 +55,15 @@ def cmap_grid(coef, order: int = ORDER, resolution: int = 24):
 
 def phi_psi(R, q):
     """phi, psi (rad) of the quintuples q (k, 5) in frame R (n, 3)."""
-    return (_dihedral(R[q[:, 0]], R[q[:, 1]], R[q[:, 2]], R[q[:, 3]]),
-            _dihedral(R[q[:, 1]], R[q[:, 2]], R[q[:, 3]], R[q[:, 4]]))
+    return (
+        _dihedral(R[q[:, 0]], R[q[:, 1]], R[q[:, 2]], R[q[:, 3]]),
+        _dihedral(R[q[:, 1]], R[q[:, 2]], R[q[:, 3]], R[q[:, 4]]),
+    )
 
 
 class CMAPFourier(Family):
     """Fourier backbone map of order 3 (48 coefficients); CMAPFourier6: order 6 (168)."""
+
     name = "cmap"
     order = ORDER
     params = {"cm": ((len(basis_orders(ORDER)),), 0.0)}

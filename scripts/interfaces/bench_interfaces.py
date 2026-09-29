@@ -10,6 +10,7 @@ precision, 9 A cutoff, PME 48^3 per 512 waters, order 6, dipole tol 1e-5, NVE, d
 
     python scripts/interfaces/bench_interfaces.py --replicate 1 2 --steps 2000 --out validation/interfaces/bench.json
 """
+
 import argparse
 import json
 import os
@@ -83,7 +84,7 @@ def main():
         r["engine_ms"] = 1e3 * (time.perf_counter() - t0) / 250
         r["engine_cg_per_call"] = eng.stats["cg"] / 250
         for x in fr[:10]:
-            eng.compute(x, H, virial=True)                 # compile the virial variant
+            eng.compute(x, H, virial=True)  # compile the virial variant
         t0 = time.perf_counter()
         for x in fr[50:]:
             eng.compute(x, H, virial=True)
@@ -94,6 +95,7 @@ def main():
             from ase.md.verlet import VelocityVerlet
 
             from pgm_jax.interfaces.ase import PGMCalculator, atoms_from_system, rigid_constraints
+
             e2 = PGMEngine(sysm, pos0, H, s)
             atoms = atoms_from_system(sysm, pos0, H)
             atoms.set_constraint(rigid_constraints(sysm))
@@ -119,6 +121,7 @@ def main():
                 import cProfile
                 import io
                 import pstats
+
                 pr = cProfile.Profile()
                 pr.enable()
                 dyn.run(100)
@@ -132,6 +135,7 @@ def main():
                 from openmm import unit
 
                 from pgm_jax.interfaces.openmm import PGMOpenMM
+
                 names = [openmm.Platform.getPlatform(i).getName() for i in range(openmm.Platform.getNumPlatforms())]
                 for p in [x for x in ("CPU", "CUDA") if x in names]:
                     e3 = PGMEngine(sysm, pos0, H, s)
@@ -139,7 +143,7 @@ def main():
                     integ = openmm.VerletIntegrator(a.dt * unit.picoseconds)
                     try:
                         ctx = openmm.Context(om.system(rigid=True), integ, openmm.Platform.getPlatformByName(p))
-                    except Exception as err:          # noqa: BLE001  (CUDA next to JAX on an exclusive GPU)
+                    except Exception as err:  # noqa: BLE001  (CUDA next to JAX on an exclusive GPU)
                         r[f"openmm_{p}"] = str(err)
                         continue
                     ctx.setPeriodicBoxVectors(*[openmm.Vec3(*v) for v in om.box()])

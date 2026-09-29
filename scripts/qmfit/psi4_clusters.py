@@ -17,6 +17,7 @@ Jobs (all counterpoise corrected in the basis of the whole record, frozen core, 
 
     python scripts/qmfit/psi4_clusters.py GEOMS OUTDIR WORKER --threads 16 --memory 30 [--only ids]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -46,13 +47,13 @@ def frags_of(rec):
     X = rec["xyz_A"]
     el = rec.get("elements") or ["O", "H", "H"] * rec["n"]
     na = rec.get("atoms_per_mol", 3)
-    return [(el[na * k:na * k + na], X[na * k:na * k + na]) for k in range(rec["n"])]
+    return [(el[na * k : na * k + na], X[na * k : na * k + na]) for k in range(rec["n"])]
 
 
 def run_job(psi4, rec, job):
     frags = frags_of(rec)
     n = len(frags)
-    psi4.core.clean_options()                                  # options persist between jobs
+    psi4.core.clean_options()  # options persist between jobs
     base = {"scf_type": "df", "freeze_core": True, "e_convergence": 1e-9, "d_convergence": 1e-9}
     parts = job.split(":")
     kind = parts[0]
@@ -61,8 +62,11 @@ def run_job(psi4, rec, job):
         psi4.set_options(dict(base, basis=SAPT_BASIS))
         mol = psi4.geometry(mol_string(frags, set(range(n))))
         psi4.energy("sapt0", molecule=mol)
-        res = {k: float(v) for k, v in psi4.core.variables().items() if "SAPT" in k and not hasattr(v, "np")
-               and getattr(v, "ndim", 0) == 0}
+        res = {
+            k: float(v)
+            for k, v in psi4.core.variables().items()
+            if "SAPT" in k and not hasattr(v, "np") and getattr(v, "ndim", 0) == 0
+        }
     elif kind in ("mp2", "ccsdt"):
         basis = parts[1]
         opts = dict(base, basis=basis, mp2_type="df")
@@ -95,17 +99,23 @@ def run_job(psi4, rec, job):
         for S in subsets:
             mol = psi4.geometry(mol_string(frags, set(S)))
             psi4.energy(method, molecule=mol)
-            res[",".join(map(str, S))] = {"scf": float(psi4.variable("SCF TOTAL ENERGY")),
-                                          "mp2": float(psi4.variable("MP2 TOTAL ENERGY"))}
+            res[",".join(map(str, S))] = {
+                "scf": float(psi4.variable("SCF TOTAL ENERGY")),
+                "mp2": float(psi4.variable("MP2 TOTAL ENERGY")),
+            }
             psi4.core.clean()
-    elif kind == "props":                                       # monomer dipole and static polarizability
+    elif kind == "props":  # monomer dipole and static polarizability
         method, basis = parts[1], parts[2]
         psi4.set_options({"basis": basis, "freeze_core": True, "e_convergence": 1e-10, "d_convergence": 1e-10})
         mol = psi4.geometry(mol_string(frags, set(range(n))))
         psi4.properties(method, properties=["dipole", "polarizability"], molecule=mol)
         import numpy as np
-        res = {k: np.asarray(v.np if hasattr(v, "np") else v, float).tolist() for k, v in psi4.core.variables().items()
-               if "DIPOLE" in k or "POLARIZABILITY" in k or "TOTAL ENERGY" in k}
+
+        res = {
+            k: np.asarray(v.np if hasattr(v, "np") else v, float).tolist()
+            for k, v in psi4.core.variables().items()
+            if "DIPOLE" in k or "POLARIZABILITY" in k or "TOTAL ENERGY" in k
+        }
     else:
         raise ValueError(job)
     return res
@@ -113,9 +123,10 @@ def run_job(psi4, rec, job):
 
 def main(a):
     import psi4
+
     recs = json.load(open(a.geoms))["records"]
     tasks = [(r, j) for r in recs for j in r["jobs"] if not a.only or r["id"] in a.only.split(",")]
-    tasks.sort(key=lambda t: -t[0]["n"])                      # large clusters first
+    tasks.sort(key=lambda t: -t[0]["n"])  # large clusters first
     os.makedirs(os.path.join(a.out, "claims"), exist_ok=True)
     done = set()
     for fn in os.listdir(a.out):
@@ -158,8 +169,12 @@ def main(a):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("geoms"); ap.add_argument("out"); ap.add_argument("worker")
-    ap.add_argument("--threads", type=int, default=16); ap.add_argument("--memory", type=float, default=30.0)
-    ap.add_argument("--stale", type=float, default=12.0); ap.add_argument("--only", default="")
+    ap.add_argument("geoms")
+    ap.add_argument("out")
+    ap.add_argument("worker")
+    ap.add_argument("--threads", type=int, default=16)
+    ap.add_argument("--memory", type=float, default=30.0)
+    ap.add_argument("--stale", type=float, default=12.0)
+    ap.add_argument("--only", default="")
     ap.add_argument("--quiet", action="store_true")
     main(ap.parse_args())

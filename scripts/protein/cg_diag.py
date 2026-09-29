@@ -4,6 +4,7 @@ atom that holds it.  Shows whether the predictor start or the convergence rate i
 
     python scripts/protein/cg_diag.py runs/protein/ubq.prmtop runs/protein/ubq.inpcrd [--dt 0.002]
 """
+
 import argparse
 import os
 import sys
@@ -28,8 +29,16 @@ pr, rs, dt = args.prmtop, args.inpcrd, args.dt
 asys = load_amber(pr, rs)
 prot = [k for k, m in enumerate(asys.molecules) if m.kind == "protein"]
 tpl = {k: amber_template(asys.molecules[k], pr) for k in prot}
-sim = FlexibleSimulation(asys.system(), asys.templates(tpl), asys.system_positions(), asys.box,
-                         MDSettings(dipole_tol=1e-5), dt=dt, constraints="h-bonds", hmr=3.024)
+sim = FlexibleSimulation(
+    asys.system(),
+    asys.templates(tpl),
+    asys.system_positions(),
+    asys.box,
+    MDSettings(dipole_tol=1e-5),
+    dt=dt,
+    constraints="h-bonds",
+    hmr=3.024,
+)
 sim.minimize(300)
 sim._advance(300)
 S0 = sim.state
@@ -63,6 +72,7 @@ def label(i):
     j = i - offs[m]
     return f"{L.kind}:{L.residue_names[j]}{int(L.residue_index[j])}:{L.atom_names[j]} alpha={float(P['alpha'][i]):.3g}"
 
+
 groups = {k: np.nonzero(kind == k)[0] for k in ("protein", "water", "ion")}
 print("atoms:", {k: len(v) for k, v in groups.items()}, " mean|alpha b|", norm)
 aab = np.abs(np.asarray(ab)).max(1)
@@ -75,11 +85,15 @@ r = b - A(x)
 z = r * a.astype(cd)
 pp = z
 rz = jnp.sum(r * z)
+
+
 def report(it, r):
     e = np.abs(np.asarray(r * a.astype(cd), np.float64)).max(1) / norm
     parts = "  ".join(f"{k} {e[v].max():.1e}" for k, v in groups.items() if len(v))
     i = int(np.argmax(e))
     print(f"it {it:2d}: max {e.max():.2e} rms {np.sqrt(np.mean(e**2)):.1e} | {parts} | argmax {label(i)}")
+
+
 report(0, r)
 for it in range(1, args.iterations + 1):
     Ap = A(pp)

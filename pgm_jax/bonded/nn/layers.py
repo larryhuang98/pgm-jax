@@ -1,5 +1,6 @@
 """Small pure-JAX building blocks of the neural bonded model: two-layer MLPs and message passing
 over the bond graph (parameters are plain dicts of arrays, so they are pytrees for the fitter)."""
+
 from __future__ import annotations
 
 import math
@@ -12,8 +13,11 @@ def init_mlp(key, n_in: int, n_hid: int, n_out: int, zero_out: bool = False, sca
     """Two-layer MLP; with zero_out the output layer starts at zero (the head predicts nothing)."""
     k1, k2 = jax.random.split(key)
     w1 = jax.random.normal(k1, (n_in, n_hid)) * math.sqrt(2.0 / (n_in + n_hid))
-    w2 = jnp.zeros((n_hid, n_out)) if zero_out else \
-        jax.random.normal(k2, (n_hid, n_out)) * math.sqrt(2.0 / (n_hid + n_out)) * scale_out
+    w2 = (
+        jnp.zeros((n_hid, n_out))
+        if zero_out
+        else jax.random.normal(k2, (n_hid, n_out)) * math.sqrt(2.0 / (n_hid + n_out)) * scale_out
+    )
     return {"w1": w1, "b1": jnp.zeros(n_hid), "w2": w2, "b2": jnp.zeros(n_out)}
 
 
@@ -25,8 +29,10 @@ def init_message_passing(keys: list, n_feat: int, width: int, layers: int, n_edg
     """Embedding MLP and `layers` message-passing layers (keys are popped from the list)."""
     P = {"embed": init_mlp(keys.pop(), n_feat, width, width)}
     for l in range(layers):
-        P[f"mp{l}"] = {"msg": init_mlp(keys.pop(), 2 * width + n_edge, width, width, scale_out=0.3),
-                       "upd": init_mlp(keys.pop(), 2 * width, width, width, scale_out=0.3)}
+        P[f"mp{l}"] = {
+            "msg": init_mlp(keys.pop(), 2 * width + n_edge, width, width, scale_out=0.3),
+            "upd": init_mlp(keys.pop(), 2 * width, width, width, scale_out=0.3),
+        }
     return P
 
 

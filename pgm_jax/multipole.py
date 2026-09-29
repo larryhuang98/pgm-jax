@@ -46,6 +46,7 @@ part, and `cbv_quadrupole_terms(..., terminal13=True)` adds its 1-3 neighbours a
 partners (carbonyl O: lone-pair plane vs pi axis).  Like the covalent dipoles, the quadrupoles
 follow the geometry without local frames and are smooth in the coordinates.  Units: e, nm, e nm^2.
 """
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -89,7 +90,8 @@ def cbv_quadrupole_terms(mol, pairs: bool = True, terminal13: bool = True, t: fl
             partners[i].append(j)
     nbr = [set() for _ in range(mol.n)]
     for a, b in mol.bonds:
-        nbr[a].add(b); nbr[b].add(a)
+        nbr[a].add(b)
+        nbr[b].add(a)
     terms = []
     for i in range(mol.n):
         P = list(partners[i])
@@ -98,7 +100,7 @@ def cbv_quadrupole_terms(mol, pairs: bool = True, terminal13: bool = True, t: fl
         for a, j in enumerate(P):
             terms.append((i, j, j, t))
             if pairs:
-                terms += [(i, j, k, t) for k in P[a + 1:]]
+                terms += [(i, j, k, t) for k in P[a + 1 :]]
     return terms
 
 

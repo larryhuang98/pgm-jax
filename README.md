@@ -77,23 +77,25 @@ pass `Molecule(keys={quantity: [one key per atom or per covalent dipole]})`. Bui
 `ParamTable` from all molecules and pass it to every `System` that should share parameters.
 
 ```python
-import jax, jax.numpy as jnp; jax.config.update("jax_enable_x64", True)
+import jax, jax.numpy as jnp
+
+jax.config.update("jax_enable_x64", True)
 from pgm_jax import ElecChannel, LJChannel, Model, ParamTable, PeriodicModel, System, read_prmtop_pgm
 
-w = read_prmtop_pgm("rayl_512_v2.prmtop")[0]           # pGM3P-25 water: pGM + LJ + bonds + masses
+w = read_prmtop_pgm("rayl_512_v2.prmtop")[0]  # pGM3P-25 water: pGM + LJ + bonds + masses
 sys = System([w] * 3)
-P = sys.table.initial()                                  # {"q": (2,), "cov": (2,), "alpha": (2,), ...}
+P = sys.table.initial()  # {"q": (2,), "cov": (2,), "alpha": (2,), ...}
 model = Model([ElecChannel(), LJChannel()])
-E = model.energy_fn(sys)                                 # E(pos, P) -> {"perm", "ind", "vdw", "total"} kJ/mol
-dE_dP = jax.grad(lambda p: E(pos, p)["total"])(P)        # same pytree as P
-F = model.forces_fn(sys)(pos, P)                         # kJ/mol/nm
-dL_dP = jax.grad(lambda p: jnp.sum((model.forces_fn(sys)(pos, p) - F_ref) ** 2))(P)   # force matching
+E = model.energy_fn(sys)  # E(pos, P) -> {"perm", "ind", "vdw", "total"} kJ/mol
+dE_dP = jax.grad(lambda p: E(pos, p)["total"])(P)  # same pytree as P
+F = model.forces_fn(sys)(pos, P)  # kJ/mol/nm
+dL_dP = jax.grad(lambda p: jnp.sum((model.forces_fn(sys)(pos, p) - F_ref) ** 2))(P)  # force matching
 
 box = PeriodicModel(sys512, H, pos512, rc=1.0, b0=3.8, lj_lrc=True)
-box.energy(pos512, P, H)                                 # H: lattice vectors as rows (nm)
-jax.grad(lambda h: box.energy(pos512, P, h)["total"])(H) # box derivative
-box.pressure(pos512, P)                                  # static pressure (bar), molecular virial
-box.elec.induced_dipoles(pos512, P)                      # differentiable too
+box.energy(pos512, P, H)  # H: lattice vectors as rows (nm)
+jax.grad(lambda h: box.energy(pos512, P, h)["total"])(H)  # box derivative
+box.pressure(pos512, P)  # static pressure (bar), molecular virial
+box.elec.induced_dipoles(pos512, P)  # differentiable too
 ```
 
 How induction is differentiated: the induced dipoles minimise a quadratic functional. For the gas
@@ -121,14 +123,17 @@ Force or dipole matching on fixed frames (any number of frames; each gets its ow
 
 ```python
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
+
 ff = PGMForceField(system, H, MDSettings(precision="double", dipole_tol=1e-8, differentiable=True))
-rows = ff.rows_for(pos, H)                                   # host side, once per frame
+rows = ff.rows_for(pos, H)  # host side, once per frame
+
 
 def loss(theta):
-    res = ff.compute(pos, H, rows, ff.init_induction(), theta)   # nm, kJ/mol/nm, e nm
+    res = ff.compute(pos, H, rows, ff.init_induction(), theta)  # nm, kJ/mol/nm, e nm
     return jnp.sum((res.forces - F_ref) ** 2) + w * jnp.sum((res.induction.mu - mu_ref) ** 2)
 
-g = jax.jit(jax.grad(loss))(system.params0)                  # same pytree as the parameters
+
+g = jax.jit(jax.grad(loss))(system.params0)  # same pytree as the parameters
 ```
 
 How it works:
@@ -388,11 +393,13 @@ whole across the boundaries, and the neighbour list is still built between molec
 
 ```python
 from pgm_jax.md.flexible import FlexibleTemplate, FlexibleSimulation, liquid_box
-tpl = FlexibleTemplate.from_fit(model, P)          # after fitting pgm_jax.bonded; .save() / .load()
-pos, H = liquid_box(tpl, 216, density=0.55)        # dilute start; NPT compresses it
-sim = FlexibleSimulation(System([tpl.pgm] * 216), [tpl] * 216, pos, H, MDSettings(),
-                         dt=0.0005, ensemble="npt", temperature=298.0)
-sim.run(200000, report=2000, prefix="meoh")        # log columns include temp_com and temp_internal
+
+tpl = FlexibleTemplate.from_fit(model, P)  # after fitting pgm_jax.bonded; .save() / .load()
+pos, H = liquid_box(tpl, 216, density=0.55)  # dilute start; NPT compresses it
+sim = FlexibleSimulation(
+    System([tpl.pgm] * 216), [tpl] * 216, pos, H, MDSettings(), dt=0.0005, ensemble="npt", temperature=298.0
+)
+sim.run(200000, report=2000, prefix="meoh")  # log columns include temp_com and temp_internal
 ```
 
 `examples/fit_bonded_template.py` (fit + export), `examples/run_flexible_liquid.py` (box, NVT,
@@ -423,12 +430,25 @@ protein CH3 carbon does not (3 amu left), so the two get different masses. Ubiqu
 
 ```python
 from pgm_jax.md.remd import ReplicaExchange, geometric_ladder
-sim = FlexibleSimulation(sys, templates, pos, H, MDSettings(), dt=0.002, ensemble="nvt", temperature=300.0,
-                         thermostat="bussi", constraints="h-bonds", hmr=3.024)
-sim.minimize(300); sim.run(50000)                         # equilibrate at the lowest temperature
+
+sim = FlexibleSimulation(
+    sys,
+    templates,
+    pos,
+    H,
+    MDSettings(),
+    dt=0.002,
+    ensemble="nvt",
+    temperature=300.0,
+    thermostat="bussi",
+    constraints="h-bonds",
+    hmr=3.024,
+)
+sim.minimize(300)
+sim.run(50000)  # equilibrate at the lowest temperature
 rex = ReplicaExchange(sim, geometric_ladder(300.0, 400.0, 8), exchange_every=250)
-rex.run(2000000, report=5000, traj=500, restart=50000, prefix="ala3")      # 4 ns per replica
-rex.load("ala3.remd.chk")                                 # continue later (batched or sequential)
+rex.run(2000000, report=5000, traj=500, restart=50000, prefix="ala3")  # 4 ns per replica
+rex.load("ala3.remd.chk")  # continue later (batched or sequential)
 ```
 
 - **One compiled step for every temperature.** kB T is a state variable (`MDState.kT`), so all
@@ -563,11 +583,11 @@ from pgm_jax.bonded.fit import Fitter
 from pgm_jax.bonded.model import BondedModel, BondedSettings
 from pgm_jax.bonded import terms as T
 
-spec = mol_spec("formic_acid")                                    # topology + pGM parameters + minimum
-model = BondedModel([spec], BondedSettings(families=T.PAPER))     # pGM all pairs, LJ 1-5+
+spec = mol_spec("formic_acid")  # topology + pGM parameters + minimum
+model = BondedModel([spec], BondedSettings(families=T.PAPER))  # pGM all pairs, LJ 1-5+
 fit = Fitter(model, {0: {"train": frames("formic_acid", "train500"), "test": frames("formic_acid", "test298")}})
 P = fit.fit(model.init_params())
-print(fit.metrics(P, "test"))                                     # energy / force MAE (kcal/mol, /A), dipole RMSE (D)
+print(fit.metrics(P, "test"))  # energy / force MAE (kcal/mol, /A), dipole RMSE (D)
 ```
 
 Findings of the first study are in `reports/bonded/README.md`.

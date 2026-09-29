@@ -21,6 +21,7 @@ subtracted (and its forces, which a rigid molecule does not feel) for comparison
 Coulomb constant is 18.2223^2 kcal A/mol e^-2, the engine's CODATA's (3.5e-5 larger): the engine's
 electrostatics are rescaled for the comparison.  Results go to runs/vsites/ and
 validation/validate_vsites.json."""
+
 from __future__ import annotations
 
 import argparse
@@ -32,7 +33,7 @@ import sys
 import time
 
 _USER_PLATFORMS = os.environ.get("JAX_PLATFORMS")
-if sys.argv[1:2] == ["identical"]:        # the runs compared are subprocesses: keep the (exclusive) GPU free for them
+if sys.argv[1:2] == ["identical"]:  # the runs compared are subprocesses: keep the (exclusive) GPU free for them
     os.environ["JAX_PLATFORMS"] = "cpu"
 
 import jax  # noqa: E402
@@ -59,11 +60,18 @@ SANDER = os.path.join(AMBERHOME, "bin", "sander")
 TOP = os.path.join(OUT, "tip4pew512.prmtop")
 CRD = os.path.join(OUT, "tip4pew512.inpcrd")
 KCAL = 4.184
-KE_AMBER = 18.2223 ** 2 * KCAL / 10.0          # kJ/mol nm e^-2: sander's Coulomb constant
-R_OH, R_HH, D_OM = 0.09572, 0.15136, 0.0125    # nm: Amber's SHAKE lengths and the EP bond
+KE_AMBER = 18.2223**2 * KCAL / 10.0  # kJ/mol nm e^-2: sander's Coulomb constant
+R_OH, R_HH, D_OM = 0.09572, 0.15136, 0.0125  # nm: Amber's SHAKE lengths and the EP bond
 NW = 512
-HORN = {"T_K": 297.7, "density": 0.9954, "density_err": 0.0003, "U_kcal_512": -5687.4, "U_err_kcal_512": 1.9,
-        "dHvap_kcal": 10.583, "source": "Horn et al., J. Chem. Phys. 120, 9665 (2004), Table V, T_bath = 298.0 K"}
+HORN = {
+    "T_K": 297.7,
+    "density": 0.9954,
+    "density_err": 0.0003,
+    "U_kcal_512": -5687.4,
+    "U_err_kcal_512": 1.9,
+    "dHvap_kcal": 10.583,
+    "source": "Horn et al., J. Chem. Phys. 120, 9665 (2004), Table V, T_bath = 298.0 K",
+}
 
 
 def settings(**kw):
@@ -97,6 +105,7 @@ def intramolecular(sys_, pos):
     """Energy (kJ/mol) and forces of the intramolecular Coulomb pairs (erf(a r) / r kernel of the
     model, a = 1/sqrt(2 (R_i^2 + R_j^2))) that the engine includes and Amber excludes."""
     from scipy.special import erf
+
     P = {k: np.asarray(v) for k, v in sys_.expand().items()}
     q, R = P["q"], P["radius"]
     E, F = 0.0, np.zeros_like(pos)
@@ -111,7 +120,9 @@ def intramolecular(sys_, pos):
                 r = np.linalg.norm(x)
                 al = 1.0 / np.sqrt(2 * (R[i] ** 2 + R[j] ** 2))
                 E += KE * q[i] * q[j] * erf(al * r) / r
-                dB = KE * q[i] * q[j] * (erf(al * r) / r ** 2 - 2 * al / np.sqrt(np.pi) * np.exp(-(al * r) ** 2) / r)  # -dE/dr
+                dB = (
+                    KE * q[i] * q[j] * (erf(al * r) / r**2 - 2 * al / np.sqrt(np.pi) * np.exp(-((al * r) ** 2)) / r)
+                )  # -dE/dr
                 F[i] += dB * x / r
                 F[j] -= dB * x / r
     return E, F
@@ -122,20 +133,21 @@ def write_inpcrd(path, xyz_A, box_A, title="pgm_jax"):
         fh.write(title + "\n%6d\n" % len(xyz_A))
         flat = np.asarray(xyz_A).ravel()
         for s in range(0, len(flat), 6):
-            fh.write("".join("%12.7f" % v for v in flat[s:s + 6]) + "\n")
+            fh.write("".join("%12.7f" % v for v in flat[s : s + 6]) + "\n")
         fh.write("".join("%12.7f" % v for v in list(box_A) + [90.0, 90.0, 90.0]) + "\n")
 
 
 def tleap(script, cwd):
-    subprocess.run(["bash", "-c", f"source {AMBERHOME}/amber.sh && tleap -f {script} > {script}.log 2>&1"],
-                   cwd=cwd, check=True)
+    subprocess.run(
+        ["bash", "-c", f"source {AMBERHOME}/amber.sh && tleap -f {script} > {script}.log 2>&1"], cwd=cwd, check=True
+    )
 
 
 # ----------------------------------------------------------------------------- steps
 def build(a):
     os.makedirs(OUT, exist_ok=True)
     rng = np.random.default_rng(1)
-    L = (NW * 18.01528 * 1.66053906660 / 0.995) ** (1 / 3)              # Angstrom
+    L = (NW * 18.01528 * 1.66053906660 / 0.995) ** (1 / 3)  # Angstrom
     w = ideal_water() * 10
     lines = []
     k = 0
@@ -148,7 +160,9 @@ def build(a):
                 ep = y[0] + D_OM * 10 * (y[1] + y[2] - 2 * y[0]) / np.linalg.norm(y[1] + y[2] - 2 * y[0])
                 k += 1
                 for name, x in zip(("O", "H1", "H2", "EPW"), (y[0], y[1], y[2], ep)):
-                    lines.append("ATOM  %5d %-4s WAT %5d    %8.3f%8.3f%8.3f  1.00  0.00" % (len(lines) + 1, name, k, *x))
+                    lines.append(
+                        "ATOM  %5d %-4s WAT %5d    %8.3f%8.3f%8.3f  1.00  0.00" % (len(lines) + 1, name, k, *x)
+                    )
                 lines.append("TER")
     open(os.path.join(OUT, "w512.pdb"), "w").write("\n".join(lines) + "\nEND\n")
     open(os.path.join(OUT, "leap512.in"), "w").write(f"""source leaprc.water.tip4pew
@@ -161,7 +175,7 @@ quit
     sys_, pos, _, H = load(TOP, os.path.join(OUT, "tip4pew512_leap.inpcrd"))
     X = pos.reshape(NW, 4, 3)
     ideal = ideal_water()
-    for m in range(NW):                                  # PDB precision -> exact model geometry (Kabsch)
+    for m in range(NW):  # PDB precision -> exact model geometry (Kabsch)
         y = X[m, :3] - X[m, :3].mean(0)
         c = ideal - ideal.mean(0)
         U, _, Vt = np.linalg.svd(c.T @ y)
@@ -174,8 +188,19 @@ quit
 
 def equil(a):
     sys_, pos, _, H = load()
-    sim = Simulation(sys_, pos, H, settings(), dt=0.002, ensemble="npt", temperature=298.0, thermostat="bussi",
-                     tau_t=0.5, seed=3, log=open(os.path.join(OUT, "equil.out"), "w"))
+    sim = Simulation(
+        sys_,
+        pos,
+        H,
+        settings(),
+        dt=0.002,
+        ensemble="npt",
+        temperature=298.0,
+        thermostat="bussi",
+        tau_t=0.5,
+        seed=3,
+        log=open(os.path.join(OUT, "equil.out"), "w"),
+    )
     sim.run(int(a.ps / 0.002), report=500, restart=int(a.ps / 0.002), prefix=os.path.join(OUT, "equil"))
     o = sim.observables()
     print(f"equilibrated {a.ps} ps: density {o['density_g_cm3']:.4f} g/cm^3, T {o['temp_K']:.1f} K")
@@ -186,7 +211,9 @@ def sander(a):
     wd = os.path.join(OUT, "sander")
     os.makedirs(wd, exist_ok=True)
     write_inpcrd(os.path.join(wd, "inpcrd"), pos * 10, np.diag(H) * 10, "equilibrated TIP4P-Ew")
-    open(os.path.join(wd, "mdin"), "w").write(f"""TIP4P-Ew single point: PME order 8, ew_coeff 0.4, exact erfc, 9 A, LJ tail
+    open(
+        os.path.join(wd, "mdin"), "w"
+    ).write(f"""TIP4P-Ew single point: PME order 8, ew_coeff 0.4, exact erfc, 9 A, LJ tail
  &cntrl
    imin=0, nstlim=1, irest=0, ntx=1, tempi=0.0, ntb=1, ntt=0, ntc=1, ntf=1, cut=9.0,
    ntpr=1, ntwx=1, ntwf=1, ioutfm=1, ntwr=1000, dt=0.0000000001, ig=1,
@@ -196,34 +223,43 @@ def sander(a):
  /
 """)
     t0 = time.time()
-    subprocess.run(["bash", "-c", f"source {AMBERHOME}/amber.sh && {SANDER} -O -i mdin -c inpcrd -p {TOP} -o mdout "
-                    "-x mdcrd -frc mdfrc"], cwd=wd, check=True)
+    subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"source {AMBERHOME}/amber.sh && {SANDER} -O -i mdin -c inpcrd -p {TOP} -o mdout -x mdcrd -frc mdfrc",
+        ],
+        cwd=wd,
+        check=True,
+    )
     print(f"sander done in {time.time() - t0:.0f} s")
 
 
 def _step0(path):
     txt = open(path).read()
-    blk = txt[txt.index("NSTEP =        0"):]
-    get = lambda k: float(re.search(rf"{k}\s*=\s*(-?\d+\.\d+)", blk).group(1))           # noqa: E731
+    blk = txt[txt.index("NSTEP =        0") :]
+    get = lambda k: float(re.search(rf"{k}\s*=\s*(-?\d+\.\d+)", blk).group(1))  # noqa: E731
     return {k: get(k) for k in ("EELEC", "VDWAALS", "BOND", "EPtot")}
 
 
 def compare(a):
     from scipy.io import netcdf_file
+
     wd = os.path.join(OUT, "sander")
     sys_, pos, _, H = load(TOP, os.path.join(wd, "inpcrd"))
     vs = VirtualSites.of(sys_)
     amb = _step0(os.path.join(wd, "mdout"))
     f = netcdf_file(os.path.join(wd, "mdfrc"), "r", mmap=False)
-    F_amb = np.array(f.variables["forces"][0], float)                    # kcal/mol/A
+    F_amb = np.array(f.variables["forces"][0], float)  # kcal/mol/A
     f.close()
     f = netcdf_file(os.path.join(wd, "mdcrd"), "r", mmap=False)
-    X_amb = np.array(f.variables["coordinates"][0], float)              # after one step of 1e-10 ps
+    X_amb = np.array(f.variables["coordinates"][0], float)  # after one step of 1e-10 ps
     f.close()
     s = settings(precision="double", pme_grid=(a.grid,) * 3, pme_order=8, ewald_beta=4.0, dipole_tol=1e-12)
     ff = PGMForceField(sys_, H, s)
-    ffe = PGMForceField(sys_, H, settings(precision="double", pme_grid=(a.grid,) * 3, pme_order=8, ewald_beta=4.0,
-                                          vdw="none"))
+    ffe = PGMForceField(
+        sys_, H, settings(precision="double", pme_grid=(a.grid,) * 3, pme_order=8, ewald_beta=4.0, vdw="none")
+    )
     idx = ff.rows_for(pos, H)
     res = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
     rese = jax.jit(ffe.compute)(pos, H, idx, ffe.init_induction())
@@ -244,29 +280,38 @@ def compare(a):
     X = pos.reshape(sys_.nmol, 4, 3)[:, :3] * 10
     dmol = d4.sum(1)
     dtq = np.cross(X - X[:, :1], d4).sum(1)
-    out = {"EELEC_sander": amb["EELEC"], "EELEC_pgm_jax": eelec, "EELEC_diff": eelec - amb["EELEC"],
-           "VDWAALS_sander": amb["VDWAALS"], "VDWAALS_pgm_jax": evdw, "VDWAALS_diff": evdw - amb["VDWAALS"],
-           "BOND_sander": amb["BOND"], "intramolecular_coulomb_kcal": E_in / KCAL,
-           "force_rms_diff_kcal_A": float(np.sqrt(np.mean(dF ** 2))), "force_max_diff_kcal_A": float(np.abs(dF).max()),
-           "force_rms_kcal_A": float(np.sqrt(np.mean(F_amb[real] ** 2))),
-           "molecule_force_rms_diff_kcal_A": float(np.sqrt(np.mean(dmol ** 2))),
-           "molecule_torque_rms_diff_kcal": float(np.sqrt(np.mean(dtq ** 2))),
-           "sander_ep_force_max": float(np.abs(F_amb[ep]).max()),
-           "ep_position_max_diff_A": float(np.abs(X_amb[ep] - pos[ep] * 10).max()),
-           "real_position_max_diff_A": float(np.abs(X_amb[real] - pos[real] * 10).max()),
-           "settings": f"PME {a.grid}^3 order 8, ew_coeff 0.4 A^-1, eedmeth 3 (exact erfc), netfrc 0, cut 9 A, vdwmeth 1, float64"}
+    out = {
+        "EELEC_sander": amb["EELEC"],
+        "EELEC_pgm_jax": eelec,
+        "EELEC_diff": eelec - amb["EELEC"],
+        "VDWAALS_sander": amb["VDWAALS"],
+        "VDWAALS_pgm_jax": evdw,
+        "VDWAALS_diff": evdw - amb["VDWAALS"],
+        "BOND_sander": amb["BOND"],
+        "intramolecular_coulomb_kcal": E_in / KCAL,
+        "force_rms_diff_kcal_A": float(np.sqrt(np.mean(dF**2))),
+        "force_max_diff_kcal_A": float(np.abs(dF).max()),
+        "force_rms_kcal_A": float(np.sqrt(np.mean(F_amb[real] ** 2))),
+        "molecule_force_rms_diff_kcal_A": float(np.sqrt(np.mean(dmol**2))),
+        "molecule_torque_rms_diff_kcal": float(np.sqrt(np.mean(dtq**2))),
+        "sander_ep_force_max": float(np.abs(F_amb[ep]).max()),
+        "ep_position_max_diff_A": float(np.abs(X_amb[ep] - pos[ep] * 10).max()),
+        "real_position_max_diff_A": float(np.abs(X_amb[real] - pos[real] * 10).max()),
+        "settings": f"PME {a.grid}^3 order 8, ew_coeff 0.4 A^-1, eedmeth 3 (exact erfc), netfrc 0, cut 9 A, vdwmeth 1, float64",
+    }
     print(json.dumps(out, indent=1))
     update_json("sander_single_point", out)
 
 
 def _drift(times, E, dof, T):
     """Linear drift of E (kJ/mol) in kT per ns per degree of freedom."""
-    slope = np.polyfit(np.asarray(times) / 1000.0, np.asarray(E), 1)[0]      # kJ/mol/ns
+    slope = np.polyfit(np.asarray(times) / 1000.0, np.asarray(E), 1)[0]  # kJ/mol/ns
     return slope / (dof * KB * T)
 
 
 def nve(a):
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
+
     sys_, pos, vel, H = load(TOP, os.path.join(OUT, "equil.rst7"))
     out = {}
     for engine in ("rigid", "constraints"):
@@ -276,31 +321,49 @@ def nve(a):
                 sim = Simulation(sys_, pos, H, s, dt=dt, ensemble="nve", vel_nm_ps=vel, log=None)
             else:
                 tpl = RigidTemplate(sys_.molecules[0], pos[:4])
-                sim = FlexibleSimulation(sys_, [tpl] * sys_.nmol, pos, H, s, dt=dt, ensemble="nve", vel_nm_ps=vel,
-                                         log=None)
-            nrep = int(round(1.0 / dt)) // 10                          # 0.1 ps
+                sim = FlexibleSimulation(
+                    sys_, [tpl] * sys_.nmol, pos, H, s, dt=dt, ensemble="nve", vel_nm_ps=vel, log=None
+                )
+            nrep = int(round(1.0 / dt)) // 10  # 0.1 ps
             t, E, T = [], [], []
             t0 = time.time()
             for k in range(int(a.ps * 10)):
                 sim._advance(nrep)
                 o = sim.observables()
-                t.append(o["time_ps"]); E.append(o["etot"]); T.append(o["temp_K"])
+                t.append(o["time_ps"])
+                E.append(o["etot"])
+                T.append(o["temp_K"])
             el = time.time() - t0
             d = _drift(t, E, sim.integ.dof, float(np.mean(T)))
             key = f"{engine}_dt{dt * 1000:g}fs"
-            out[key] = {"drift_kT_per_ns_per_dof": float(d), "etot_std_kJ": float(np.std(E)), "T_mean": float(np.mean(T)),
-                        "ps": a.ps, "wall_s": el}
+            out[key] = {
+                "drift_kT_per_ns_per_dof": float(d),
+                "etot_std_kJ": float(np.std(E)),
+                "T_mean": float(np.mean(T)),
+                "ps": a.ps,
+                "wall_s": el,
+            }
             print(key, out[key], flush=True)
     update_json("nve_mixed", out)
 
 
 def npt(a):
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
+
     sys_, pos, vel, H = load(TOP, os.path.join(OUT, "equil.rst7"))
     dt = a.dt / 1000.0
     prefix = os.path.join(OUT, f"npt_{a.engine}" + ("" if a.dt == 2.0 else f"_{a.dt:g}fs"))
-    kw = dict(dt=dt, ensemble="npt", temperature=298.0, pressure=1.01325, thermostat="bussi", tau_t=1.0,
-              vel_nm_ps=vel, seed=11, log=open(prefix + ".out", "w"))
+    kw = dict(
+        dt=dt,
+        ensemble="npt",
+        temperature=298.0,
+        pressure=1.01325,
+        thermostat="bussi",
+        tau_t=1.0,
+        vel_nm_ps=vel,
+        seed=11,
+        log=open(prefix + ".out", "w"),
+    )
     if a.engine == "rigid":
         sim = Simulation(sys_, pos, H, settings(), **kw)
     else:
@@ -325,9 +388,10 @@ def _block(x, nb=10):
 
 def analyse(a):
     sys_, pos, _, H = load()
-    E_in, _ = intramolecular(sys_, pos)                                  # rigid: the same for every frame
+    E_in, _ = intramolecular(sys_, pos)  # rigid: the same for every frame
     out = {"horn2004": HORN, "intramolecular_coulomb_kJ_per_molecule": E_in / NW}
     import glob
+
     for path in sorted(glob.glob(os.path.join(OUT, "npt_*.log"))):
         engine = os.path.basename(path)[4:-4]
         d = _log(path)
@@ -336,18 +400,28 @@ def analyse(a):
         U = (d["epot"][keep] - E_in) / NW
         u, u_e = _block(U)
         T, _ = _block(d["temp_K"][keep])
-        out[engine] = {"ns": float(d["time_ps"][keep][-1] - d["time_ps"][keep][0]) / 1000, "density": rho, "density_err": rho_e,
-                       "U_kJ_per_molecule": u, "U_err": u_e, "U_kcal_per_molecule": u / KCAL, "U_err_kcal": u_e / KCAL,
-                       "T_mean": T, "ns_per_day_last": float(d["ns_per_day"][-1]),
-                       "dHvap_uncorrected_kcal": -u / KCAL + KB * 298.0 / KCAL}
+        out[engine] = {
+            "ns": float(d["time_ps"][keep][-1] - d["time_ps"][keep][0]) / 1000,
+            "density": rho,
+            "density_err": rho_e,
+            "U_kJ_per_molecule": u,
+            "U_err": u_e,
+            "U_kcal_per_molecule": u / KCAL,
+            "U_err_kcal": u_e / KCAL,
+            "T_mean": T,
+            "ns_per_day_last": float(d["ns_per_day"][-1]),
+            "dHvap_uncorrected_kcal": -u / KCAL + KB * 298.0 / KCAL,
+        }
         print(engine, json.dumps(out[engine], indent=1))
     h = HORN["U_kcal_512"] / NW
-    print(f"Horn et al.: density {HORN['density']} +- {HORN['density_err']}, U {h:.4f} kcal/mol ({h * KCAL:.3f} kJ/mol)")
+    print(
+        f"Horn et al.: density {HORN['density']} +- {HORN['density_err']}, U {h:.4f} kcal/mol ({h * KCAL:.3f} kJ/mol)"
+    )
     update_json("npt_298K", out)
 
 
 def _timed(sim, steps):
-    sim._advance(200)                                                     # compile + warm up
+    sim._advance(200)  # compile + warm up
     jax.block_until_ready(sim.state.epot)
     t0 = time.time()
     sim._advance(steps)
@@ -359,19 +433,32 @@ def bench(a):
     import dataclasses
 
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
+
     sys4, pos4, vel, H = load(TOP, os.path.join(OUT, "equil.rst7"))
     n = a.replicate
-    if n > 1:                                                            # n^3 copies (cubic box)
+    if n > 1:  # n^3 copies (cubic box)
         shifts = np.array([[i, j, k] for i in range(n) for j in range(n) for k in range(n)]) @ H
         pos4 = np.concatenate([pos4 + s for s in shifts])
         H = H * n
-        sys4 = System(sys4.molecules * n ** 3)
+        sys4 = System(sys4.molecules * n**3)
     m = sys4.molecules[0]
-    m3 = dataclasses.replace(m, elements=m.elements[:3], types=m.types[:3], q=np.array([m.q[3], m.q[1], m.q[2]]),
-                             radius=m.radius[:3], alpha=m.alpha[:3], lj_rmin_half=m.lj_rmin_half[:3],
-                             lj_sqrt_eps=m.lj_sqrt_eps[:3], gvdw_sqrt_a=m.gvdw_sqrt_a[:3], gvdw_sqrt_c6=m.gvdw_sqrt_c6[:3],
-                             gvdw_b=m.gvdw_b[:3], masses=m.masses[:3], bonds=[b for b in m.bonds if 3 not in b],
-                             vsites=[], keys={})
+    m3 = dataclasses.replace(
+        m,
+        elements=m.elements[:3],
+        types=m.types[:3],
+        q=np.array([m.q[3], m.q[1], m.q[2]]),
+        radius=m.radius[:3],
+        alpha=m.alpha[:3],
+        lj_rmin_half=m.lj_rmin_half[:3],
+        lj_sqrt_eps=m.lj_sqrt_eps[:3],
+        gvdw_sqrt_a=m.gvdw_sqrt_a[:3],
+        gvdw_sqrt_c6=m.gvdw_sqrt_c6[:3],
+        gvdw_b=m.gvdw_b[:3],
+        masses=m.masses[:3],
+        bonds=[b for b in m.bonds if 3 not in b],
+        vsites=[],
+        keys={},
+    )
     sys3 = System([m3] * sys4.nmol)
     pos3 = pos4.reshape(-1, 4, 3)[:, :3].reshape(-1, 3)
     out = {}
@@ -381,7 +468,7 @@ def bench(a):
             if engine == "rigid":
                 sim = Simulation(S, P, H, settings(), **kw)
             else:
-                tpl = RigidTemplate(S.molecules[0], P[:S.molecules[0].n])
+                tpl = RigidTemplate(S.molecules[0], P[: S.molecules[0].n])
                 sim = FlexibleSimulation(S, [tpl] * S.nmol, P, H, settings(), **kw)
             ms = _timed(sim, a.steps)
             key = f"{label} | {engine}"
@@ -397,7 +484,7 @@ def bench(a):
         jax.block_until_ready(loop(Pj))
         t0 = time.time()
         jax.block_until_ready(loop(Pj))
-        ms = (time.time() - t0) * 1000.0 / 1000                          # 1000 calls
+        ms = (time.time() - t0) * 1000.0 / 1000  # 1000 calls
         out[f"{name} alone"] = {"ms_per_call": ms}
         print(name, f"{ms:.4f} ms per call", flush=True)
     update_json(f"bench_{sys4.nmol}_waters", out)
@@ -409,14 +496,26 @@ def pgm_water_sites():
     polarizability (alpha = 0): every path of the site code at once.  Local geometry (nm)."""
     from pgm_jax.md.vsites import VirtualSite
     from pgm_jax.system import Molecule
+
     w = ideal_water()
-    vs = [VirtualSite.tip4p(3, 0, 1, 2, 0.015, R_OH, np.degrees(2 * np.arcsin(R_HH / 2 / R_OH))),
-          VirtualSite.out_of_plane(4, 0, 1, 2, -0.2, -0.2, 6.0), VirtualSite.out_of_plane(5, 0, 1, 2, -0.2, -0.2, -6.0)]
-    m = Molecule("PW5", ["O", "H", "H", "EP", "EP", "EP"], ["OW", "HW", "HW", "MW", "LP", "LP"],
-                 q=[-0.30, 0.45, 0.45, -0.40, -0.10, -0.10], radius=[0.06, 0.05, 0.05, 0.05, 0.03, 0.03],
-                 alpha=[1.0e-3, 0.0, 0.0, 0.4e-3, 0.0, 0.0],
-                 cov=[(0, 1, -0.02), (0, 2, -0.02), (1, 0, 0.008), (2, 0, 0.008), (0, 3, 0.01)],
-                 lj_rmin_half=[0.178, 0, 0, 0, 0, 0], lj_sqrt_eps=[0.80, 0, 0, 0, 0, 0], bonds=[(0, 1), (0, 2)], vsites=vs)
+    vs = [
+        VirtualSite.tip4p(3, 0, 1, 2, 0.015, R_OH, np.degrees(2 * np.arcsin(R_HH / 2 / R_OH))),
+        VirtualSite.out_of_plane(4, 0, 1, 2, -0.2, -0.2, 6.0),
+        VirtualSite.out_of_plane(5, 0, 1, 2, -0.2, -0.2, -6.0),
+    ]
+    m = Molecule(
+        "PW5",
+        ["O", "H", "H", "EP", "EP", "EP"],
+        ["OW", "HW", "HW", "MW", "LP", "LP"],
+        q=[-0.30, 0.45, 0.45, -0.40, -0.10, -0.10],
+        radius=[0.06, 0.05, 0.05, 0.05, 0.03, 0.03],
+        alpha=[1.0e-3, 0.0, 0.0, 0.4e-3, 0.0, 0.0],
+        cov=[(0, 1, -0.02), (0, 2, -0.02), (1, 0, 0.008), (2, 0, 0.008), (0, 3, 0.01)],
+        lj_rmin_half=[0.178, 0, 0, 0, 0, 0],
+        lj_sqrt_eps=[0.80, 0, 0, 0, 0, 0],
+        bonds=[(0, 1), (0, 2)],
+        vsites=vs,
+    )
     x = np.asarray(VirtualSites.of(System([m])).place(np.concatenate([w, np.zeros((3, 3))])))
     return m, x
 
@@ -425,20 +524,31 @@ def pgm(a):
     """Forces and molecular strain derivative of pGM water with sites against central differences
     (float64, dipoles re-solved to 1e-12 at every displaced point); zero-polarizability checks."""
     from pgm_jax.lj import lj_long_range
+
     m, x = pgm_water_sites()
     rng = np.random.default_rng(4)
     n_side, a0 = 4, 0.4
     pos = []
-    for i in range(n_side ** 3):
-        g = np.array([i // n_side ** 2, (i // n_side) % n_side, i % n_side]) + 0.5
+    for i in range(n_side**3):
+        g = np.array([i // n_side**2, (i // n_side) % n_side, i % n_side]) + 0.5
         R = np.linalg.qr(rng.normal(size=(3, 3)))[0]
         pos.append((x - x[0]) @ R.T + g * a0 + rng.normal(scale=0.01, size=3))
     H = np.eye(3) * a0 * n_side
-    sys_ = System([m] * n_side ** 3)
+    sys_ = System([m] * n_side**3)
     vs = VirtualSites.of(sys_)
     pos = np.asarray(vs.place(np.concatenate(pos), H))
-    s = MDSettings(cutoff=0.7, skin=0.05, ewald_beta=5.2, pme_grid=(48,) * 3, pme_order=8, lj_lrc=True, dipole_tol=1e-12,
-                   max_iter=1000, peek=0.0, precision="double")
+    s = MDSettings(
+        cutoff=0.7,
+        skin=0.05,
+        ewald_beta=5.2,
+        pme_grid=(48,) * 3,
+        pme_order=8,
+        lj_lrc=True,
+        dipole_tol=1e-12,
+        max_iter=1000,
+        peek=0.0,
+        precision="double",
+    )
     ff = PGMForceField(sys_, H, s)
     idx = ff.rows_for(pos, H)
     res = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
@@ -451,7 +561,8 @@ def pgm(a):
     real = np.nonzero(vs.real)[0]
     for a_ in rng.choice(real, 12, replace=False):
         for k in range(3):
-            d = np.zeros_like(pos); d[a_, k] = h
+            d = np.zeros_like(pos)
+            d[a_, k] = h
             fd = -(float(e(pos + d, H)) - float(e(pos - d, H))) / (2 * h)
             errs.append(abs(fd - F[a_, k]) / max(1.0, abs(fd)))
     W = np.asarray(ff.strain_derivative(pos, H, idx, res.induction.mu))
@@ -461,14 +572,22 @@ def pgm(a):
     werr = []
     for i in range(3):
         for j in range(3):
-            eps = np.zeros((3, 3)); eps[i, j] = 1e-6
-            ee = lambda sgn: float(e(pos + (com @ (sgn * eps).T)[sys_.mol], H @ (np.eye(3) + sgn * eps).T))   # noqa: E731
+            eps = np.zeros((3, 3))
+            eps[i, j] = 1e-6
+            ee = lambda sgn: float(e(pos + (com @ (sgn * eps).T)[sys_.mol], H @ (np.eye(3) + sgn * eps).T))  # noqa: E731
             fd = (ee(1.0) - ee(-1.0)) / 2e-6 - (tail if i == j else 0.0)
             werr.append(abs(fd - W[i, j]) / max(1.0, abs(fd)))
-    out = {"waters": sys_.nmol, "sites_per_water": 3, "force_fd_max_rel_err": float(max(errs)),
-           "force_fd_components": len(errs), "strain_fd_max_rel_err": float(max(werr)),
-           "mu_at_alpha0_max": float(np.abs(mu[alpha == 0]).max()), "mu_M_site_rms": float(np.sqrt(np.mean(mu[3::6] ** 2))),
-           "energy_kJ": float(res.energy["total"]), "cg_iterations": int(res.iterations)}
+    out = {
+        "waters": sys_.nmol,
+        "sites_per_water": 3,
+        "force_fd_max_rel_err": float(max(errs)),
+        "force_fd_components": len(errs),
+        "strain_fd_max_rel_err": float(max(werr)),
+        "mu_at_alpha0_max": float(np.abs(mu[alpha == 0]).max()),
+        "mu_M_site_rms": float(np.sqrt(np.mean(mu[3::6] ** 2))),
+        "energy_kJ": float(res.energy["total"]),
+        "cg_iterations": int(res.iterations),
+    }
     print(json.dumps(out, indent=1))
     update_json("pgm_sites_fd", out)
 
@@ -479,7 +598,7 @@ def identical(a):
     `git archive`), each in its own process; positions, dipoles and energies must be bitwise equal.
     Run it on the CPU (JAX_PLATFORMS=cpu): GPU runs are not bitwise reproducible (atomics in the PME
     spreading), not even with the same code."""
-    script = r'''
+    script = r"""
 import sys, numpy as np, jax
 jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, sys.argv[1])
@@ -505,7 +624,7 @@ fs = FlexibleSimulation(sysf, [tpl] * sysf.nmol, xyz * 0.1, H, MDSettings(), dt=
                         thermostat="langevin", seed=5, log=None)
 fs._advance(100); out["flex_pos"] = fs.positions_nm()
 np.savez(sys.argv[2] + ".npz", **out)
-'''
+"""
     path = os.path.join(OUT, "identical.py")
     open(path, "w").write(script)
     res = {}
@@ -525,8 +644,9 @@ np.savez(sys.argv[2] + ".npz", **out)
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("step", choices=["build", "equil", "sander", "compare", "nve", "npt", "analyse", "bench", "identical",
-                                     "pgm"])
+    ap.add_argument(
+        "step", choices=["build", "equil", "sander", "compare", "nve", "npt", "analyse", "bench", "identical", "pgm"]
+    )
     ap.add_argument("--ps", type=float, default=200.0, help="equil: ps; nve: ps per run")
     ap.add_argument("--ns", type=float, default=4.0)
     ap.add_argument("--engine", default="rigid", choices=["rigid", "constraints"])

@@ -21,6 +21,7 @@ Numerics: G(y) = F(y)/y^6 is evaluated from its Taylor series (15 terms, exact r
 coefficients, truncation < 1e-13 relative) for y < 0.6 and in closed form above; both branches are safe in float32.
 Units: nm, kJ/mol.
 """
+
 from __future__ import annotations
 
 import math
@@ -35,9 +36,23 @@ from .system import System
 _SQRT_PI = math.sqrt(math.pi)
 C0 = 8.0 / (9.0 * math.pi)
 # F(y)/y^6 = C0 sum_k _GC[k] y^(2k)
-_GC = (1.0, -2.0, 58 / 25, -188 / 105, 2222 / 2205, -1532 / 3465, 64244 / 405405, -162056 / 3378375,
-       1587734 / 126351225, -211108 / 72747675, 11902564 / 19860115275, -611992 / 5465775315,
-       755028172 / 39529267903125, -213335384 / 71152682225625, 15291334888 / 35078272337233125)
+_GC = (
+    1.0,
+    -2.0,
+    58 / 25,
+    -188 / 105,
+    2222 / 2205,
+    -1532 / 3465,
+    64244 / 405405,
+    -162056 / 3378375,
+    1587734 / 126351225,
+    -211108 / 72747675,
+    11902564 / 19860115275,
+    -611992 / 5465775315,
+    755028172 / 39529267903125,
+    -213335384 / 71152682225625,
+    15291334888 / 35078272337233125,
+)
 Y_SERIES = 0.6
 KCAL = 4.184
 
@@ -76,7 +91,7 @@ def gvdw_pair(r, beta, A, C6, B, rep: str = "gauss", grad: bool = False):
     y = beta * r
     if rep == "gauss":
         er = A * jnp.exp(-B * y * y)
-        dr = -2.0 * B * beta * beta * er                           # (1/r) dU_rep/dr
+        dr = -2.0 * B * beta * beta * er  # (1/r) dU_rep/dr
     elif rep == "slater":
         er = A * jnp.exp(-B * y)
         dr = -B * beta * er / r
@@ -93,15 +108,18 @@ def gvdw_pair(r, beta, A, C6, B, rep: str = "gauss", grad: bool = False):
 
 def gvdw_pair_params(P, i, j):
     """(A_ij, C6_ij, B_ij) from per-atom parameter arrays."""
-    return (P["gvdw_sqrt_a"][i] * P["gvdw_sqrt_a"][j], P["gvdw_sqrt_c6"][i] * P["gvdw_sqrt_c6"][j],
-            0.5 * (P["gvdw_b"][i] + P["gvdw_b"][j]))
+    return (
+        P["gvdw_sqrt_a"][i] * P["gvdw_sqrt_a"][j],
+        P["gvdw_sqrt_c6"][i] * P["gvdw_sqrt_c6"][j],
+        0.5 * (P["gvdw_b"][i] + P["gvdw_b"][j]),
+    )
 
 
 def gvdw_long_range(P, volume, rc):
     """Continuum correction beyond rc for the dispersion (F = 1 there), as Amber's vdwmeth = 1 for
     the r^-6 term: -2 pi / (3 V rc^3) sum_{i,j} C6_ij over all ordered pairs (i = j included)."""
     c = jnp.sum(P["gvdw_sqrt_c6"])
-    return -2.0 * jnp.pi * c * c / (3.0 * volume * rc ** 3)
+    return -2.0 * jnp.pi * c * c / (3.0 * volume * rc**3)
 
 
 def pair_beta(P, i, j):
@@ -111,6 +129,7 @@ def pair_beta(P, i, j):
 @dataclass
 class GVDWChannel:
     """Gas phase: all intermolecular pairs, no cutoff."""
+
     rep: str = "gauss"
     name: str = "vdw"
 
@@ -126,9 +145,19 @@ class GVDWChannel:
 class PeriodicGVDW:
     """Periodic GVDW with a hard cutoff rc and optional dispersion tail (lj.PeriodicLJ analogue)."""
 
-    def __init__(self, sys: System, H, pos_ref, rc: float = 1.0, skin: float = 0.0, lrc: bool = False,
-                 nlist=None, rep: str = "gauss"):
+    def __init__(
+        self,
+        sys: System,
+        H,
+        pos_ref,
+        rc: float = 1.0,
+        skin: float = 0.0,
+        lrc: bool = False,
+        nlist=None,
+        rep: str = "gauss",
+    ):
         from .lj import PeriodicLJ
+
         base = PeriodicLJ(sys, H, pos_ref, rc=rc, skin=skin, lrc=lrc, nlist=nlist)
         self.sys, self.H, self.rc, self.lrc, self.rep = sys, base.H, rc, lrc, rep
         self.pi, self.pj, self.img = base.pi, base.pj, base.img
@@ -168,5 +197,7 @@ def set_gvdw(mol, by_type: dict):
 
 
 # pmemd-pgm GVDW water models of the GVDW manuscript (O-O only; ~/pgm-gvdw-data/README.md)
-PGM3P_GVDW = {"slater": {"rep": "slater", "OW": from_pmemd(87500.0, 594.825035, 4.52)},
-              "gauss": {"rep": "gauss", "OW": from_pmemd(422.0, 594.825035, 0.9453)}}
+PGM3P_GVDW = {
+    "slater": {"rep": "slater", "OW": from_pmemd(87500.0, 594.825035, 4.52)},
+    "gauss": {"rep": "gauss", "OW": from_pmemd(422.0, 594.825035, 0.9453)},
+}

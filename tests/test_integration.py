@@ -2,6 +2,7 @@
 dipoles in an external field (constant E and constant D: exact shadow forces, the field-polarized
 solution), biases together with a field and with iEL, walkers with a time-dependent field,
 multiple time stepping in FlexibleSimulation.minimize, and the combinations that are refused."""
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -20,8 +21,8 @@ from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
 from pgm_jax.md.integrate import KB  # noqa: E402
 from pgm_jax.md.simulation import Simulation  # noqa: E402
 
-E1 = np.array([0.3, -0.5, 0.8])            # V/nm
-DD = np.array([1.0, -2.0, 3.0])            # D / eps0, V/nm
+E1 = np.array([0.3, -0.5, 0.8])  # V/nm
+DD = np.array([1.0, -2.0, 3.0])  # D / eps0, V/nm
 
 
 def _field(kind):
@@ -29,12 +30,13 @@ def _field(kind):
 
 
 def _rel(a, b):
-    return float(jnp.sqrt(jnp.sum((a - b) ** 2) / jnp.sum(b ** 2)))
+    return float(jnp.sqrt(jnp.sum((a - b) ** 2) / jnp.sum(b**2)))
 
 
 # ----------------------------------------------------------------------------- iEL in a field
-@pytest.mark.parametrize("kind,precond,omega", [("E", "jacobi", 1.0), ("E", "block", 0.9), ("D", "jacobi", 1.0),
-                                                ("D", "block", 0.9)])
+@pytest.mark.parametrize(
+    "kind,precond,omega", [("E", "jacobi", 1.0), ("E", "block", 0.9), ("D", "jacobi", 1.0), ("D", "block", 0.9)]
+)
 def test_iel_shadow_forces_are_exact_in_a_field(kind, precond, omega):
     """iEL/0-SCF with an external field: the warm-up gives the field-polarized SCF dipoles, x at that
     solution has zero residual (the field is on the right-hand side of the auxiliary-dipole step),
@@ -59,10 +61,12 @@ def test_iel_shadow_forces_are_exact_in_a_field(kind, precond, omega):
     assert int(r0.iterations) == 0
     assert _rel(r0.induction.mu, mu_star) < 1e-9 and abs(float(r0.energy["total"]) - e_star) < 1e-8 * abs(e_star)
     rng = np.random.default_rng(0)
-    noise = jnp.asarray(rng.normal(size=mu_star.shape)) * float(jnp.sqrt(jnp.mean(mu_star ** 2)))
+    noise = jnp.asarray(rng.normal(size=mu_star.shape)) * float(jnp.sqrt(jnp.mean(mu_star**2)))
 
     def shadow(eps):
-        return ref.induction.set(count=jnp.asarray(100, jnp.int32), xl=ref.induction.xl.at[0].set(mu_star + eps * noise))
+        return ref.induction.set(
+            count=jnp.asarray(100, jnp.int32), xl=ref.induction.xl.at[0].set(mu_star + eps * noise)
+        )
 
     ind = shadow(5e-2)
     res = comp(pos, ind)
@@ -76,7 +80,7 @@ def test_iel_shadow_forces_are_exact_in_a_field(kind, precond, omega):
         v = jnp.asarray(rng.normal(size=pos.shape))
         fd = (float(E(pos + h * v)) - float(E(pos - h * v))) / (2 * h)
         an = -float(jnp.sum(res.forces * v))
-        hf = -float(jnp.sum(F_hf * v))                         # fixed-dipole forces at mu alone
+        hf = -float(jnp.sum(F_hf * v))  # fixed-dipole forces at mu alone
         assert abs(fd - an) < 1e-7 * abs(an) + 1e-3, (fd, an)
         assert abs(fd - hf) > 10 * abs(fd - an), (fd, an, hf)
     # U~ - U* second order in the error of x
@@ -97,8 +101,9 @@ def test_iel_scf_step_converges_to_the_field_polarized_dipoles(kind):
     ref = ff.compute(pos, H, idx, ff.init_induction(), efield=fld)
     mu = ref.induction.mu
     x = mu * 1.05
-    res = ff.compute(pos, H, idx, ref.induction.set(count=jnp.asarray(100, jnp.int32),
-                                                     xl=ref.induction.xl.at[0].set(x)), efield=fld)
+    res = ff.compute(
+        pos, H, idx, ref.induction.set(count=jnp.asarray(100, jnp.int32), xl=ref.induction.xl.at[0].set(x)), efield=fld
+    )
     assert int(res.iterations) > 0 and _rel(res.induction.mu, mu) < 1e-9
     assert abs(float(res.energy["total"]) - float(ref.energy["total"])) < 1e-9 * abs(float(ref.energy["total"]))
 
@@ -141,8 +146,11 @@ def test_bias_with_field_and_iel(iel):
     x = sim.rigid.positions(sim.state.dyn.position)
     g = jax.grad(lambda p: sim.integ.bias.energy(sim.state.bias, p, jnp.asarray(H)))(x)
     mapped = sim.rigid.forces(sim.state.dyn.position, -g)
-    for a, b_, c in zip(jax.tree_util.tree_leaves(sim.state.dyn.force), jax.tree_util.tree_leaves(ref.state.dyn.force),
-                        jax.tree_util.tree_leaves(mapped)):
+    for a, b_, c in zip(
+        jax.tree_util.tree_leaves(sim.state.dyn.force),
+        jax.tree_util.tree_leaves(ref.state.dyn.force),
+        jax.tree_util.tree_leaves(mapped),
+    ):
         assert np.allclose(np.asarray(a) - np.asarray(b_), np.asarray(c), atol=1e-7 * np.abs(np.asarray(c)).max())
     o = sim.observables()
     assert abs(o["epot"] - ref.observables()["epot"] - o["ebias"]) < 1e-6 and o["ebias"] > 1.0
@@ -161,6 +169,7 @@ def test_walkers_book_the_work_of_a_time_dependent_field():
     """Independent walkers step through the same compiled step as a single simulation, including the
     heat booked for the explicit time dependence of E(t): walker 0 reproduces the single run."""
     from pgm_jax.bias.walkers import Walkers
+
     pos, H, w = _cluster()
     sys = System([water()] * (len(pos) // 3))
     s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
@@ -168,8 +177,20 @@ def test_walkers_book_the_work_of_a_time_dependent_field():
     fld = EF.ExternalField((0.0, 0.0, 1.5), omega=2 * np.pi / 0.1)
 
     def mk():
-        return Simulation(sys, pos, H, s, dt=0.001, ensemble="nvt", thermostat="bussi", temperature=300.0, log=None,
-                          bias=BiasSet([Harmonic([d], at=[0.6], kappa=[500.0])], colvar=5), efield=fld)
+        return Simulation(
+            sys,
+            pos,
+            H,
+            s,
+            dt=0.001,
+            ensemble="nvt",
+            thermostat="bussi",
+            temperature=300.0,
+            log=None,
+            bias=BiasSet([Harmonic([d], at=[0.6], kappa=[500.0])], colvar=5),
+            efield=fld,
+        )
+
     sim, one = mk(), mk()
     wk = Walkers(sim, 2, shared=False, seed=4)
     one.state = wk.state(0).set(nbr=one.state.nbr)
@@ -186,12 +207,22 @@ def test_flexible_minimize_with_mts():
 
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
     from pgm_jax.md.mts import MTS
+
     pos, H, w = _water_box(n_side=4, spacing=0.31)
     wat = water()
     sys = System([wat] * (len(pos) // 3))
     s = MDSettings(precision="double", dipole_tol=1e-10, max_iter=300, cutoff=0.55, skin=0.05)
-    sim = FlexibleSimulation(sys, [RigidTemplate(wat, w)] * sys.nmol, pos, H, s, dt=0.004, ensemble="nvt", log=None,
-                             mts=MTS(inner=2, r_short=0.4, buffer=0.1))
+    sim = FlexibleSimulation(
+        sys,
+        [RigidTemplate(wat, w)] * sys.nmol,
+        pos,
+        H,
+        s,
+        dt=0.004,
+        ensemble="nvt",
+        log=None,
+        mts=MTS(inner=2, r_short=0.4, buffer=0.1),
+    )
     out = sim.minimize(steps=3)
     assert out["steps"] >= 1
     sim._advance(4)
@@ -204,15 +235,32 @@ def test_refused_combinations():
     from pgm_jax.interfaces.engine import PGMEngine
     from pgm_jax.md.flexible import FlexibleSimulation
     from pgm_jax.md.pimd import PIMDSimulation
+
     tpl, sys, pos, H = _water_box()
     s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=0.5, skin=0.05, lj_lrc=False, max_iter=200)
 
     def flex(settings=s, **kw):
-        return FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, settings, dt=0.0002, ensemble="nvt", temperature=T,
-                                  thermostat="bussi", log=None, **kw)
+        return FlexibleSimulation(
+            sys,
+            [tpl] * sys.nmol,
+            pos,
+            H,
+            settings,
+            dt=0.0002,
+            ensemble="nvt",
+            temperature=T,
+            thermostat="bussi",
+            log=None,
+            **kw,
+        )
+
     ub = BiasSet([Harmonic([cv.Distance(0, 3)], at=[0.3], kappa=[100.0])])
-    for kw in (dict(bias=ub), dict(efield=(0.0, 0.0, 0.1)), dict(constraints="h-bonds"),
-               dict(settings=MDSettings(precision="double", cutoff=0.5, skin=0.05, lj_lrc=False, iel="0scf"))):
+    for kw in (
+        dict(bias=ub),
+        dict(efield=(0.0, 0.0, 0.1)),
+        dict(constraints="h-bonds"),
+        dict(settings=MDSettings(precision="double", cutoff=0.5, skin=0.05, lj_lrc=False, iel="0scf")),
+    ):
         with pytest.raises((NotImplementedError, ValueError)):
             PIMDSimulation(flex(**kw), beads=4, log=None)
     for kw in (dict(bias=ub), dict(efield=(0.0, 0.0, 0.1))):
@@ -230,7 +278,7 @@ def _rotated_energy(ff, pos, H, mu, P, eps, com, efield=None):
     Hs = H @ F.T
     x = pos + ((com @ eps.T)[np.asarray(ff.mol)] if com is not None else pos @ eps.T)
     Q, R = np.linalg.qr(Hs.T)
-    Q = Q @ np.diag(np.sign(np.diag(R)))                       # Hs Q lower triangular, positive diagonal
+    Q = Q @ np.diag(np.sign(np.diag(R)))  # Hs Q lower triangular, positive diagonal
     L = Hs @ Q
     assert np.abs(np.triu(L, 1)).max() < 1e-12
     x2 = jnp.asarray(x @ Q)
@@ -255,15 +303,20 @@ def test_strain_derivative_full_tensor_matches_finite_differences(molecular, fie
     mol = np.asarray(ff.mol)
     com = None
     if molecular:
-        com = np.stack([np.bincount(mol, weights=m * pos[:, c]) for c in range(3)], 1) / np.bincount(mol, weights=m)[:, None]
+        com = (
+            np.stack([np.bincount(mol, weights=m * pos[:, c]) for c in range(3)], 1)
+            / np.bincount(mol, weights=m)[:, None]
+        )
     h = 1e-5
     fd = np.zeros((3, 3))
     for a in range(3):
         for b in range(3):
             e = np.zeros((3, 3))
             e[a, b] = h
-            fd[a, b] = (_rotated_energy(ff, pos, np.asarray(H), mu, P, e, com, fld)
-                        - _rotated_energy(ff, pos, np.asarray(H), mu, P, -e, com, fld)) / (2 * h)
+            fd[a, b] = (
+                _rotated_energy(ff, pos, np.asarray(H), mu, P, e, com, fld)
+                - _rotated_energy(ff, pos, np.asarray(H), mu, P, -e, com, fld)
+            ) / (2 * h)
     fd = fd - float(ff._vdw_tail(P, H)) * np.eye(3)
     scale = np.abs(fd).max()
     assert np.abs(W - fd).max() < 1e-6 * scale, (W - fd) / scale

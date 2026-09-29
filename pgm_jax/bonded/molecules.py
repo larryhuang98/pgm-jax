@@ -6,6 +6,7 @@ Each entry: SMILES (explicit charge), total charge and the subset it belongs to:
 `build(name)` gives elements, bonds and a few low-energy conformers (Angstrom) from RDKit
 (ETKDG + MMFF); geometries are refined later at the sampling level.
 """
+
 from __future__ import annotations
 
 MOLECULES = {
@@ -59,8 +60,14 @@ def build(name: str, n_conf: int = 30, keep: int = 4, rms: float = 0.3, seed: in
         if len(kept) == keep:
             break
     confs = [mol.GetConformer(cids[i]).GetPositions().tolist() for i in kept]
-    return {"name": name, "smiles": smi, "charge": charge, "subset": subset,
-            "elements": [a.GetSymbol() for a in mol.GetAtoms()],
-            "bonds": [(b.GetBeginAtomIdx(), b.GetEndAtomIdx()) for b in mol.GetBonds()],
-            "bond_orders": [b.GetBondTypeAsDouble() for b in mol.GetBonds()],
-            "conformers": confs, "mmff_E": [float(energies[i]) for i in kept]}
+    return {
+        "name": name,
+        "smiles": smi,
+        "charge": charge,
+        "subset": subset,
+        "elements": [a.GetSymbol() for a in mol.GetAtoms()],
+        "bonds": [(b.GetBeginAtomIdx(), b.GetEndAtomIdx()) for b in mol.GetBonds()],
+        "bond_orders": [b.GetBondTypeAsDouble() for b in mol.GetBonds()],
+        "conformers": confs,
+        "mmff_E": [float(energies[i]) for i in kept],
+    }

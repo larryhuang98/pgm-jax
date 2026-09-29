@@ -1,7 +1,8 @@
 """Timing of the core evaluations on the current device (run on CPU or GPU nodes).
 
-    python scripts/bench.py            # prints device, compile time and steady-state time per call
+python scripts/bench.py            # prints device, compile time and steady-state time per call
 """
+
 from __future__ import annotations
 
 import os
@@ -36,17 +37,21 @@ def random_clusters(mono, nmol, nconf, seed=0):
         centre = np.zeros(3)
         for m in range(nmol):
             Q = np.linalg.qr(rng.normal(size=(3, 3)))[0]
-            out[c, 3 * m:3 * m + 3] = mono @ Q.T + centre
+            out[c, 3 * m : 3 * m + 3] = mono @ Q.T + centre
             v = rng.normal(size=3)
             centre = centre + v / np.linalg.norm(v) * rng.uniform(0.28, 0.40)
     return out
 
 
 def timed(f, n=3):
-    t0 = time.time(); jax.block_until_ready(f()); t_first = time.time() - t0
+    t0 = time.time()
+    jax.block_until_ready(f())
+    t_first = time.time() - t0
     ts = []
     for _ in range(n):
-        t0 = time.time(); jax.block_until_ready(f()); ts.append(time.time() - t0)
+        t0 = time.time()
+        jax.block_until_ready(f())
+        ts.append(time.time() - t0)
     return t_first, min(ts)
 
 
@@ -77,8 +82,14 @@ def main():
     mono = pos[:3]
     c2, c3 = random_clusters(mono, 2, 4000), random_clusters(mono, 3, 45316, seed=1)
     s2, s3 = System([w] * 2), System([w] * 3)
-    print("4000 water dimers, interaction E:    first %.1fs, then %.3fs" % timed(lambda: model.nbody(s2, c2)["int"]["total"], 1))
-    print("45316 water trimers, 3-body E:       first %.1fs, then %.3fs" % timed(lambda: model.nbody(s3, c3, order=3)["nb3"]["total"], 1))
+    print(
+        "4000 water dimers, interaction E:    first %.1fs, then %.3fs"
+        % timed(lambda: model.nbody(s2, c2)["int"]["total"], 1)
+    )
+    print(
+        "45316 water trimers, 3-body E:       first %.1fs, then %.3fs"
+        % timed(lambda: model.nbody(s3, c3, order=3)["nb3"]["total"], 1)
+    )
 
 
 if __name__ == "__main__":

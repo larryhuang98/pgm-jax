@@ -3,6 +3,7 @@ util) without executing `jax_md/__init__.py`, which also imports its machine-lea
 force-field modules (flax, e3nn, ...).  None of those are needed here, and flax releases can lag
 behind JAX (flax 0.12.9 does not import with JAX 0.11.2).  If `jax_md` was already imported by
 the user, that module is used."""
+
 from __future__ import annotations
 
 import importlib.util

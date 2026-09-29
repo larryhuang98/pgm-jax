@@ -3,6 +3,7 @@ force field and MD engines, the ASE calculator (energy, forces, stress vs finite
 water constraints, NVE), the i-PI socket client (protocol and units against an in-process server,
 single and batched requests; a real i-PI run if IPI_ROOT or i-pi is available) and the OpenMM
 PythonForce (if OpenMM >= 8.4 is importable)."""
+
 import os
 import socket
 import sys
@@ -22,8 +23,17 @@ from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
 
 
 def settings(**kw):
-    base = dict(cutoff=0.6, skin=0.05, ewald_beta=6.0, pme_grid=(32, 32, 32), pme_order=6, lj_lrc=False,
-                dipole_tol=1e-10, max_iter=500, precision="double")
+    base = dict(
+        cutoff=0.6,
+        skin=0.05,
+        ewald_beta=6.0,
+        pme_grid=(32, 32, 32),
+        pme_order=6,
+        lj_lrc=False,
+        dipole_tol=1e-10,
+        max_iter=500,
+        precision="double",
+    )
     base.update(kw)
     return MDSettings(**base)
 
@@ -96,6 +106,7 @@ def test_flexible_templates_match_flexible_simulation():
     from test_flexible import _box
 
     from pgm_jax.md.flexible import FlexibleSimulation
+
     tpl, sysm, pos, H = _box()
     s = MDSettings(precision="double", dipole_tol=1e-10, cutoff=0.6, skin=0.05, lj_lrc=False)
     sim = FlexibleSimulation(sysm, [tpl] * sysm.nmol, pos, H, s, ensemble="nve", log=None)
@@ -124,7 +135,7 @@ def test_slots_and_resizing():
     s = settings(dipole_tol=1e-5)
     rng = np.random.default_rng(0)
     confs = [pos + 0.002 * k * rng.normal(size=pos.shape) for k in range(4)]
-    other = [c + 0.03 for c in confs]                          # a rigid shift: a different "bead"
+    other = [c + 0.03 for c in confs]  # a rigid shift: a different "bead"
     eng2 = PGMEngine(sysm, pos, H, s, slots=2)
     a, b = PGMEngine(sysm, pos, H, s), PGMEngine(sysm, pos + 0.03, H, s)
     for x, y in zip(confs, other):
@@ -134,7 +145,7 @@ def test_slots_and_resizing():
         assert abs(r1.energy - ra.energy) < 1e-9 * abs(ra.energy) and abs(r2.energy - rb.energy) < 1e-9 * abs(rb.energy)
     eng = PGMEngine(sysm, pos, H, settings())
     ref = eng.compute(pos, H).energy
-    eng.ff.mc = 8                                              # far too small: overflow, resize, repeat
+    eng.ff.mc = 8  # far too small: overflow, resize, repeat
     eng._compile()
     for sl in eng.slots:
         sl.nbr = None
@@ -147,11 +158,11 @@ def test_compute_batch_matches_single_structures():
     histories, optionally in chunks) = one engine call per structure; molecules of one bead may
     sit in another periodic image."""
     sysm, pos, H = water_box(5)
-    s = settings(dipole_tol=1e-10, cutoff=0.4)            # the box holds the molecule list of the batch mean
+    s = settings(dipole_tol=1e-10, cutoff=0.4)  # the box holds the molecule list of the batch mean
     rng = np.random.default_rng(1)
     X = np.stack([pos + 0.004 * rng.normal(size=pos.shape) for _ in range(4)])
-    X[2, :3] += np.asarray(H)[0]                        # a whole molecule of bead 2 one cell over
-    for chunk, s in ((None, s), (2, settings(dipole_tol=1e-10))):          # molecule list, then atom list
+    X[2, :3] += np.asarray(H)[0]  # a whole molecule of bead 2 one cell over
+    for chunk, s in ((None, s), (2, settings(dipole_tol=1e-10))):  # molecule list, then atom list
         ref = [PGMEngine(sysm, pos, H, s, stress="atomic").compute(x, H, virial=True) for x in X]
         eng = PGMEngine(sysm, pos, H, s, stress="atomic", bead_margin=0.02)
         out = eng.compute_batch(X, H, virial=True, chunk=chunk)
@@ -177,6 +188,7 @@ def test_gas_phase_engine():
     from test_grad import cluster
 
     from pgm_jax import ElecChannel, LJChannel, Model
+
     sysm, pos = cluster(np.random.default_rng(0))
     model = Model([ElecChannel(), LJChannel()])
     eng = GasPhaseEngine(model, sysm)
@@ -196,7 +208,8 @@ def test_ase_calculator_units_stress_and_dipoles(box):
     from ase import units
 
     from pgm_jax.interfaces.ase import PGMCalculator, atoms_from_system
-    KJMOL_EV = units.kJ / units.mol                  # ASE's constants (CODATA 2014)
+
+    KJMOL_EV = units.kJ / units.mol  # ASE's constants (CODATA 2014)
     sysm, pos, H, s, eng = box
     r = eng.compute(pos, H, virial=True)
     atoms = atoms_from_system(sysm, pos, H)
@@ -232,6 +245,7 @@ def test_ase_rigid_water_nve():
     from ase.md.verlet import VelocityVerlet
 
     from pgm_jax.interfaces.ase import PGMCalculator, atoms_from_system, rigid_constraints
+
     sysm, pos, H = water_box(0)
     s = settings(dipole_tol=1e-8)
     atoms = atoms_from_system(sysm, pos, H)
@@ -255,6 +269,7 @@ def test_fix_rigid_molecules_equals_fix_bond_lengths():
     from ase.constraints import FixBondLengths
 
     from pgm_jax.interfaces.ase import atoms_from_system, rigid_blocks, rigid_constraints
+
     sysm, pos, H = water_box(2)
     rng = np.random.default_rng(3)
     a1, a2 = atoms_from_system(sysm, pos, H), atoms_from_system(sysm, pos, H)
@@ -301,13 +316,22 @@ class FakeIPI:
         self.c.sendall(self.msg("INIT") + np.int32(0).tobytes() + np.int32(len(t)).tobytes() + t)
 
     def posdata(self, h, pos):
-        self.c.sendall(self.msg("POSDATA") + h.tobytes() + np.linalg.inv(h).tobytes() + np.int32(len(pos)).tobytes()
-                       + pos.tobytes())
+        self.c.sendall(
+            self.msg("POSDATA")
+            + h.tobytes()
+            + np.linalg.inv(h).tobytes()
+            + np.int32(len(pos)).tobytes()
+            + pos.tobytes()
+        )
 
     def posdata_batch(self, hs, poss):
         body = b"".join(h.tobytes() + np.linalg.inv(h).tobytes() for h in hs)
-        self.c.sendall(self.msg("POSDATA") + np.int32(len(poss[0])).tobytes() + body
-                       + np.concatenate([p.reshape(-1) for p in poss]).tobytes())
+        self.c.sendall(
+            self.msg("POSDATA")
+            + np.int32(len(poss[0])).tobytes()
+            + body
+            + np.concatenate([p.reshape(-1) for p in poss]).tobytes()
+        )
 
     def getforce(self, batch=1):
         self.c.sendall(self.msg("GETFORCE"))
@@ -334,6 +358,7 @@ def test_ipi_client_protocol_and_units(tmp_path):
     import json
 
     from pgm_jax.interfaces.ipi import BOHR_NM, HARTREE_KJMOL, IPIClient
+
     sysm, pos, H = water_box(3)
     s = settings()
     ref = PGMEngine(sysm, pos, H, s)
@@ -344,14 +369,14 @@ def test_ipi_client_protocol_and_units(tmp_path):
     th = threading.Thread(target=client.run, daemon=True)
     th.start()
     srv.accept()
-    h = np.asarray(H).T / BOHR_NM                    # i-PI's cell: lattice vectors as columns, Bohr
+    h = np.asarray(H).T / BOHR_NM  # i-PI's cell: lattice vectors as columns, Bohr
     x = pos / BOHR_NM
     assert srv.status() == "NEEDINIT"
     srv.init("")
     assert srv.status() == "READY"
     srv.posdata(np.ascontiguousarray(h), np.ascontiguousarray(x))
     assert srv.status() == "HAVEDATA"
-    (E, F, vir, ex), = srv.getforce()
+    ((E, F, vir, ex),) = srv.getforce()
     r = ref.compute(pos, H, virial=True)
     assert abs(E * HARTREE_KJMOL - r.energy) < 1e-9 * abs(r.energy)
     assert np.abs(F * HARTREE_KJMOL / BOHR_NM - r.forces).max() < 1e-7
@@ -374,6 +399,7 @@ def _ipi_available():
     try:
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "interfaces"))
         import ipi_tools
+
         ipi_tools.ipi_command()
         return True
     except Exception:
@@ -388,6 +414,7 @@ def test_ipi_real_server_short_nvt(tmp_path):
     from test_flexible import _box
 
     from pgm_jax.interfaces.ipi import IPIClient
+
     tpl, sysm, pos, H = _box()
     s = MDSettings(precision="double", dipole_tol=1e-8, cutoff=0.6, skin=0.05, lj_lrc=False)
     tpls = [tpl] * sysm.nmol
@@ -396,10 +423,16 @@ def test_ipi_real_server_short_nvt(tmp_path):
     for nb in (1, 2):
         name = f"pgmreal{os.getpid()}_{nb}"
         wd = str(tmp_path / f"b{nb}")
-        T.write_input(wd, symbols, pos, H, sysm.masses, nbeads=nb, steps=20, dt_fs=0.25, stride=1, address=name,
-                      batch_size=nb)
-        client, st, props, wall = T.run(wd, name, lambda: IPIClient(
-            lambda p, c: PGMEngine(sysm, p, c, s, templates=tpls, slots=nb), name, unix=True, log=None))
+        T.write_input(
+            wd, symbols, pos, H, sysm.masses, nbeads=nb, steps=20, dt_fs=0.25, stride=1, address=name, batch_size=nb
+        )
+        client, st, props, wall = T.run(
+            wd,
+            name,
+            lambda: IPIClient(
+                lambda p, c: PGMEngine(sysm, p, c, s, templates=tpls, slots=nb), name, unix=True, log=None
+            ),
+        )
         assert abs(props["potential"][0] - E0) < 1e-6 * abs(E0)
         cons = props["conserved"]
         assert np.abs(cons - cons[0]).max() < 0.05 * abs(props["kinetic_md"][0])
@@ -409,6 +442,7 @@ def test_ipi_real_server_short_nvt(tmp_path):
 def _openmm():
     try:
         import openmm
+
         return openmm if hasattr(openmm, "PythonForce") else None
     except ImportError:
         return None
@@ -420,6 +454,7 @@ def test_openmm_pythonforce_energy_forces_and_nve():
     from openmm import unit
 
     from pgm_jax.interfaces.openmm import PGMOpenMM
+
     sysm, pos, H = water_box(4)
     s = settings(dipole_tol=1e-8)
     eng = PGMEngine(sysm, pos, H, s)

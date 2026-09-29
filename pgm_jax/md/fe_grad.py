@@ -41,6 +41,7 @@ Cost: per sample, 2 x K dipole re-solves and 2 x K reverse passes of the energy 
 states); see docs/fe_gradients.md.
 
 Units: kJ/mol, nm, e, e nm; gradients in kJ/mol per unit of each table entry."""
+
 from __future__ import annotations
 
 import dataclasses as _dc
@@ -59,8 +60,13 @@ KCAL = 4.184
 
 # scale groups: parameter quantities scaled together and the exponent of the scale on each
 # (lj_sqrt_eps carries sqrt(eps), so scaling eps by s scales it by s^1/2)
-SCALE_GROUPS = {"charge": {"q": 1.0, "cov": 1.0}, "eps": {"lj_sqrt_eps": 0.5}, "rmin": {"lj_rmin_half": 1.0},
-                "alpha": {"alpha": 1.0}, "radius": {"radius": 1.0}}
+SCALE_GROUPS = {
+    "charge": {"q": 1.0, "cov": 1.0},
+    "eps": {"lj_sqrt_eps": 0.5},
+    "rmin": {"lj_rmin_half": 1.0},
+    "alpha": {"alpha": 1.0},
+    "radius": {"radius": 1.0},
+}
 
 
 # ----------------------------------------------------------------------------- parameter space
@@ -161,10 +167,11 @@ def alchemical_map(sys0, sysA):
     idx = {}
     for q in QUANTITIES:
         pos = {k: i for i, k in enumerate(sys0.table.keys[q])}
-        idx[q] = np.array([pos[k[len(PREFIX):] if k.startswith(PREFIX) else k] for k in sysA.table.keys[q]], int)
+        idx[q] = np.array([pos[k[len(PREFIX) :] if k.startswith(PREFIX) else k] for k in sysA.table.keys[q]], int)
 
     def f(P0):
         return {q: jnp.asarray(P0[q])[idx[q]] for q in QUANTITIES}
+
     return f
 
 
@@ -228,6 +235,7 @@ class ParamGradients:
         if key not in self._fns:
             if w.batched:
                 from .remd import _axes
+
                 f = jax.vmap(self._one, in_axes=(_axes(w.S), None))
             else:
                 f = self._one
@@ -256,7 +264,7 @@ class ParamGradients:
 def gas_leg_gradient(gas, params, space: ParamSpace) -> tuple:
     """(Delta G_gas(1 -> 0), d Delta G_gas / dP (M,)) of a rigid solute's gas-phase leg
     (alchemy.GasPhaseLeg: E_gas(0) - E_gas(1), exact), kJ/mol."""
-    f = lambda P: gas._e(jnp.asarray(0.0), P) - gas._e(jnp.asarray(1.0), P)      # noqa: E731
+    f = lambda P: gas._e(jnp.asarray(0.0), P) - gas._e(jnp.asarray(1.0), P)  # noqa: E731
     v, g = jax.value_and_grad(f)(params)
     return float(v), np.asarray(space.flatten(g), float)
 
@@ -274,6 +282,7 @@ class FEGradient:
     """A free energy (kJ/mol), its gradient over the parameter entries `names` (kJ/mol per unit), their
     jackknife standard errors and the replicates (jk_value (B,), jk_grad (B, M)) for exact errors of
     projections and chain-rule products."""
+
     value: float
     value_err: float
     grad: np.ndarray
@@ -304,12 +313,13 @@ class FEGradient:
 def _subset(S, discard_ps, end_ps, stride):
     t = np.asarray(S["time_ps"], float)
     last = np.inf if end_ps is None else float(end_ps) + 1e-9
-    keep = np.nonzero((t > float(discard_ps) + 1e-9) & (t <= last))[0][::max(int(stride), 1)]
+    keep = np.nonzero((t > float(discard_ps) + 1e-9) & (t <= last))[0][:: max(int(stride), 1)]
     return keep
 
 
-def gradient_estimate(samples, discard_ps: float = 0.0, gas=None, n_blocks: int = 10, end_ps: float | None = None,
-                      stride: int = 1) -> dict:
+def gradient_estimate(
+    samples, discard_ps: float = 0.0, gas=None, n_blocks: int = 10, end_ps: float | None = None, stride: int = 1
+) -> dict:
     """Free energy of the solution leg (window 0 -> K-1) and of hydration, with their parameter
     gradients, from FreeEnergyRun samples with parameter gradients (a dict or free_energy.load of
     prefix_fe.npz; needs 'dudp' (S, T, K, M), meta dudp_targets containing 0 and K-1, dudp_names).
@@ -340,7 +350,7 @@ def gradient_estimate(samples, discard_ps: float = 0.0, gas=None, n_blocks: int 
     if len(keep) < 2 * n_blocks:
         raise ValueError(f"only {len(keep)} samples after {discard_ps} ps for {n_blocks} blocks")
     u, G = u[keep], G[keep]
-    A0, A1 = G[:, i0], G[:, i1]                                   # (s, K, M)
+    A0, A1 = G[:, i0], G[:, i1]  # (s, K, M)
     M = G.shape[-1]
 
     f_start = [None]
@@ -348,7 +358,7 @@ def gradient_estimate(samples, discard_ps: float = 0.0, gas=None, n_blocks: int 
     def estimate(idx):
         s = len(idx)
         uu = u[idx]
-        u_kn = uu.transpose(1, 2, 0).reshape(K, K * s)          # column (window n, sample)
+        u_kn = uu.transpose(1, 2, 0).reshape(K, K * s)  # column (window n, sample)
         N_k = np.full(K, s)
         f, _ = fe.mbar(u_kn, N_k, f0=f_start[0])
         lw, _ = fe._mbar_weights(u_kn, N_k, f)
@@ -363,9 +373,14 @@ def gradient_estimate(samples, discard_ps: float = 0.0, gas=None, n_blocks: int 
     blocks = np.array_split(np.arange(len(keep)), int(n_blocks))
     reps = [estimate(np.concatenate([b for j, b in enumerate(blocks) if j != i])) for i in range(len(blocks))]
     jk_dG = np.array([r["dG"] for r in reps])
-    out = {"names": names, "samples_per_window": len(keep), "n_blocks": int(n_blocks), "kT": kT,
-           "end_means": (full["e0"], full["e1"]),
-           "end_means_err": (jackknife_error([r["e0"] for r in reps]), jackknife_error([r["e1"] for r in reps]))}
+    out = {
+        "names": names,
+        "samples_per_window": len(keep),
+        "n_blocks": int(n_blocks),
+        "kT": kT,
+        "end_means": (full["e0"], full["e1"]),
+        "end_means_err": (jackknife_error([r["e0"] for r in reps]), jackknife_error([r["e1"] for r in reps])),
+    }
     legs = {"solv": (1.0, 0.0, np.zeros(M))}
     if gas is not None:
         gg = np.zeros(M) if gas.get("grad") is None else np.asarray(gas["grad"], float).reshape(M)
@@ -375,9 +390,16 @@ def gradient_estimate(samples, discard_ps: float = 0.0, gas=None, n_blocks: int 
         for est in ("mbar", "end"):
             jk_g = np.array([cg + sgn * r[est] for r in reps])
             jk_v = c + sgn * jk_dG
-            out[leg][est] = FEGradient(value=c + sgn * full["dG"], value_err=float(jackknife_error(jk_v)),
-                                       grad=cg + sgn * full[est], grad_err=jackknife_error(jk_g), names=names,
-                                       jk_value=jk_v, jk_grad=jk_g, estimator=est)
+            out[leg][est] = FEGradient(
+                value=c + sgn * full["dG"],
+                value_err=float(jackknife_error(jk_v)),
+                grad=cg + sgn * full[est],
+                grad_err=jackknife_error(jk_g),
+                names=names,
+                jk_value=jk_v,
+                jk_grad=jk_g,
+                estimator=est,
+            )
     return out
 
 
@@ -394,16 +416,34 @@ class FreeEnergyTarget:
     theta_fn(theta) must reproduce the sampled table at the theta of the run (checked); combined
     with alchemical_map(sys0, sysA) it can act on the original (non-alchemical) table."""
 
-    def __init__(self, result: FEGradient, params_flat, space_names, experiment: float | None = None,
-                 sigma: float | None = None, name: str = "", space: ParamSpace | None = None):
+    def __init__(
+        self,
+        result: FEGradient,
+        params_flat,
+        space_names,
+        experiment: float | None = None,
+        sigma: float | None = None,
+        name: str = "",
+        space: ParamSpace | None = None,
+    ):
         self.result, self.p = result, np.asarray(params_flat, float)
         self.names = list(space_names)
         self.space = space or ParamSpace.from_names(self.names)
         self.experiment, self.sigma, self.name = experiment, sigma, name
 
     @classmethod
-    def from_samples(cls, samples, discard_ps=0.0, estimator="mbar", leg=None, n_blocks=10, experiment=None,
-                     sigma=None, name="", gas=None):
+    def from_samples(
+        cls,
+        samples,
+        discard_ps=0.0,
+        estimator="mbar",
+        leg=None,
+        n_blocks=10,
+        experiment=None,
+        sigma=None,
+        name="",
+        gas=None,
+    ):
         S = dict(samples)
         meta = S.get("meta", {})
         if gas is None and meta.get("gas_grad") is not None:
@@ -417,7 +457,7 @@ class FreeEnergyTarget:
         return cls.from_samples(fe.load(path), **kw)
 
     def _J(self, theta_fn, theta, space):
-        flat = lambda th: space.flatten(theta_fn(th))                            # noqa: E731
+        flat = lambda th: space.flatten(theta_fn(th))  # noqa: E731
         th = jnp.asarray(theta, jnp.float64)
         p = np.asarray(flat(th), float)
         if p.shape != self.p.shape or not np.allclose(p, self.p, rtol=1e-8, atol=1e-12):
@@ -439,7 +479,7 @@ class FreeEnergyTarget:
         if self.experiment is not None:
             s = self.sigma or 1.0
             out["chi2"] = ((r.value - self.experiment) / s) ** 2
-            out["dchi2"] = 2.0 * (r.value - self.experiment) / s ** 2 * np.asarray(g)
+            out["dchi2"] = 2.0 * (r.value - self.experiment) / s**2 * np.asarray(g)
         return out
 
     def estimate(self, theta_fn, theta, space: ParamSpace | None = None, unit: str = "kJ/mol") -> dict:
@@ -452,10 +492,17 @@ class FreeEnergyTarget:
         g = c * (r.grad @ J)
         jy = c * np.asarray(r.jk_value, float)[:, None]
         jJ = c * (np.asarray(r.jk_grad, float) @ J)[:, None, :]
-        return {"names": [self.name or "dG"], "y": np.array([c * r.value]), "J": g[None, :],
-                "cov_y": np.array([[(c * r.value_err) ** 2]]), "J_err": jackknife_error(jJ),
-                "loo": {"y": jy, "J": jJ}, "target": np.array([np.nan if self.experiment is None else c * self.experiment]),
-                "tol": np.array([c * (self.sigma or 1.0)]), "unit": unit}
+        return {
+            "names": [self.name or "dG"],
+            "y": np.array([c * r.value]),
+            "J": g[None, :],
+            "cov_y": np.array([[(c * r.value_err) ** 2]]),
+            "J_err": jackknife_error(jJ),
+            "loo": {"y": jy, "J": jJ},
+            "target": np.array([np.nan if self.experiment is None else c * self.experiment]),
+            "tol": np.array([c * (self.sigma or 1.0)]),
+            "unit": unit,
+        }
 
     def predict(self, dp_flat) -> float:
         """First-order prediction of the free energy after changing the table by dp_flat (kJ/mol)."""

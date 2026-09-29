@@ -3,6 +3,7 @@ force groups sum to the full force and the fast forces are the gradient of the f
 range and special-pair splits, every fast induction model), the list rebuild, the NVE step is
 time-reversible, energy conservation, per-group kinetic temperatures with thermostats (two and
 three levels), NPT + restraints + checkpoints, and the settings that must be refused."""
+
 import jax
 import numpy as np
 import pytest
@@ -29,10 +30,23 @@ def water_sim(engine, mts=None, dt=0.002, ensemble="nve", thermostat="langevin",
     wat = water()
     sys = System([wat] * (len(pos) // 3))
     if engine == "rigid":
-        return Simulation(sys, pos, H, settings, dt=dt, ensemble=ensemble, thermostat=thermostat, log=None, seed=seed,
-                          mts=mts, **kw)
-    return FlexibleSimulation(sys, [RigidTemplate(wat, w)] * sys.nmol, pos, H, settings, dt=dt, ensemble=ensemble,
-                              thermostat=thermostat, log=None, seed=seed, mts=mts, **kw)
+        return Simulation(
+            sys, pos, H, settings, dt=dt, ensemble=ensemble, thermostat=thermostat, log=None, seed=seed, mts=mts, **kw
+        )
+    return FlexibleSimulation(
+        sys,
+        [RigidTemplate(wat, w)] * sys.nmol,
+        pos,
+        H,
+        settings,
+        dt=dt,
+        ensemble=ensemble,
+        thermostat=thermostat,
+        log=None,
+        seed=seed,
+        mts=mts,
+        **kw,
+    )
 
 
 def methanol_sim(mts=None, dt=0.001, ensemble="nve", **kw):
@@ -68,7 +82,7 @@ def test_groups_sum_to_the_full_force_and_fast_forces_are_gradients():
     sim._advance(100)
     st, integ = sim.state, sim.integ
     F = np.asarray(st.dyn.force)
-    rms = np.sqrt(np.mean(F ** 2))
+    rms = np.sqrt(np.mean(F**2))
     assert np.abs(sum(np.asarray(f) for f in st.mts.forces) - F).max() < 1e-12 * rms
     # the full force is the ordinary one at the same positions
     ref = methanol_sim(None, dt=0.001)
@@ -100,7 +114,7 @@ def test_special_pair_split(pol):
     st, integ = sim.state, sim.integ
     F1 = np.asarray(st.mts.forces[1])
     g = jax.grad(lambda y: integ.short_energy(y, st.box, st) + integ.flex.energy(y))(st.dyn.position)
-    assert np.abs(F1 + np.asarray(g)).max() < 1e-10 * np.sqrt(np.mean(F1 ** 2))
+    assert np.abs(F1 + np.asarray(g)).max() < 1e-10 * np.sqrt(np.mean(F1**2))
     out = []
     for m in (None, MTS(inner=1, split="special", polarization=pol, anchor=False)):
         sim = methanol_sim(m, dt=0.0005, ensemble="nvt", thermostat="bussi")
@@ -149,15 +163,30 @@ def test_energy_conservation():
     assert abs(res["mts"][1]) < 0.01, res
 
 
-@pytest.mark.parametrize("engine,thermostat,o_step", [("rigid", "bussi", "outer"), ("rigid", "langevin", "outer"),
-                                                    ("constraints", "langevin", "outer"),
-                                                    ("constraints", "langevin", "inner")])
+@pytest.mark.parametrize(
+    "engine,thermostat,o_step",
+    [
+        ("rigid", "bussi", "outer"),
+        ("rigid", "langevin", "outer"),
+        ("constraints", "langevin", "outer"),
+        ("constraints", "langevin", "inner"),
+    ],
+)
 def test_group_temperatures(engine, thermostat, o_step):
     """NVT with MTS (outer 4 fs, fast 2 fs): translational and rotational (rigid bodies) or centre-of-
     mass and internal (constraints) temperatures at the target."""
     s = MDSettings(precision="mixed", dipole_tol=1e-5, cutoff=0.55, skin=0.05)
-    sim = water_sim(engine, MTS(inner=2, r_short=0.4, buffer=0.1, o_step=o_step), dt=0.004, ensemble="nvt",
-                    thermostat=thermostat, settings=s, temperature=300.0, gamma=5.0, tau_t=0.1)
+    sim = water_sim(
+        engine,
+        MTS(inner=2, r_short=0.4, buffer=0.1, o_step=o_step),
+        dt=0.004,
+        ensemble="nvt",
+        thermostat=thermostat,
+        settings=s,
+        temperature=300.0,
+        gamma=5.0,
+        tau_t=0.1,
+    )
     sim._advance(250)
     T = []
     for _ in range(150):
@@ -171,8 +200,14 @@ def test_group_temperatures(engine, thermostat, o_step):
 def test_three_levels_thermostat():
     """Flexible methanol with three levels (slow 2 fs, short-range 1 fs, bonded 0.5 fs) and the O step
     in the middle of the outer step: centre-of-mass and internal temperatures at the target."""
-    sim = methanol_sim(MTS(inner=2, bonded=2, r_short=0.4, buffer=0.1), dt=0.002, ensemble="nvt",
-                       thermostat="langevin", gamma=5.0, temperature=300.0)
+    sim = methanol_sim(
+        MTS(inner=2, bonded=2, r_short=0.4, buffer=0.1),
+        dt=0.002,
+        ensemble="nvt",
+        thermostat="langevin",
+        gamma=5.0,
+        temperature=300.0,
+    )
     sim._advance(300)
     T = []
     for _ in range(120):
@@ -187,11 +222,20 @@ def test_npt_restraints_and_checkpoint(tmp_path):
     """NPT with the barostat at outer steps and a positional restraint in the fast group; a checkpoint
     continues the run exactly."""
     from pgm_jax.md.restraints import PositionRestraint
+
     pos, H, w = _water_box(n_side=4, spacing=0.31)
     rest = PositionRestraint([0, 3], pos[[0, 3]], k=500.0)
     s = MDSettings(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
-    mk = lambda: water_sim("constraints", MTS(inner=2, r_short=0.4, buffer=0.1), dt=0.004, ensemble="npt",  # noqa: E731
-                           thermostat="bussi", settings=s, barostat_interval=5, restraints=rest)
+    mk = lambda: water_sim(
+        "constraints",
+        MTS(inner=2, r_short=0.4, buffer=0.1),
+        dt=0.004,
+        ensemble="npt",  # noqa: E731
+        thermostat="bussi",
+        settings=s,
+        barostat_interval=5,
+        restraints=rest,
+    )
     sim = mk()
     sim._advance(100)
     assert int(sim.state.mc[0]) == 20 and np.isfinite(sim.observables()["econs"])
@@ -208,14 +252,21 @@ def test_refused_settings():
     with pytest.raises(ValueError, match="bonded"):
         water_sim("rigid", MTS(inner=2, split="bonded"))
     with pytest.raises(ValueError, match="cutoff"):
-        water_sim("constraints", MTS(inner=2, r_short=0.5, buffer=0.1))           # list beyond 0.55 nm
+        water_sim("constraints", MTS(inner=2, r_short=0.5, buffer=0.1))  # list beyond 0.55 nm
     with pytest.raises(ValueError, match="direct"):
-        water_sim("constraints", MTS(inner=2, r_short=0.4, polarization="direct"),
-                  settings=MDSettings(precision="double", cutoff=0.55, skin=0.05, elec="qp"))
+        water_sim(
+            "constraints",
+            MTS(inner=2, r_short=0.4, polarization="direct"),
+            settings=MDSettings(precision="double", cutoff=0.55, skin=0.05, elec="qp"),
+        )
     with pytest.raises(ValueError, match="predictor"):
-        water_sim("constraints", MTS(inner=2, r_short=0.4, anchor=True),
-                  settings=MDSettings(precision="double", cutoff=0.55, skin=0.05, predictor="ls"))
+        water_sim(
+            "constraints",
+            MTS(inner=2, r_short=0.4, anchor=True),
+            settings=MDSettings(precision="double", cutoff=0.55, skin=0.05, predictor="ls"),
+        )
     from pgm_jax.md.remd import MDReplicas
+
     sim = water_sim("constraints", MTS(inner=2, r_short=0.4), ensemble="nvt", thermostat="bussi")
     with pytest.raises(ValueError, match="multiple time stepping"):
         MDReplicas(sim, [300.0, 310.0])

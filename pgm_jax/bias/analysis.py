@@ -11,6 +11,7 @@
   wham               1D weighted histogram analysis of umbrella windows (reference free energies)
   align_rmsd         RMSD between two FES over a region after the best constant shift
 Units: kJ/mol and the CVs' units."""
+
 from __future__ import annotations
 
 import jax
@@ -33,7 +34,7 @@ def bias_on_grid(bias, state, points, chunk: int = 4096):
     """V(s) (G,) of one bias (core.Bias) at the grid points (G, d)."""
     f = jax.jit(jax.vmap(lambda s: bias.potential(state, s)))
     P = np.asarray(points, float).reshape(-1, bias.d)
-    return np.concatenate([np.asarray(f(jnp.asarray(P[i:i + chunk]))) for i in range(0, len(P), chunk)])
+    return np.concatenate([np.asarray(f(jnp.asarray(P[i : i + chunk]))) for i in range(0, len(P), chunk)])
 
 
 def fes_from_bias(bias, state, points):
@@ -62,11 +63,13 @@ def metad_ct(hills: dict, biasfactor: float, kT: float, periods, points, chunk: 
     V = np.zeros(len(points))
     out = np.zeros(len(h))
     for i in range(0, len(h), chunk):
-        H = _hill_values(C[i:i + chunk], h[i:i + chunk], sig, periods, points)
+        H = _hill_values(C[i : i + chunk], h[i : i + chunk], sig, periods, points)
         Vc = V[None, :] + np.cumsum(H, 0)
         a, b = g / (g - 1.0) * Vc / kT, Vc / ((g - 1.0) * kT)
         am, bm = a.max(1, keepdims=True), b.max(1, keepdims=True)
-        out[i:i + chunk] = kT * ((am[:, 0] + np.log(np.exp(a - am).sum(1))) - (bm[:, 0] + np.log(np.exp(b - bm).sum(1))))
+        out[i : i + chunk] = kT * (
+            (am[:, 0] + np.log(np.exp(a - am).sum(1))) - (bm[:, 0] + np.log(np.exp(b - bm).sum(1)))
+        )
         V = Vc[-1]
     return np.asarray(hills["step"]), out
 
@@ -120,14 +123,17 @@ def align_rmsd(F, F_ref, mask=None):
     """RMSD of F - F_ref over mask after subtracting the mean difference (the best constant shift);
     returns (rmsd, max |diff|, shifted F)."""
     F, F_ref = np.asarray(F, float), np.asarray(F_ref, float)
-    m = np.isfinite(F) & np.isfinite(F_ref) if mask is None else (np.asarray(mask) & np.isfinite(F) & np.isfinite(F_ref))
+    m = (
+        np.isfinite(F) & np.isfinite(F_ref)
+        if mask is None
+        else (np.asarray(mask) & np.isfinite(F) & np.isfinite(F_ref))
+    )
     shift = np.mean((F - F_ref)[m])
     D = (F - shift - F_ref)[m]
     return float(np.sqrt(np.mean(D * D))), float(np.max(np.abs(D))), F - shift
 
 
-def wham(samples, centers, kappas, axis, kT: float, period: float = 0.0, tol: float = 1e-10,
-         max_iter: int = 100000):
+def wham(samples, centers, kappas, axis, kT: float, period: float = 0.0, tol: float = 1e-10, max_iter: int = 100000):
     """1D WHAM of umbrella windows with biases kappa_k / 2 (s - c_k)^2 (Harmonic; differences
     wrapped for a periodic CV).  samples: list of 1D arrays (one per window); axis: bin centres
     (uniform).  Returns (F on the axis, min 0; inf where no samples, f_k window free energies)."""
@@ -148,7 +154,7 @@ def wham(samples, centers, kappas, axis, kT: float, period: float = 0.0, tol: fl
     d = axis[None, :] - np.asarray(centers, float)[:, None]
     if period > 0:
         d = d - period * np.round(d / period)
-    bk = 0.5 * np.asarray(kappas, float)[:, None] * d * d / kT         # (K, bins) reduced biases
+    bk = 0.5 * np.asarray(kappas, float)[:, None] * d * d / kT  # (K, bins) reduced biases
     num = counts.sum(0)
     f = np.zeros(K)
     for _ in range(int(max_iter)):

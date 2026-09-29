@@ -2,6 +2,7 @@
 derivative against finite differences, dihedral sign and periodicity, positional references under
 box scaling, both MD drivers (energy conservation, rigid-body force mapping, a restrained atom
 held, Monte Carlo trials with restraints, the pressure), protein selections."""
+
 import os
 
 import jax
@@ -53,7 +54,7 @@ def test_flat_bottom_form():
     e = np.asarray(nmr_energy(jnp.asarray(xs), *b, k2, k3))
     assert np.allclose(e, [_amber_nmr(x, *b, k2, k3) for x in xs], rtol=1e-13, atol=1e-13)
     g = jax.grad(lambda x: nmr_energy(x, *b, k2, k3))
-    for x in b:                                            # value and slope continuous at the knots
+    for x in b:  # value and slope continuous at the knots
         h = 1e-7
         assert abs(float(nmr_energy(x + h, *b, k2, k3)) - float(nmr_energy(x - h, *b, k2, k3))) < 1e-4
         assert abs(float(g(x + h)) - float(g(x - h))) < 1e-4
@@ -80,18 +81,28 @@ def _all_kinds(pos, H):
     """One restraint set of every kind, parameters chosen so that every region of the forms is
     visited (some restraints inside the flat bottom, some on the linear walls)."""
     m = np.arange(1.0, len(pos) + 1)
-    return Restraints([
-        PositionRestraint([0, 1, 2, 3], pos[:4] + [[0.05, 0, 0], [0, 0.3, 0], [0.01, 0, 0], [0, 0, -0.9]],
-                          k=[400.0, 300.0, 500.0, 200.0], r0=[0.0, 0.1, 0.02, 0.0]),
-        PositionRestraint([4, 5], pos[4:6] + 0.04, k=600.0, scaling="fractional", box=H),
-        PositionRestraint([6, 7, 8], pos[6:9] - 0.03, k=800.0, r0=0.01, scaling="com", box=H, weights=m[6:9]),
-        DistanceRestraint([[0, 9], [2, 11], [3, 12], [5, 13]], ([0.0, 0.1, 0.1, 0.15], 0.2, [0.3, 0.3, 0.3, 0.6], [0.5, 0.5, 0.5, 0.8]),
-                          k2=[100.0, 50.0, 80.0, 120.0], k3=[200.0, 70.0, 90.0, 60.0]),
-        AngleRestraint([[0, 4, 9], [1, 5, 10], [2, 6, 11]], (0.3, 1.0, 1.5, 2.2), k2=40.0, k3=30.0),
-        DihedralRestraint([[0, 3, 6, 9], [1, 4, 7, 10], [2, 5, 8, 11]], (-2.5, -1.0, 0.5, 2.0), k=25.0),
-        DihedralRestraint([[3, 5, 7, 13]], harmonic(np.pi), k=15.0),
-        COMDistanceRestraint([0, 1, 2], [9, 10, 11, 12], (0.1, 0.25, 0.3, 0.4), k=300.0, masses=m),
-    ])
+    return Restraints(
+        [
+            PositionRestraint(
+                [0, 1, 2, 3],
+                pos[:4] + [[0.05, 0, 0], [0, 0.3, 0], [0.01, 0, 0], [0, 0, -0.9]],
+                k=[400.0, 300.0, 500.0, 200.0],
+                r0=[0.0, 0.1, 0.02, 0.0],
+            ),
+            PositionRestraint([4, 5], pos[4:6] + 0.04, k=600.0, scaling="fractional", box=H),
+            PositionRestraint([6, 7, 8], pos[6:9] - 0.03, k=800.0, r0=0.01, scaling="com", box=H, weights=m[6:9]),
+            DistanceRestraint(
+                [[0, 9], [2, 11], [3, 12], [5, 13]],
+                ([0.0, 0.1, 0.1, 0.15], 0.2, [0.3, 0.3, 0.3, 0.6], [0.5, 0.5, 0.5, 0.8]),
+                k2=[100.0, 50.0, 80.0, 120.0],
+                k3=[200.0, 70.0, 90.0, 60.0],
+            ),
+            AngleRestraint([[0, 4, 9], [1, 5, 10], [2, 6, 11]], (0.3, 1.0, 1.5, 2.2), k2=40.0, k3=30.0),
+            DihedralRestraint([[0, 3, 6, 9], [1, 4, 7, 10], [2, 5, 8, 11]], (-2.5, -1.0, 0.5, 2.0), k=25.0),
+            DihedralRestraint([[3, 5, 7, 13]], harmonic(np.pi), k=15.0),
+            COMDistanceRestraint([0, 1, 2], [9, 10, 11, 12], (0.1, 0.25, 0.3, 0.4), k=300.0, masses=m),
+        ]
+    )
 
 
 def test_forces_and_strain_derivative_match_finite_differences():
@@ -131,21 +142,24 @@ def test_forces_and_strain_derivative_match_finite_differences():
 
 def test_dihedral_sign_and_periodicity():
     from pgm_jax.bonded.terms.core import _dihedral
+
     x = jnp.asarray(np.random.default_rng(1).normal(size=(50, 4, 3)))
     assert np.allclose(dihedral(*(x[:, a] for a in range(4))), _dihedral(*(x[:, a] for a in range(4))), atol=1e-14)
 
-    def quad(phi):                                          # dihedral 0-1-2-3 equal to phi (checked)
-        return np.array([[0.1, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.15],
-                         [0.1 * np.cos(phi), 0.1 * np.sin(phi), 0.15]]) + 0.5
+    def quad(phi):  # dihedral 0-1-2-3 equal to phi (checked)
+        return (
+            np.array([[0.1, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.15], [0.1 * np.cos(phi), 0.1 * np.sin(phi), 0.15]])
+            + 0.5
+        )
 
     H = np.eye(3) * 3.0
     for phi in np.radians([-179.0, -60.0, 0.0, 45.0, 120.0, 179.0]):
         assert abs(float(dihedral(*quad(phi))) - phi) < 1e-12
     k2, k3 = 30.0, 50.0
     dr = DihedralRestraint([0, 1, 2, 3], np.radians([150.0, 170.0, 190.0, 210.0]), k2=k2, k3=k3)
-    E = lambda deg: float(dr.energy(quad(np.radians(deg)), H))   # noqa: E731
-    assert E(175.0) == 0.0 and E(-175.0) == 0.0 and E(-170.0) == 0.0          # the window crosses +-180
-    assert abs(E(-160.0) - k3 * np.radians(10.0) ** 2) < 1e-12                  # -160 = 200 deg: upper wall
+    E = lambda deg: float(dr.energy(quad(np.radians(deg)), H))  # noqa: E731
+    assert E(175.0) == 0.0 and E(-175.0) == 0.0 and E(-170.0) == 0.0  # the window crosses +-180
+    assert abs(E(-160.0) - k3 * np.radians(10.0) ** 2) < 1e-12  # -160 = 200 deg: upper wall
     assert abs(E(160.0) - k2 * np.radians(10.0) ** 2) < 1e-12
     assert abs(E(-120.0) - k3 * (np.radians(20.0) ** 2 + 2 * np.radians(20.0) * np.radians(30.0))) < 1e-12
     assert abs(E(35.0 + 360.0) - E(35.0)) < 1e-12
@@ -163,7 +177,7 @@ def test_reference_scaling():
     pos, H = _system(2)
     ref = pos[:5] + 0.02
     w = np.array([1.0, 12.0, 16.0, 1.0, 14.0])
-    F = np.eye(3) + np.array([[0.02, 0.0, 0.0], [0.01, -0.015, 0.0], [0.005, 0.003, 0.01]])     # deformation
+    F = np.eye(3) + np.array([[0.02, 0.0, 0.0], [0.01, -0.015, 0.0], [0.005, 0.003, 0.01]])  # deformation
     Hn = H @ F.T
     r_none = PositionRestraint(range(5), ref, 100.0)
     r_frac = PositionRestraint(range(5), ref, 100.0, scaling="fractional", box=H)
@@ -182,25 +196,28 @@ def test_reference_scaling():
     assert abs(float(r_com.energy(pos + c @ (F.T - np.eye(3)), Hn)) - e0c) < 1e-10 * e0c
     assert abs(float(r_none.energy(pos + c @ (F.T - np.eye(3)), Hn)) - float(r_none.energy(pos, H))) > 1e-3
     with pytest.raises(ValueError):
-        PositionRestraint([0], ref[:1], 1.0, scaling="com")                 # needs the reference box
+        PositionRestraint([0], ref[:1], 1.0, scaling="com")  # needs the reference box
 
 
 def _cluster_restraints(pos, masses):
     """Restraints of every kind between the cluster's waters (oxygens 3k), pulling: ~50 kJ/mol
     move between the restraints and the molecules within a short run."""
     O = lambda k: 3 * k  # noqa: E731
-    return Restraints([
-        PositionRestraint([O(7)], pos[[O(7)]] + [0.1, 0.0, 0.0], k=1500.0),
-        DistanceRestraint([[O(0), O(1)]], harmonic(0.40), k=2000.0),
-        AngleRestraint([[O(2), O(3), O(7)]], harmonic(np.radians(70.0)), k=100.0),
-        DihedralRestraint([[O(4), O(5), O(6), O(0)]], harmonic(np.radians(30.0)), k=10.0),
-        COMDistanceRestraint(range(12, 15), range(18, 21), (0.0, 0.15, 0.2, 0.25), k=800.0, masses=masses),
-    ])
+    return Restraints(
+        [
+            PositionRestraint([O(7)], pos[[O(7)]] + [0.1, 0.0, 0.0], k=1500.0),
+            DistanceRestraint([[O(0), O(1)]], harmonic(0.40), k=2000.0),
+            AngleRestraint([[O(2), O(3), O(7)]], harmonic(np.radians(70.0)), k=100.0),
+            DihedralRestraint([[O(4), O(5), O(6), O(0)]], harmonic(np.radians(30.0)), k=10.0),
+            COMDistanceRestraint(range(12, 15), range(18, 21), (0.0, 0.15, 0.2, 0.25), k=800.0, masses=masses),
+        ]
+    )
 
 
 def _water_sim(engine, pos, H, w, settings, **kw):
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
     from pgm_jax.md.simulation import Simulation
+
     wat = water()
     sys = System([wat] * (len(pos) // 3))
     if engine == "rigid":
@@ -241,8 +258,11 @@ def test_nve_with_restraints_and_force_mapping(engine):
     sim.set_restraints(None)
     assert abs(p_with - sim.pressure() - dP) < 1e-6 * max(1.0, abs(dP)), (p_with, sim.pressure(), dP)
     assert "erestraint" not in sim.observables() and sim.restraint_energies() == {}
-    for a, b, c in zip(jax.tree_util.tree_leaves(st.dyn.force), jax.tree_util.tree_leaves(sim.state.dyn.force),
-                       jax.tree_util.tree_leaves(mapped)):
+    for a, b, c in zip(
+        jax.tree_util.tree_leaves(st.dyn.force),
+        jax.tree_util.tree_leaves(sim.state.dyn.force),
+        jax.tree_util.tree_leaves(mapped),
+    ):
         c = np.asarray(c)
         assert np.allclose(np.asarray(a) - np.asarray(b), c, rtol=0, atol=1e-7 * np.abs(c).max())
     assert abs((o["epot"] - sim.observables()["epot"]) - o["erestraint"]) < 1e-6
@@ -259,13 +279,26 @@ def test_barostat_trials_include_restraints(engine):
     reference be dragged: ~0.02 nm, hundreds of kJ/mol.)"""
     pos, H, w = _water_box()
     m = np.tile(np.asarray(System([water()]).masses), len(pos) // 3)
-    far = np.arange(3 * 63, 3 * 64)                                # centre near (1.1, 1.1, 1.1) nm
+    far = np.arange(3 * 63, 3 * 64)  # centre near (1.1, 1.1, 1.1) nm
     s = MDSettings(precision="double", dipole_tol=1e-8, cutoff=0.55, skin=0.05)
     out = {}
     for scaling in ("none", "com"):
         r = PositionRestraint(far, pos[far], k=1e6, scaling=scaling, box=H, weights=m[far])
-        sim = _water_sim(engine, pos, H, w, s, dt=1e-5, ensemble="npt", barostat_interval=1, gamma=1.0,
-                         temperature=300.0, vel_nm_ps=np.zeros_like(pos), restraints=r, seed=2)
+        sim = _water_sim(
+            engine,
+            pos,
+            H,
+            w,
+            s,
+            dt=1e-5,
+            ensemble="npt",
+            barostat_interval=1,
+            gamma=1.0,
+            temperature=300.0,
+            vel_nm_ps=np.zeros_like(pos),
+            restraints=r,
+            seed=2,
+        )
         V0 = sim.observables()["volume_nm3"]
         sim._advance(120)
         o = sim.observables()
@@ -281,6 +314,7 @@ def test_flexible_engine_restrained_atom_held():
     """Atom engine (rigid water by constraints, 2 fs, Bussi): an oxygen restrained 0.2 nm away
     from its start moves to its reference and stays there."""
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
+
     pos, H, w = _water_box()
     wat = water()
     nmol = len(pos) // 3
@@ -288,8 +322,19 @@ def test_flexible_engine_restrained_atom_held():
     ref = pos[[0]] + [[0.0, 0.2, 0.0]]
     rs = PositionRestraint([0], ref, k=3000.0, r0=0.01)
     s = MDSettings(precision="double", dipole_tol=1e-8, cutoff=0.55, skin=0.05)
-    sim = FlexibleSimulation(sys, [RigidTemplate(wat, w)] * nmol, pos, H, s, dt=0.002, temperature=300.0,
-                             thermostat="bussi", tau_t=0.1, restraints=rs, log=None)
+    sim = FlexibleSimulation(
+        sys,
+        [RigidTemplate(wat, w)] * nmol,
+        pos,
+        H,
+        s,
+        dt=0.002,
+        temperature=300.0,
+        thermostat="bussi",
+        tau_t=0.1,
+        restraints=rs,
+        log=None,
+    )
     L = H[0, 0]
     dist = lambda: float(np.linalg.norm((lambda v: v - np.round(v / L) * L)(sim.positions_nm()[0] - ref[0])))  # noqa: E731
     d = [dist()]
@@ -304,13 +349,14 @@ def test_flexible_engine_restrained_atom_held():
 
 def test_protein_selections_and_position_restraints():
     from pgm_jax.protein import load_amber
+
     asys = load_amber(PRM, CRD)
     sys = asys.system()
     prot = asys.molecules[0]
     heavy, bb, ca = asys.select("heavy"), asys.select("backbone"), asys.select("ca")
     el = np.array(sys.elements)
-    assert len(heavy) == int(np.sum(el[:prot.n] != "H")) and np.all(el[heavy] != "H")
-    assert {prot.atom_names[a] for a in bb} == {"N", "CA", "C", "O"} and len(ca) == 2      # ALA, SER
+    assert len(heavy) == int(np.sum(el[: prot.n] != "H")) and np.all(el[heavy] != "H")
+    assert {prot.atom_names[a] for a in bb} == {"N", "CA", "C", "O"} and len(ca) == 2  # ALA, SER
     assert len(asys.select("heavy", kinds=("water",))) == sum(m.kind == "water" for m in asys.molecules)
     pos = asys.system_positions()
     rs = asys.position_restraints(418.4, "backbone")

@@ -14,12 +14,13 @@ python scripts/dielectric.py ir.dip --ir ir_spectrum.dat                   # M s
 ```
 
 ```python
-sim.run(nsteps, report=5000, traj=5000, dipoles=25, induced=5000, prefix="md")   # also md.mu.nc
+sim.run(nsteps, report=5000, traj=5000, dipoles=25, induced=5000, prefix="md")  # also md.mu.nc
 from pgm_jax.md.dipoles import cell_dipole, CellDipole, read_dipoles
-cell_dipole(sim)            # {"charge", "perm", "ind", "total"} e nm, "debye": the same in D, "molecular" (nmol, 3)
-CellDipole(ff).components(pos, H, mu)       # fixed frames: rows M_q, M_perm, M_ind (e nm)
+
+cell_dipole(sim)  # {"charge", "perm", "ind", "total"} e nm, "debye": the same in D, "molecular" (nmol, 3)
+CellDipole(ff).components(pos, H, mu)  # fixed frames: rows M_q, M_perm, M_ind (e nm)
 CellDipole(ff).polarizability(pos, H, idx)  # cell polarizability tensor (nm^3), tin-foil Ewald
-meta, d = read_dipoles(["md.dip", "md2.dip"])   # continuation segments; superseded records dropped
+meta, d = read_dipoles(["md.dip", "md2.dip"])  # continuation segments; superseded records dropped
 ```
 
 Both engines are supported (`Simulation`, rigid bodies; `FlexibleSimulation`, atoms with

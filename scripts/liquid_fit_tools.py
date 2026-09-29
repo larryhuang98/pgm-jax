@@ -10,6 +10,7 @@ check of the ensemble gradients, calibration of the parameter uncertainties.
     python scripts/liquid_fit_tools.py calib runs/fit/cal_s*.json
 
 The same --params / --targets / --model options as fit_multi.py define the objective."""
+
 from __future__ import annotations
 
 import argparse
@@ -44,7 +45,7 @@ def load_frames(prefix, skip: int = 0, select=None):
             raise SystemExit(f"{prefix}: segments at different theta")
     keys = [k for k in parts[0] if k not in ("theta", "rep")]
     out = {k: np.concatenate([p[k] for p in parts]) for k in keys}
-    if "rep" in parts[0]:                  # batched replicas: order by replica, then time (contiguous blocks)
+    if "rep" in parts[0]:  # batched replicas: order by replica, then time (contiguous blocks)
         rep = np.concatenate([p["rep"] for p in parts])
         order = np.argsort(rep, kind="stable")
         out = {k: v[order] for k, v in out.items()}
@@ -72,8 +73,10 @@ def cmd_combine(S, a):
         est, s = estimate(S, a, pre)
         print(f"# {pre}: {s.F} frames, theta {np.round(est.theta, 5).tolist()}")
         for i, n in enumerate(est.names):
-            print(f"   {n:20s} {est.y[i]:12.5f} +- {est.err[i]:9.5f}   d/dtheta " +
-                  " ".join(f"{j:11.4f} +- {e:8.4f}" for j, e in zip(est.J[i], est.J_err[i])))
+            print(
+                f"   {n:20s} {est.y[i]:12.5f} +- {est.err[i]:9.5f}   d/dtheta "
+                + " ".join(f"{j:11.4f} +- {e:8.4f}" for j, e in zip(est.J[i], est.J_err[i]))
+            )
         if a.json:
             json.dump(est.as_dict(), open(pre + "_combined.json", "w"), indent=1)
 
@@ -84,21 +87,37 @@ def cmd_fd(S, a):
     ep, sp = estimate(S, a, a.plus)
     j = a.param
     dth = ep.theta[j] - em.theta[j]
-    print(f"# finite differences along {S['space'].names[j]}: theta {em.theta[j]:+.4f} / {ec.theta[j]:+.4f} / "
-          f"{ep.theta[j]:+.4f}; frames {sm.F} / {sc.F} / {sp.F}")
+    print(
+        f"# finite differences along {S['space'].names[j]}: theta {em.theta[j]:+.4f} / {ec.theta[j]:+.4f} / "
+        f"{ep.theta[j]:+.4f}; frames {sm.F} / {sc.F} / {sp.F}"
+    )
     rows = []
     for i, n in enumerate(ec.names):
         fd = (ep.y[i] - em.y[i]) / dth
         fd_err = np.hypot(ep.err[i], em.err[i]) / abs(dth)
         g = [em.J[i, j], ec.J[i, j], ep.J[i, j]]
         ge = [em.J_err[i, j], ec.J_err[i, j], ep.J_err[i, j]]
-        simpson = (g[0] + 4 * g[1] + g[2]) / 6.0                          # mean slope over [-d, +d] (exact for cubics)
+        simpson = (g[0] + 4 * g[1] + g[2]) / 6.0  # mean slope over [-d, +d] (exact for cubics)
         simpson_err = np.sqrt(ge[0] ** 2 + 16 * ge[1] ** 2 + ge[2] ** 2) / 6.0
         z = (fd - simpson) / np.hypot(fd_err, simpson_err)
-        rows.append({"name": n, "y": [em.y[i], ec.y[i], ep.y[i]], "y_err": [em.err[i], ec.err[i], ep.err[i]],
-                     "fd": fd, "fd_err": fd_err, "grad": g, "grad_err": ge, "simpson": simpson, "simpson_err": simpson_err, "z": z})
-        print(f"   {n:16s} y {em.y[i]:10.4f} {ec.y[i]:10.4f} {ep.y[i]:10.4f} (+- {ec.err[i]:.4f})  FD {fd:11.4f} +- {fd_err:9.4f}  "
-              f"gradient {g[0]:11.4f} {g[1]:11.4f} {g[2]:11.4f} (+- {ge[1]:.4f})  Simpson {simpson:11.4f} +- {simpson_err:9.4f}  z {z:+.2f}")
+        rows.append(
+            {
+                "name": n,
+                "y": [em.y[i], ec.y[i], ep.y[i]],
+                "y_err": [em.err[i], ec.err[i], ep.err[i]],
+                "fd": fd,
+                "fd_err": fd_err,
+                "grad": g,
+                "grad_err": ge,
+                "simpson": simpson,
+                "simpson_err": simpson_err,
+                "z": z,
+            }
+        )
+        print(
+            f"   {n:16s} y {em.y[i]:10.4f} {ec.y[i]:10.4f} {ep.y[i]:10.4f} (+- {ec.err[i]:.4f})  FD {fd:11.4f} +- {fd_err:9.4f}  "
+            f"gradient {g[0]:11.4f} {g[1]:11.4f} {g[2]:11.4f} (+- {ge[1]:.4f})  Simpson {simpson:11.4f} +- {simpson_err:9.4f}  z {z:+.2f}"
+        )
     if a.json:
         json.dump(rows, open(a.json, "w"), indent=1, default=float)
 
@@ -119,9 +138,12 @@ def cmd_calib(a):
     for k, nm in enumerate(names):
         # chi-square interval of the sample standard deviation (95 %)
         from scipy.stats import chi2
+
         lo, hi = sd[k] * np.sqrt((n - 1) / chi2.ppf(0.975, n - 1)), sd[k] * np.sqrt((n - 1) / chi2.ppf(0.025, n - 1))
-        print(f"   {nm:12s} mean {th[:, k].mean():+.5f}  spread {sd[k]:.5f} (95 % {lo:.5f}-{hi:.5f})  "
-              f"predicted (jackknife) {np.sqrt(np.mean(err[:, k] ** 2)):.5f}  bootstrap {np.sqrt(np.nanmean(errb[:, k] ** 2)):.5f}")
+        print(
+            f"   {nm:12s} mean {th[:, k].mean():+.5f}  spread {sd[k]:.5f} (95 % {lo:.5f}-{hi:.5f})  "
+            f"predicted (jackknife) {np.sqrt(np.mean(err[:, k] ** 2)):.5f}  bootstrap {np.sqrt(np.nanmean(errb[:, k] ** 2)):.5f}"
+        )
 
 
 def cmd_calib_rep(S, a):
@@ -135,7 +157,9 @@ def cmd_calib_rep(S, a):
     fits, errs, errb, ys, yerr = [], [], [], [], []
     for k in range(R // g):
         sel = (rep >= k * g) & (rep < (k + 1) * g)
-        s = LiquidSamples({key: v[sel] for key, v in fr.items()}, a.T, S["sys"].nmol, float(np.sum(S["sys"].masses)), a.nblocks)
+        s = LiquidSamples(
+            {key: v[sel] for key, v in fr.items()}, a.T, S["sys"].nmol, float(np.sum(S["sys"].masses)), a.nblocks
+        )
         est = obj.estimate(s, th)
         st = obj.step(est, radius=np.inf)
         cov = obj.covariance(est)
@@ -148,15 +172,29 @@ def cmd_calib_rep(S, a):
     fits, errs, errb, ys, yerr = map(np.array, (fits, errs, errb, ys, yerr))
     n = len(fits)
     from scipy.stats import chi2
-    print(f"# {n} independent fits of {g} replicas each ({R} replicas, {len(rep)} frames); targets "
-          + ", ".join(f"{t.name}={t.value}" for t in obj.targets if t.fit))
+
+    print(
+        f"# {n} independent fits of {g} replicas each ({R} replicas, {len(rep)} frames); targets "
+        + ", ".join(f"{t.name}={t.value}" for t in obj.targets if t.fit)
+    )
     rows = []
     for j, nm in enumerate(S["space"].names):
         sd = fits[:, j].std(ddof=1)
         lo, hi = sd * np.sqrt((n - 1) / chi2.ppf(0.975, n - 1)), sd * np.sqrt((n - 1) / chi2.ppf(0.025, n - 1))
         pj, pb = np.sqrt(np.mean(errs[:, j] ** 2)), np.sqrt(np.mean(errb[:, j] ** 2))
-        rows.append({"param": nm, "spread": sd, "spread_95": [lo, hi], "predicted": pj, "bootstrap": pb, "mean": fits[:, j].mean()})
-        print(f"   {nm:14s} fitted {fits[:, j].mean():+.5f}  spread {sd:.5f} (95 % {lo:.5f}-{hi:.5f})  predicted {pj:.5f}  bootstrap {pb:.5f}")
+        rows.append(
+            {
+                "param": nm,
+                "spread": sd,
+                "spread_95": [lo, hi],
+                "predicted": pj,
+                "bootstrap": pb,
+                "mean": fits[:, j].mean(),
+            }
+        )
+        print(
+            f"   {nm:14s} fitted {fits[:, j].mean():+.5f}  spread {sd:.5f} (95 % {lo:.5f}-{hi:.5f})  predicted {pj:.5f}  bootstrap {pb:.5f}"
+        )
     names = obj.layout()[0]
     for i, nm in enumerate(names):
         sd = ys[:, i].std(ddof=1)

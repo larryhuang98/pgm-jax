@@ -7,6 +7,7 @@ The npz is the output of `scripts/solvation_free_energy.py run --grad` (or FreeE
 param_grad).  theta -> parameter table is any JAX function (here: the solute's charges and covalent
 dipoles times exp(theta)); FreeEnergyTarget checks that it reproduces the sampled table at theta = 0
 and applies the chain rule, with jackknife errors of the projected gradient.  docs/fe_gradients.md."""
+
 import argparse
 import os
 import sys
@@ -31,12 +32,13 @@ def main():
     ap.add_argument("--group", default="charge", choices=sorted(fg.SCALE_GROUPS))
     ap.add_argument("--discard-ps", type=float, default=100.0)
     a = ap.parse_args()
-    t = fg.FreeEnergyTarget.from_npz(a.npz, discard_ps=a.discard_ps, experiment=a.experiment * KCAL,
-                                     sigma=a.sigma * KCAL, name="dG_hyd")
+    t = fg.FreeEnergyTarget.from_npz(
+        a.npz, discard_ps=a.discard_ps, experiment=a.experiment * KCAL, sigma=a.sigma * KCAL, name="dG_hyd"
+    )
     space = t.space
     P = space.unflatten(jnp.asarray(t.p))
 
-    def theta_fn(theta):                          # ln s -> table (the solute's group scaled by s)
+    def theta_fn(theta):  # ln s -> table (the solute's group scaled by s)
         return fg.scaled_params(space, P, {a.group: jnp.exp(theta[0])})
 
     r = t.value_and_grad(theta_fn, jnp.zeros(1))
@@ -46,7 +48,10 @@ def main():
     step = (a.experiment - r["value"] / KCAL) / g
     print(f"Newton step: ln s = {step:+.4f} (s = {np.exp(step):.4f}); first-order s: {1 + step:.4f}")
     est = t.estimate(theta_fn, jnp.zeros(1), unit="kcal/mol")
-    print("fit layout:", {k: np.round(np.asarray(v, float), 4).tolist() for k, v in est.items() if k in ("y", "J", "cov_y", "J_err")})
+    print(
+        "fit layout:",
+        {k: np.round(np.asarray(v, float), 4).tolist() for k, v in est.items() if k in ("y", "J", "cov_y", "J_err")},
+    )
 
 
 if __name__ == "__main__":

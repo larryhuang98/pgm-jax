@@ -1,5 +1,6 @@
 """Flexible-molecule MD: templates, the single-molecule limit (MD forces = gas-phase model),
 NVE energy conservation and an NPT run that compresses a dilute box (neighbour-list rebuilds)."""
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -32,13 +33,13 @@ def template(**kw):
 def test_template_roundtrip_and_pgm_only(tmp_path):
     tpl, x = template()
     i, j, w = tpl.lj_pairs()
-    assert len(i) == 3 and np.allclose(w, 0.5)                    # the three H-C-O-H pairs
+    assert len(i) == 3 and np.allclose(w, 0.5)  # the three H-C-O-H pairs
     tpl.save(str(tmp_path / "m.flex"))
     t2 = FlexibleTemplate.load(str(tmp_path / "m.flex"))
     y = jnp.asarray(x + 0.004 * np.random.default_rng(1).normal(size=x.shape))
     assert abs(float(t2.bonded_energy(y)) - float(tpl.bonded_energy(y))) < 1e-10
     assert float(tpl.bonded_energy(y)) > 0.0
-    for bad in (dict(elec_exclude=3), dict(escale=(1,))):                  # (charge flux runs: test_flux.py)
+    for bad in (dict(elec_exclude=3), dict(escale=(1,))):  # (charge flux runs: test_flux.py)
         with pytest.raises(ValueError):
             template(**bad)
 
@@ -53,7 +54,7 @@ def test_single_molecule_matches_gas_phase_model():
     F = np.asarray(sim.state.dyn.force)
     P = jax.tree_util.tree_map(jnp.asarray, tpl.P)
     g = np.asarray(jax.grad(lambda R: tpl.model.energy(0, R, P)[0])(jnp.asarray(y)))
-    rms = np.sqrt(np.mean(g ** 2))
+    rms = np.sqrt(np.mean(g**2))
     assert np.abs(F + g).max() < 1e-3 * rms, (np.abs(F + g).max(), rms)
 
 
@@ -66,11 +67,21 @@ def _box(n=32, density=0.55):
 def test_nve_energy_conservation():
     tpl, sys, pos, H = _box()
     s = MDSettings(precision="double", dipole_tol=1e-8, cutoff=0.6, skin=0.05, lj_lrc=False)
-    sim = FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=0.0005, ensemble="nvt", temperature=298.0,
-                             gamma=10.0, log=None)
+    sim = FlexibleSimulation(
+        sys, [tpl] * sys.nmol, pos, H, s, dt=0.0005, ensemble="nvt", temperature=298.0, gamma=10.0, log=None
+    )
     sim._advance(1000)
-    sim2 = FlexibleSimulation(sys, [tpl] * sys.nmol, sim.positions_nm(), np.asarray(sim.state.box), s, dt=0.0005,
-                              ensemble="nve", vel_nm_ps=sim.velocities_nm_ps(), log=None)
+    sim2 = FlexibleSimulation(
+        sys,
+        [tpl] * sys.nmol,
+        sim.positions_nm(),
+        np.asarray(sim.state.box),
+        s,
+        dt=0.0005,
+        ensemble="nve",
+        vel_nm_ps=sim.velocities_nm_ps(),
+        log=None,
+    )
     E = []
     for _ in range(10):
         sim2._advance(100)
@@ -88,8 +99,20 @@ def test_npt_compresses_dilute_box():
     built for, so the driver must rebuild them on the way (and the molecules must stay whole)."""
     tpl, sys, pos, H = _box(density=0.45)
     s = MDSettings(precision="mixed", dipole_tol=1e-5, cutoff=0.5, skin=0.05)
-    sim = FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=0.0005, ensemble="npt", temperature=298.0,
-                             gamma=5.0, pressure=2000.0, barostat_interval=5, log=None)
+    sim = FlexibleSimulation(
+        sys,
+        [tpl] * sys.nmol,
+        pos,
+        H,
+        s,
+        dt=0.0005,
+        ensemble="npt",
+        temperature=298.0,
+        gamma=5.0,
+        pressure=2000.0,
+        barostat_interval=5,
+        log=None,
+    )
     rho0 = sim.observables()["density_g_cm3"]
     for _ in range(4):
         sim._advance(1000)

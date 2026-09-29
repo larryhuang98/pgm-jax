@@ -45,6 +45,7 @@ Both include, with MDSettings.lj_lrc, the long-range correction's impulse term, 
 Simulation.pressure(): W = PGMForceField.strain_derivative (+ the bonded terms for "atomic").
 
 Units: nm, kJ/mol, kJ/mol/nm, e nm, amu (conversions in the driver modules)."""
+
 from __future__ import annotations
 
 import math
@@ -83,9 +84,9 @@ def standard_cell(cell):
         raise ValueError("left-handed cell: reorder the lattice vectors")
     if np.all(np.abs(np.triu(C, 1)) <= 1e-12 * np.abs(C).max()) and np.all(np.diag(C) > 0):
         return reduce_box(np.tril(C)), None
-    Qr, Rr = np.linalg.qr(C.T)                         # C = Rr^T Qr^T  ->  C Qr = Rr^T (lower triangular)
+    Qr, Rr = np.linalg.qr(C.T)  # C = Rr^T Qr^T  ->  C Qr = Rr^T (lower triangular)
     s = np.sign(np.diag(Rr))
-    Qr = Qr * s[None, :]                               # positive diagonal; det(Qr) = +1 for a right-handed cell
+    Qr = Qr * s[None, :]  # positive diagonal; det(Qr) = +1 for a right-handed cell
     L = C @ Qr
     return reduce_box(np.tril(L)), Qr
 
@@ -101,15 +102,16 @@ def _bond_tree(sys: System, bonds_of=None):
         bonds = bonds_of(k) if bonds_of is not None else list(getattr(m, "bonds", []) or [])
         nbr = [[] for _ in range(m.n)]
         for i, j in bonds:
-            nbr[int(i)].append(int(j)); nbr[int(j)].append(int(i))
+            nbr[int(i)].append(int(j))
+            nbr[int(j)].append(int(i))
         seen = np.zeros(m.n, bool)
         d = np.zeros(m.n, int)
-        for root in range(m.n):                        # BFS from atom 0, then any unreached atom
+        for root in range(m.n):  # BFS from atom 0, then any unreached atom
             if seen[root]:
                 continue
             seen[root] = True
             if root != 0:
-                parent[off + root] = off               # disconnected: hang from the molecule's first atom
+                parent[off + root] = off  # disconnected: hang from the molecule's first atom
                 d[root] = 1
             queue = [root]
             while queue:
@@ -133,11 +135,12 @@ def match_previous(X, prev):
     C = np.sum(a * a, 1)[:, None] + np.sum(b * b, 1)[None, :] - 2.0 * a @ b.T
     try:
         from scipy.optimize import linear_sum_assignment
+
         rows, cols = linear_sum_assignment(C)
         perm = np.empty(B, int)
         perm[rows] = cols
         return perm
-    except ImportError:                                   # greedy
+    except ImportError:  # greedy
         perm, used = np.full(B, -1), set()
         for k in np.argsort(C.min(1)):
             j = next(int(j) for j in np.argsort(C[k]) if int(j) not in used)
@@ -149,11 +152,12 @@ def match_previous(X, prev):
 @dataclass
 class EngineResult:
     """One evaluation, host arrays in engine units (kJ/mol, kJ/mol/nm), in the caller's frame."""
+
     energy: float
     forces: np.ndarray
-    terms: dict                                        # elec, vdw, bonded (kJ/mol)
-    iterations: int                                    # CG iterations of the dipole solve
-    _dev: dict = field(default_factory=dict, repr=False)   # device arrays: mu, dipole parts, virial
+    terms: dict  # elec, vdw, bonded (kJ/mol)
+    iterations: int  # CG iterations of the dipole solve
+    _dev: dict = field(default_factory=dict, repr=False)  # device arrays: mu, dipole parts, virial
     _Q: np.ndarray | None = None
 
     def _rot_vec(self, v):
@@ -192,9 +196,9 @@ class EngineResult:
 
 class _Slot:
     def __init__(self):
-        self.x = None          # last positions (host, standard frame)
-        self.ind = None        # InductionState (device)
-        self.nbr = None        # neighbour list (device)
+        self.x = None  # last positions (host, standard frame)
+        self.ind = None  # InductionState (device)
+        self.nbr = None  # neighbour list (device)
 
 
 class PGMEngine:
@@ -212,16 +216,32 @@ class PGMEngine:
     RigidTemplate, one per molecule) the model is FlexibleSimulation's.  params: parameter pytree
     (None: the system's values).  Virtual sites and alchemical regions are not supported here."""
 
-    def __init__(self, sys: System, pos, H, settings: MDSettings = MDSettings(), templates=None, params=None,
-                 stress: str | None = None, slots: int = 1, r_margin: float = 0.05, neighbor_list: str = "auto",
-                 jump: float = 0.05, restraints=None, bead_margin: float = 0.08):
+    def __init__(
+        self,
+        sys: System,
+        pos,
+        H,
+        settings: MDSettings = MDSettings(),
+        templates=None,
+        params=None,
+        stress: str | None = None,
+        slots: int = 1,
+        r_margin: float = 0.05,
+        neighbor_list: str = "auto",
+        jump: float = 0.05,
+        restraints=None,
+        bead_margin: float = 0.08,
+    ):
         from ..md.vsites import VirtualSites
+
         if VirtualSites.of(sys) is not None:
             raise NotImplementedError("virtual sites are not supported by the external-code interfaces yet")
         if getattr(settings, "iel", "none") != "none":
-            raise NotImplementedError("extended-Lagrangian dipoles (MDSettings.iel) need the native integrator's "
-                                      "sequence of steps; external codes call the engine with SCF dipoles (iel='none')")
-        if stress is None:                      # rigid-molecule model: molecular virial (as the native pressure)
+            raise NotImplementedError(
+                "extended-Lagrangian dipoles (MDSettings.iel) need the native integrator's "
+                "sequence of steps; external codes call the engine with SCF dipoles (iel='none')"
+            )
+        if stress is None:  # rigid-molecule model: molecular virial (as the native pressure)
             stress = "molecular" if templates is None else "atomic"
         if stress not in ("atomic", "molecular"):
             raise ValueError("stress must be 'atomic' or 'molecular'")
@@ -229,7 +249,7 @@ class PGMEngine:
         pos = np.asarray(pos, float) if Q is None else np.asarray(pos, float) @ Q
         self.sys, self.settings, self.params = sys, settings, params
         self.stress_mode, self.jump, self.bead_margin = stress, float(jump), float(bead_margin)
-        self.with_dipole = False           # cell dipole inside every call (i-PI extras); else on first access
+        self.with_dipole = False  # cell dipole inside every call (i-PI extras); else on first access
         self.n = sys.n
         self.masses = np.asarray(sys.masses, float)
         self.flex = None
@@ -240,6 +260,7 @@ class PGMEngine:
         else:
             from ..md.flexible import FlexibleMolecules
             from ..md.flux import ChargeFlux
+
             templates = list(templates)
             uniq = {id(t): t for t in templates}.values()
             for tpl in uniq:
@@ -247,13 +268,17 @@ class PGMEngine:
             rules = {id(t): t.md_rule("none") for t in uniq}
             self.topology = MDTopology.build(sys, [rules[id(t)] for t in templates])
             self.flex = FlexibleMolecules(sys, pos, H0, templates, self.topology, self.masses)
-            self.ff = PGMForceField(sys, H0, settings, topology=self.topology,
-                                    flux=ChargeFlux.from_templates(sys, templates))
+            self.ff = PGMForceField(
+                sys, H0, settings, topology=self.topology, flux=ChargeFlux.from_templates(sys, templates)
+            )
             self.ff.masses = jnp.asarray(self.masses)
-            tb = [t.terms.mols[t.index].top.bonds if t.has_bonded else sys.molecules[k].bonds
-                  for k, t in enumerate(templates)]
+            tb = [
+                t.terms.mols[t.index].top.bonds if t.has_bonded else sys.molecules[k].bonds
+                for k, t in enumerate(templates)
+            ]
             bonds_of = lambda k: tb[k]
         from ..md.restraints import as_restraints
+
         self.restraints = as_restraints(restraints)
         if self.restraints is not None:
             self.restraints.check(sys.n)
@@ -269,10 +294,11 @@ class PGMEngine:
         mg = np.bincount(np.asarray(self.topology.group), weights=self.masses, minlength=self._ngroup)
         self._wgroup = jnp.asarray(self.masses / mg[np.asarray(self.topology.group)])
         from ..md.dipoles import CellDipole
+
         self._celldip = CellDipole(self.ff)
         # whole molecules at the start: list radius and sizes
         x0 = np.asarray(self._whole_jit()(jnp.asarray(pos), jnp.asarray(H0)))
-        self.initial_positions, self.initial_box = x0, H0      # standard frame (OpenMM's box form)
+        self.initial_positions, self.initial_box = x0, H0  # standard frame (OpenMM's box form)
         self.r_margin = float(r_margin)
         self.r_list = self.topology.group_radius(x0, self.masses) + self.r_margin
         self._nb_mode = neighbor_list
@@ -289,6 +315,7 @@ class PGMEngine:
         from ..md.io import box_from_cell, read_coordinates
         from ..md.simulation import _dedupe
         from ..param import read_prmtop_pgm
+
         mols = _dedupe(read_prmtop_pgm(prmtop, first_residue_only=False, charges=charges))
         sys = System(mols)
         xyz, _, box = read_coordinates(coords)
@@ -304,8 +331,10 @@ class PGMEngine:
         if templates is None and hasattr(sim, "flex"):
             raise ValueError("FlexibleSimulation: pass its templates, PGMEngine.from_simulation(sim, templates=...)")
         if getattr(sim.integ, "efield", None) is not None or getattr(sim.integ, "bias", None) is not None:
-            raise NotImplementedError("the external-code interfaces do not carry the external field (efield=) or "
-                                      "the biases (bias=) of a simulation; use the native engine")
+            raise NotImplementedError(
+                "the external-code interfaces do not carry the external field (efield=) or "
+                "the biases (bias=) of a simulation; use the native engine"
+            )
         kw.setdefault("params", sim.integ.params)
         kw.setdefault("restraints", sim.integ.restraints)
         return cls(sim.sys, sim.positions_nm(), np.asarray(sim.state.box), sim.settings, templates=templates, **kw)
@@ -379,9 +408,20 @@ class PGMEngine:
             er, gr = jax.value_and_grad(self.restraints.energy)(x, H)
             F = F - gr
         ext = jnp.max(jnp.sqrt(jnp.sum((x - c[self._group]) ** 2, axis=1)))
-        head = jnp.stack([E + eb + er, res.energy["elec"], res.energy["vdw"], eb, er,
-                          res.iterations.astype(jnp.float64), res.residual.astype(jnp.float64),
-                          (res.overflow | ovf).astype(jnp.float64), nbr.error.code.astype(jnp.float64), ext])
+        head = jnp.stack(
+            [
+                E + eb + er,
+                res.energy["elec"],
+                res.energy["vdw"],
+                eb,
+                er,
+                res.iterations.astype(jnp.float64),
+                res.residual.astype(jnp.float64),
+                (res.overflow | ovf).astype(jnp.float64),
+                nbr.error.code.astype(jnp.float64),
+                ext,
+            ]
+        )
         packed = jnp.concatenate([head, F.reshape(-1)])
         dev = {"mu": res.induction.mu}
         if dipole:
@@ -401,16 +441,20 @@ class PGMEngine:
         # virial the tensor itself; for the molecular one its antisymmetric torque part is dropped)
         W = jnp.triu(W) + jnp.triu(W, 1).T
         if gb is not None and not molecular:
-            W = W + gb.T @ x                           # bonded energy under x -> x (1 + eps)^T: sum_i g_i (x) x_i
+            W = W + gb.T @ x  # bonded energy under x -> x (1 + eps)^T: sum_i g_i (x) x_i
         if self.restraints is not None:
-            W = W + (self.restraints.strain_derivative(x, H, self.ff.mol, self.ff.masses, self._nmol) if molecular
-                     else self._restraint_strain_atomic(x, H))
+            W = W + (
+                self.restraints.strain_derivative(x, H, self.ff.mol, self.ff.masses, self._nmol)
+                if molecular
+                else self._restraint_strain_atomic(x, H)
+            )
         return W
 
     def _restraint_strain_atomic(self, x, H):
         def e(eps):
             F = jnp.eye(3) + eps
             return self.restraints.energy(x @ F.T, H @ F.T)
+
         return jax.grad(e)(jnp.zeros((3, 3)))
 
     def _compile(self):
@@ -432,7 +476,7 @@ class PGMEngine:
         drivers may wrap atoms or molecules back into the cell between calls."""
         d = b - a
         m = float(np.max(np.abs(d)))
-        if m < 0.25 * float(np.min(np.diag(H))):             # no lattice jump possible: the common case
+        if m < 0.25 * float(np.min(np.diag(H))):  # no lattice jump possible: the common case
             return m
         f = d @ np.linalg.inv(H)
         return float(np.max(np.abs(d - np.round(f) @ H)))
@@ -470,12 +514,12 @@ class PGMEngine:
         induced-dipole history to use (default: the closest one)."""
         t0 = time.perf_counter()
         cell = np.asarray(cell, float)
-        x = np.array(pos, float)                         # a copy: kept as the slot's last configuration
+        x = np.array(pos, float)  # a copy: kept as the slot's last configuration
         if x.shape != (self.n, 3):
             raise ValueError(f"expected positions of shape ({self.n}, 3), got {x.shape}")
         cache = getattr(self, "_cell_cache", None)
         if cache is not None and np.array_equal(cache[0], cell):
-            H, Q, Hd = cache[1:]                         # same cell as the last call (NVE / NVT)
+            H, Q, Hd = cache[1:]  # same cell as the last call (NVE / NVT)
         else:
             H, Q = standard_cell(cell)
             check_box(H, self.settings.pair_cutoff + self.settings.skin)
@@ -487,7 +531,7 @@ class PGMEngine:
             x = x @ Q
         slot = self._slot_for(x, H) if slot is None else self.slots[int(slot)]
         if slot.x is not None and self._displacement(slot.x, x, H) > self.jump:
-            slot.ind = None                              # new configuration: restart the predictor
+            slot.ind = None  # new configuration: restart the predictor
             self.stats["resets"] += 1
         xd = jnp.asarray(x)
         for attempt in range(8):
@@ -495,11 +539,12 @@ class PGMEngine:
                 xw = self._whole_c(xd, Hd)
                 slot.nbr = self.nb.allocate(xw, self._centers(xw), Hd)
             ind = self.ff.init_induction() if slot.ind is None else slot.ind
-            packed, ind_new, nbr_new, dev = self._fn(xd, Hd, ind, slot.nbr, virial=bool(virial),
-                                                     dipole=bool(self.with_dipole))
+            packed, ind_new, nbr_new, dev = self._fn(
+                xd, Hd, ind, slot.nbr, virial=bool(virial), dipole=bool(self.with_dipole)
+            )
             out = np.asarray(packed)
             ovf, code, ext = bool(out[7]), int(out[8]), float(out[9])
-            nb_bad = bool(code & _LIST_ERRORS)             # = nb.failed(nbr_new), without another transfer
+            nb_bad = bool(code & _LIST_ERRORS)  # = nb.failed(nbr_new), without another transfer
             far = self.nb.kind == "molecule" and ext > self.r_list
             if not (ovf or nb_bad or far) and np.isfinite(out[0]):
                 break
@@ -530,7 +575,7 @@ class PGMEngine:
         slot.x, slot.ind, slot.nbr = x, ind_new, nbr_new
         n = self.n
         E = float(out[0])
-        F = out[10:10 + 3 * n].reshape(n, 3)
+        F = out[10 : 10 + 3 * n].reshape(n, 3)
         if Q is not None:
             F = F @ Q.T
         self._last = (xd, Hd, slot)
@@ -540,8 +585,14 @@ class PGMEngine:
         self.stats["calls"] += 1
         self.stats["cg"] += int(out[5])
         self.stats["time"] += time.perf_counter() - t0
-        return EngineResult(E, F, {"elec": float(out[1]), "vdw": float(out[2]), "bonded": float(out[3]),
-                                   "restraint": float(out[4])}, int(out[5]), dev, Q)
+        return EngineResult(
+            E,
+            F,
+            {"elec": float(out[1]), "vdw": float(out[2]), "bonded": float(out[3]), "restraint": float(out[4])},
+            int(out[5]),
+            dev,
+            Q,
+        )
 
     def virial_of_last(self, res: EngineResult) -> np.ndarray:
         """The virial (kJ/mol, caller's frame) of the last computed configuration without a new
@@ -594,9 +645,18 @@ class PGMEngine:
             if self.restraints is not None:
                 er, gr = jax.value_and_grad(self.restraints.energy)(xk, H)
                 F = F - gr
-            head = jnp.stack([E + eb + er, res.energy["elec"], res.energy["vdw"], eb, er,
-                              res.iterations.astype(jnp.float64), res.residual.astype(jnp.float64),
-                              (res.overflow | ovf).astype(jnp.float64)])
+            head = jnp.stack(
+                [
+                    E + eb + er,
+                    res.energy["elec"],
+                    res.energy["vdw"],
+                    eb,
+                    er,
+                    res.iterations.astype(jnp.float64),
+                    res.residual.astype(jnp.float64),
+                    (res.overflow | ovf).astype(jnp.float64),
+                ]
+            )
             dev = {"mu": res.induction.mu}
             if dipole:
                 dev["dip"] = self._celldip.components(xk, H, res.induction.mu, params)
@@ -612,23 +672,28 @@ class PGMEngine:
         B = X.shape[0]
         if chunk is None or chunk >= B or B % chunk:
             packed, ind_new, dev = vf(X, ind)
-        else:                                          # chunks of vmapped structures, one after the other
+        else:  # chunks of vmapped structures, one after the other
             count = ind.count
-            split = lambda a: a.reshape((B // chunk, chunk) + a.shape[1:])        # noqa: E731
-            merge = lambda a: a.reshape((B,) + a.shape[2:])                        # noqa: E731
+            split = lambda a: a.reshape((B // chunk, chunk) + a.shape[1:])  # noqa: E731
+            merge = lambda a: a.reshape((B,) + a.shape[2:])  # noqa: E731
 
             def body(args):
                 xc, ic = args
                 p, i2, d = vf(xc, ic.set(count=count))
                 return (p, i2.set(count=None), d), i2.count
-            (packed, ind_new, dev), counts = jax.lax.map(body, (split(X), jax.tree_util.tree_map(split, ind.set(count=None))))
+
+            (packed, ind_new, dev), counts = jax.lax.map(
+                body, (split(X), jax.tree_util.tree_map(split, ind.set(count=None)))
+            )
             packed, dev = merge(packed), jax.tree_util.tree_map(merge, dev)
             ind_new = jax.tree_util.tree_map(merge, ind_new).set(count=counts[0])
         ref = c[self._group] if nb.kind == "molecule" else qc
         ext = jnp.max(jnp.sqrt(jnp.sum((Xall - ref[None]) ** 2, axis=-1)))
         flags = jnp.stack([nbr.error.code.astype(jnp.float64), ext])
-        put = lambda full, new: full.at[idx].set(new)                               # noqa: E731
-        ind_new = jax.tree_util.tree_map(put, ind_full.set(count=None), ind_new.set(count=None)).set(count=ind_new.count)
+        put = lambda full, new: full.at[idx].set(new)  # noqa: E731
+        ind_new = jax.tree_util.tree_map(put, ind_full.set(count=None), ind_new.set(count=None)).set(
+            count=ind_new.count
+        )
         return packed, flags, ind_new, nbr, dev
 
     def _batch_setup(self, B, X, H):
@@ -638,14 +703,14 @@ class PGMEngine:
         r = self.r_list + self.bead_margin
         if MoleculeNeighbors.fits(H, s.pair_cutoff, s.skin, r):
             self._nbb = MoleculeNeighbors(self.topology.group, self._ngroup, r, H, s.pair_cutoff, s.skin)
-            self._bfar = r                                  # atom to its centroid group's centre
-        else:                   # atom list of the centroid: pairs of structure atoms within cutoff + 2 margins
+            self._bfar = r  # atom to its centroid group's centre
+        else:  # atom list of the centroid: pairs of structure atoms within cutoff + 2 margins
             rc = s.pair_cutoff + 2.0 * self.bead_margin
             skin = min(s.skin, max_cutoff(H) - rc - 0.002)
             if skin < 0.02:
                 return False
             self._nbb = AtomNeighbors(self.n, H, rc, skin)
-            self._bfar = self.bead_margin                   # atom to its centroid atom
+            self._bfar = self.bead_margin  # atom to its centroid atom
         Xw = self._whole_batch_c(jnp.asarray(X), jnp.asarray(H))
         qc = jnp.mean(Xw, 0)
         c = self._centers(qc)
@@ -654,9 +719,16 @@ class PGMEngine:
             self._nbb.cap = max(self._nbb.size(nbr, c, jnp.asarray(H), Xw[k], 1.2) for k in range(B))
         ind0 = self.ff.init_induction()
         ind = jax.tree_util.tree_map(lambda a: jnp.broadcast_to(a, (B,) + jnp.shape(a)), ind0.set(count=None))
-        self._bstate = {"P": B, "ind": ind.set(count=ind0.count), "nbr": nbr, "H": np.asarray(H).copy(),
-                        "vol": float(np.linalg.det(H)), "x": np.asarray(X, float), "filled": 0,
-                        "seen": np.zeros(B, bool)}
+        self._bstate = {
+            "P": B,
+            "ind": ind.set(count=ind0.count),
+            "nbr": nbr,
+            "H": np.asarray(H).copy(),
+            "vol": float(np.linalg.det(H)),
+            "x": np.asarray(X, float),
+            "filled": 0,
+            "seen": np.zeros(B, bool),
+        }
         self._bfn = jax.jit(self._eval_batch, static_argnames=("virial", "chunk", "dipole"))
         return True
 
@@ -682,7 +754,7 @@ class PGMEngine:
             X = X @ Q
         check_box(H, self.settings.pair_cutoff + self.settings.skin)
         keys, uniq, where = {}, [], []
-        for k in range(B):                                   # exact duplicates: i-PI's padding
+        for k in range(B):  # exact duplicates: i-PI's padding
             key = X[k].tobytes()
             if key not in keys:
                 keys[key] = len(uniq)
@@ -702,7 +774,7 @@ class PGMEngine:
             st = self._bstate
             st["x"] = full0
         P = st["P"]
-        if st["filled"] < P and st["filled"] + n <= P:       # first batches: fill the slots in order
+        if st["filled"] < P and st["filled"] + n <= P:  # first batches: fill the slots in order
             slot_of = np.arange(st["filled"], st["filled"] + n)
             st["filled"] += n
         else:
@@ -719,16 +791,18 @@ class PGMEngine:
         if chunk == "auto":
             chunk = 8 if (m > 8 and m % 8 == 0) else None
         if st["seen"].all() and self._displacement(st["x"][slot_of], U, H) > self.jump:
-            ind0 = self.ff.init_induction()                  # a new configuration: restart the predictors
-            st["ind"] = jax.tree_util.tree_map(lambda a: jnp.broadcast_to(a, (P,) + jnp.shape(a)),
-                                               ind0.set(count=None)).set(count=ind0.count)
+            ind0 = self.ff.init_induction()  # a new configuration: restart the predictors
+            st["ind"] = jax.tree_util.tree_map(
+                lambda a: jnp.broadcast_to(a, (P,) + jnp.shape(a)), ind0.set(count=None)
+            ).set(count=ind0.count)
             self.stats["resets"] += 1
         st["seen"] |= present
         t0 = time.perf_counter()
         Xd, Hd, md = jnp.asarray(full), jnp.asarray(H), jnp.asarray(idx)
         for attempt in range(8):
-            packed, flags, ind_new, nbr_new, dev = self._bfn(Xd, Hd, st["ind"], st["nbr"], md, virial=bool(virial),
-                                                             chunk=chunk, dipole=bool(self.with_dipole))
+            packed, flags, ind_new, nbr_new, dev = self._bfn(
+                Xd, Hd, st["ind"], st["nbr"], md, virial=bool(virial), chunk=chunk, dipole=bool(self.with_dipole)
+            )
             out, fl = np.asarray(packed), np.asarray(flags)
             ovf = bool(np.any(out[:, 7]))
             nb_bad = bool(int(fl[0]) & _LIST_ERRORS)
@@ -770,20 +844,32 @@ class PGMEngine:
         st["ind"], st["nbr"], st["x"] = ind_new, nbr_new, full
         nat = self.n
         res_u = []
-        host = {key: np.asarray(v) for key, v in dev.items() if key in ("dip", "W")}   # one transfer each
+        host = {key: np.asarray(v) for key, v in dev.items() if key in ("dip", "W")}  # one transfer each
         mu_all = dev["mu"]
         for j in range(n):
-            k = j                                            # row j of the evaluated slots (idx[j] = slot_of[j])
-            F = out[k, 8:8 + 3 * nat].reshape(nat, 3)
+            k = j  # row j of the evaluated slots (idx[j] = slot_of[j])
+            F = out[k, 8 : 8 + 3 * nat].reshape(nat, 3)
             if Q is not None:
                 F = F @ Q.T
             dk = {key: v[k] for key, v in host.items()}
-            dk["mu_fn"] = (lambda k=k: np.asarray(mu_all[k]))
+            dk["mu_fn"] = lambda k=k: np.asarray(mu_all[k])
             if "dip" not in dk:
-                dk["dip_fn"] = (lambda k=k, sl=int(slot_of[j]): self._dip_fn(Xd[sl], Hd, mu_all[k]))
-            res_u.append(EngineResult(float(out[k, 0]), F, {"elec": float(out[k, 1]), "vdw": float(out[k, 2]),
-                                                            "bonded": float(out[k, 3]), "restraint": float(out[k, 4])},
-                                      int(out[k, 5]), dk, Q))
+                dk["dip_fn"] = lambda k=k, sl=int(slot_of[j]): self._dip_fn(Xd[sl], Hd, mu_all[k])
+            res_u.append(
+                EngineResult(
+                    float(out[k, 0]),
+                    F,
+                    {
+                        "elec": float(out[k, 1]),
+                        "vdw": float(out[k, 2]),
+                        "bonded": float(out[k, 3]),
+                        "restraint": float(out[k, 4]),
+                    },
+                    int(out[k, 5]),
+                    dk,
+                    Q,
+                )
+            )
             self.stats["cg"] += int(out[k, 5])
         self.stats["calls"] += n
         self.stats["batches"] = self.stats.get("batches", 0) + 1
@@ -793,11 +879,13 @@ class PGMEngine:
 
     def describe(self) -> str:
         s = self.settings
-        return (f"pgm_jax engine: {self.sys.nmol} molecules, {self.n} atoms, "
-                f"{'flexible templates' if self.flex is not None else 'rigid-molecule model'}, "
-                f"{s.precision} precision, PME grid {self.ff.pme.K} order {s.pme_order}, {s.describe_cutoffs()}, "
-                f"{self.nb.kind} neighbour list, dipole tol {s.dipole_tol:g}, {len(self.slots)} dipole slot(s), "
-                f"stress {self.stress_mode}, device {jax.devices()[0]}")
+        return (
+            f"pgm_jax engine: {self.sys.nmol} molecules, {self.n} atoms, "
+            f"{'flexible templates' if self.flex is not None else 'rigid-molecule model'}, "
+            f"{s.precision} precision, PME grid {self.ff.pme.K} order {s.pme_order}, {s.describe_cutoffs()}, "
+            f"{self.nb.kind} neighbour list, dipole tol {s.dipole_tol:g}, {len(self.slots)} dipole slot(s), "
+            f"stress {self.stress_mode}, device {jax.devices()[0]}"
+        )
 
 
 # ----------------------------------------------------------------------------- gas phase

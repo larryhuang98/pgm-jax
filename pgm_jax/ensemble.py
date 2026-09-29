@@ -20,6 +20,7 @@ says when theta has moved too far from the sampled ensemble (resample).
     loss, grad = rw.chi2_and_grad(th, [(J, J_exp, 0.5)])
 
 Units: kJ/mol, K, rad, Hz."""
+
 from __future__ import annotations
 
 import jax
@@ -29,12 +30,12 @@ from jax.scipy.special import logsumexp
 
 from .bonded import terms as T
 
-KB = 0.0083144626181532                       # kJ/mol/K
+KB = 0.0083144626181532  # kJ/mol/K
 
 # Karplus relations J = A cos^2(theta) + B cos(theta) + C with theta = phi + delta (rad).
 # Only sets whose provenance is stated; add others as (A, B, C, delta) from the paper you use.
 KARPLUS = {
-    "3J_HNHA_Vogeli2007": (7.97, -1.26, 0.63, -np.pi / 3),   # Vogeli, Ying, Grishaev, Bax, JACS 129, 9377 (2007)
+    "3J_HNHA_Vogeli2007": (7.97, -1.26, 0.63, -np.pi / 3),  # Vogeli, Ying, Grishaev, Bax, JACS 129, 9377 (2007)
 }
 
 
@@ -57,7 +58,7 @@ def in_region(phi, psi, phi_range, psi_range):
     return ((p >= phi_range[0]) & (p < phi_range[1]) & (s >= psi_range[0]) & (s < psi_range[1])).astype(float)
 
 
-ALPHA_BOX = ((-100.0, -30.0), (-67.0, -7.0))            # a common helical basin definition (degrees)
+ALPHA_BOX = ((-100.0, -30.0), (-67.0, -7.0))  # a common helical basin definition (degrees)
 
 
 class Reweighting:

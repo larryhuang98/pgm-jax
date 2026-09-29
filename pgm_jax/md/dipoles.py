@@ -57,6 +57,7 @@ files are unchanged):
     steps, NetCDF-3 (dimensions frame, atom, spatial; variables time, step, induced_dipoles).
 
 Units: nm, ps, e, e nm, nm^3 (polarizability volume), K."""
+
 from __future__ import annotations
 
 import functools
@@ -70,8 +71,23 @@ import numpy as np
 from ..units import DEBYE_E_NM
 from .box import volume
 
-DIP_COLUMNS = ("step", "time_ps", "temp_K", "volume_nm3", "Mq_x", "Mq_y", "Mq_z", "Mp_x", "Mp_y", "Mp_z",
-               "Mi_x", "Mi_y", "Mi_z", "mol_dipole", "alpha_nm3")
+DIP_COLUMNS = (
+    "step",
+    "time_ps",
+    "temp_K",
+    "volume_nm3",
+    "Mq_x",
+    "Mq_y",
+    "Mq_z",
+    "Mp_x",
+    "Mp_y",
+    "Mp_z",
+    "Mi_x",
+    "Mi_y",
+    "Mi_z",
+    "mol_dipole",
+    "alpha_nm3",
+)
 
 
 class CellDipole:
@@ -86,7 +102,7 @@ class CellDipole:
         self.mol = jnp.asarray(sys.mol)
         m = np.asarray(sys.masses, float)
         mmol = np.bincount(np.asarray(sys.mol), weights=m, minlength=sys.nmol)
-        self.w = jnp.asarray(m / mmol[np.asarray(sys.mol)])             # centre-of-mass weights within a molecule
+        self.w = jnp.asarray(m / mmol[np.asarray(sys.mol)])  # centre-of-mass weights within a molecule
 
     def molecular_charges(self, params=None) -> np.ndarray:
         """Net charge of every molecule (e; charge flux keeps it)."""
@@ -95,7 +111,7 @@ class CellDipole:
 
     def _parts(self, pos, H, mu, params):
         pos, H = jnp.asarray(pos, jnp.float64), jnp.asarray(H, jnp.float64)
-        P = self.ff.charges_at(pos, H, self.ff._atoms(params))            # charge flux: q, c of this geometry
+        P = self.ff.charges_at(pos, H, self.ff._atoms(params))  # charge flux: q, c of this geometry
         com = jax.ops.segment_sum(self.w[:, None] * pos, self.mol, self.nmol)
         qr = P["q"][:, None] * (pos - com[self.mol])
         p = self.ff.perm_dipoles(pos, H, P["cov"])
@@ -124,7 +140,7 @@ class CellDipole:
         S, Gk = ff.pme.setup(pos, H), ff.pme.influence(H)
         alpha = P["alpha"]
         A = ff._operator(g, S, Gk, alpha)
-        norm = jnp.mean(alpha) / 3.0                                   # mean|alpha b| for a unit field
+        norm = jnp.mean(alpha) / 3.0  # mean|alpha b| for a unit field
         tol = ff.s.dipole_tol if tol is None else tol
         cols = []
         for a in range(3):
@@ -153,7 +169,7 @@ class DipoleRecorder:
     run(dipoles=n)), written to a .dip text file.  The driver calls run(state, n) instead of
     Integrator.run for each block, keep() once the block is accepted, flush() after each block."""
 
-    alpha_every = 100               # samples between evaluations of the cell polarizability (3 CG solves)
+    alpha_every = 100  # samples between evaluations of the cell polarizability (3 CG solves)
 
     def __init__(self, sim, path: str, interval: int, append: bool = False):
         if int(interval) <= 0:
@@ -170,20 +186,30 @@ class DipoleRecorder:
         sim = self.sim
         Qk = self.cell.molecular_charges(sim.integ.params)
         th = sim.integ.thermostat
-        meta = {"temperature_K": sim.T0, "ensemble": sim.ensemble,
-                "thermostat": "none" if th is None else th.describe().replace(" ", "_"),
-                "dt_ps": sim.dt, "interval": self.interval, "n_atoms": sim.sys.n, "n_molecules": sim.sys.nmol,
-                "net_charge": round(float(Qk.sum()), 6), "charged_molecules": int(np.sum(np.abs(Qk) > 1e-6)),
-                "elec": sim.settings.elec, "alpha_every": self.alpha_every}
+        meta = {
+            "temperature_K": sim.T0,
+            "ensemble": sim.ensemble,
+            "thermostat": "none" if th is None else th.describe().replace(" ", "_"),
+            "dt_ps": sim.dt,
+            "interval": self.interval,
+            "n_atoms": sim.sys.n,
+            "n_molecules": sim.sys.nmol,
+            "net_charge": round(float(Qk.sum()), 6),
+            "charged_molecules": int(np.sum(np.abs(Qk) > 1e-6)),
+            "elec": sim.settings.elec,
+            "alpha_every": self.alpha_every,
+        }
         fld = getattr(sim.integ, "efield", None)
-        if fld is not None:                                # external field (md/efield.py): amplitude, omega
+        if fld is not None:  # external field (md/efield.py): amplitude, omega
             E = np.asarray(sim.state.efield, float)
             meta.update(efield_Vnm=" ".join(f"{x:.10g}" for x in E), efield_omega=fld.omega, efield_phase=fld.phase)
-        lines = ["pgm_jax cell dipole series (pgm_jax.md.dipoles; scripts/dielectric.py)",
-                 "cell dipole M: M_q + M_perm + M_ind in e nm (1 D is 0.020819434 e nm); molecules whole,",
-                 "charged molecules about their centre of mass; mol_dipole: mean |dipole| of the molecules (e nm);",
-                 "alpha_nm3: cell electronic polarizability, 1/3 trace of dM_ind/dF at fixed nuclei, tin-foil",
-                 "Ewald (every alpha_every-th sample; nan otherwise or if not converged); temp_K: kinetic temperature"]
+        lines = [
+            "pgm_jax cell dipole series (pgm_jax.md.dipoles; scripts/dielectric.py)",
+            "cell dipole M: M_q + M_perm + M_ind in e nm (1 D is 0.020819434 e nm); molecules whole,",
+            "charged molecules about their centre of mass; mol_dipole: mean |dipole| of the molecules (e nm);",
+            "alpha_nm3: cell electronic polarizability, 1/3 trace of dM_ind/dF at fixed nuclei, tin-foil",
+            "Ewald (every alpha_every-th sample; nan otherwise or if not converged); temp_K: kinetic temperature",
+        ]
         lines += [f"{k} = {v}" for k, v in meta.items()]
         lines.append("columns = " + " ".join(DIP_COLUMNS))
         return "".join(f"# {s}\n" for s in lines)
@@ -192,7 +218,7 @@ class DipoleRecorder:
     def _alpha(self, st):
         sim, integ = self.sim, self.sim.integ
         pos = sim.rigid.positions(st.dyn.position)
-        flex = getattr(sim, "flex", None)                  # neighbour-list centres as in each engine's _forces
+        flex = getattr(sim, "flex", None)  # neighbour-list centres as in each engine's _forces
         centers = st.dyn.position.center if flex is None else flex.list_centers(pos)
         idx = integ.nb.candidates(st.nbr, centers, st.box, pos)[0]
         return jnp.trace(self.cell.polarizability(pos, st.box, idx, integ.params)) / 3.0
@@ -203,7 +229,7 @@ class DipoleRecorder:
 
         def body(c, _):
             st, ovf, mi, rs = c
-            st = integ._run(st, chunk)                     # resets the per-block maxima: carried here
+            st = integ._run(st, chunk)  # resets the per-block maxima: carried here
             c = (st, ovf | st.overflow, jnp.maximum(mi, st.max_iters), jnp.maximum(rs, st.resid))
             pos = sim.rigid.positions(st.dyn.position)
             parts = self.cell._parts(pos, st.box, st.induction.mu, integ.params)
@@ -220,7 +246,7 @@ class DipoleRecorder:
     def run(self, st, n: int):
         """Advance n steps like Integrator.run, sampling on the way; the samples wait for keep()."""
         integ = self.sim.integ
-        if self._key is not integ.run:                     # integ.compile() changed static sizes: re-trace
+        if self._key is not integ.run:  # integ.compile() changed static sizes: re-trace
             self._key, self._fns = integ.run, {}
         s0 = int(st.step)
         chunk = int(np.gcd.reduce([int(n), self.interval, s0 % self.interval]))
@@ -244,9 +270,12 @@ class DipoleRecorder:
             step, M, V, T, mmol, a = (np.asarray(x) for x in out)
             for j in np.nonzero(step % self.interval == 0)[0]:
                 m = M[j].reshape(-1)
-                lines.append(f"{int(step[j]):10d} {t0 + (int(step[j]) - s0) * self.sim.dt:14.6f} {float(T[j]):9.3f} "
-                             f"{float(V[j]):14.8f} " + " ".join(f"{x:17.10e}" for x in m)
-                             + f" {float(mmol[j]):14.8e} {float(a[j]):14.8e}\n")
+                lines.append(
+                    f"{int(step[j]):10d} {t0 + (int(step[j]) - s0) * self.sim.dt:14.6f} {float(T[j]):9.3f} "
+                    f"{float(V[j]):14.8f} "
+                    + " ".join(f"{x:17.10e}" for x in m)
+                    + f" {float(mmol[j]):14.8e} {float(a[j]):14.8e}\n"
+                )
         self._kept = []
         if lines:
             with open(self.path, "a") as fh:
@@ -291,10 +320,14 @@ def read_dipoles(paths) -> tuple[dict, dict]:
         rows.append(x.reshape(-1, len(DIP_COLUMNS)))
     x = np.concatenate(rows)
     step = x[:, 0].astype(np.int64)
-    later_min = np.minimum.accumulate(step[::-1])[::-1]              # min over rows i..end
+    later_min = np.minimum.accumulate(step[::-1])[::-1]  # min over rows i..end
     keep = np.append(step[:-1] < later_min[1:], True) if len(step) else np.zeros(0, bool)
     x = x[keep]
-    d = {c: x[:, k] for k, c in enumerate(DIP_COLUMNS) if c in ("time_ps", "temp_K", "volume_nm3", "mol_dipole", "alpha_nm3")}
+    d = {
+        c: x[:, k]
+        for k, c in enumerate(DIP_COLUMNS)
+        if c in ("time_ps", "temp_K", "volume_nm3", "mol_dipole", "alpha_nm3")
+    }
     d["step"] = x[:, 0].astype(np.int64)
     d["M_charge"], d["M_perm"], d["M_ind"] = x[:, 4:7], x[:, 7:10], x[:, 10:13]
     d["M"] = x[:, 4:7] + x[:, 7:10] + x[:, 10:13]
@@ -339,14 +372,18 @@ class InducedDipoleFile:
 
     def _write_header(self):
         dims = [("frame", 0), ("atom", self.n), ("spatial", 3)]
-        vars_ = [("time", [0], self.DOUBLE, {"units": "picosecond"}, 8),
-                 ("step", [0], self.INT, {}, 4),
-                 ("induced_dipoles", [0, 1, 2], self.FLOAT, {"units": "e nm"}, 12 * self.n)]
+        vars_ = [
+            ("time", [0], self.DOUBLE, {"units": "picosecond"}, 8),
+            ("step", [0], self.INT, {}, 4),
+            ("induced_dipoles", [0, 1, 2], self.FLOAT, {"units": "e nm"}, 12 * self.n),
+        ]
         gatts = {"title": "pgm_jax induced dipoles", "program": "pgm_jax", "Conventions": "pgm_jax induced dipoles 1.0"}
 
         def header(begins):
             h = b"CDF\x02" + struct.pack(">i", self.nframes)
-            h += struct.pack(">ii", self.NC_DIM, len(dims)) + b"".join(self._name(k) + struct.pack(">i", v) for k, v in dims)
+            h += struct.pack(">ii", self.NC_DIM, len(dims)) + b"".join(
+                self._name(k) + struct.pack(">i", v) for k, v in dims
+            )
             h += self._atts(gatts) + struct.pack(">ii", self.NC_VAR, len(vars_))
             for (name, vd, t, att, size), beg in zip(vars_, begins):
                 h += self._name(name) + struct.pack(">i", len(vd)) + b"".join(struct.pack(">i", d) for d in vd)

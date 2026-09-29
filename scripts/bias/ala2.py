@@ -14,6 +14,7 @@ bonded terms + CMAP, flexible engine, X-H constraints, Langevin 300 K, 2 fs.
 "vacuum" up to its periodic images beyond the 1.2 nm cutoff).  Umbrella windows: harmonic in phi
 (kappa --kappa kJ/mol/rad^2, V = kappa/2 dphi^2), --nwin centres over the circle.  Outputs: the
 drivers' prefix.colvar / .hills / .log / .chk; analyze writes OUT_fes.json."""
+
 import argparse
 import json
 import os
@@ -87,10 +88,17 @@ def build(bias):
     phi, psi = cv.Dihedral(*q[:4], name="phi"), cv.Dihedral(*q[1:], name="psi")
     if a.solvated:
         s = MDSettings(precision=a.precision, dipole_tol=a.tol, cutoff=1.0, skin=0.1)
-    else:           # one molecule: a small Ewald coefficient makes a coarse PME grid accurate
+    else:  # one molecule: a small Ewald coefficient makes a coarse PME grid accurate
         g = a.pme_grid or 20
-        s = MDSettings(precision=a.precision, dipole_tol=a.tol, cutoff=1.2, skin=0.1, ewald_beta=a.beta or 2.5,
-                       pme_grid=(g, g, g), lj_lrc=False)
+        s = MDSettings(
+            precision=a.precision,
+            dipole_tol=a.tol,
+            cutoff=1.2,
+            skin=0.1,
+            ewald_beta=a.beta or 2.5,
+            pme_grid=(g, g, g),
+            lj_lrc=False,
+        )
     if a.solvated:
         sys_, tpls, pos, H = asys.system(), asys.templates({kp: tpl}), asys.system_positions(), asys.box
     else:
@@ -99,13 +107,27 @@ def build(bias):
         sys_, tpls, H = System([asys.molecules[kp].spec.pgm]), [tpl], np.eye(3) * a.box
         phi, psi = cv.Dihedral(*(q[:4] - sl.start), name="phi"), cv.Dihedral(*(q[1:] - sl.start), name="psi")
     b = bias(phi, psi) if bias is not None else None
-    sim = FlexibleSimulation(sys_, tpls, pos, H, s, dt=a.dt, temperature=a.T, gamma=a.gamma, thermostat="langevin",
-                             constraints="h-bonds", seed=a.seed, bias=b, log=sys.stdout)
+    sim = FlexibleSimulation(
+        sys_,
+        tpls,
+        pos,
+        H,
+        s,
+        dt=a.dt,
+        temperature=a.T,
+        gamma=a.gamma,
+        thermostat="langevin",
+        constraints="h-bonds",
+        seed=a.seed,
+        bias=b,
+        log=sys.stdout,
+    )
     return sim, phi, psi
 
 
 def run(sim, prefix, ns):
     from pgm_jax.bias.walkers import Walkers
+
     n = int(round(ns * 1000 / a.dt))
     rep = int(round(a.report / a.dt))
     W = a.walkers
@@ -118,8 +140,10 @@ def run(sim, prefix, ns):
             print(f"# resumed at step {int(np.asarray(wk.S.step)[0])}; {n} steps to go")
         t0 = time.time()
         wk.run(n, report=rep, restart=rep * 50, prefix=prefix, append=a.resume)
-        print(f"# {W} walkers x {n} steps in {time.time() - t0:.0f} s "
-              f"({W * n * a.dt / 1000 / max(time.time() - t0, 1e-9) * 86400:.1f} ns/day aggregate)")
+        print(
+            f"# {W} walkers x {n} steps in {time.time() - t0:.0f} s "
+            f"({W * n * a.dt / 1000 / max(time.time() - t0, 1e-9) * 86400:.1f} ns/day aggregate)"
+        )
         return wk
     if a.resume and os.path.exists(prefix + ".chk"):
         sim.load(prefix + ".chk")
@@ -129,7 +153,9 @@ def run(sim, prefix, ns):
         sim.minimize(200, seed=a.seed)
     t0 = time.time()
     sim.run(n, report=rep, restart=rep * 50, prefix=prefix, append=a.resume)
-    print(f"# {n} steps in {time.time() - t0:.0f} s ({n * a.dt / 1000 / max(time.time() - t0, 1e-9) * 86400:.1f} ns/day)")
+    print(
+        f"# {n} steps in {time.time() - t0:.0f} s ({n * a.dt / 1000 / max(time.time() - t0, 1e-9) * 86400:.1f} ns/day)"
+    )
 
 
 def record_only(phi, psi):
@@ -137,12 +163,26 @@ def record_only(phi, psi):
 
 
 if a.mode == "metad":
-    sim, _, _ = build(lambda phi, psi: BiasSet([MetaD([phi, psi], sigma=a.sigma, height=a.height, pace=a.pace,
-                                                     biasfactor=a.biasfactor, grid=(-np.pi, np.pi, 128))], colvar=a.colvar))
+    sim, _, _ = build(
+        lambda phi, psi: BiasSet(
+            [
+                MetaD(
+                    [phi, psi],
+                    sigma=a.sigma,
+                    height=a.height,
+                    pace=a.pace,
+                    biasfactor=a.biasfactor,
+                    grid=(-np.pi, np.pi, 128),
+                )
+            ],
+            colvar=a.colvar,
+        )
+    )
     run(sim, a.out, a.ns)
 elif a.mode == "opes":
-    sim, _, _ = build(lambda phi, psi: BiasSet([OPES([phi, psi], sigma=a.sigma, pace=a.pace, barrier=a.barrier)],
-                                               colvar=a.colvar))
+    sim, _, _ = build(
+        lambda phi, psi: BiasSet([OPES([phi, psi], sigma=a.sigma, pace=a.pace, barrier=a.barrier)], colvar=a.colvar)
+    )
     run(sim, a.out, a.ns)
 elif a.mode == "plain":
     sim, _, _ = build(record_only)
@@ -150,8 +190,9 @@ elif a.mode == "plain":
 elif a.mode == "umbrella":
     # all windows as walkers of one program; each first steered from the start to its centre
     from pgm_jax.bias.walkers import Walkers
+
     cen_all = -np.pi + (np.arange(a.nwin) + 0.5) * 2 * np.pi / a.nwin
-    cen = cen_all[a.first:a.first + (a.count or a.nwin)]
+    cen = cen_all[a.first : a.first + (a.count or a.nwin)]
     K = len(cen)
     holder = {}
 
@@ -180,8 +221,14 @@ elif a.mode == "umbrella":
             wk.S = wk._forces(wk.S).set(induction=wk.S.induction)
             wk.advance(per)
             if j % 10 == 0:
-                print(f"# steering {j}/{nst}: phi - centre (deg) " + " ".join(
-                    f"{np.degrees(x):.0f}" for x in np.mod(np.asarray(wk.rows(0))[-1:, 1] - at[0, 0] + np.pi, 2 * np.pi) - np.pi), flush=True)
+                print(
+                    f"# steering {j}/{nst}: phi - centre (deg) "
+                    + " ".join(
+                        f"{np.degrees(x):.0f}"
+                        for x in np.mod(np.asarray(wk.rows(0))[-1:, 1] - at[0, 0] + np.pi, 2 * np.pi) - np.pi
+                    ),
+                    flush=True,
+                )
         for w in range(K):
             wk.rows(w)
         wk.S = wk.S.set(step=jnp.zeros_like(wk.S.step))
@@ -194,6 +241,7 @@ elif a.mode == "remd":
     # temperature replica exchange (md/remd.py), the replicas batched: the 300 K slot is an
     # independent reference for the phi/psi distribution
     from pgm_jax.md.remd import ReplicaExchange, geometric_ladder
+
     sim, phi, psi = build(None)
     rex_T = geometric_ladder(a.T, a.tmax, a.replicas)
     n = int(round(a.ns * 1000 / a.dt))
@@ -207,8 +255,10 @@ elif a.mode == "remd":
         sim.minimize(200, seed=a.seed)
         sim.run(int(round(a.equil / a.dt)), report=int(round(a.equil / a.dt)), prefix=a.out + "_eq")
         rex = ReplicaExchange(sim, rex_T, exchange_every=250, seed=a.seed)
-    json.dump({"phi": [int(i) for i in phi.idx], "psi": [int(i) for i in psi.idx], "T": list(map(float, rex_T))},
-              open(a.out + ".json", "w"))
+    json.dump(
+        {"phi": [int(i) for i in phi.idx], "psi": [int(i) for i in psi.idx], "T": list(map(float, rex_T))},
+        open(a.out + ".json", "w"),
+    )
     t0 = time.time()
     rex.run(n, report=rep, traj=100, restart=rep * 50, prefix=a.out, append=a.resume)
     print(f"# REMD {a.replicas} replicas x {n} steps in {time.time() - t0:.0f} s", flush=True)
@@ -219,14 +269,43 @@ elif a.mode == "bench":
         if label == "none":
             sim, _, _ = build(None)
         elif label == "metad_grid":
-            sim, _, _ = build(lambda phi, psi: BiasSet([MetaD([phi, psi], sigma=a.sigma, height=a.height, pace=a.pace,
-                                                             biasfactor=a.biasfactor, grid=(-np.pi, np.pi, 128))], colvar=a.colvar))
+            sim, _, _ = build(
+                lambda phi, psi: BiasSet(
+                    [
+                        MetaD(
+                            [phi, psi],
+                            sigma=a.sigma,
+                            height=a.height,
+                            pace=a.pace,
+                            biasfactor=a.biasfactor,
+                            grid=(-np.pi, np.pi, 128),
+                        )
+                    ],
+                    colvar=a.colvar,
+                )
+            )
         elif label == "metad_hills":
-            sim, _, _ = build(lambda phi, psi: BiasSet([MetaD([phi, psi], sigma=a.sigma, height=a.height, pace=a.pace,
-                                                             biasfactor=a.biasfactor, capacity=4096)], colvar=a.colvar))
+            sim, _, _ = build(
+                lambda phi, psi: BiasSet(
+                    [
+                        MetaD(
+                            [phi, psi],
+                            sigma=a.sigma,
+                            height=a.height,
+                            pace=a.pace,
+                            biasfactor=a.biasfactor,
+                            capacity=4096,
+                        )
+                    ],
+                    colvar=a.colvar,
+                )
+            )
         else:
-            sim, _, _ = build(lambda phi, psi: BiasSet([OPES([phi, psi], sigma=a.sigma, pace=a.pace, barrier=a.barrier)],
-                                                       colvar=a.colvar))
+            sim, _, _ = build(
+                lambda phi, psi: BiasSet(
+                    [OPES([phi, psi], sigma=a.sigma, pace=a.pace, barrier=a.barrier)], colvar=a.colvar
+                )
+            )
         sim._advance(500)
         ts = []
         for rep in range(3):
