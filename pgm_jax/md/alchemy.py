@@ -106,9 +106,7 @@ from __future__ import annotations
 
 import dataclasses as _dc
 import json
-import pickle
 import sys as _sys
-import time
 
 import jax
 import jax.numpy as jnp
@@ -118,12 +116,14 @@ from ..lj import lj_long_range
 from ..system import ATOM_QUANTITIES, QUANTITIES, System
 from ..units import KB
 from .box import centers_of_mass, min_image, volume
+from .driver import LogTable, Stopwatch, block_length, read_checkpoint, write_checkpoint
+from .engine import OPTIONAL_STATE
 from .forcefield import full_strain_derivative
 from .io import write_restart
 from .remd import ExchangeStatistics, MDReplicas, _nocount, _stack, _take, exchange_pairs, metropolis
 
 PREFIX = "alch:"  # tying-key prefix of an alchemical molecule's own parameters
-FORMAT = "pgm_jax free energy 1"
+LEGACY_FORMAT = "pgm_jax free energy 1"  # the "format" entry of legacy pickle checkpoints
 
 
 # ----------------------------------------------------------------------------- setup
@@ -784,20 +784,38 @@ class FreeEnergyRun:
         return pairs, acc
 
     # ------------------------------------------------------------------ running
-    def run(self, nsteps: int, prefix: str | None = "fe", report: int = 0, restart: int = 0):
-        """nsteps steps of every window with samples every sample_every steps (and exchanges);
-        a log line every `report` steps, checkpoint + samples every `restart` (prefix None: no files)."""
+    def run(self, nsteps: int, prefix: str | None = "fe", report: int = 0, restart: int = 0) -> dict:
+        """Advance every window nsteps with samples every sample_every steps (and exchanges).
+
+        Parameters
+        ----------
+        nsteps : int
+            Steps.
+        prefix : str or None
+            Path prefix of the files (None: no files).
+        report : int
+            Steps between rows of the log table prefix_fe.log (mean, minimum and maximum
+            temperature of the windows [K], mean CG iterations per step and of the last sample,
+            neighbour acceptance, ns/day per window); 0: none.
+        restart : int
+            Steps between checkpoints prefix.fe.chk with the samples prefix_fe.npz and restarts
+            prefix_Lkk.rst7 (0: only at the end).
+
+        Returns
+        -------
+        dict
+            `summary` of the run.
+        """
         w = self.windows
-        block = int(np.gcd.reduce([x for x in (self.sample_every, report, restart, nsteps) if x > 0]))
+        block = block_length(nsteps, self.sample_every, report, restart)
         files = prefix is not None
-        logf = open(f"{prefix}_fe.log", "a" if self.step else "w") if (files and report) else None
-        if logf is not None and not self.step:
-            logf.write(
-                "# lambda (elec, vdw): " + " ".join(f"({a:g},{b:g})" for a, b in w.lambdas) + "\n"
-                "#       step    time_ps  T_mean_K  T_min_K  T_max_K  cg_mean  cg_samp  acceptance (pairs)"
-                "   ns/day/window\n"
-            )
-        t0, s0, done = time.time(), self.step, 0
+        table = None
+        if report:
+            title = ["lambda (elec, vdw): " + " ".join(f"({a:g},{b:g})" for a, b in w.lambdas)]
+            path = f"{prefix}_fe.log" if files else None
+            table = LogTable(path, append=bool(self.step), title=title, echo=self.log)
+        clock = Stopwatch(self.step, w.dt)
+        done = 0
         while done < nsteps:
             m = min(block, nsteps - done)
             w.advance(m)
@@ -807,29 +825,29 @@ class FreeEnergyRun:
                 u = self._sample()
                 if self.exchange_every and self.step % self.exchange_every == 0:
                     self._exchange(u)
-            speed = (self.step - s0) * w.dt / 1000.0 / max(time.time() - t0, 1e-9) * 86400.0
-            if report and self.step % report == 0:
+            if table is not None and self.step % report == 0:
                 obs = [w.observables(k) for k in range(self.n)]
                 T = np.array([o["temp_K"] for o in obs])
-                cg = np.mean([o["cg_mean"] for o in obs])
-                acc = self.stats.neighbour_acceptance() if self.exchange_every else np.array([])
-                cgs = self.samples["cg"][-1] if self.samples["cg"] else 0
-                line = (
-                    f"  {self.step:10d} {w.time_ps:10.2f} {T.mean():9.2f} {T.min():8.2f} {T.max():8.2f} "
-                    f"{cg:8.2f} {cgs:8d}  "
-                    + " ".join("  -  " if np.isnan(a) else f"{a:.3f}" for a in acc)
-                    + f"   {speed:.1f}"
-                )
-                self._print(line)
-                if logf is not None:
-                    logf.write(line + "\n")
-                    logf.flush()
+                row = {
+                    "step": self.step,
+                    "time_ps": w.time_ps,
+                    "T_mean_K": float(T.mean()),
+                    "T_min_K": float(T.min()),
+                    "T_max_K": float(T.max()),
+                    "cg_mean": float(np.mean([o["cg_mean"] for o in obs])),
+                    "cg_sample": int(self.samples["cg"][-1]) if self.samples["cg"] else 0,
+                }
+                if self.exchange_every:
+                    acc = self.stats.neighbour_acceptance()
+                    row.update({f"acc_{k}_{k + 1}": float(a) for k, a in enumerate(acc)})
+                row["ns_per_day"] = clock.ns_per_day(self.step)
+                table.write(row)
             if files and restart and self.step % restart == 0:
                 self.save(prefix)
-        el = time.time() - t0
-        if logf is not None:
-            logf.close()
-        summary = self.summary(ns_per_day=(self.step - s0) * w.dt / 1000.0 / max(el, 1e-9) * 86400.0)
+        speed = clock.ns_per_day(self.step)
+        if table is not None:
+            table.close()
+        summary = self.summary(ns_per_day=speed)
         if files:
             self.save(prefix)
             with open(f"{prefix}_fe.json", "w") as fh:
@@ -882,28 +900,58 @@ class FreeEnergyRun:
             else {}
         )
 
-    def save(self, prefix: str):
+    def save(self, prefix: str) -> None:
+        """Write the samples prefix_fe.npz, a checkpoint prefix.fe.chk and restarts prefix_Lkk.rst7.
+
+        Parameters
+        ----------
+        prefix : str
+            Path prefix of the files.
+
+        Notes
+        -----
+        The checkpoint (driver.write_checkpoint, kind "free-energy") holds every window state,
+        the samples, the exchange statistics and random state, the step and the metadata; `load`
+        continues the run bitwise on the CPU.
+        """
         np.savez(f"{prefix}_fe.npz", **self.arrays())
-        d = {
-            "format": FORMAT,
-            "lambdas": self.windows.lambdas.copy(),
+        content = {
+            "lambdas": self.windows.lambdas,
             "step": self.step,
             "rng": self.rng.bit_generator.state,
             "stats": self.stats.to_dict(),
-            "samples": self.samples,
+            "samples": {k: np.asarray(v) for k, v in self.samples.items()},
             "meta": self.meta,
             "windows": self.windows.state_dict(),
         }
-        with open(prefix + ".fe.chk", "wb") as fh:
-            pickle.dump(d, fh)
+        write_checkpoint(prefix + ".fe.chk", "free-energy", content)
         self.windows.write_restarts(prefix)
 
-    def load(self, path: str):
-        """Continue from a checkpoint written by `save` (same system, settings and windows)."""
-        with open(path, "rb") as fh:
-            d = pickle.load(fh)
-        if d.get("format") != FORMAT:
-            raise ValueError(f"{path}: not a {FORMAT!r} checkpoint")
+    def _read(self, path: str) -> dict:
+        """The content of a checkpoint written by `save` (or a legacy pickle ``.fe.chk``), with the
+        samples as lists of per-sample entries."""
+        d = read_checkpoint(
+            path, "free-energy", self.windows.state_template(), OPTIONAL_STATE, legacy_format=LEGACY_FORMAT
+        )
+        d["samples"] = {k: list(v) for k, v in d["samples"].items()}
+        return d
+
+    def load(self, path: str) -> None:
+        """Continue from a checkpoint written by `save`, or from a legacy pickle ``.fe.chk`` of
+        pgm_jax up to commit e72c57c (same system, settings and windows).
+
+        Parameters
+        ----------
+        path : str
+            The checkpoint file.
+
+        Raises
+        ------
+        ValueError
+            Another kind of checkpoint, other windows, or samples without the parameter gradients
+            this run collects.
+        """
+        d = self._read(path)
         if self.param_grad is not None and "dudp" not in d["samples"] and d["samples"]["u"]:
             raise ValueError(
                 f"{path}: its samples have no parameter gradients (continue without param_grad, "
@@ -920,14 +968,24 @@ class FreeEnergyRun:
         if self.param_grad is not None:
             self.meta.update(self.param_grad.meta())
 
-    def load_windows(self, path: str):
-        """Start from the window configurations of a checkpoint written by `save` (e.g. equilibrated at
-        other parameters) with no samples, step 0 and time 0: its samples, statistics and random state
-        are not taken over."""
-        with open(path, "rb") as fh:
-            d = pickle.load(fh)
-        if d.get("format") != FORMAT:
-            raise ValueError(f"{path}: not a {FORMAT!r} checkpoint")
+    def load_windows(self, path: str) -> None:
+        """Start from the window configurations of a checkpoint written by `save` (e.g. equilibrated
+        at other parameters) with no samples, step 0 and time 0.
+
+        Its samples, statistics and random state are not taken over.  Windows are matched by
+        lambda when the checkpoint has other windows.
+
+        Parameters
+        ----------
+        path : str
+            The checkpoint file (current or legacy format).
+
+        Raises
+        ------
+        ValueError
+            Another kind of checkpoint, or no window at one of this run's lambdas.
+        """
+        d = self._read(path)
         wd = dict(d["windows"])
         L, mine = np.asarray(wd["lambdas"], float), self.windows.lambdas
         if L.shape != mine.shape or not np.allclose(L, mine):  # windows matched by lambda

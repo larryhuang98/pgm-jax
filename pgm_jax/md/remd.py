@@ -78,9 +78,7 @@ Units: K, kJ/mol, nm, ps."""
 from __future__ import annotations
 
 import json
-import pickle
 import sys
-import time
 from types import SimpleNamespace
 
 import jax
@@ -88,9 +86,20 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..units import KB
+from .driver import (
+    LogTable,
+    Stopwatch,
+    block_length,
+    device_tree,
+    host_tree,
+    read_checkpoint,
+    retry_block,
+    write_checkpoint,
+)
+from .engine import OPTIONAL_STATE
 from .io import NetCDFTrajectory, write_restart
 
-FORMAT = "pgm_jax remd 1"
+LEGACY_FORMAT = "pgm_jax remd 1"  # the "format" entry of legacy pickle checkpoints
 
 
 # ----------------------------------------------------------------------------- exchange logic
@@ -338,9 +347,18 @@ class MDReplicas:
         return new.set(heat=dst.heat + (e1 - e0))
 
     # ------------------------------------------------------------------ access
+    def _slot(self, S, k: int):
+        """The MDState of slot k of the stacked state S."""
+        return _take(S, k)
+
     def state(self, k: int):
         """MDState of temperature slot k."""
-        return _take(self.S, k) if self.batched else self.states[k]
+        return self._slot(self.S, k) if self.batched else self.states[k]
+
+    def state_template(self):
+        """A state with the structure of the replica states in a checkpoint (slot 0 without its
+        neighbour list): the template driver.read_checkpoint rebuilds them on."""
+        return self.state(0).set(nbr=None)
 
     def potentials(self) -> np.ndarray:
         """Potential energy (kJ/mol) of the configuration at each temperature."""
@@ -426,15 +444,36 @@ class MDReplicas:
         codes = np.asarray(S.nbr.error.code).reshape(-1)
         return any(self.sim.nb.failed(SimpleNamespace(error=SimpleNamespace(code=c))) for c in codes)
 
-    def _advance_batched(self, n: int):
+    def _run_block(self, start, n: int):
+        """One compiled block of n steps of every replica from the stacked state `start`."""
+        new = self._run(start, n)
+        jax.block_until_ready(new.epot)
+        return new
+
+    def _advance_batched(self, n: int) -> None:
+        """n steps of every replica as one vmapped block.
+
+        Overflows of any replica's neighbour list or pair rows re-size the shared static sizes for
+        all and repeat the block (driver.retry_block); then the molecules are re-wrapped into the
+        box, the energies checked and, for flexible molecules, their extent checked against the
+        list radius.
+
+        Parameters
+        ----------
+        n : int
+            Steps.
+
+        Raises
+        ------
+        FloatingPointError
+            A replica's energy is not finite.
+        RuntimeError
+            A block keeps overflowing, or an atom beyond the neighbour-list radius (r_margin).
+        """
         sim = self.sim
-        start = self.S
-        for _attempt in range(6):
-            new = self._run(start, n)
-            jax.block_until_ready(new.epot)
-            nb_bad, row_bad = self._nb_failed(new), bool(np.any(np.asarray(new.overflow)))
-            if not (nb_bad or row_bad):
-                break
+
+        def resize(start, nb_bad: bool, row_bad: bool):
+            """_resize and a log line."""
             step0 = int(np.asarray(start.step)[0])
             start = self._resize(start, nb_bad, row_bad)
             sim._print(
@@ -442,8 +481,14 @@ class MDReplicas:
                 f"(replicas): resized (rows {sim.ff.mc or sim.nb.cap}, list "
                 f"{self._template.idx.shape[1]}), repeating"
             )
-        else:
-            raise RuntimeError("neighbour list keeps overflowing")
+            return start
+
+        new = retry_block(
+            lambda s: self._run_block(s, n),
+            self.S,
+            lambda s: (self._nb_failed(s), bool(np.any(np.asarray(s.overflow)))),
+            resize,
+        )
         new = new.set(dyn=new.dyn.set(position=self._wrap(new.dyn.position, new.box)))
         e = np.asarray(new.epot)
         if not np.all(np.isfinite(e)):
@@ -467,7 +512,7 @@ class MDReplicas:
         old = self._sizes()
         sizes, lists = [], []
         for k in range(self.n):
-            st = _take(start, k)
+            st = self._slot(start, k)
             lists.append(sim._size_lists(st.dyn.position, st.box, 1.3, None if nb_bad else st.nbr))
             sizes.append(self._sizes())
         # never below what overflowed
@@ -496,11 +541,19 @@ class MDReplicas:
 
     # ------------------------------------------------------------------ checkpoints
     def state_dict(self) -> dict:
+        """The replicas' content for a checkpoint.
+
+        Returns
+        -------
+        dict
+            temperatures [K], time_ps, batched, and the state of every slot (host arrays, no
+            neighbour lists).
+        """
         return {
             "temperatures": self.temperatures.copy(),
             "time_ps": self.time_ps,
             "batched": self.batched,
-            "states": [jax.tree_util.tree_map(np.asarray, self.state(k).set(nbr=None)) for k in range(self.n)],
+            "states": [host_tree(self.state(k).set(nbr=None)) for k in range(self.n)],
         }
 
     def load_state_dict(self, d: dict):
@@ -509,7 +562,7 @@ class MDReplicas:
         if len(d["temperatures"]) != self.n or not np.allclose(d["temperatures"], self.temperatures, rtol=1e-12):
             raise ValueError(f"checkpoint temperatures {list(d['temperatures'])} differ from {list(self.temperatures)}")
         sim = self.sim
-        states = [jax.tree_util.tree_map(jnp.asarray, s) for s in d["states"]]
+        states = [device_tree(s) for s in d["states"]]
         sizes, lists = [], []
         for st in states:
             lists.append(sim._size_lists(st.dyn.position, st.box))
@@ -610,24 +663,26 @@ class ReplicaExchange:
         logs every `report` steps, trajectories every `traj`, checkpoints every `restart` (0: off;
         prefix None: no files)."""
         rep, n = self.replicas, self.n
-        block = int(np.gcd.reduce([x for x in (self.every, report, traj, restart, nsteps) if x > 0]))
+        block = block_length(nsteps, self.every, report, traj, restart)
         files = prefix is not None
-        mode = "a" if append else "w"
-        logs = [open(f"{prefix}_T{k:02d}.log", mode) for k in range(n)] if (files and report) else None
+        logs = (
+            [LogTable(f"{prefix}_T{k:02d}.log", append=append, title=[f"T = {self.T[k]:.4f} K"]) for k in range(n)]
+            if (files and report)
+            else None
+        )
         trajs = (
             [NetCDFTrajectory(f"{prefix}_T{k:02d}.nc", rep.frames()[0].shape[1], append=append) for k in range(n)]
             if (files and traj)
             else None
         )
-        xlog = open(f"{prefix}_remd.log", mode) if files else None
+        xlog = open(f"{prefix}_remd.log", "a" if append else "w") if files else None
         if xlog is not None and not append:
             xlog.write(
                 f"# replica exchange, T (K) = {' '.join(f'{t:.4f}' for t in self.T)}\n"
                 f"# step, replica at T_0 .. T_{n - 1} from this step on, outcome per pair (i, i+1): "
                 f"+ accepted, . rejected, - not tried\n"
             )
-        cols = None
-        t0, s0 = time.time(), self.step
+        clock = Stopwatch(self.step, rep.dt)
         done = 0
         while done < nsteps:
             m = min(block, nsteps - done)
@@ -643,25 +698,14 @@ class ReplicaExchange:
                         + f"  {self._outcome(pairs, acc)}\n"
                     )
                     xlog.flush()
-            speed = (self.step - s0) * rep.dt / 1000.0 / max(time.time() - t0, 1e-9) * 86400.0
+            speed = clock.ns_per_day(self.step)
             if report and self.step % report == 0:
                 if logs is not None:
                     for k in range(n):
                         obs = rep.observables(k)
                         obs["replica"] = int(self.stats.replica[k])
                         obs["ns_per_day"] = speed
-                        if cols is None:
-                            cols = list(obs)
-                        if logs[k].tell() == 0:
-                            logs[k].write(f"# T = {self.T[k]:.4f} K\n# " + " ".join(f"{c:>14s}" for c in cols) + "\n")
-                        logs[k].write(
-                            "  "
-                            + " ".join(
-                                f"{obs[c]:14.6f}" if isinstance(obs[c], float) else f"{obs[c]:14d}" for c in cols
-                            )
-                            + "\n"
-                        )
-                        logs[k].flush()
+                        logs[k].write(obs)
                 acc = self.stats.neighbour_acceptance()
                 self._print(
                     f"# step {self.step} ({rep.time_ps:.1f} ps): acceptance "
@@ -674,12 +718,14 @@ class ReplicaExchange:
                     trajs[k].write(rep.time_ps, X[k], B[k])
             if files and restart and self.step % restart == 0:
                 self.save(prefix)
-        el = time.time() - t0
-        for f in (logs or []) + ([xlog] if xlog is not None else []):
-            f.close()
+        speed = clock.ns_per_day(self.step)
+        for t in logs or []:
+            t.close()
+        if xlog is not None:
+            xlog.close()
         if files and restart:
             self.save(prefix)
-        summary = self.summary(ns_per_day=(self.step - s0) * rep.dt / 1000.0 / max(el, 1e-9) * 86400.0)
+        summary = self.summary(ns_per_day=speed)
         if files:
             with open(f"{prefix}_remd.json", "w") as fh:
                 json.dump(summary, fh, indent=1)
@@ -710,30 +756,50 @@ class ReplicaExchange:
         return out
 
     # ------------------------------------------------------------------ checkpoints
-    def save(self, prefix: str):
-        """prefix.remd.chk: every replica state, replica map, statistics and exchange random state
-        (continue with `load`); prefix_Tkk.rst7 Amber restarts when the engine writes them."""
-        d = {
-            "format": FORMAT,
-            "temperatures": self.T.copy(),
+    def save(self, prefix: str) -> None:
+        """Write a checkpoint prefix.remd.chk (and prefix_Tkk.rst7 Amber restarts when the replica
+        engine writes them).
+
+        Parameters
+        ----------
+        prefix : str
+            Path prefix of the files.
+
+        Notes
+        -----
+        The checkpoint (driver.write_checkpoint, kind "remd") holds every replica state
+        (`state_dict` of the engine), the replica map and statistics, the step and the state of
+        the exchange random-number generator; `load` continues the run bitwise on the CPU.
+        """
+        content = {
+            "temperatures": self.T,
             "exchange_every": self.every,
             "step": self.step,
             "rng": self.rng.bit_generator.state,
             "stats": self.stats.to_dict(),
             "replicas": self.replicas.state_dict(),
         }
-        with open(prefix + ".remd.chk", "wb") as fh:
-            pickle.dump(d, fh)
+        write_checkpoint(prefix + ".remd.chk", "remd", content)
         if hasattr(self.replicas, "write_restarts"):
             self.replicas.write_restarts(prefix)
 
-    def load(self, path: str):
-        """Continue from a checkpoint written by `save` (same system, settings and temperatures; the
-        replica engine may be batched or sequential)."""
-        with open(path, "rb") as fh:
-            d = pickle.load(fh)
-        if d.get("format") != FORMAT:
-            raise ValueError(f"{path}: not a {FORMAT!r} checkpoint")
+    def load(self, path: str) -> None:
+        """Continue from a checkpoint written by `save`, or from a legacy pickle ``.remd.chk`` of
+        pgm_jax up to commit e72c57c.
+
+        Parameters
+        ----------
+        path : str
+            The checkpoint (same system, settings and temperatures; the replica engine may be
+            batched or sequential).
+
+        Raises
+        ------
+        ValueError
+            Another kind of checkpoint or other temperatures.
+        """
+        template = getattr(self.replicas, "state_template", None)
+        d = read_checkpoint(path, "remd", template() if template else None, OPTIONAL_STATE, legacy_format=LEGACY_FORMAT)
         if len(d["temperatures"]) != self.n or not np.allclose(d["temperatures"], self.T, rtol=1e-12):
             raise ValueError(f"checkpoint temperatures {list(d['temperatures'])} differ from {list(self.T)}")
         self.replicas.load_state_dict(d["replicas"])

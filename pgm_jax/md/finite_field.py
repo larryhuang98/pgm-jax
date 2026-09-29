@@ -36,13 +36,13 @@ Units: V/nm, e nm, nm^3, K."""
 from __future__ import annotations
 
 import os
-import pickle
-import time
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
+from .driver import LogTable, Stopwatch, read_checkpoint, write_checkpoint
+from .engine import OPTIONAL_STATE
 from .remd import MDReplicas, _stack
 
 
@@ -123,18 +123,45 @@ class FieldReplicas(MDReplicas):
         restart: int = 0,
         extra: dict | None = None,
         log=None,
-    ):
-        """Advance every replica nsteps, writing M every `every` steps to prefix.ffd, a log line every
-        `report` steps to prefix.log (temperatures, energies, CG iterations, ns/day per replica and
-        aggregate) and, every `restart` steps and at the end, a checkpoint prefix.ffchk."""
+    ) -> None:
+        """Advance every replica nsteps with output files.
+
+        Parameters
+        ----------
+        nsteps : int
+            Steps (a multiple of `every`).
+        every : int
+            Steps between samples of the cell dipole M [e nm] of every replica, written to
+            prefix.ffd (header: `header`).
+        prefix : str
+            Path prefix of the files.
+        report : int
+            Steps between rows of the log table prefix.log (mean, minimum and maximum temperature
+            [K], mean CG iterations, ns/day per replica and aggregate) and flushes of prefix.ffd;
+            a multiple of `every` (0: none).
+        append : bool
+            Continue existing files.
+        restart : int
+            Steps between checkpoints prefix.ffchk (0: none; always one at the end).
+        extra : dict, optional
+            Further header entries of prefix.ffd.
+        log : text stream or None
+            Receives the rows of the log table too.
+
+        Raises
+        ------
+        ValueError
+            nsteps or report not a multiple of every.
+        """
         if nsteps % every or (report and report % every):
             raise ValueError("nsteps and report must be multiples of every")
         path = prefix + ".ffd"
         if not (append and os.path.exists(path)):
             with open(path, "w") as fh:
                 fh.write(self.header(extra))
-        logf = open(prefix + ".log", "a" if append else "w")
-        t0, done, rows = time.time(), 0, []
+        table = LogTable(prefix + ".log", append=append, echo=log)
+        clock = Stopwatch(0, self.dt)
+        done, rows = 0, []
         while done < nsteps:
             self.advance(every)
             done += every
@@ -146,37 +173,57 @@ class FieldReplicas(MDReplicas):
                 with open(path, "a") as fh:
                     fh.writelines(rows)
                 rows = []
-                T = [self.integ.temperature(self.state(k)) for k in range(self.n)]
-                el = time.time() - t0
-                nsd = done * self.dt / 1000.0 / max(el, 1e-9) * 86400.0
-                line = (
-                    f"step {step} t {self.time_ps:.2f} ps  T {np.mean(T):.1f} (min {np.min(T):.1f} max "
-                    f"{np.max(T):.1f})  "
-                    f"cg {float(np.mean(np.asarray(self.S.cg_total))) / max(step, 1):.2f}  "
-                    f"{nsd:.2f} ns/day per replica, {nsd * self.n:.1f} aggregate"
+                T = [float(self.integ.temperature(self.state(k))) for k in range(self.n)]
+                nsd = clock.ns_per_day(done)
+                table.write(
+                    {
+                        "step": step,
+                        "time_ps": self.time_ps,
+                        "temp_mean": float(np.mean(T)),
+                        "temp_min": float(np.min(T)),
+                        "temp_max": float(np.max(T)),
+                        "cg_mean": float(np.mean(np.asarray(self.S.cg_total))) / max(step, 1),
+                        "ns_per_day": nsd,
+                        "ns_per_day_agg": nsd * self.n,
+                    }
                 )
-                logf.write(line + "\n")
-                logf.flush()
-                if log is not None:
-                    print(line, file=log, flush=True)
             if restart and done % restart == 0:
                 self.save(prefix + ".ffchk")
         if rows:
             with open(path, "a") as fh:
                 fh.writelines(rows)
-        logf.close()
+        table.close()
         self.save(prefix + ".ffchk")
 
-    def save(self, path: str):
+    def save(self, path: str) -> None:
+        """Write a checkpoint of every replica and the fields (driver.write_checkpoint, kind
+        "field-replicas").
+
+        Parameters
+        ----------
+        path : str
+            The file (prefix.ffchk in `run`).
+        """
         d = self.state_dict()
         d["fields"] = self.fields
-        with open(path, "wb") as fh:
-            pickle.dump(d, fh)
+        write_checkpoint(path, "field-replicas", d)
 
-    def load(self, path: str):
-        with open(path, "rb") as fh:
-            d = pickle.load(fh)
-        if not np.allclose(d["fields"], self.fields):
+    def load(self, path: str) -> None:
+        """Continue from a checkpoint written by `save`, or from a legacy pickle ``.ffchk`` of
+        pgm_jax up to commit e72c57c (same system and fields).
+
+        Parameters
+        ----------
+        path : str
+            The checkpoint file.
+
+        Raises
+        ------
+        ValueError
+            Another kind of checkpoint or other fields.
+        """
+        d = read_checkpoint(path, "field-replicas", self.state_template(), OPTIONAL_STATE)
+        if "fields" not in d or not np.allclose(d["fields"], self.fields):
             raise ValueError("checkpoint fields differ")
         self.load_state_dict(d)
 

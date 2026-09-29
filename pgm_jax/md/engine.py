@@ -35,9 +35,7 @@ from .driver import (
     finite_or_raise,
     is_legacy_checkpoint,
     read_checkpoint,
-    read_legacy_checkpoint,
     retry_block,
-    tree_from_arrays,
     write_checkpoint,
 )
 from .integrate import field_state, upgrade_state
@@ -487,8 +485,7 @@ class MDEngine:
         write_checkpoint(
             prefix + ".chk",
             self.checkpoint_kind,
-            {"time_ps": self.time_ps, "engine": type(self).__name__},
-            {"state": self.state.set(nbr=None)},
+            {"time_ps": self.time_ps, "engine": type(self).__name__, "state": self.state.set(nbr=None)},
         )
         if self.integ.bias is not None and self.state.bias is not None:
             self.integ.bias.save(self.state.bias, prefix + ".bias")
@@ -514,19 +511,16 @@ class MDEngine:
         ValueError
             A checkpoint of another kind, system or setup.
         """
+        template = self.state.set(nbr=None)
+        if self.integ.bias is not None and template.bias is None:
+            template = template.set(bias=self.integ.bias.init())
+        d = read_checkpoint(path, self.checkpoint_kind, template, OPTIONAL_STATE)
+        st = d["state"]
         if is_legacy_checkpoint(path):
-            d = read_legacy_checkpoint(path)
-            st = device_tree(d["state"])
+            st = device_tree(st)
             st = upgrade_state(st, self.state.aux)  # checkpoints from before the thermostat fields
             st = self._bias_of_checkpoint(st)
-            time_ps = float(d["time_ps"])
-        else:
-            meta, arrays = read_checkpoint(path, self.checkpoint_kind)
-            template = self.state.set(nbr=None)
-            if self.integ.bias is not None and template.bias is None:
-                template = template.set(bias=self.integ.bias.init())
-            st = tree_from_arrays(template, arrays, "state", OPTIONAL_STATE)
-            time_ps = float(meta["time_ps"])
+        time_ps = float(d["time_ps"])
         st = field_state(st, self.integ.efield)  # the checkpoint's field amplitude, or the integrator's
         dynpos = st.dyn.position
         nbr = self.nb.allocate(self._atom_positions(dynpos), self._list_centers(dynpos), st.box)

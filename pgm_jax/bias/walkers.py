@@ -25,15 +25,15 @@ checkpoint prefix.walkers.chk (all states; `load`)."""
 
 from __future__ import annotations
 
-import pickle
 import sys
-import time
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..md.remd import MDReplicas, _broadcast, _nocount, _stack
+from ..md.driver import LogTable, Stopwatch, block_length, device_tree, host_tree, read_checkpoint, write_checkpoint
+from ..md.engine import OPTIONAL_STATE
+from ..md.remd import MDReplicas, _nocount, _stack
 from .io import BiasOutput
 
 
@@ -166,25 +166,6 @@ class Walkers(MDReplicas):
         return jax.lax.fori_loop(0, n, lambda _, s: post(step(s)), S)
 
     # ------------------------------------------------------------------ bias bookkeeping (host)
-    def _resize(self, start, nb_bad: bool, row_bad: bool):
-        """MDReplicas._resize with the walkers' own state access (a shared bias is not stacked)."""
-        sim = self.sim
-        old = self._sizes()
-        sizes, lists = [], []
-        self.S = start
-        for k in range(self.n):
-            st = self.state(k)
-            lists.append(sim._size_lists(st.dyn.position, st.box, 1.3, None if nb_bad else st.nbr))
-            sizes.append(self._sizes())
-        self._fit(sizes, old[0] if row_bad else None, old[1] if row_bad else None)
-        if nb_bad:
-            self._template = max(lists, key=lambda b: b.max_occupancy)
-        self.integ.compile()
-        S = start.set(nbr=_broadcast(self._template, self.n)) if nb_bad else start
-        self.S = S
-        self._build()
-        return self._forces(S).set(induction=start.induction)
-
     def _reserve(self, n: int):
         bias = self.integ.bias
         if self.shared:
@@ -227,10 +208,16 @@ class Walkers(MDReplicas):
         self._rows[w] = []
         return np.concatenate(r) if r else np.zeros((0, self.integ.bias.ncol))
 
+    def _slot(self, S, k: int):
+        """The MDState of walker k of the stacked state S, with its bias state (the shared one
+        for shared=True)."""
+        T = jax.tree_util.tree_map(lambda x: x[k], _nocount(S.set(bias=None)))
+        T = T.set(induction=T.induction.set(count=S.induction.count))
+        return T.set(bias=S.bias if self.shared else jax.tree_util.tree_map(lambda a: a[k], S.bias))
+
     def state(self, k: int):
-        T = jax.tree_util.tree_map(lambda x: x[k], _nocount(self.S.set(bias=None)))
-        T = T.set(induction=T.induction.set(count=self.S.induction.count))
-        return T.set(bias=self.bias_state(k))
+        """The MDState of walker k (with its bias state)."""
+        return self._slot(self.S, k)
 
     # ------------------------------------------------------------------ driver
     def run(
@@ -241,10 +228,28 @@ class Walkers(MDReplicas):
         prefix: str = "walkers",
         append: bool = False,
         log=sys.stdout,
-    ):
-        """Advance every walker nsteps; files as in the module docstring."""
+    ) -> None:
+        """Advance every walker nsteps with output files.
+
+        Parameters
+        ----------
+        nsteps : int
+            Steps.
+        report : int
+            Steps between rows of prefix_walkers.log (mean temperature [K], mean potential and bias
+            energies and total bias work [kJ/mol], aggregate ns/day); 0: none.
+        restart : int
+            Steps between checkpoints prefix.walkers.chk (0: none; with restarts also at the end).
+        prefix : str
+            Path prefix of the files: COLVAR rows prefix_wNN.colvar per walker, hills in
+            prefix.hills (shared) or prefix_wNN.hills.
+        append : bool
+            Append to existing files (a continuation).
+        log : text stream or None
+            Receives the rows of the log table too.
+        """
         bias, sim = self.integ.bias, self.sim
-        block = int(np.gcd.reduce([x for x in (report, restart, nsteps) if x > 0]))
+        block = block_length(nsteps, report, restart)
         outs = []
         for w in range(self.n):
             st = self.bias_state(w)
@@ -254,12 +259,9 @@ class Walkers(MDReplicas):
         shared_out = None
         if self.shared:
             shared_out = BiasOutput(bias, prefix, self.dt, sim.T0, append=append, state=self.S.bias, colvar=False)
-        lf = open(prefix + "_walkers.log", "a" if append else "w")
-        if not append:
-            lf.write(
-                "#       step       time_ps     temp_mean     epot_mean     ebias_mean      bias_work    ns_day_agg\n"
-            )
-        t0, done = time.time(), 0
+        table = LogTable(prefix + "_walkers.log", append=append, echo=log)
+        clock = Stopwatch(0, self.dt)
+        done = 0
         for w in range(self.n):
             self.rows(w)
         while done < nsteps:
@@ -274,42 +276,56 @@ class Walkers(MDReplicas):
             if report and step % report == 0:
                 T = [float(self.integ.temperature(self.state(w))) for w in range(min(self.n, 64))]
                 eb = self.bias_energies().sum(1)
-                work = float(np.sum(np.asarray(self.S.bias.work)))
-                el = max(time.time() - t0, 1e-9)
-                nsd = done * self.dt / 1000.0 / el * 86400.0 * self.n
-                line = (
-                    f"{step:12d} {step * self.dt:13.4f} {np.mean(T):13.3f} "
-                    f"{float(np.mean(np.asarray(self.S.epot))):13.3f} "
-                    f"{float(eb.mean()):14.4f} {work:14.4f} {nsd:13.2f}"
+                table.write(
+                    {
+                        "step": step,
+                        "time_ps": step * self.dt,
+                        "temp_mean": float(np.mean(T)),
+                        "epot_mean": float(np.mean(np.asarray(self.S.epot))),
+                        "ebias_mean": float(eb.mean()),
+                        "bias_work": float(np.sum(np.asarray(self.S.bias.work))),
+                        "ns_day_agg": clock.ns_per_day(done) * self.n,
+                    }
                 )
-                lf.write(line + "\n")
-                lf.flush()
-                if log is not None:
-                    print(line, file=log, flush=True)
             if restart and step % restart == 0:
                 self.save(prefix + ".walkers.chk")
-        lf.close()
+        table.close()
         if restart:
             self.save(prefix + ".walkers.chk")
 
-    def save(self, path: str):
-        d = {
+    def state_dict(self) -> dict:
+        """The walkers' content for a checkpoint.
+
+        Returns
+        -------
+        dict
+            n, shared, time_ps and the state of every walker (host arrays with its bias state, no
+            neighbour lists).
+        """
+        return {
             "n": self.n,
             "shared": self.shared,
             "time_ps": self.time_ps,
-            "states": [jax.tree_util.tree_map(np.asarray, self.state(k).set(nbr=None)) for k in range(self.n)],
+            "states": [host_tree(self.state(k).set(nbr=None)) for k in range(self.n)],
         }
-        with open(path, "wb") as fh:
-            pickle.dump(d, fh)
 
-    def load(self, path: str):
-        """Continue from `save` (same system, walker count and mode)."""
-        with open(path, "rb") as fh:
-            d = pickle.load(fh)
-        if d["n"] != self.n or d["shared"] != self.shared:
+    def load_state_dict(self, d: dict) -> None:
+        """Walker states from `state_dict` content; neighbour lists are rebuilt in one layout.
+
+        Parameters
+        ----------
+        d : dict
+            Content of a checkpoint of the same walker set.
+
+        Raises
+        ------
+        ValueError
+            A checkpoint of another number of walkers or another bias mode.
+        """
+        if int(d["n"]) != self.n or bool(d["shared"]) != self.shared:
             raise ValueError("checkpoint of a different walker set")
         sim = self.sim
-        states = [jax.tree_util.tree_map(jnp.asarray, s) for s in d["states"]]
+        states = [device_tree(s) for s in d["states"]]
         lists = []
         for st in states:
             lists.append(sim._size_lists(st.dyn.position, st.box))
@@ -323,3 +339,29 @@ class Walkers(MDReplicas):
         self._build()
         self.S = S.set(nbr=self._forces(S).nbr)
         self.time_ps = float(d["time_ps"])
+
+    def save(self, path: str) -> None:
+        """Write a checkpoint of every walker (driver.write_checkpoint, kind "walkers").
+
+        Parameters
+        ----------
+        path : str
+            The file (prefix.walkers.chk in `run`).
+        """
+        write_checkpoint(path, "walkers", self.state_dict())
+
+    def load(self, path: str) -> None:
+        """Continue from a checkpoint written by `save`, or from a legacy pickle ``.walkers.chk`` of
+        pgm_jax up to commit e72c57c (same system, walker count and mode).
+
+        Parameters
+        ----------
+        path : str
+            The checkpoint file.
+
+        Raises
+        ------
+        ValueError
+            Another kind of checkpoint or another walker set.
+        """
+        self.load_state_dict(read_checkpoint(path, "walkers", self.state_template(), OPTIONAL_STATE))

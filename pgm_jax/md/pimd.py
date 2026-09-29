@@ -69,9 +69,7 @@ flexible pGM water with the q-TIP4P/F monomer surface; docs/pimd.md).  Units: nm
 from __future__ import annotations
 
 import math
-import pickle
 import sys
-import time
 
 import jax
 import jax.numpy as jnp
@@ -80,11 +78,22 @@ import numpy as np
 from ..units import AMU_NM3_TO_G_CM3, BAR_PER_KJMOL_NM3, DEBYE_E_NM, HBAR_KJMOL_PS, KB, KJMOL_TO_MEV
 from ._jaxmd import dataclasses
 from .box import inv3, max_cutoff, volume
+from .driver import (
+    LogTable,
+    Stopwatch,
+    advance_with_rebuilds,
+    block_length,
+    device_tree,
+    finite_or_raise,
+    read_checkpoint,
+    retry_block,
+    write_checkpoint,
+)
 from .io import NetCDFTrajectory, write_restart
 from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .thermostats import Bussi
 
-FORMAT = "pgm_jax pimd 1"
+LEGACY_FORMAT = "pgm_jax pimd 1"  # the "format" entry of legacy pickle checkpoints
 
 
 # ----------------------------------------------------------------------------- ring polymer
@@ -895,45 +904,84 @@ class PIMDSimulation:
         redo = self.integ.forces(self.state.set(eng=self.state.eng.set(nbr=nbr)))
         self.state = redo.set(eng=redo.eng.set(induction=self.state.eng.induction))
 
-    def _advance(self, n: int):
-        """n steps; under NPT the lists are rebuilt when the volume has drifted by 10 %, and a block that
-        keeps overflowing (a box shrinking fast) is split in halves with rebuilds in between."""
-        if abs(float(volume(self.state.box)) / self.engine._nb_volume - 1.0) > 0.10:
-            self._rebuild_neighbors()
-        try:
-            self._advance_block(n)
-        except RuntimeError as err:
-            if "overflowing" not in str(err) or n < 2:
-                raise
-            self._rebuild_neighbors()
-            self._advance(n // 2)
-            self._advance(n - n // 2)
+    def _advance(self, n: int) -> None:
+        """Advance n steps without writing files.
 
-    def _advance_block(self, n: int):
+        Under NPT the lists are rebuilt when the volume has drifted by 10 %, and a block that keeps
+        overflowing (a box shrinking fast) is split in halves with rebuilds in between
+        (driver.advance_with_rebuilds).
+
+        Parameters
+        ----------
+        n : int
+            Steps.
+        """
+        advance_with_rebuilds(
+            n,
+            self._advance_block,
+            self._rebuild_neighbors,
+            lambda: float(volume(self.state.box)) / self.engine._nb_volume,
+        )
+
+    def _run_block(self, start: PIMDState, n: int) -> PIMDState:
+        """One compiled block of n ring-polymer steps from `start` (waits for the result)."""
+        new = self.integ.run(start, n)
+        jax.block_until_ready(new.upot)
+        return new
+
+    def _resize(self, start: PIMDState, n: int, list_bad: bool, rows_bad: bool) -> PIMDState:
+        """Enlarge the capacities after an overflow in the block of n steps from `start`.
+
+        Parameters
+        ----------
+        start : PIMDState
+            State at the start of the failed block.
+        n : int
+            Steps of the block (for the log line).
+        list_bad, rows_bad : bool
+            Whether the neighbour list / the pair rows overflowed.
+
+        Returns
+        -------
+        PIMDState
+            `start` with a new neighbour list and its forces evaluated at the new sizes (the
+            induced-dipole history is kept: no second history entry).
+        """
         e = self.engine
-        start = self.state
-        for _attempt in range(6):
-            new = self.integ.run(start, n)
-            jax.block_until_ready(new.upot)
-            nb_bad, row_bad = e.nb.failed(new.eng.nbr), bool(new.eng.overflow)
-            if not (nb_bad or row_bad):
-                break
-            old = (e.ff.capacity, getattr(e.nb, "cap", None))
-            nbr = self._size(start.q, start.box, 1.3, None if nb_bad else start.eng.nbr)
-            if row_bad:
-                e.ff.grow_rows(old[0])
-                if getattr(e.nb, "cap", None) is not None and old[1] is not None:
-                    e.nb.cap = max(e.nb.cap, old[1] + 4)
-                self.integ.run = jax.jit(self.integ._run)
-                self.integ.forces = jax.jit(self.integ._forces)
-            self._print(
-                f"# {'neighbour list' if nb_bad else 'row capacity'} overflow in steps {int(start.step)}-"
-                f"{int(start.step) + n}: resized, repeating"
-            )
-            redo = self.integ.forces(start.set(eng=start.eng.set(nbr=nbr)))
-            start = redo.set(eng=redo.eng.set(induction=start.eng.induction))  # no second history entry
-        else:
-            raise RuntimeError("neighbour list keeps overflowing")
+        old = (e.ff.capacity, getattr(e.nb, "cap", None))
+        nbr = self._size(start.q, start.box, 1.3, None if list_bad else start.eng.nbr)
+        if rows_bad:  # never shrink below what overflowed
+            e.ff.grow_rows(old[0])
+            if getattr(e.nb, "cap", None) is not None and old[1] is not None:
+                e.nb.cap = max(e.nb.cap, old[1] + 4)
+            self.integ.run = jax.jit(self.integ._run)
+            self.integ.forces = jax.jit(self.integ._forces)
+        self._print(
+            f"# {'neighbour list' if list_bad else 'row capacity'} overflow in steps {int(start.step)}-"
+            f"{int(start.step) + n}: resized, repeating"
+        )
+        redo = self.integ.forces(start.set(eng=start.eng.set(nbr=nbr)))
+        return redo.set(eng=redo.eng.set(induction=start.eng.induction))
+
+    def _advance_block(self, n: int) -> None:
+        """n steps as one compiled block (driver.retry_block), then the ring polymers re-wrapped
+        into the box and the bead spread checked against the list margin.
+
+        Raises
+        ------
+        RuntimeError
+            A bead atom beyond the neighbour-list margin (increase bead_margin), or a block that
+            keeps overflowing.
+        FloatingPointError
+            A non-finite energy.
+        """
+        e = self.engine
+        new = retry_block(
+            lambda s: self._run_block(s, n),
+            self.state,
+            lambda s: (e.nb.failed(s.eng.nbr), bool(s.eng.overflow)),
+            lambda s, lb, rb: self._resize(s, n, lb, rb),
+        )
         new = self._wrap(new)
         ext = float(jax.jit(e.extent)(new.q))
         if ext > e.limit():
@@ -941,8 +989,7 @@ class PIMDSimulation:
                 f"a bead atom is {ext:.3f} nm from its centroid reference, beyond the list margin "
                 f"{e.limit():.3f} nm; increase bead_margin"
             )
-        if not np.isfinite(float(new.upot)):
-            raise FloatingPointError(f"energy is not finite at step {int(new.step)}")
+        finite_or_raise(new.upot, new.step)
         self.state = new
         self.time_ps += n * self.dt
 
@@ -1035,16 +1082,35 @@ class PIMDSimulation:
         append: bool = False,
         pressure: bool = False,
     ):
-        """Every `report` steps a log line (prefix.log), `traj` a centroid frame (prefix.nc),
-        `beads_traj` a frame of every bead (prefix_beads.nc, P x N atoms, bead-major), `restart` a
-        checkpoint (prefix.pimd.chk) and an Amber restart of the centroid."""
-        block = int(np.gcd.reduce([x for x in (report, traj, beads_traj, restart, nsteps) if x > 0]))
+        """Advance nsteps with output files.
+
+        Parameters
+        ----------
+        nsteps : int
+            Steps.
+        report : int
+            Steps between rows of the log table prefix.log (estimators, energies [kJ/mol], volume,
+            dipoles [D], CG statistics, speed); 0: none.
+        traj : int
+            Steps between centroid frames of prefix.nc (0: none).
+        beads_traj : int
+            Steps between frames of every bead in prefix_beads.nc (P x N atoms, bead-major; 0: none).
+        restart : int
+            Steps between checkpoints prefix.pimd.chk plus Amber restarts of the centroid
+            prefix.rst7 (0: none; with restarts also at the end).
+        prefix : str
+            Path prefix of the files.
+        append : bool
+            Append to existing files (a continuation).
+        pressure : bool
+            Add the centroid-virial pressure [bar] to every log row.
+        """
+        block = block_length(nsteps, report, traj, beads_traj, restart)
         n = self.sim.sys.n
         tfile = NetCDFTrajectory(prefix + ".nc", n, append=append) if traj else None
         bfile = NetCDFTrajectory(prefix + "_beads.nc", n * self.P, append=append) if beads_traj else None
-        logf = open(prefix + ".log", "a" if append else "w")
-        cols = None
-        t0, s0 = time.time(), int(self.state.step)
+        table = LogTable(prefix + ".log", append=append, echo=self.log)
+        clock = Stopwatch(int(self.state.step), self.dt)
         done = 0
         while done < nsteps:
             m = min(block, nsteps - done)
@@ -1055,20 +1121,8 @@ class PIMDSimulation:
                 obs = self.observables()
                 if pressure:
                     obs["press_bar"] = self.pressure()
-                el = time.time() - t0
-                obs["ns_per_day"] = (step - s0) * self.dt / 1000.0 / max(el, 1e-9) * 86400.0
-                if cols is None:
-                    cols = list(obs)
-                    header = "# " + " ".join(f"{c:>14s}" for c in cols)
-                    if not append or logf.tell() == 0:
-                        logf.write(header + "\n")
-                    self._print(header)
-                line = "  " + " ".join(
-                    f"{obs[c]:14.6f}" if isinstance(obs[c], float) else f"{obs[c]:14d}" for c in cols
-                )
-                logf.write(line + "\n")
-                logf.flush()
-                self._print(line)
+                obs["ns_per_day"] = clock.ns_per_day(step)
+                table.write(obs)
             box_A = np.asarray(self.state.box) * 10.0
             if tfile is not None and step % traj == 0:
                 tfile.write(self.time_ps, self.centroid_nm() * 10.0, box_A)
@@ -1076,14 +1130,26 @@ class PIMDSimulation:
                 bfile.write(self.time_ps, self.beads_nm().reshape(-1, 3) * 10.0, box_A)
             if restart and step % restart == 0:
                 self.save(prefix)
-        logf.close()
+        table.close()
         if restart:
             self.save(prefix)
 
     # ------------------------------------------------------------------ checkpoints
-    def save(self, prefix: str):
-        """prefix.pimd.chk (complete state: beads, momenta, forces, dipoles and predictor history of
-        every bead, random state) and prefix.rst7 (Amber restart of the centroid)."""
+    def save(self, prefix: str) -> None:
+        """Write a checkpoint prefix.pimd.chk and an Amber restart of the centroid prefix.rst7.
+
+        Parameters
+        ----------
+        prefix : str
+            Path prefix of the files.
+
+        Notes
+        -----
+        The checkpoint (driver.write_checkpoint, kind "pimd") holds the complete state: beads,
+        momenta, forces, induced dipoles and predictor history of every bead, thermostat and
+        barostat state and the random key; continuing from it reproduces the run bitwise on the
+        CPU.
+        """
         st = self.state
         vc = np.asarray(jnp.mean(st.p, 0) / self.integ.mass)
         write_restart(
@@ -1094,17 +1160,32 @@ class PIMDSimulation:
             self.time_ps,
             title=f"pgm_jax PIMD centroid, {self.P} beads",
         )
-        host = jax.tree_util.tree_map(np.asarray, st.set(eng=st.eng.set(nbr=None)))
-        with open(prefix + ".pimd.chk", "wb") as fh:
-            pickle.dump({"format": FORMAT, "beads": self.P, "state": host, "time_ps": self.time_ps}, fh)
+        write_checkpoint(
+            prefix + ".pimd.chk",
+            "pimd",
+            {"beads": self.P, "time_ps": self.time_ps, "state": st.set(eng=st.eng.set(nbr=None))},
+        )
 
-    def load(self, path: str):
-        with open(path, "rb") as fh:
-            d = pickle.load(fh)
-        if d.get("format") != FORMAT or int(d["beads"]) != self.P:
-            raise ValueError(f"{path}: not a {self.P}-bead {FORMAT!r} checkpoint")
-        st = jax.tree_util.tree_map(jnp.asarray, d["state"])
-        if st.mc is None:
+    def load(self, path: str) -> None:
+        """Continue from a checkpoint written by `save`, or from a legacy pickle ``.pimd.chk`` of
+        pgm_jax up to commit e72c57c (same system, settings and number of beads).
+
+        Parameters
+        ----------
+        path : str
+            The checkpoint file.
+
+        Raises
+        ------
+        ValueError
+            Another kind of checkpoint, another number of beads, or another system.
+        """
+        st = self.state
+        d = read_checkpoint(path, "pimd", st.set(eng=st.eng.set(nbr=None)), legacy_format=LEGACY_FORMAT)
+        if int(d["beads"]) != self.P:
+            raise ValueError(f"{path}: a {int(d['beads'])}-bead checkpoint, not a {self.P}-bead one")
+        st = device_tree(d["state"])
+        if st.mc is None:  # legacy checkpoints from before the barostat
             st = st.set(mc=jnp.zeros(4, jnp.int32), mc_dv=jnp.asarray(0.01 * float(volume(st.box)), jnp.float64))
         self.engine.make_neighbors(np.asarray(st.box))
         nbr = self._size(st.q, st.box)
