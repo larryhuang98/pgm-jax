@@ -140,8 +140,8 @@ def test_ewald_matches_gas_phase_in_a_large_box():
     pos = _trimer(rng)[:6] + 3.0
     H = np.eye(3) * 6.0
     e_gas = float(Model([lambda s: ElecChannel()]).energy_fn(sys)(pos, None)["total"])
-    e1 = float(PeriodicPGM(sys, H, pos, b0=1.2, rc=2.9).energy(pos)[0]["total"])
-    e2 = float(PeriodicPGM(sys, H, pos, b0=1.0, rc=2.9, k_tol=1e-10).energy(pos)[0]["total"])
+    e1 = float(PeriodicPGM(sys, H, pos, ewald_beta=1.2, cutoff=2.9).energy(pos)[0]["total"])
+    e2 = float(PeriodicPGM(sys, H, pos, ewald_beta=1.0, cutoff=2.9, k_tol=1e-10).energy(pos)[0]["total"])
     assert abs(e1 - e2) < 1e-4, (e1, e2)
     assert abs(e1 - e_gas) < 5e-3, (e1, e_gas)
 

@@ -96,29 +96,55 @@ def _pair_tensors(x, bij, b0):
 class PeriodicPGM:
     """pGM energy/forces for one System in a periodic box.
 
-    H and pos_ref fix the neighbour list and the set of k-vectors; energies take any positions,
-    parameters and box (default: the reference box).  Pairs of the list farther apart than rc
-    are masked, so a list built with a skin (rc + skin) stays valid for small displacements."""
+    The reference box and positions fix the neighbour list and the set of k-vectors; energies take
+    any positions, parameters and box (default: the reference box).  Pairs of the list farther apart
+    than the cutoff are masked, so a list built with a skin (rc + skin) stays valid for small displacements."""
 
     def __init__(
         self,
-        sys: System,
-        H: np.ndarray,
-        pos_ref: np.ndarray,
-        b0: float = 3.8,
-        rc: float = 1.0,
+        system: System,
+        box: np.ndarray,
+        positions_ref: np.ndarray,
+        ewald_beta: float = 3.8,
+        cutoff: float = 1.0,
         skin: float = 0.0,
         k_tol: float = 1e-12,
-        cg_tol: float = 1e-12,
+        dipole_tol: float = 1e-12,
         nlist=None,
         elec: str = "qpi",
     ):
+        """Build the Ewald model.
+
+        Parameters
+        ----------
+        system : System
+            The molecules.
+        box : array (3, 3)
+            Reference box [nm], lattice vectors as rows (fixes the k-vector set).
+        positions_ref : array (N, 3)
+            Reference positions [nm] of the neighbour list.
+        ewald_beta : float
+            Ewald coefficient [1/nm].
+        cutoff : float
+            Real-space cutoff [nm] (pairs of the list beyond it are masked).
+        skin : float
+            Neighbour-list skin [nm].
+        k_tol : float
+            Reciprocal-space truncation: exp(-k^2 / (4 beta^2)) below k_tol.
+        dipole_tol : float
+            Relative residual of the induced-dipole CG (jax.scipy.sparse.linalg.cg).
+        nlist : tuple, optional
+            A neighbour list (i, j, image) to share (PeriodicModel).
+        elec : str
+            "q" | "qp" | "qi" | "qpi" (options.py).
+        """
         from .options import elec_flags
 
         self.pd, self.ind = elec_flags(elec)
-        self.sys, self.H = sys, np.asarray(H, float)
-        self.b0, self.rc, self.cg_tol = b0, rc, cg_tol
-        self.pi, self.pj, self.img = nlist if nlist is not None else neighbor_list(pos_ref, self.H, rc + skin)
+        self.sys, self.H = system, np.asarray(box, float)
+        b0, rc = ewald_beta, cutoff
+        self.b0, self.rc, self.cg_tol = b0, rc, dipole_tol
+        self.pi, self.pj, self.img = nlist if nlist is not None else neighbor_list(positions_ref, self.H, rc + skin)
         kcut = 2 * b0 * np.sqrt(-np.log(k_tol))
         self.m = kvector_indices(self.H, kcut)
         self._E = variational(self._G, self._solve)

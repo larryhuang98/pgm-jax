@@ -52,18 +52,19 @@ def timed(f, n=3):
 
 
 def main():
+    """Time the energy, force and MD step evaluations of the 512-water box and print them."""
     print("device:", jax.devices())
     w = read_prmtop_pgm(TOP)[0]
     xyz, (L, ang) = read_restart(RST)
     H = box_from_cell(L, ang) * 0.1
     pos = xyz * 0.1
     sys512 = System([w] * 512)
-    per = PeriodicPGM(sys512, H, pos, b0=3.8, rc=1.0)
+    per = PeriodicPGM(sys512, H, pos, ewald_beta=3.8, cutoff=1.0)
     e_fn = jax.jit(lambda x: per.energy(x)[0]["total"])
     f_fn = jax.jit(per.forces)
     print("periodic 512 waters, energy:        first {:.1f}s, then {:.3f}s".format(*timed(lambda: e_fn(pos))))
     print("periodic 512 waters, forces:        first {:.1f}s, then {:.3f}s".format(*timed(lambda: f_fn(pos))))
-    pm = PeriodicModel(sys512, H, pos, rc=1.0, b0=3.8)
+    pm = PeriodicModel(sys512, H, pos, cutoff=1.0, ewald_beta=3.8)
     P = sys512.params0
     fm = jax.jit(pm.forces)
     gp = jax.jit(jax.grad(lambda p: pm.energy(pos, p)["total"]))

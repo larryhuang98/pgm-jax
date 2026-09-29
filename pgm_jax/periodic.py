@@ -44,44 +44,89 @@ def pressure_bar(dE_deps, H):
 
 
 class PeriodicModel:
-    """pGM electrostatics (Ewald) + LJ in a periodic box.
+    """pGM electrostatics (Ewald) + van der Waals in a periodic box: the differentiable reference
+    model (energies, forces, strain derivatives and pressure are exact derivatives of one energy).
 
-    One neighbour list (rc + skin, or the LJ cutoff if larger) is built at (pos_ref, H) and
-    shared; energies accept any positions, parameters and box."""
+    One neighbour list (cutoff + skin, or the van der Waals cutoff if larger) is built at
+    (positions_ref, box) and shared; energies accept any positions, parameters and box."""
 
     def __init__(
         self,
-        sys: System,
-        H,
-        pos_ref,
-        rc: float = 1.0,
-        b0: float = 3.8,
+        system: System,
+        box,
+        positions_ref,
+        cutoff: float = 1.0,
+        ewald_beta: float = 3.8,
         skin: float = 0.0,
-        lj: bool = True,
-        lj_rc: float | None = None,
+        vdw_cutoff: float | None = None,
         lj_lrc: bool = False,
         k_tol: float = 1e-12,
-        cg_tol: float = 1e-12,
+        dipole_tol: float = 1e-12,
         elec: str = "qpi",
         vdw: str = "lj",
         gvdw_rep: str = "gauss",
     ):
-        """elec: "q" | "qp" | "qi" | "qpi" (options.py); vdw: "lj" | "gvdw" | "none" (lj=False: none);
-        lj_rc / lj_lrc apply to either van der Waals form."""
+        """Build the model.
+
+        Parameters
+        ----------
+        system : System
+            The molecules.
+        box : array (3, 3)
+            Reference box [nm], lattice vectors as rows (fixes the k-vectors).
+        positions_ref : array (N, 3)
+            Reference positions [nm] of the neighbour list.
+        cutoff : float
+            Real-space electrostatics cutoff [nm] (and the van der Waals cutoff by default).
+        ewald_beta : float
+            Ewald coefficient [1/nm].
+        skin : float
+            Neighbour-list skin [nm] (pairs beyond the cutoffs are masked, so small displacements
+            from positions_ref stay exact).
+        vdw_cutoff : float or None
+            Van der Waals cutoff [nm] (None: `cutoff`); applies to LJ and GVDW.
+        lj_lrc : bool
+            Long-range correction of the van der Waals tail (LJ or GVDW dispersion).
+        k_tol : float
+            Reciprocal-space truncation: exp(-k^2 / (4 beta^2)) below k_tol.
+        dipole_tol : float
+            Relative residual of the induced-dipole CG (jax.scipy.sparse.linalg.cg).
+        elec : str
+            "q" | "qp" | "qi" | "qpi" (options.py).
+        vdw : str
+            "lj" | "gvdw" | "none".
+        gvdw_rep : str
+            GVDW repulsion, "gauss" or "slater".
+
+        Raises
+        ------
+        ValueError
+            An unknown van der Waals form.
+        """
         from .options import check_vdw
         from .vdw import PeriodicGVDW
 
         check_vdw(vdw, gvdw_rep)
-        self.sys, self.H = sys, np.asarray(H, float)
-        lj_rc = rc if lj_rc is None else lj_rc
-        nl = neighbor_list(pos_ref, self.H, max(rc, lj_rc) + skin)
-        self.elec = PeriodicPGM(sys, self.H, pos_ref, b0=b0, rc=rc, k_tol=k_tol, cg_tol=cg_tol, nlist=nl, elec=elec)
-        if not lj or vdw == "none":
+        self.sys, self.H = system, np.asarray(box, float)
+        vdw_cutoff = cutoff if vdw_cutoff is None else vdw_cutoff
+        nl = neighbor_list(positions_ref, self.H, max(cutoff, vdw_cutoff) + skin)
+        self.elec = PeriodicPGM(
+            system,
+            self.H,
+            positions_ref,
+            ewald_beta=ewald_beta,
+            cutoff=cutoff,
+            k_tol=k_tol,
+            dipole_tol=dipole_tol,
+            nlist=nl,
+            elec=elec,
+        )
+        if vdw == "none":
             self.vdw = None
         elif vdw == "lj":
-            self.vdw = PeriodicLJ(sys, self.H, pos_ref, rc=lj_rc, lrc=lj_lrc, nlist=nl)
+            self.vdw = PeriodicLJ(system, self.H, positions_ref, rc=vdw_cutoff, lrc=lj_lrc, nlist=nl)
         else:
-            self.vdw = PeriodicGVDW(sys, self.H, pos_ref, rc=lj_rc, lrc=lj_lrc, nlist=nl, rep=gvdw_rep)
+            self.vdw = PeriodicGVDW(system, self.H, positions_ref, rc=vdw_cutoff, lrc=lj_lrc, nlist=nl, rep=gvdw_rep)
 
     def energy(self, pos, params=None, H=None):
         """-> {perm, ind, elec, vdw, total} kJ/mol."""

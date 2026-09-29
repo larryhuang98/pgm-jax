@@ -192,7 +192,7 @@ def periodic_model():
     sys, pos, H = S.small_box(1)
     P = sys.table.initial()
     out = {}
-    box = PeriodicModel(sys, H, pos, rc=0.6, lj_lrc=True)
+    box = PeriodicModel(sys, H, pos, cutoff=0.6, lj_lrc=True)
     x = jnp.asarray(pos)
     _put(out, "E", box.energy(x, P, H))
     out["forces"] = _np(box.forces(x, P, H))
@@ -200,7 +200,7 @@ def periodic_model():
     out["strain_atom"] = _np(box.strain_derivative(x, P, H, molecular=False))
     out["pressure"] = _np(box.pressure(x, P))
     out["mu"] = _np(box.elec.induced_dipoles(x, P))
-    _put(out, "E_qp_none", PeriodicModel(sys, H, pos, rc=0.6, elec="qp", vdw="none").energy(x, P, H))
+    _put(out, "E_qp_none", PeriodicModel(sys, H, pos, cutoff=0.6, elec="qp", vdw="none").energy(x, P, H))
     return out
 
 

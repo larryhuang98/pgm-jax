@@ -91,7 +91,7 @@ dE_dP = jax.grad(lambda p: E(pos, p)["total"])(P)  # same pytree as P
 F = model.forces_fn(sys)(pos, P)  # kJ/mol/nm
 dL_dP = jax.grad(lambda p: jnp.sum((model.forces_fn(sys)(pos, p) - F_ref) ** 2))(P)  # force matching
 
-box = PeriodicModel(sys512, H, pos512, rc=1.0, b0=3.8, lj_lrc=True)
+box = PeriodicModel(sys512, H, pos512, cutoff=1.0, ewald_beta=3.8, lj_lrc=True)
 box.energy(pos512, P, H)  # H: lattice vectors as rows (nm)
 jax.grad(lambda h: box.energy(pos512, P, h)["total"])(H)  # box derivative
 box.pressure(pos512, P)  # static pressure (bar), molecular virial

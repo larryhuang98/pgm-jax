@@ -27,11 +27,12 @@ def _list(sys, pos, H, s):
 
 @pytest.mark.parametrize("elec", ["q", "qp", "qi"])
 def test_elec_levels_match_ewald(elec):
+    """Every electrostatics level of the MD force field matches the exact Ewald reference."""
     sys, pos, H = small_box(2)
     s = settings(elec=elec)
     ff = PGMForceField(sys, H, s)
     res = jax.jit(ff.compute)(pos, H, _list(sys, pos, H, s), ff.init_induction())
-    ew = PeriodicPGM(sys, H, pos, b0=6.0, rc=0.6, elec=elec).energy(pos)[0]["total"]
+    ew = PeriodicPGM(sys, H, pos, ewald_beta=6.0, cutoff=0.6, elec=elec).energy(pos)[0]["total"]
     assert abs(float(res.energy["elec"]) - float(ew)) < 2e-6 * abs(float(ew)), (
         elec,
         float(res.energy["elec"]),
@@ -45,12 +46,13 @@ def test_elec_levels_match_ewald(elec):
 
 @pytest.mark.parametrize("rep", ["gauss", "slater"])
 def test_gvdw_md_matches_periodic_and_forces(rep):
+    """The Gaussian vdW energy of the MD force field matches PeriodicModel, and its forces are the gradient."""
     sys, pos, H = _gvdw_box(1)
     s = settings(vdw="gvdw", gvdw_rep=rep)
     ff = PGMForceField(sys, H, s)
     idx = _list(sys, pos, H, s)
     res = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
-    ref = PeriodicModel(sys, H, pos, rc=0.6, b0=6.0, vdw="gvdw", gvdw_rep=rep).energy(pos)["vdw"]
+    ref = PeriodicModel(sys, H, pos, cutoff=0.6, ewald_beta=6.0, vdw="gvdw", gvdw_rep=rep).energy(pos)["vdw"]
     assert abs(float(res.energy["vdw"]) - float(ref)) < 1e-9 * max(1.0, abs(float(ref))), (
         float(res.energy["vdw"]),
         float(ref),
@@ -69,12 +71,13 @@ def test_gvdw_md_matches_periodic_and_forces(rep):
 
 
 def test_gvdw_tail_and_virial():
+    """Gaussian vdW with the long-range tail: energy and strain derivative match PeriodicModel."""
     sys, pos, H = _gvdw_box(3)
     s = settings(vdw="gvdw", lj_lrc=True)
     ff = PGMForceField(sys, H, s)
     idx = _list(sys, pos, H, s)
     res = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
-    pm = PeriodicModel(sys, H, pos, rc=0.6, b0=6.0, vdw="gvdw", lj_lrc=True)
+    pm = PeriodicModel(sys, H, pos, cutoff=0.6, ewald_beta=6.0, vdw="gvdw", lj_lrc=True)
     assert abs(float(res.energy["vdw"]) - float(pm.energy(pos)["vdw"])) < 1e-9 * abs(float(pm.energy(pos)["vdw"]))
     W = ff.strain_derivative(pos, H, idx, res.induction.mu)
     W_ref = pm.virial_derivative(pos)

@@ -148,6 +148,7 @@ def amber():
 
 
 def compare():
+    """Compare the JAX energies and forces with the stored Amber reference runs and write the report."""
     os.makedirs(OUT, exist_ok=True)
     res = {}
     xyz, (L, ang) = read_restart(RST)
@@ -213,7 +214,7 @@ def compare():
     f_lj = to_kcal_A(-jax.grad(lambda x: ljp.energy(x)[0]["vdw"])(pos))
     for tag, b0, rc in (("b0=3.8,rc=1.0", 3.8, 1.0), ("b0=3.5,rc=1.1", 3.5, 1.1)):
         t0 = time.time()
-        per = PeriodicPGM(sys, H, pos, b0=b0, rc=rc)
+        per = PeriodicPGM(sys, H, pos, ewald_beta=b0, cutoff=rc)
         e, aux = per.energy(pos)
         F = to_kcal_A(per.forces(pos))
         mu = np.asarray(per.induced_dipoles(pos)) * 10  # e A
@@ -347,7 +348,7 @@ def virial():
     H = box_from_cell(L, ang) * 0.1
     pos = xyz * 0.1
     sys = System([read_prmtop_pgm(TOP)[0]] * 512)
-    per = PeriodicPGM(sys, H, pos, b0=3.8, rc=1.0)
+    per = PeriodicPGM(sys, H, pos, ewald_beta=3.8, cutoff=1.0)
     out = {}
     t0 = time.time()
     W_el = np.asarray(strain_derivative(lambda x, h: per.energy(x, None, h)[0]["total"], pos, H, sys)) / KCAL

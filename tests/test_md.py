@@ -80,13 +80,14 @@ def ff_and_list(sys, pos, H, **kw):
 
 
 def test_pme_matches_exact_ewald():
+    """PME energy and induced dipoles of the MD force field match the exact Ewald sum (PeriodicPGM)."""
     sys, pos, H = small_box()
     ff, idx = ff_and_list(sys, pos, H)
     res = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
-    ew = PeriodicPGM(sys, H, pos, b0=6.0, rc=0.6).energy(pos)[0]["total"]
+    ew = PeriodicPGM(sys, H, pos, ewald_beta=6.0, cutoff=0.6).energy(pos)[0]["total"]
     e_elec = res.energy["elec"]
     assert abs(float(e_elec) - float(ew)) < 2e-6 * abs(float(ew)), (float(e_elec), float(ew))
-    mu_ew = PeriodicPGM(sys, H, pos, b0=6.0, rc=0.6).induced_dipoles(pos)
+    mu_ew = PeriodicPGM(sys, H, pos, ewald_beta=6.0, cutoff=0.6).induced_dipoles(pos)
     assert np.allclose(res.induction.mu, mu_ew, atol=1e-6 * float(jnp.abs(mu_ew).max()))
 
 

@@ -198,11 +198,12 @@ def test_polarizability_parameter_gradients():
 
 @pytest.fixture(scope="module")
 def periodic():
+    """A perturbed periodic cluster in a triclinic box with its PeriodicModel (fixture)."""
     rng = np.random.default_rng(7)
     sys, pos = cluster(rng)
     H = np.array([[1.45, 0.0, 0.0], [0.15, 1.40, 0.0], [-0.10, 0.20, 1.35]])  # triclinic, nm
     pos = pos + np.array([0.5, 0.5, 0.5])
-    model = PeriodicModel(sys, H, pos, rc=0.6, b0=6.5, skin=0.05, k_tol=1e-10, cg_tol=1e-13)
+    model = PeriodicModel(sys, H, pos, cutoff=0.6, ewald_beta=6.5, skin=0.05, k_tol=1e-10, dipole_tol=1e-13)
     P = perturbed(sys.params0, rng)
     return model, sys, pos, H, P
 
@@ -289,6 +290,6 @@ def test_charged_system_independent_of_ewald_splitting():
     P["q"] = P["q"].at[0].add(0.5)  # net charge
     pos = pos + 3.0
     H = np.eye(3) * 6.0
-    e1 = float(PeriodicPGM(sys, H, pos, b0=1.2, rc=2.9).energy(pos, P)[0]["total"])
-    e2 = float(PeriodicPGM(sys, H, pos, b0=1.0, rc=2.9, k_tol=1e-10).energy(pos, P)[0]["total"])
+    e1 = float(PeriodicPGM(sys, H, pos, ewald_beta=1.2, cutoff=2.9).energy(pos, P)[0]["total"])
+    e2 = float(PeriodicPGM(sys, H, pos, ewald_beta=1.0, cutoff=2.9, k_tol=1e-10).energy(pos, P)[0]["total"])
     assert abs(e1 - e2) < 1e-4, (e1, e2)
