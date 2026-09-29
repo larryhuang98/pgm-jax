@@ -1,9 +1,9 @@
 # pGM-JAX clean-up: survey and API design
 
-Status: proposal for review (branch `cleanup`, from master `e72c57c`). Nothing in `pgm_jax/`,
-`scripts/`, `tests/` or the docs has been changed yet. This branch adds only this document, the
-regression harness (`tests/regression/`), the GPU speed check (`scripts/dev/gpu_bench.sh`) and a
-`[tool.ruff]` section in `pyproject.toml` that is not applied yet.
+Status: accepted with the owner's decisions (section 9, which overrides the recommendations of
+the earlier sections where they differ); being executed phase by phase on branch `cleanup`
+(from master `e72c57c`). P0 added this document, the regression harness (`tests/regression/`),
+the GPU speed check (`scripts/dev/gpu_bench.sh`) and the ruff configuration.
 
 Scope chosen by the owner: clean-up plus API redesign. Breaking API changes are allowed, and
 scripts, tests and docs are updated in the same commits. Lint and format with ruff (isort,
@@ -11,7 +11,8 @@ pyflakes, pyupgrade; line length 120). Physics results must not change: MD stays
 identical wherever the change does not touch numerics, and jitted hot paths must not get slower.
 
 Contents: 1 Inventory, 2 Problems, 3 Target design, 4 Migration table, 5 Phased plan,
-6 Risks, what is not changed, open questions, 7 Regression harness, 8 Ruff report.
+6 Risks, what is not changed, open questions, 7 Regression harness, 8 Ruff report,
+9 Decisions.
 
 ---------------------------------------------------------------------------------------------------
 
@@ -817,3 +818,33 @@ wrapped, (b) column-aligned trailing comments collapsed to two spaces (652 align
 line, magic trailing commas and quote normalization. ruff 0.16 also
 formats Python code blocks in Markdown: README.md and 15 files in `docs/` would change (exclude
 `*.md` or accept; part of Q11).
+
+---------------------------------------------------------------------------------------------------
+
+## 9. Decisions (owner, 2026-09-29)
+
+The owner answered the open questions of 6.3; where the owner delegated, the coordinator chose.
+These decisions override the recommendations above where they differ.
+
+| # | Decision | Where it lands |
+|---|---|---|
+| D1 | Hard breaks: no compatibility shims for renamed APIs or moved modules; every call site in the repository is updated in the same commit (library, scripts, tests, examples, docs, `paper/` scripts that import `pgm_jax`). (Q3) | every phase |
+| D2 | Script CLI units: common MD units with the unit in the option name: `--dt-fs`, `--cutoff-nm`, `--time-ns`, `--temperature-K`, `--pressure-bar`, ... `scripts/run_md.py` keeps its Amber style (Angstrom, Amber option names) for comparisons with pmemd and says so in its help. (Q1, Q14) | P9 (`pgm_jax/cli/args.py` groups from P3 on) |
+| D3 | Checkpoints: a new versioned format, `.npz` arrays + JSON header with a format version, for every driver; old `.chk` pickles stay loadable through a reader / converter, tested on a real old checkpoint. (Q7) | P4 |
+| D4 | Research code (`scripts/bonded/`, the `reports/` and `validation/` producing scripts, one-off validation scripts) is cleaned to the same standard as the library (docstrings, structure, no `sys.path` edits, no hard-coded user paths) and organized by purpose. (Q10) | P3 (imports, paths), P9 (layout, docstrings) |
+| D5 | Every function (public and private, including non-trivial nested functions) has a docstring or a clear comment: what it does, arguments with units, returns, non-obvious physics / algorithm notes; every module has a module docstring; clear module responsibilities, no duplication, small functions. | P8 (library), P9 (scripts); new code from P1 on |
+| D6 | `ensemble=`, `gamma=`, `tau_t=`, `barostat_interval=` are removed in favour of thermostat / barostat objects (Q2). Defaults that exist today are kept so that results do not change (the default thermostat stays Langevin 1/ps; the docs recommend Bussi) (Q4). | P5 |
+| D7 | Python `logging` (`logging.getLogger("pgm_jax...")`) for diagnostics; MD tables (log lines, observables) still go to their files / streams. (Q5) | P4, P5 |
+| D8 | Nested `MDSettings` groups with a `replace(**flat)` convenience. (Q6) | P6 |
+| D9 | One `ParameterSpace` replaces `fit.ParameterSpace`, `fe_grad.ParamSpace` and `qmfit.ParamMap`. (Q8) | P7 |
+| D10 | A single `pgm-jax` CLI entry point (`[project.scripts]`) dispatching to subcommands for the main scripts. (Q9) | P9 |
+| D11 | numpy docstring style; ruff rules E, W, F, I, UP, B (subset) and D (numpy convention), D enforced on the library and the scripts; `ruff format` accepted (column alignment of comments goes); type hints on all function signatures, no mypy / pyright gate for now; Python floor 3.10. (Q11-Q13) | P1 (E, W, F, I, UP, B, format), P8/P9 (D, hints) |
+| D12 | README shortened to overview + quick start + links; the long feature and validation material moves into `docs/` with an index; `NOTES_*.md` -> `docs/dev/notes/`. (Q16) | P10 |
+| D13 | Data layout (decided here): `data/` is the single top-level home of tracked data: `data/inputs/` (QM sets, bonded-study molecules and frames; today's `data/qm`, `data/bonded`), `data/validation/` (today's `validation/`: Amber reference outputs and validation JSON results), `data/reports/` (today's `reports/`: figures and tables of studies). Scripts write there through one `pgm_jax.cli.paths` helper (repository-relative, overridable with `PGM_DATA`). (Q15) | P9 (moves together with the scripts that write them) |
+
+B subset (D11): B905 (`zip` without `strict`), B008 (calls in default arguments: the defaults are
+frozen dataclasses such as `MDSettings()`) and B023 (loop variables in closures: the flagged
+closures are jitted and called inside the same iteration) are not selected; the rest of B is.
+E741 (ambiguous names `l`, `I`, `O`) is not selected: they are the physics notation (angular
+index, identity matrix). E402 is resolved by removing the `sys.path` edits (P3) and by setting
+`jax_enable_x64` in `tests/conftest.py` instead of in every test module (P1).
