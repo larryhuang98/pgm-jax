@@ -1,30 +1,53 @@
-"""Virtual sites on TIP4P-Ew (Horn et al., J. Chem. Phys. 120, 9665 (2004)): Amber extra points
-against sander, energy conservation and the liquid at 298 K / 1 atm in both MD engines, and the
-GPU cost of sites.  Point charges (elec "q", Gaussian radii 1e-4 nm), Amber's EP frame.
+"""Validate virtual sites on TIP4P-Ew: sander single point, energy conservation, the liquid, GPU cost.
 
-    python scripts/validate_vsites.py build       # 512 waters (8^3 lattice, 24.87 A cube) through tleap
-    python scripts/validate_vsites.py equil       # NPT 298 K, rigid engine, 200 ps -> runs/vsites/equil.rst7
-    python scripts/validate_vsites.py sander      # sander single point (PME 64^3, order 8, exact erfc) at that frame
-    python scripts/validate_vsites.py compare     # energies, forces and EP positions vs sander
-    python scripts/validate_vsites.py nve         # NVE drift, rigid and constrained engines, mixed precision
-    python scripts/validate_vsites.py npt --engine rigid --ns 4      # production (log: runs/vsites/npt_rigid.log)
-    python scripts/validate_vsites.py npt --engine constraints --dt 1 --ns 3   # (npt_constraints_1fs.log)
-    python scripts/validate_vsites.py analyse     # density and <U> per molecule, block errors, vs Horn et al.
-    python scripts/validate_vsites.py bench       # ms/step: TIP4P-Ew vs the same water without its site
-    python scripts/validate_vsites.py identical --base DIR   # no sites: bitwise the same as the code in DIR
-    python scripts/validate_vsites.py pgm         # pGM water with charged / polarizable sites: forces and
-                                                  # strain derivative vs finite differences (float64)
+TIP4P-Ew (Horn et al., J. Chem. Phys. 120, 9665 (2004)): Amber extra points against sander, energy
+conservation and the liquid at 298 K / 1 atm in both MD engines, and the GPU cost of sites.  Point
+charges (elec "q", Gaussian radii 1e-4 nm), Amber's EP frame (docs/virtual_sites.md).
+
+Steps:
+  build      512 waters (8^3 lattice, 24.87 A cube) through tleap
+  equil      NPT 298 K, rigid engine, --time-ps (200 ps) -> runs/vsites/equil.rst7
+  sander     sander single point (PME --grid^3, order 8, exact erfc) at that frame
+  compare    energies, forces and EP positions vs sander
+  nve        NVE drift, rigid and constrained engines, mixed precision
+  npt        production (log: runs/vsites/npt_<engine>[_<dt>fs].log)
+  analyse    density and <U> per molecule, block errors, vs Horn et al.
+  bench      ms/step: TIP4P-Ew vs the same water without its site
+  identical  no sites: bitwise the same as the code in --base (the check of the vsites feature: its
+             subprocess script uses the engine API of that time, ensemble= and report=, and the
+             pgm_jax.paths helpers without importing them, so it does not run against the current
+             code)
+  pgm        pGM water with charged / polarizable sites: forces and strain derivative vs finite
+             differences (float64)
 
 Energies: the engine's potential energy includes the intramolecular Coulomb energy of every
 molecule (pGM has no exclusions; a constant for rigid water), which Amber excludes: it is
 subtracted (and its forces, which a rigid molecule does not feel) for comparisons.  sander's
 Coulomb constant is 18.2223^2 kcal A/mol e^-2, the engine's CODATA's (3.5e-5 larger): the engine's
-electrostatics are rescaled for the comparison.  Results go to runs/vsites/ and
-validation/validate_vsites.json."""
+electrostatics are rescaled for the comparison.
+
+Usage:
+
+    python scripts/validation/validate_vsites.py build
+    python scripts/validation/validate_vsites.py npt --engine rigid --time-ns 4
+    python scripts/validation/validate_vsites.py npt --engine constraints --dt-fs 1 --time-ns 3
+    python scripts/validation/validate_vsites.py analyse --skip-ps 200
+    python scripts/validation/validate_vsites.py --help
+
+Inputs: AMBERHOME (tleap, sander; pgm_jax.paths); the files written by the earlier steps.
+Outputs: runs/vsites/ (topology, runs, logs) and data/validation/validate_vsites.json (one key per
+step); printed results.
+Units: --time-ps ps, --time-ns ns, --dt-fs fs, --skip-ps ps; kcal/mol and A for the comparisons
+with sander, kJ/mol and nm otherwise.
+Runtime: build, sander, compare, pgm on a CPU (minutes); equil, nve, npt, bench on a GPU.  Sets
+jax_enable_x64; identical runs on the CPU (its runs are subprocesses).
+"""
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import glob
 import json
 import os
 import re
@@ -35,18 +58,22 @@ import time
 import jax
 import jax.numpy as jnp
 import numpy as np
+from scipy.io import netcdf_file
+from scipy.special import erf
 
 from pgm_jax.cli.args import setup_logging
+from pgm_jax.lj import lj_long_range
 from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.box import box_from_cell
+from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.md.io import read_coordinates
 from pgm_jax.md.simulation import Simulation
 from pgm_jax.md.thermostats import Bussi
-from pgm_jax.md.vsites import VirtualSites
+from pgm_jax.md.vsites import VirtualSite, VirtualSites
 from pgm_jax.param import read_prmtop_molecules
-from pgm_jax.paths import resource
-from pgm_jax.system import System
+from pgm_jax.paths import REPO, repo_path, resource
+from pgm_jax.system import Molecule, System
 from pgm_jax.units import (
     KB,
     KCAL,
@@ -54,13 +81,10 @@ from pgm_jax.units import (
 )
 
 _USER_PLATFORMS = os.environ.get("JAX_PLATFORMS")
-if sys.argv[1:2] == ["identical"]:  # the runs compared are subprocesses: keep the (exclusive) GPU free for them
-    jax.config.update("jax_platforms", "cpu")
 jax.config.update("jax_enable_x64", True)
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-OUT = os.path.join(ROOT, "runs", "vsites")
-JSON = os.path.join(ROOT, "validation", "validate_vsites.json")
+OUT = repo_path("runs", "vsites")
+JSON = repo_path("data", "validation", "validate_vsites.json")
 AMBERHOME = resource("amberhome")
 SANDER = os.path.join(AMBERHOME, "bin", "sander")
 TOP = os.path.join(OUT, "tip4pew512.prmtop")
@@ -68,7 +92,7 @@ CRD = os.path.join(OUT, "tip4pew512.inpcrd")
 KE_AMBER = 18.2223**2 * KCAL / 10.0  # kJ/mol nm e^-2: sander's Coulomb constant
 R_OH, R_HH, D_OM = 0.09572, 0.15136, 0.0125  # nm: Amber's SHAKE lengths and the EP bond
 NW = 512
-HORN = {
+HORN = {  # reference values of Horn et al. (2004)
     "T_K": 297.7,
     "density": 0.9954,
     "density_err": 0.0003,
@@ -79,38 +103,41 @@ HORN = {
 }
 
 
-def settings(**kw):
+def settings(**kw) -> MDSettings:
     """Production settings: 0.9 nm cutoff with the LJ tail, PME 0.08 nm order 6, Ewald 4.0 nm^-1."""
     base = dict(elec="q", cutoff=0.9, skin=0.1, lj_lrc=True, pme_order=6, precision="mixed")
     base.update(kw)
     return MDSettings().replace(**base)
 
 
-def update_json(key, value):
+def update_json(key: str, value: object) -> None:
+    """Store value under key in data/validation/validate_vsites.json (other keys are kept)."""
     d = json.load(open(JSON)) if os.path.exists(JSON) else {}
     d[key] = value
     os.makedirs(os.path.dirname(JSON), exist_ok=True)
     json.dump(d, open(JSON, "w"), indent=1)
 
 
-def ideal_water():
-    """O, H1, H2 at the model geometry (nm), O at the origin, bisector along +y."""
+def ideal_water() -> np.ndarray:
+    """Return O, H1, H2 at the model geometry [nm], O at the origin, bisector along +y."""
     t = np.arcsin(R_HH / 2 / R_OH)
     return np.array([[0, 0, 0], [R_OH * np.sin(t), R_OH * np.cos(t), 0], [-R_OH * np.sin(t), R_OH * np.cos(t), 0]])
 
 
-def load(prmtop=TOP, coords=CRD):
+def load(prmtop: str = TOP, coords: str = CRD) -> tuple[System, np.ndarray, np.ndarray | None, np.ndarray]:
+    """Return the system (Amber point charges), positions [nm], velocities [nm/ps] or None, and box [nm]."""
     mols = read_prmtop_molecules(prmtop, charges="amber")
     xyz, vel, box = read_coordinates(coords)
     sys_ = System(mols)
     return sys_, xyz * 0.1, None if vel is None else vel * 0.1, box_from_cell(*box) * 0.1
 
 
-def intramolecular(sys_, pos):
-    """Energy (kJ/mol) and forces of the intramolecular Coulomb pairs (erf(a r) / r kernel of the
-    model, a = 1/sqrt(2 (R_i^2 + R_j^2))) that the engine includes and Amber excludes."""
-    from scipy.special import erf
+def intramolecular(sys_: System, pos: np.ndarray) -> tuple[float, np.ndarray]:
+    """Return the energy [kJ/mol] and forces [kJ/mol/nm] of the intramolecular Coulomb pairs.
 
+    The erf(a r) / r kernel of the model, a = 1/sqrt(2 (R_i^2 + R_j^2)), that the engine includes
+    and Amber excludes.
+    """
     P = {k: np.asarray(v) for k, v in sys_.expand().items()}
     q, R = P["q"], P["radius"]
     E, F = 0.0, np.zeros_like(pos)
@@ -133,7 +160,8 @@ def intramolecular(sys_, pos):
     return E, F
 
 
-def write_inpcrd(path, xyz_A, box_A, title="pgm_jax"):
+def write_inpcrd(path: str, xyz_A: np.ndarray, box_A: np.ndarray, title: str = "pgm_jax") -> None:
+    """Write an ASCII inpcrd with an orthorhombic box (coordinates and box lengths [A])."""
     with open(path, "w") as fh:
         fh.write(f"{title}\n{len(xyz_A):6d}\n")
         flat = np.asarray(xyz_A).ravel()
@@ -142,14 +170,16 @@ def write_inpcrd(path, xyz_A, box_A, title="pgm_jax"):
         fh.write("".join(f"{v:12.7f}" for v in list(box_A) + [90.0, 90.0, 90.0]) + "\n")
 
 
-def tleap(script, cwd):
+def tleap(script: str, cwd: str) -> None:
+    """Run tleap on a script in cwd (log: <script>.log)."""
     subprocess.run(
         ["bash", "-c", f"source {AMBERHOME}/amber.sh && tleap -f {script} > {script}.log 2>&1"], cwd=cwd, check=True
     )
 
 
 # ----------------------------------------------------------------------------- steps
-def build(a):
+def build(a: argparse.Namespace) -> None:
+    """Build the 512-water TIP4P-Ew box with tleap and put it at the exact model geometry (the `build` step)."""
     os.makedirs(OUT, exist_ok=True)
     rng = np.random.default_rng(1)
     L = (NW * 18.01528 * 1.66053906660 / 0.995) ** (1 / 3)  # Angstrom
@@ -192,7 +222,8 @@ quit
     print(f"{NW} waters, box {L:.4f} A, {sys_.n} atoms -> {TOP}, {CRD}")
 
 
-def equil(a):
+def equil(a: argparse.Namespace) -> None:
+    """Equilibrate the box (NPT 298 K, Bussi 0.5 ps, rigid engine, 2 fs) for --time-ps (the `equil` step)."""
     sys_, pos, _, H = load()
     sim = Simulation(
         sys_,
@@ -206,12 +237,14 @@ def equil(a):
         seed=3,
         log=open(os.path.join(OUT, "equil.out"), "w"),
     )
-    sim.run(int(a.ps / 0.002), report_every=500, checkpoint_every=int(a.ps / 0.002), prefix=os.path.join(OUT, "equil"))
+    n = int(a.time_ps / 0.002)
+    sim.run(n, report_every=500, checkpoint_every=n, prefix=os.path.join(OUT, "equil"))
     o = sim.observables()
-    print(f"equilibrated {a.ps} ps: density {o['density_g_cm3']:.4f} g/cm^3, T {o['temp_K']:.1f} K")
+    print(f"equilibrated {a.time_ps} ps: density {o['density_g_cm3']:.4f} g/cm^3, T {o['temp_K']:.1f} K")
 
 
-def sander(a):
+def sander(a: argparse.Namespace) -> None:
+    """Run the sander single point at the equilibrated frame (the `sander` step)."""
     sys_, pos, _, H = load(TOP, os.path.join(OUT, "equil.rst7"))
     wd = os.path.join(OUT, "sander")
     os.makedirs(wd, exist_ok=True)
@@ -240,19 +273,20 @@ def sander(a):
     print(f"sander done in {time.time() - t0:.0f} s")
 
 
-def _step0(path):
+def _step0(path: str) -> dict[str, float]:
+    """Return EELEC, VDWAALS, BOND, EPtot of step 0 of an mdout [kcal/mol]."""
     txt = open(path).read()
     blk = txt[txt.index("NSTEP =        0") :]
 
     def get(k):
+        """Return the value printed after "k =" in the step-0 block."""
         return float(re.search(rf"{k}\s*=\s*(-?\d+\.\d+)", blk).group(1))
 
     return {k: get(k) for k in ("EELEC", "VDWAALS", "BOND", "EPtot")}
 
 
-def compare(a):
-    from scipy.io import netcdf_file
-
+def compare(a: argparse.Namespace) -> None:
+    """Compare energies, forces and EP positions with sander's single point (the `compare` step)."""
     wd = os.path.join(OUT, "sander")
     sys_, pos, _, H = load(TOP, os.path.join(wd, "inpcrd"))
     vs = VirtualSites.of(sys_)
@@ -319,9 +353,8 @@ def _drift(times, E, dof, T):
     return slope / (dof * KB * T)
 
 
-def nve(a):
-    from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
-
+def nve(a: argparse.Namespace) -> None:
+    """Measure the NVE drift of both engines at 1 and 2 fs for --time-ps each (the `nve` step)."""
     sys_, pos, vel, H = load(TOP, os.path.join(OUT, "equil.rst7"))
     out = {}
     for engine in ("rigid", "constraints"):
@@ -337,7 +370,7 @@ def nve(a):
             nrep = int(round(1.0 / dt)) // 10  # 0.1 ps
             t, E, T = [], [], []
             t0 = time.time()
-            for _k in range(int(a.ps * 10)):
+            for _k in range(int(a.time_ps * 10)):
                 sim.advance(nrep)
                 o = sim.observables()
                 t.append(o["time_ps"])
@@ -350,19 +383,18 @@ def nve(a):
                 "drift_kT_per_ns_per_dof": float(d),
                 "etot_std_kJ": float(np.std(E)),
                 "T_mean": float(np.mean(T)),
-                "ps": a.ps,
+                "ps": a.time_ps,
                 "wall_s": el,
             }
             print(key, out[key], flush=True)
     update_json("nve_mixed", out)
 
 
-def npt(a):
-    from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
-
+def npt(a: argparse.Namespace) -> None:
+    """Run the NPT production (298 K, 1 atm, Bussi 1 ps) with --engine for --time-ns (the `npt` step)."""
     sys_, pos, vel, H = load(TOP, os.path.join(OUT, "equil.rst7"))
-    dt = a.dt / 1000.0
-    prefix = os.path.join(OUT, f"npt_{a.engine}" + ("" if a.dt == 2.0 else f"_{a.dt:g}fs"))
+    dt = a.dt_fs / 1000.0
+    prefix = os.path.join(OUT, f"npt_{a.engine}" + ("" if a.dt_fs == 2.0 else f"_{a.dt_fs:g}fs"))
     kw = dict(
         dt=dt,
         thermostat=Bussi(1.0),
@@ -377,33 +409,34 @@ def npt(a):
     else:
         tpl = RigidTemplate(sys_.molecules[0], pos[:4])
         sim = FlexibleSimulation(sys_, [tpl] * sys_.nmol, pos, H, settings(), **kw)
-    n = int(round(a.ns * 1000 / dt))
+    n = int(round(a.time_ns * 1000 / dt))
     sim.run(n, report_every=int(round(1.0 / dt)), checkpoint_every=int(round(100.0 / dt)), prefix=prefix)
 
 
-def _log(path):
+def _log(path: str) -> dict[str, np.ndarray]:
+    """Return the columns of an MD log (header "# step ...") as float arrays."""
     rows = [l.split() for l in open(path) if not l.startswith("#") and l.strip()]
     cols = next(l[1:].split() for l in open(path) if l.startswith("#") and "step" in l)
     return {c: np.array([float(r[k]) for r in rows]) for k, c in enumerate(cols)}
 
 
-def _block(x, nb=10):
+def _block(x: np.ndarray, nb: int = 10) -> tuple[float, float]:
+    """Return the mean of x and its standard error from nb contiguous blocks."""
     x = np.asarray(x)
     b = np.array_split(x, nb)
     m = np.array([bb.mean() for bb in b])
     return float(x.mean()), float(m.std(ddof=1) / np.sqrt(nb))
 
 
-def analyse(a):
+def analyse(a: argparse.Namespace) -> None:
+    """Print and store density and <U> per molecule of the NPT logs after --skip-ps, vs Horn et al. (`analyse`)."""
     sys_, pos, _, H = load()
     E_in, _ = intramolecular(sys_, pos)  # rigid: the same for every frame
     out = {"horn2004": HORN, "intramolecular_coulomb_kJ_per_molecule": E_in / NW}
-    import glob
-
     for path in sorted(glob.glob(os.path.join(OUT, "npt_*.log"))):
         engine = os.path.basename(path)[4:-4]
         d = _log(path)
-        keep = d["time_ps"] > a.skip
+        keep = d["time_ps"] > a.skip_ps
         rho, rho_e = _block(d["density_g_cm3"][keep])
         U = (d["epot"][keep] - E_in) / NW
         u, u_e = _block(U)
@@ -428,7 +461,8 @@ def analyse(a):
     update_json("npt_298K", out)
 
 
-def _timed(sim, steps):
+def _timed(sim: Simulation, steps: int) -> float:
+    """Return ms per step of sim over `steps` steps (after 200 steps of compilation and warm-up)."""
     sim.advance(200)  # compile + warm up
     jax.block_until_ready(sim.state.epot)
     t0 = time.time()
@@ -437,11 +471,8 @@ def _timed(sim, steps):
     return (time.time() - t0) / steps * 1000.0
 
 
-def bench(a):
-    import dataclasses
-
-    from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
-
+def bench(a: argparse.Namespace) -> None:
+    """Time TIP4P-Ew against a 3-site control, both engines, and the site placement / spreading (`bench`)."""
     sys4, pos4, vel, H = load(TOP, os.path.join(OUT, "equil.rst7"))
     n = a.replicate
     if n > 1:  # n^3 copies (cubic box)
@@ -498,13 +529,13 @@ def bench(a):
     update_json(f"bench_{sys4.nmol}_waters", out)
 
 
-def pgm_water_sites():
-    """A pGM water with a charged, polarizable M site (Gaussian, a covalent dipole from O to it) and
-    two charged, non-polarizable lone pairs (out-of-plane sites, alpha = 0), hydrogens without
-    polarizability (alpha = 0): every path of the site code at once.  Local geometry (nm)."""
-    from pgm_jax.md.vsites import VirtualSite
-    from pgm_jax.system import Molecule
+def pgm_water_sites() -> tuple[Molecule, np.ndarray]:
+    """Return a pGM water with three virtual sites and its local geometry [nm].
 
+    A charged, polarizable M site (Gaussian, a covalent dipole from O to it) and two charged,
+    non-polarizable lone pairs (out-of-plane sites, alpha = 0), hydrogens without polarizability
+    (alpha = 0): every path of the site code at once.
+    """
     w = ideal_water()
     vs = [
         VirtualSite.tip4p(3, 0, 1, 2, 0.015, R_OH, np.degrees(2 * np.arcsin(R_HH / 2 / R_OH))),
@@ -528,11 +559,11 @@ def pgm_water_sites():
     return m, x
 
 
-def pgm(a):
-    """Forces and molecular strain derivative of pGM water with sites against central differences
-    (float64, dipoles re-solved to 1e-12 at every displaced point); zero-polarizability checks."""
-    from pgm_jax.lj import lj_long_range
+def pgm(a: argparse.Namespace) -> None:
+    """Check forces and strain derivative of pGM water with sites against central differences (the `pgm` step).
 
+    float64, dipoles re-solved to 1e-12 at every displaced point; zero-polarizability checks.
+    """
     m, x = pgm_water_sites()
     rng = np.random.default_rng(4)
     n_side, a0 = 4, 0.4
@@ -603,12 +634,16 @@ def pgm(a):
     update_json("pgm_sites_fd", out)
 
 
-def identical(a):
-    """No virtual sites: run the same short MD (pGM water, rigid NPT in mixed and double precision,
+def identical(a: argparse.Namespace) -> None:
+    """Compare short MD runs without sites of this code and the code in --base bitwise (the `identical` step).
+
+    No virtual sites: run the same short MD (pGM water, rigid NPT in mixed and double precision,
     constrained NVT) with this code and with the code in a.base (e.g. the commit before the feature,
     `git archive`), each in its own process; positions, dipoles and energies must be bitwise equal.
     Run it on the CPU (JAX_PLATFORMS=cpu): GPU runs are not bitwise reproducible (atomics in the PME
-    spreading), not even with the same code."""
+    spreading), not even with the same code.  The subprocess script uses the API of the time of the
+    vsites feature (module docstring).
+    """
     script = r"""
 import sys, numpy as np, jax
 jax.config.update("jax_enable_x64", True)
@@ -643,7 +678,7 @@ np.savez(sys.argv[2] + ".npz", **out)
     path = os.path.join(OUT, "identical.py")
     open(path, "w").write(script)
     res = {}
-    for tag, root in (("base", os.path.abspath(a.base)), ("branch", ROOT)):
+    for tag, root in (("base", os.path.abspath(a.base)), ("branch", REPO)):
         env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
         env.pop("JAX_PLATFORMS", None)
         if _USER_PLATFORMS is not None:
@@ -657,21 +692,25 @@ np.savez(sys.argv[2] + ".npz", **out)
     update_json("no_sites_bitwise", res)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "step", choices=["build", "equil", "sander", "compare", "nve", "npt", "analyse", "bench", "identical", "pgm"]
-    )
-    ap.add_argument("--ps", type=float, default=200.0, help="equil: ps; nve: ps per run")
-    ap.add_argument("--ns", type=float, default=4.0)
-    ap.add_argument("--engine", default="rigid", choices=["rigid", "constraints"])
-    ap.add_argument("--dt", type=float, default=2.0, help="npt: time step (fs)")
-    ap.add_argument("--grid", type=int, default=64)
-    ap.add_argument("--skip", type=float, default=0.0, help="analyse: ps discarded at the start")
-    ap.add_argument("--steps", type=int, default=5000)
-    ap.add_argument("--replicate", type=int, default=1)
-    ap.add_argument("--base", default=None)
-    a = ap.parse_args()
+STEPS = ["build", "equil", "sander", "compare", "nve", "npt", "analyse", "bench", "identical", "pgm"]
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line and run one step (see the module docstring)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("step", choices=STEPS, help="validation step")
+    ap.add_argument("--time-ps", type=float, default=200.0, help="equil: length [ps]; nve: length per run [ps]")
+    ap.add_argument("--time-ns", type=float, default=4.0, help="npt: production [ns]")
+    ap.add_argument("--engine", default="rigid", choices=["rigid", "constraints"], help="npt: MD engine")
+    ap.add_argument("--dt-fs", type=float, default=2.0, help="npt: time step [fs]")
+    ap.add_argument("--grid", type=int, default=64, help="sander, compare: PME grid points per edge")
+    ap.add_argument("--skip-ps", type=float, default=0.0, help="analyse: time discarded at the start [ps]")
+    ap.add_argument("--steps", type=int, default=5000, help="bench: timed steps")
+    ap.add_argument("--replicate", type=int, default=1, help="bench: n x n x n copies of the box")
+    ap.add_argument("--base", default=None, help="identical: code tree to compare with")
+    a = ap.parse_args(argv)
+    if a.step == "identical":  # the runs compared are subprocesses: keep the (exclusive) GPU free for them
+        jax.config.update("jax_platforms", "cpu")
     setup_logging()
     os.makedirs(OUT, exist_ok=True)
     globals()[a.step](a)

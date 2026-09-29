@@ -1,24 +1,44 @@
-"""Validation of the extended-Lagrangian induced dipoles (docs/iel.md) on the pGM water box of the
-README (512 waters, or replicated; --model pgm3p25: the same box with the paper's geometry and
-Lennard-Jones, as scripts/water_dielectric.py --model pgm3p25): from an equilibrated checkpoint, `--seeds` segments of
-Bussi-NVT equilibration (fresh Maxwell velocities) followed by NVE production, sampling
+"""Validate the extended-Lagrangian induced dipoles (docs/iel.md) on the pGM water box of the README.
+
+512 waters, or replicated; --model pgm3p25: the same box with the paper's geometry and
+Lennard-Jones, as scripts/dielectric/water_dielectric.py --model pgm3p25.  From an equilibrated
+checkpoint (--start-from), --seeds segments of Bussi-NVT equilibration (fresh Maxwell velocities)
+followed by NVE production, sampling
 
   * the energy drift (econs = E_tot, NVE) per ns per degree of freedom and its fluctuation;
   * the dipole error: RMS |mu - mu*| / RMS |mu*| and the energy error U - U* against fully converged
-    float64 dipoles (tol 1e-9) at the same positions, every --err-every ps;
+    float64 dipoles (tol 1e-9) at the same positions, every --err-ps;
   * the translational diffusion coefficient (centre-of-mass MSD, fit from 2 to 20 ps) and the
     rotational correlation times of the dipole axis (P1, P2; integral of the fitted exponential);
   * the O-O radial distribution function, <U>, <T>, the mean molecular dipole, CG iterations.
 
-    python scripts/iel_validate.py --checkpoint prod.chk --dt 2 --iel 0scf -o runs/iel/dyn_0scf
-    python scripts/iel_validate.py --checkpoint prod.chk --dt 2 --tol 1e-5 -o runs/iel/dyn_scf
-    python scripts/iel_validate.py --model pgm3p25 --checkpoint p25.chk --npt 8 --seeds 1 --iel 0scf -o runs/iel/p25eps
+Other modes: --npt-ns (independent NPT replicas for eps, density, <U>, <mu_mol>), --eps (pooled
+static dielectric constant of such replicas), --combine (summary of several runs' JSON files).
+Uses engine internals (Simulation.ff / .nb / .rigid / .integ, PGMForceField._atoms) to share one
+force field between the NVT and NVE engines and to recompute converged dipoles.
 
-Writes prefix.json (every number) and prefix_rdf.dat."""
+Usage:
+
+    python scripts/validation/iel_validate.py --start-from prod.chk --dt-fs 2 --iel 0scf -o runs/iel/dyn_0scf
+    python scripts/validation/iel_validate.py --start-from prod.chk --dt-fs 2 --dipole-tol 1e-5 -o runs/iel/dyn_scf
+    python scripts/validation/iel_validate.py --model pgm3p25 --start-from p25.chk --npt-ns 8 --seeds 1 --iel 0scf
+        -o runs/iel/p25eps
+    python scripts/validation/iel_validate.py --help
+
+Inputs: PGM_GVDW_DATA (the box; pgm_jax.paths), the checkpoint; .dip / .log files (--eps), JSON
+files (--combine).
+Outputs: <out>.json (every number) and <out>_rdf.dat; --npt-ns: <out>_s<seed>.{log,dip,chk,out};
+--eps: <out>_eps.json.
+Units: --dt-fs fs, durations in ps (--equil-ps, --time-ps, --sample-ps, --rdf-ps, --err-ps,
+--skip-ps), --npt-ns ns, --density-g-cm3 g/cm^3; D in 1e-9 m^2/s, tau in ps, drift in kT/ns/dof.
+Runtime: GPU; each segment compiles two engines and a float64 reference force field.  Sets
+jax_enable_x64.
+"""
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import time
@@ -27,39 +47,44 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from pgm_jax.analysis import dielectric as D
 from pgm_jax.analysis.stats import block_mean
-from pgm_jax.cli.args import add_iel_arguments, iel_settings, setup_logging
+from pgm_jax.cli.args import add_dipole_tol_arg, add_dt_arg, add_iel_args, iel_settings, setup_logging
+from pgm_jax.cli.main import load_script, scripts_dir
 from pgm_jax.md.barostats import MonteCarloBarostat
-from pgm_jax.md.box import box_from_cell
+from pgm_jax.md.box import box_from_cell, volume
+from pgm_jax.md.dipoles import read_dipoles
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.md.io import read_coordinates
+from pgm_jax.md.rigid import RigidBody
 from pgm_jax.md.simulation import Simulation
 from pgm_jax.md.thermostats import Bussi
 from pgm_jax.param import read_prmtop_molecules
-from pgm_jax.paths import resource
+from pgm_jax.paths import pgm3p25_files
 from pgm_jax.system import System
 from pgm_jax.units import AMU_NM3_TO_G_CM3, DEBYE_E_NM, KB, KCAL
 
 jax.config.update("jax_enable_x64", True)
-TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
-RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
+TOP, RST = pgm3p25_files()
 
 
-def min_image(d, H):
+def min_image(d: np.ndarray, H: np.ndarray) -> np.ndarray:
+    """Return the minimum image of displacements d (..., 3) [nm] in the lower-triangular (reduced) box H."""
     for c in (2, 1, 0):
         d = d - np.round(d[..., c] / H[c, c])[..., None] * H[c]
     return d
 
 
 def block_err(x, nb=5):
-    """Standard error of the mean of x from nb contiguous blocks (nan with fewer than nb samples)."""
+    """Return the standard error of the mean of x from nb contiguous blocks (nan with fewer than nb samples)."""
     return block_mean(x, nb)[1] if len(x) >= nb else float("nan")
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    """Return the argument parser (see the module docstring)."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("-o", "--out", required=True)
-    ap.add_argument("--checkpoint", help="equilibrated .chk of the same box (e.g. an NPT run)")
+    ap.add_argument("-o", "--out", required=True, help="output prefix")
+    ap.add_argument("--start-from", help="equilibrated .chk of the same box (e.g. an NPT run)")
     ap.add_argument(
         "--model",
         default="pgm",
@@ -67,12 +92,12 @@ def main():
         help="pgm: the README box (pGM3P-25 "
         "electrostatics on TIP3P's geometry and Lennard-Jones); pgm3p25: the paper's geometry and Lennard-Jones",
     )
-    ap.add_argument("--dt", type=float, default=2.0, help="fs")
-    ap.add_argument("--tol", type=float, default=1e-5)
-    ap.add_argument("--seeds", type=int, default=5)
+    add_dt_arg(ap, 2.0)
+    add_dipole_tol_arg(ap)
+    ap.add_argument("--seeds", type=int, default=5, help="number of segments / replicas")
     ap.add_argument("--seed0", type=int, default=0, help="first seed (independent jobs: one seed each, then --combine)")
     ap.add_argument(
-        "--npt",
+        "--npt-ns",
         type=float,
         default=0.0,
         help="instead: NPT production of this many ns per seed (Bussi 1 ps, "
@@ -83,40 +108,34 @@ def main():
         "--eps",
         nargs="+",
         help="instead: pooled eps, density, <U>, <mu_mol> of these .dip files (independent "
-        "replicas, each with its .log), the first --skip ps of each dropped; jackknife over the replicas",
+        "replicas, each with its .log), the first --skip-ps of each dropped; jackknife over the replicas",
     )
-    ap.add_argument("--skip", type=float, default=50.0, help="ps dropped at the start of each --eps replica")
+    ap.add_argument("--skip-ps", type=float, default=50.0, help="time dropped at the start of each --eps replica [ps]")
     ap.add_argument("--combine", nargs="+", help="summarise these prefix.json files (with their _rdf.dat) into -o")
-    ap.add_argument("--equil", type=float, default=10.0, help="ps of Bussi NVT (tau 1 ps) before each NVE segment")
-    ap.add_argument("--ps", type=float, default=100.0, help="ps of NVE per segment")
-    ap.add_argument("--every", type=float, default=0.02, help="ps between frames (MSD, rotations)")
-    ap.add_argument("--rdf-every", type=float, default=0.2, help="ps between RDF frames")
-    ap.add_argument("--err-every", type=float, default=1.0, help="ps between converged-dipole comparisons")
-    ap.add_argument("--replicate", type=int, default=1)
+    ap.add_argument("--equil-ps", type=float, default=10.0, help="Bussi NVT (tau 1 ps) before each NVE segment [ps]")
+    ap.add_argument("--time-ps", type=float, default=100.0, help="NVE per segment [ps]")
+    ap.add_argument("--sample-ps", type=float, default=0.02, help="time between frames (MSD, rotations) [ps]")
+    ap.add_argument("--rdf-ps", type=float, default=0.2, help="time between RDF frames [ps]")
+    ap.add_argument("--err-ps", type=float, default=1.0, help="time between converged-dipole comparisons [ps]")
+    ap.add_argument("--replicate", type=int, default=1, help="n: n x n x n copies of the box")
     ap.add_argument(
-        "--density",
+        "--density-g-cm3",
         type=float,
         default=None,
-        help="g/cm^3: the checkpoint box is scaled to it "
+        help="the checkpoint box is scaled to this density [g/cm^3] "
         "(0: kept); default: <density> of the SCF NPT run of the model (1.0178 pgm, 1.0099 pgm3p25)",
     )
-    add_iel_arguments(ap)
-    a = ap.parse_args()
-    setup_logging()
-    if a.combine:
-        return combine(a.combine, a.out)
-    if a.eps:
-        return pooled_eps(a.eps, a.skip, a.out)
-    if a.density is None:
-        a.density = {"pgm": 1.0178, "pgm3p25": 1.0099}[a.model]
+    add_iel_args(ap)
+    return ap
+
+
+def build(a: argparse.Namespace) -> tuple[System, np.ndarray, np.ndarray, MDSettings, int]:
+    """Return the system, positions [nm], one-copy box [nm], MD settings and the replication factor n."""
     mols = read_prmtop_molecules(TOP)
     xyz, vel, box = read_coordinates(RST)
     if a.model == "pgm3p25":  # as water_dielectric.py --model pgm3p25
-        import dataclasses
-
-        from water_dielectric import paper_geometry
-
-        xyz = paper_geometry(xyz, 0.9745, 103.64, [list(m.elements) for m in mols])
+        wd = load_script(os.path.join(scripts_dir(), "dielectric", "water_dielectric.py"))
+        xyz = wd.paper_geometry(xyz, 0.9745, 103.64, [list(m.elements) for m in mols])
         sig, eps = 3.18156, 0.14473
         rh = np.array([2 ** (1 / 6) * sig / 2 * 0.1, 0.0, 0.0])
         se = np.array([np.sqrt(eps * KCAL), 0.0, 0.0])
@@ -134,32 +153,50 @@ def main():
         pme_grid=(48 * n,) * 3,
         pme_order=6,
         lj_lrc=True,
-        dipole_tol=a.tol,
+        dipole_tol=a.dipole_tol,
         precision="mixed",
         **iel_settings(a),
     )
-    dt = a.dt / 1000
+    return sys_, pos, H, st, n
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line and run the mode (see the module docstring)."""
+    a = build_parser().parse_args(argv)
+    setup_logging()
+    if a.combine:
+        return combine(a.combine, a.out)
+    if a.eps:
+        return pooled_eps(a.eps, a.skip_ps, a.out)
+    if a.density_g_cm3 is None:
+        a.density_g_cm3 = {"pgm": 1.0178, "pgm3p25": 1.0099}[a.model]
+    sys_, pos, H, st, n = build(a)
+    dt = a.dt_fs / 1000
     kw = dict(settings=st, temperature=298.0, dt=dt, log=None, thermostat=Bussi(1.0))
-    if a.npt > 0:
+    if a.npt_ns > 0:
         return npt_replicas(a, sys_, pos, H * n, kw)
+    nve_segments(a, sys_, pos, H, st, n, kw)
+
+
+def nve_segments(
+    a: argparse.Namespace, sys_: System, pos: np.ndarray, H: np.ndarray, st: MDSettings, n: int, kw: dict
+) -> None:
+    """Run the NVT + NVE segments, sample them and write <out>.json and <out>_rdf.dat (module docstring)."""
     nvt = Simulation(sys_, pos, H * n, **kw)
     nve = Simulation(sys_, pos, H * n, thermostat=None, **kw)
     nve.ff = nve.integ.ff = nvt.ff  # one force field and neighbour list, two steps
     nve.nb = nve.integ.nb = nvt.nb
     nve.integ.compile()
-    nvt.load_checkpoint(a.checkpoint)
+    nvt.load_checkpoint(a.start_from)
     start = nvt.state
-    if a.density:  # molecular scaling to the target density
-        from pgm_jax.md.box import volume
-        from pgm_jax.md.rigid import RigidBody
-
+    if a.density_g_cm3:  # molecular scaling to the target density
         mass = float(np.sum(sys_.masses)) * AMU_NM3_TO_G_CM3
-        f = (mass / a.density / float(volume(start.box))) ** (1.0 / 3.0)
+        f = (mass / a.density_g_cm3 / float(volume(start.box))) ** (1.0 / 3.0)
         body = start.dyn.position
         start = start.set(dyn=start.dyn.set(position=RigidBody(body.center * f, body.orientation)), box=start.box * f)
         nvt.state = start
     print(
-        f"# {sys_.nmol} waters, dt {a.dt:g} fs, {st.describe_induction()}; start {a.checkpoint} "
+        f"# {sys_.nmol} waters, dt {a.dt_fs:g} fs, {st.describe_induction()}; start {a.start_from} "
         f"(density {nvt.observables()['density_g_cm3']:.4f})",
         flush=True,
     )
@@ -179,14 +216,15 @@ def main():
 
     @jax.jit
     def converged(pos, H, idx):
+        """Return the converged float64 dipoles, total energy and CG iterations at pos, H."""
         r = ref.compute(pos, H, idx, ref.init_induction())
         return r.induction.mu, r.energy["total"], r.iterations
 
     nmol = sys_.nmol
-    k_every = max(1, int(round(a.every / a.dt * 1000)))
-    k_rdf = max(1, int(round(a.rdf_every / a.dt * 1000)))
-    k_err = max(1, int(round(a.err_every / a.dt * 1000)))
-    n_prod = int(round(a.ps / a.dt * 1000)) // k_every * k_every
+    k_every = max(1, int(round(a.sample_ps / a.dt_fs * 1000)))
+    k_rdf = max(1, int(round(a.rdf_ps / a.dt_fs * 1000)))
+    k_err = max(1, int(round(a.err_ps / a.dt_fs * 1000)))
+    n_prod = int(round(a.time_ps / a.dt_fs * 1000)) // k_every * k_every
     edges = np.linspace(0.0, 0.8, 321)
     hist = np.zeros(len(edges) - 1)
     rdf_frames, rdf_vol = 0, []
@@ -194,7 +232,7 @@ def main():
     t_run = 0.0
     for seed in range(a.seed0, a.seed0 + a.seeds):
         nvt.state = nvt.integ.init(start.dyn.position, start.box, jax.random.PRNGKey(1000 + seed))
-        nvt.advance(int(round(a.equil / a.dt * 1000)))
+        nvt.advance(int(round(a.equil_ps / a.dt_fs * 1000)))
         nve.integ.compile()  # row capacities may have grown
         nve.state = nvt.state
         nve.advance(k_every)
@@ -213,7 +251,7 @@ def main():
             E.append(o["etot"])
             U.append(o["epot"])
             T.append(o["temp_K"])
-            ts.append(step * a.dt / 1000)
+            ts.append(step * a.dt_fs / 1000)
             x = nve.positions().reshape(nmol, 3, 3)
             Hh = np.asarray(s.box)
             c = np.asarray(s.dyn.position.center)
@@ -252,7 +290,7 @@ def main():
         drift = slope * 1000.0 / dof / (KB * 298.0)  # kT / ns / dof
         resid = E - np.polyval(np.polyfit(ts, E, 1), ts)
         com, axis = np.array(com), np.array(axis)
-        D, tau1, tau2 = dynamics(com, axis, a.every)
+        D, tau1, tau2 = dynamics(com, axis, a.sample_ps)
         errs = np.array(errs)
         seg = {
             "seed": seed,
@@ -279,28 +317,31 @@ def main():
     g = hist / (rdf_frames * 0.5 * nmol * (nmol - 1) / np.mean(rdf_vol) * shell)
     np.savetxt(a.out + "_rdf.dat", np.c_[rc, g], header="r (nm)  g_OO(r)")
     out["rdf_frames"] = rdf_frames
-    out["ns_per_day_incl_sampling"] = a.seeds * a.ps / 1000 / t_run * 86400
+    out["ns_per_day_incl_sampling"] = a.seeds * a.time_ps / 1000 / t_run * 86400
     summarise(out, [(g, rdf_frames)], rc)
     with open(a.out + ".json", "w") as fh:
         json.dump(out, fh, indent=1)
 
 
-def npt_replicas(a, sys_, pos, H, kw):
-    """Independent NPT replicas from one checkpoint (fresh Maxwell velocities and random streams)."""
+def npt_replicas(a: argparse.Namespace, sys_: System, pos: np.ndarray, H: np.ndarray, kw: dict) -> None:
+    """Run independent NPT replicas from one checkpoint (fresh Maxwell velocities and random streams).
+
+    Each replica (seed) continues from its own <out>_s<seed>.chk when it exists.
+    """
     for seed in range(a.seed0, a.seed0 + a.seeds):
         prefix = f"{a.out}_s{seed}"
         kw = dict(kw, log=open(prefix + ".out", "a"))
         sim = Simulation(sys_, pos, H, barostat=MonteCarloBarostat(1.0, 100), **kw)
         if os.path.exists(prefix + ".chk"):  # continue this replica
             sim.load_checkpoint(prefix + ".chk")
-            done = int(round(sim.time_ps * 1000 / a.dt))
+            done = int(round(sim.time_ps * 1000 / a.dt_fs))
             append = True
         else:
-            sim.load_checkpoint(a.checkpoint)
+            sim.load_checkpoint(a.start_from)
             st0 = sim.state
             sim.state = sim.integ.init(st0.dyn.position, st0.box, jax.random.PRNGKey(2000 + seed))
             sim.time_ps, done, append = 0.0, 0, False
-        total = int(round(a.npt * 1e6 / a.dt))
+        total = int(round(a.npt_ns * 1e6 / a.dt_fs))
         total -= total % 5000
         if total > done:
             sim.run(
@@ -308,13 +349,13 @@ def npt_replicas(a, sys_, pos, H, kw):
             )
 
 
-def pooled_eps(files, skip, prefix):
-    """Static dielectric constant of independent replicas pooled (tin-foil, eps_inf from alpha_cell):
-    <M.M> - <M>.<M> over all samples, jackknife with one block per replica (or 10 contiguous blocks
-    for a single run); <V>, density, <U>, <T> from the logs, <mu_mol> from the .dip files."""
-    from pgm_jax.analysis import dielectric as D
-    from pgm_jax.md.dipoles import read_dipoles
+def pooled_eps(files: list[str], skip: float, prefix: str) -> None:
+    """Write the pooled static dielectric constant of independent replicas to <prefix>_eps.json.
 
+    Tin-foil, eps_inf from alpha_cell: <M.M> - <M>.<M> over all samples, jackknife with one block
+    per replica (or 10 contiguous blocks for a single run); <V>, density, <U>, <T> from the logs,
+    <mu_mol> from the .dip files; skip [ps] dropped at the start of each replica.
+    """
     Ms, Vs, As, mus, U, rho, T = [], [], [], [], [], [], []
     temp = None
     for f in files:
@@ -361,7 +402,8 @@ def pooled_eps(files, skip, prefix):
         json.dump(out, fh, indent=1)
 
 
-def per_block(x, nb):
+def per_block(x: np.ndarray, nb: int) -> list[float]:
+    """Return [mean, standard error from nb contiguous blocks] of x."""
     x = np.asarray(x, float)
     m = len(x) // nb * nb
     b = x[:m].reshape(nb, -1).mean(1)
@@ -387,7 +429,8 @@ def summarise(out, rdfs, rc):
     return g
 
 
-def combine(files, prefix):
+def combine(files: list[str], prefix: str) -> None:
+    """Summarise several runs' JSON (and _rdf.dat) files into <prefix>.json and <prefix>_rdf.dat."""
     out, rdfs, rc = {"parts": files, "segments": []}, [], None
     for f in files:
         d = json.load(open(f))
@@ -405,8 +448,8 @@ def combine(files, prefix):
         json.dump(out, fh, indent=1)
 
 
-def molecular_dipole(ff, pos, H, mu):
-    """Mean |molecular dipole| (e nm): charges about the centre of mass + permanent + induced."""
+def molecular_dipole(ff: PGMForceField, pos: jax.Array, H: jax.Array, mu: jax.Array) -> jax.Array:
+    """Return the mean |molecular dipole| [e nm]: charges about the centre of mass + permanent + induced."""
     P = ff._atoms(None)
     p = ff.perm_dipoles(pos, H, P["cov"])
     m = ff.masses
@@ -418,11 +461,14 @@ def molecular_dipole(ff, pos, H, mu):
     return jnp.mean(jnp.linalg.norm(dip, axis=1))
 
 
-def dynamics(com, axis, dt_frame):
-    """D (1e-9 m^2/s) from the MSD of the centres of mass (linear fit 2-20 ps, all time origins) and the
-    rotational correlation times of the dipole axis: tau_l = integral of <P_l(u(0).u(t))>, the
-    integral taken to where the correlation falls below 0.05 and completed with the exponential
-    fitted between 0.3 and 0.05 (tau2 of pGM water is ~1-2 ps)."""
+def dynamics(com: np.ndarray, axis: np.ndarray, dt_frame: float) -> tuple[float, float, float]:
+    """Return D [1e-9 m^2/s] and the rotational correlation times tau1, tau2 [ps] of the dipole axis.
+
+    D from the MSD of the unwrapped centres of mass com (F, M, 3) [nm] (linear fit 2-20 ps, all
+    time origins); tau_l = integral of <P_l(u(0).u(t))> of the unit axes (F, M, 3), the integral
+    taken to where the correlation falls below 0.05 and completed with the exponential fitted
+    between 0.3 and 0.05 (tau2 of pGM water is ~1-2 ps); frames every dt_frame [ps].
+    """
     nf = len(com)
     lags = np.unique(np.round(np.geomspace(1, nf // 2, 80)).astype(int))
     t = lags * dt_frame

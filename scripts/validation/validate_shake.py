@@ -1,15 +1,29 @@
 """Validation of holonomic bond constraints in the flexible engine (docs/shake.md).
 
-Liquid methanol with the fitted pGM model (runs/flex/methanol.flex; 216 molecules, 1,296 atoms):
-    # NVT 2 ps + NPT 150 ps (X-H constraints, 2 fs) -> runs/shake/eq.npz
-    python scripts/validate_shake.py equil
-    # NVE drift of every configuration -> runs/shake/nve_mixed.json
-    python scripts/validate_shake.py nve --prec mixed
-    # NPT, Langevin 1/ps: density, U, T, RDF, angles -> runs/shake/sample_hb-2.npz
-    python scripts/validate_shake.py sample hb-2 --ns 2
-    python scripts/validate_shake.py analyze                # table of the samples with block errors
-Configurations (CONFIGS): none-0.5 (no constraints, 0.5 fs), hb-* (X-H bonds), hmr-* (X-H bonds and 3.024 amu
-hydrogens), ab-* (every bond); the number is the time step in fs."""
+Liquid methanol with the fitted pGM model (runs/flex/methanol.flex; 216 molecules, 1,296 atoms) at
+298 K: equilibration, NVE energy drift of every configuration, NPT sampling (density, U, T, RDFs,
+angles) and its analysis; also a solvated peptide (peptide) and the speed per configuration
+(speed).  The helpers compare_rows, hist_frame, new_acc and save_blocks are also used by
+scripts/validation/shake_vs_pmemd.py.
+
+Configurations (CONFIGS): none-0.5 (no constraints, 0.5 fs), hb-* (X-H bonds), hmr-* (X-H bonds and
+3.024 amu hydrogens), ab-* (every bond); the number is the time step in fs.
+
+Usage:
+
+    python scripts/validation/validate_shake.py equil                 # NVT 2 ps + NPT 150 ps -> runs/shake/eq.npz
+    python scripts/validation/validate_shake.py nve --precision mixed # NVE drift -> runs/shake/nve_mixed_*.json
+    python scripts/validation/validate_shake.py sample hb-2 --time-ns 2   # NPT, Langevin 1/ps -> sample_hb-2.npz
+    python scripts/validation/validate_shake.py analyze               # table of the samples with block errors
+    python scripts/validation/validate_shake.py --help
+
+Inputs: the methanol template (runs/flex/methanol.flex, e.g. from examples/fit_bonded_template.py);
+tests/data/pep_wat.* (peptide).
+Outputs: runs/shake/ (eq.npz, nve_<precision>_<name>.json, sample_<name>[_s<seed>].npz,
+analysis.json, peptide.json, speed_<device>.json); printed tables.
+Units: --time-ps and --equil-ps ps, --time-ns ns; nm, kJ/mol, K, g/cm^3 in the outputs.
+Runtime: GPU (sample: hours per ns of 216 methanols); sets jax_enable_x64.
+"""
 
 from __future__ import annotations
 
@@ -27,14 +41,14 @@ from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.thermostats import Bussi, Langevin
+from pgm_jax.paths import repo_path
 from pgm_jax.system import System
 from pgm_jax.units import KB
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 jax.config.update("jax_enable_x64", True)
-OUT = os.path.join(ROOT, "runs/shake")
-T0, N = 298.0, 216
-CONFIGS = {
+OUT = repo_path("runs", "shake")
+T0, N = 298.0, 216  # temperature [K], molecules
+CONFIGS = {  # name -> (constraints, time step [fs], hydrogen mass [amu] or None)
     "none-0.5": ("none", 0.5, None),
     "none-1": ("none", 1.0, None),
     "hb-0.5": ("h-bonds", 0.5, None),
@@ -52,12 +66,16 @@ CONFIGS = {
 }
 
 
-def template():
-    return FlexibleTemplate.load(os.path.join(ROOT, "runs/flex/methanol.flex"))
+def template() -> FlexibleTemplate:
+    """Return the fitted methanol template (runs/flex/methanol.flex)."""
+    return FlexibleTemplate.load(repo_path("runs", "flex", "methanol.flex"))
 
 
 def atoms_of(tpl):
-    """Indices of C, O, the hydroxyl H and the methyl H's of the template."""
+    """Return the indices of C, O, the hydroxyl H and the methyl H's of the template.
+
+    Indices of C, O, the hydroxyl H and the methyl H's of the template.
+    """
     el = list(tpl.spec.elements)
     bonds = [tuple(b) for b in tpl.spec.bonds]
     C, O = el.index("C"), el.index("O")
@@ -71,10 +89,11 @@ def atoms_of(tpl):
 
 
 def sim_for(name, x, H, prec="mixed", tol=1e-5, thermostat="langevin", npt=True, vel=None, seed=0, log=None):
-    """The methanol liquid of configuration `name` (constraints, time step, HMR of CONFIGS).
+    """Return the methanol liquid of configuration `name` (constraints, time step, HMR of CONFIGS).
 
     thermostat: "langevin" (1/ps), "bussi" (0.5 ps) or None (NVE); npt: Monte Carlo barostat every
-    0.1 ps (needs a thermostat)."""
+    0.1 ps (needs a thermostat).
+    """
     cons, dt_fs, hmr = CONFIGS[name]
     tpl = template()
     st = MDSettings().replace(precision=prec, dipole_tol=tol)  # 0.9 nm, PME, LJ tail (the model's settings)
@@ -98,7 +117,8 @@ def sim_for(name, x, H, prec="mixed", tol=1e-5, thermostat="langevin", npt=True,
     )
 
 
-def equil():
+def equil() -> None:
+    """Equilibrate the liquid (NVT 2 ps at 0.5 fs, Langevin 5/ps; NPT 150 ps hb-2) and save runs/shake/eq.npz."""
     tpl = template()
     pos, H = liquid_box(tpl, N, 0.55, seed=1, min_dist=0.18)
     st = MDSettings()
@@ -120,15 +140,19 @@ def equil():
     np.savez(os.path.join(OUT, "eq.npz"), x=s.positions(), v=s.velocities(), H=np.asarray(s.state.box))
 
 
-def load_eq():
+def load_eq() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return positions [nm], velocities [nm/ps] and box [nm] of runs/shake/eq.npz."""
     d = np.load(os.path.join(OUT, "eq.npz"))
     return d["x"], d["v"], d["H"]
 
 
 def nve(prec, names, ps):
-    """From the equilibrated state: 2 ps NVT (Bussi) with the configuration's own constraints,
+    """Measure the NVE energy drift, constraint errors and speed of each configuration.
+
+    From the equilibrated state: 2 ps NVT (Bussi) with the configuration's own constraints,
     masses and time step, then NVE: drift (linear fit) and fluctuation of E_tot, constraint errors
-    every step for the first 200 steps, CG iterations and speed."""
+    every step for the first 200 steps, CG iterations and speed.
+    """
     x, v, H = load_eq()
     tol = 1e-5 if prec == "mixed" else 1e-9
     for name in names:
@@ -194,7 +218,8 @@ def nve(prec, names, ps):
         json.dump(res, open(path, "w"), indent=1)
 
 
-def new_acc():
+def new_acc() -> dict:
+    """Return an empty accumulator of hist_frame (bin edges [nm, deg] and zero histograms)."""
     return {
         "r_edges": np.linspace(0, 1.0, 201),
         "dih_edges": np.linspace(-180, 180, 73),
@@ -211,12 +236,16 @@ def new_acc():
 
 
 def hist_frame(X, L, idx, nmol, acc):
-    """Accumulate one frame (positions nm, molecules contiguous; orthorhombic box lengths L nm):
-    O-O and O-HO pair distances, H-C-O-H dihedrals, C-O-H angles and C-O lengths."""
+    """Accumulate the pair, dihedral, angle and bond-length histograms of one frame.
+
+    Accumulate one frame (positions nm, molecules contiguous; orthorhombic box lengths L nm):
+    O-O and O-HO pair distances, H-C-O-H dihedrals, C-O-H angles and C-O lengths.
+    """
     C, O, HO, HC = idx
     Xm = X.reshape(nmol, -1, 3)
 
     def pairs(A, B, same):
+        """Histogram of the minimum-image distances between the rows of A and B (pairs j > i if same)."""
         cnt = np.zeros(len(acc["r_edges"]) - 1)
         for s in range(0, len(A), 250):  # chunks: memory
             d = A[s : s + 250, None, :] - B[None, :, :]
@@ -248,7 +277,8 @@ def hist_frame(X, L, idx, nmol, acc):
     acc["frames"] += 1
 
 
-def save_blocks(path, blocks, extra):
+def save_blocks(path: str, blocks: list[dict], extra: dict) -> None:
+    """Save the accumulators of the blocks (blk_<key> arrays, the bin edges) and `extra` to an .npz."""
     out = {"blk_" + k: np.array([a[k] for a in blocks]) for k in ("oo", "oh", "dih", "coh", "co", "vol", "frames")}
     for k in ("r_edges", "dih_edges", "ang_edges", "co_edges"):
         out[k] = blocks[0][k]
@@ -257,8 +287,11 @@ def save_blocks(path, blocks, extra):
 
 
 def sample(name, ns, seed, frame_ps=0.5, blocks=10, equil_ps=100.0):
-    """NPT production (Langevin 1/ps, MC barostat every 0.1 ps) after 100 ps of equilibration with
-    the configuration's own settings: per frame density, U, temperatures; per block the histograms."""
+    """Run the NPT production of one configuration and save its samples.
+
+    NPT production (Langevin 1/ps, MC barostat every 0.1 ps) after 100 ps of equilibration with
+    the configuration's own settings: per frame density, U, temperatures; per block the histograms.
+    """
     x, v, H = load_eq()
     s = sim_for(name, x, H, seed=seed)
     dt = s.dt
@@ -331,7 +364,8 @@ def sample(name, ns, seed, frame_ps=0.5, blocks=10, equil_ps=100.0):
     print(meta)
 
 
-def block_stats(x, blocks=10):
+def block_stats(x: np.ndarray, blocks: int = 10) -> tuple[float, float]:
+    """Return the mean of x and its standard error from `blocks` contiguous blocks."""
     b = np.array([c.mean(0) for c in np.array_split(np.asarray(x, float), blocks)])
     return float(b.mean(0)), float(b.std(0, ddof=1) / np.sqrt(len(b)))
 
@@ -366,9 +400,12 @@ def _load_runs(path):
 
 
 def compare_rows(paths, names, nmol, out):
-    """Means with block standard errors; distributions as block-averaged histograms and their
+    """Print and write the means and distributions of several runs against the first one.
+
+    Means with block standard errors; distributions as block-averaged histograms and their
     largest deviation from the first run's in units of the combined error.  Prints a table,
-    writes `out` (json) and the distributions (npz next to it)."""
+    writes `out` (json) and the distributions (npz next to it).
+    """
     rows = {}
     for path, name in zip(paths, names):
         d = _load_runs(path)
@@ -445,13 +482,16 @@ def compare_rows(paths, names, nmol, out):
 
 
 def peptide(ps=10.0):
-    """The solvated peptide of the tests (ACE-ALA-SER-NME, TIP3P, NaCl; placeholder pGM, ff19SB-form
+    """Compare all-bond constraints with HMR at 4 fs against X-H constraints at 2 fs on the peptide.
+
+    The solvated peptide of the tests (ACE-ALA-SER-NME, TIP3P, NaCl; placeholder pGM, ff19SB-form
     bonded terms): every protein bond constrained (one cluster: the iterative solver) with 3.024 amu
     hydrogens at 4 fs, against X-H bonds at 2 fs; 5 ps Bussi, then NVE with the constraint errors
-    of every step for 200 steps, drift and CG iterations."""
+    of every step for 200 steps, drift and CG iterations.
+    """
     from pgm_jax.protein import amber_template, load_amber
 
-    prm, crd = os.path.join(ROOT, "tests/data/pep_wat.prmtop"), os.path.join(ROOT, "tests/data/pep_wat.inpcrd")
+    prm, crd = repo_path("tests", "data", "pep_wat.prmtop"), repo_path("tests", "data", "pep_wat.inpcrd")
     asys = load_amber(prm, crd)
     tpl = {k: amber_template(m, prm) for k, m in enumerate(asys.molecules) if m.kind == "protein"}
     templates = asys.templates(tpl)
@@ -540,8 +580,11 @@ def peptide(ps=10.0):
 
 
 def speed(names, ps=10.0):
-    """ns/day of production-like runs (NVT, Bussi 0.5 ps, mixed precision, tol 1e-5; no output
-    between blocks of 1 ps) from the equilibrated state, after 2 ps of warm-up and compilation."""
+    """Measure ns/day of production-like runs of each configuration.
+
+    ns/day of production-like runs (NVT, Bussi 0.5 ps, mixed precision, tol 1e-5; no output
+    between blocks of 1 ps) from the equilibrated state, after 2 ps of warm-up and compilation.
+    """
     x, v, H = load_eq()
     path = os.path.join(OUT, f"speed_{str(jax.devices()[0]).replace(':', '')}.json")
     res = json.load(open(path)) if os.path.exists(path) else {}
@@ -598,31 +641,38 @@ def analyze(names):
     compare_rows(paths, names, N, os.path.join(OUT, "analysis.json"))
 
 
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=("equil", "nve", "nve-table", "sample", "analyze", "peptide", "speed"))
-    ap.add_argument("names", nargs="*")
-    ap.add_argument("--prec", default="mixed")
-    ap.add_argument("--ps", type=float, default=20.0)
-    ap.add_argument("--ns", type=float, default=1.0)
-    ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--equil-ps", type=float, default=100.0)
-    ap.add_argument("--blocks", type=int, default=10)
-    a = ap.parse_args()
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line and run the mode (see the module docstring)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument(
+        "mode", choices=("equil", "nve", "nve-table", "sample", "analyze", "peptide", "speed"), help="what to do"
+    )
+    ap.add_argument("names", nargs="*", help="configurations (CONFIGS; default: a mode-specific set)")
+    ap.add_argument("--precision", default="mixed", choices=["mixed", "double"], help="nve, nve-table: precision")
+    ap.add_argument("--time-ps", type=float, default=20.0, help="nve, speed, peptide: run length [ps]")
+    ap.add_argument("--time-ns", type=float, default=1.0, help="sample: production [ns]")
+    ap.add_argument("--seed", type=int, default=0, help="sample: random seed (also in the file name when > 0)")
+    ap.add_argument("--equil-ps", type=float, default=100.0, help="sample: equilibration [ps]")
+    ap.add_argument("--blocks", type=int, default=10, help="sample: blocks of the saved accumulators")
+    a = ap.parse_args(argv)
     setup_logging()
     os.makedirs(OUT, exist_ok=True)
     if a.mode == "equil":
         equil()
     elif a.mode == "nve":
-        nve(a.prec, a.names or list(CONFIGS), a.ps)
+        nve(a.precision, a.names or list(CONFIGS), a.time_ps)
     elif a.mode == "speed":
-        speed(a.names or ["none-0.5", "hb-1", "hb-2", "hmr-3", "ab-2", "ab-hmr-4"], a.ps)
+        speed(a.names or ["none-0.5", "hb-1", "hb-2", "hmr-3", "ab-2", "ab-hmr-4"], a.time_ps)
     elif a.mode == "peptide":
-        peptide(a.ps)
+        peptide(a.time_ps)
     elif a.mode == "nve-table":
-        nve_table(a.prec)
+        nve_table(a.precision)
     elif a.mode == "sample":
         for n in a.names:
-            sample(n, a.ns, a.seed, equil_ps=a.equil_ps, blocks=a.blocks)
+            sample(n, a.time_ns, a.seed, equil_ps=a.equil_ps, blocks=a.blocks)
     else:
         analyze(a.names or ["hb-0.5", "none-0.5", "hb-1", "hb-2", "hmr-4", "ab-2"])
+
+
+if __name__ == "__main__":
+    main()

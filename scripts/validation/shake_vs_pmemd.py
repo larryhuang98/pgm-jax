@@ -1,4 +1,4 @@
-"""Constrained MD of the engine against pmemd.pgm with SHAKE, on the same pGM model.
+"""Compare constrained MD of the engine with pmemd.pgm (SHAKE) on the same pGM model (docs/shake.md).
 
 System: Amber's methanol box (MEOHBOX of solvents.lib, frcmod.meoh, parm10 bonded terms; tleap
 inputs in runs/meoh): `meoh125` (125 methanols, 750 atoms, 2.009 nm; pmemd.pgm on the CPU) or
@@ -13,12 +13,25 @@ from the minimised structure (pmemd: heated 10 ps at 0.5 fs from 0 K; the engine
 for the error bars.  The engine's charges and covalent dipoles are scaled by
 sqrt(KE_AMBER_PGM / KE) (pmemd-pgm's Coulomb constant), so both run the same Hamiltonian.
 
+The pmemd helpers (run_pmemd, sp_mdin, ...) come from scripts/protein/check_pgm_prmtop.py, the
+histograms and the comparison table from scripts/validation/validate_shake.py.
+
+Usage:
+
     # prmtop, mdin, minimisation, single point
-    JAX_PLATFORMS=cpu python scripts/shake_vs_pmemd.py prep --system meoh125
+    JAX_PLATFORMS=cpu python scripts/validation/shake_vs_pmemd.py prep --system meoh125
     # one pmemd run (runs 0..n-1 in parallel)
-    python scripts/shake_vs_pmemd.py pmemd --system meoh125 --run 0 --kind cpu
-    python scripts/shake_vs_pmemd.py engine --system meoh125 --run 0             # one engine run
-    python scripts/shake_vs_pmemd.py analyze --system meoh125 --runs 8           # runs/meoh/<system>/compare.json
+    python scripts/validation/shake_vs_pmemd.py pmemd --system meoh125 --run 0 --kind cpu
+    python scripts/validation/shake_vs_pmemd.py engine --system meoh125 --run 0      # one engine run
+    python scripts/validation/shake_vs_pmemd.py analyze --system meoh125             # -> compare.json
+    python scripts/validation/shake_vs_pmemd.py --help
+
+Inputs: runs/meoh/<system>.{prmtop,inpcrd} (tleap); pmemd.pgm(.cuda) of PGM_PMEMD_BIN.
+Outputs: runs/meoh/<system>/ (prmtop, single_point.json, pmemd and engine runs, <tag>.npz,
+compare.json); printed tables.
+Units: --time-ns ns, --dt-fs fs, --hmr-amu amu; kcal/mol (single point), nm, K, g/cm^3.
+Runtime: pmemd runs on a CPU or GPU node, engine runs on a GPU; minutes to hours per run.
+Sets jax_enable_x64.
 """
 
 from __future__ import annotations
@@ -38,46 +51,66 @@ import numpy as np
 from validate_shake import compare_rows, hist_frame, new_acc, save_blocks
 
 from pgm_jax.cli.args import setup_logging
+from pgm_jax.cli.main import load_script, scripts_dir
+from pgm_jax.md.flexible import FlexibleSimulation
 from pgm_jax.md.forcefield import MDSettings
+from pgm_jax.md.io import read_coordinates
 from pgm_jax.md.thermostats import Langevin
+from pgm_jax.paths import repo_path
 from pgm_jax.protein import amber_template, load_amber, pmemd_mdin, write_pgm_prmtop
 from pgm_jax.protein.pmemd import pmemd_grid
 from pgm_jax.units import KCAL, KE, KE_AMBER_PGM
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 jax.config.update("jax_enable_x64", True)
-T0 = 298.0
+T0 = 298.0  # K
+
+
+def check_pgm_prmtop() -> object:
+    """Return scripts/protein/check_pgm_prmtop.py as a module (its pmemd helpers)."""
+    return load_script(os.path.join(scripts_dir(), "protein", "check_pgm_prmtop.py"))
 
 
 class Paths:
-    def __init__(self, system):
+    """File locations of one methanol system (runs/meoh/<system>...)."""
+
+    def __init__(self, system: str) -> None:
+        """Set up the paths of `system` ("meoh125" or "meoh1000")."""
         self.system = system
-        self.wd = os.path.join(ROOT, "runs/meoh", system)
-        self.prm0 = os.path.join(ROOT, "runs/meoh", f"{system}.prmtop")
-        self.crd0 = os.path.join(ROOT, "runs/meoh", f"{system}.inpcrd")
+        self.wd = repo_path("runs", "meoh", system)
+        self.prm0 = repo_path("runs", "meoh", f"{system}.prmtop")
+        self.crd0 = repo_path("runs", "meoh", f"{system}.inpcrd")
         self.prm = os.path.join(self.wd, f"{system}_pgm.prmtop")
         self.minrst = os.path.join(self.wd, "min/restrt")
 
 
-def model(p):
+def model(p: Paths) -> tuple[object, object, list]:
+    """Return the Amber system (placeholder electrostatics), the methanol template and all templates."""
     asys = load_amber(p.prm0, p.crd0, electrostatics="placeholder")
     tpl = amber_template(asys.molecules[0], p.prm0)
     return asys, tpl, asys.templates({k: tpl for k in range(len(asys.molecules))})
 
 
-def settings(box):
+def settings(box: np.ndarray) -> MDSettings:
+    """Return the MD settings (0.9 nm, dipole tolerance 1e-5, pmemd_grid of the box [nm])."""
     return MDSettings().replace(cutoff=0.9, dipole_tol=1e-5, pme_grid=pmemd_grid(box))
 
 
 def atoms_of(names):
-    """Atom indices within a methanol (MEOHBOX names): C, O, hydroxyl H, methyl H's."""
+    """Return the atom indices within a methanol (MEOHBOX names): C, O, hydroxyl H, methyl H's."""
     return names.index("C1"), names.index("O1"), names.index("HO1"), [names.index(h) for h in ("HC1", "HC2", "HC3")]
 
 
 # ----------------------------------------------------------------------------- pmemd
-def prep(p, kind):
-    from check_pgm_prmtop import engine, read_energies, run_pmemd, settings_for, sp_mdin
-
+def prep(p: Paths, kind: str) -> None:
+    """Write the pmemd-pgm prmtop, minimise with pmemd and compare a single point of both codes."""
+    ck = check_pgm_prmtop()
+    engine, read_energies, run_pmemd, settings_for, sp_mdin = (
+        ck.engine,
+        ck.read_energies,
+        ck.run_pmemd,
+        ck.settings_for,
+        ck.sp_mdin,
+    )
     os.makedirs(p.wd, exist_ok=True)
     asys, tpl, templates = model(p)
     info = write_pgm_prmtop(asys, p.prm, templates)
@@ -92,12 +125,18 @@ def prep(p, kind):
     e_pm = read_energies(os.path.join(p.wd, "sp/mdout"))
     out = {"engine": {k: float(v) for k, v in e_eng.items() if np.isscalar(v)}, "pmemd": e_pm}
     print(json.dumps(out, indent=1))
-    json.dump(out, open(os.path.join(p.wd, "single_point.json"), "w"), indent=1)
+    with open(os.path.join(p.wd, "single_point.json"), "w") as fh:
+        json.dump(out, fh, indent=1)
 
 
-def pmemd(p, run, kind, ns, equil_ps=50.0, dt_fs=2.0, tag="pm"):
-    from check_pgm_prmtop import run_pmemd
+def pmemd(
+    p: Paths, run: int, kind: str, ns: float, equil_ps: float = 50.0, dt_fs: float = 2.0, tag: str = "pm"
+) -> None:
+    """Run one pmemd run: 10 ps heating at 0.5 fs from 0 K, equil_ps [ps] and ns [ns] of production at dt_fs [fs].
 
+    kind: "cpu", "gpu_spfp" or "gpu_dpfp"; the run directory is <wd>/<tag><run> (seed 1000 + 17 run).
+    """
+    run_pmemd = check_pgm_prmtop().run_pmemd
     asys = load_amber(p.prm0, p.crd0, electrostatics="placeholder")
     st = settings(asys.box)
     wd = os.path.join(p.wd, f"{tag}{run}")
@@ -160,10 +199,22 @@ def pmemd_hist(p, tag="pm"):
 
 
 # ----------------------------------------------------------------------------- engine
-def engine_md(p, run, ns, equil_ps=50.0, frame_ps=0.5, hmr=None, dt_fs=2.0, tag="engine", cons="h-bonds"):
-    from pgm_jax.md.flexible import FlexibleSimulation
-    from pgm_jax.md.io import read_coordinates
+def engine_md(
+    p: Paths,
+    run: int,
+    ns: float,
+    equil_ps: float = 50.0,
+    frame_ps: float = 0.5,
+    hmr: float | None = None,
+    dt_fs: float = 2.0,
+    tag: str = "engine",
+    cons: str = "h-bonds",
+) -> None:
+    """Run one engine run from pmemd's minimised structure and save its samples (<wd>/<tag><run>.npz).
 
+    Velocities at 298 K, equil_ps [ps] of equilibration, ns [ns] of production with a frame every
+    frame_ps [ps]; hmr: hydrogen mass [amu] (None: unchanged); cons: the engine's constraints.
+    """
     asys, tpl, templates = model(p)
     sys_ = asys.system()
     s = math.sqrt(KE_AMBER_PGM / KE)
@@ -256,7 +307,8 @@ def merge(p, tag):
     np.savez(os.path.join(p.wd, f"{tag}.npz"), **out)
 
 
-def analyze(p, tags):
+def analyze(p: Paths, tags: list[str]) -> None:
+    """Merge the runs of each tag and print / write the comparison table (compare.json)."""
     asys = load_amber(p.prm0, p.crd0, electrostatics="placeholder")
     for t in tags:
         if t == "pmemd":
@@ -273,26 +325,31 @@ def analyze(p, tags):
     )
 
 
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=("prep", "pmemd", "engine", "analyze"))
-    ap.add_argument("--system", default="meoh125")
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line and run the mode (see the module docstring)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("mode", choices=("prep", "pmemd", "engine", "analyze"), help="what to do")
+    ap.add_argument("--system", default="meoh125", choices=["meoh125", "meoh1000"], help="methanol box")
     ap.add_argument("--kind", default="cpu", help="pmemd build: cpu | gpu_spfp | gpu_dpfp")
-    ap.add_argument("--run", type=int, default=0)
-    ap.add_argument("--ns", type=float, default=0.25)
-    ap.add_argument("--hmr", type=float, default=None)
-    ap.add_argument("--dt", type=float, default=2.0)
-    ap.add_argument("--constraints", default="h-bonds")
-    ap.add_argument("--tag", default="engine")
-    ap.add_argument("--tags", default="pmemd,engine")
-    a = ap.parse_args()
+    ap.add_argument("--run", type=int, default=0, help="run index (seed and directory)")
+    ap.add_argument("--time-ns", type=float, default=0.25, help="production [ns]")
+    ap.add_argument("--hmr-amu", type=float, default=None, help="engine: hydrogen mass [amu] (default: unchanged)")
+    ap.add_argument("--dt-fs", type=float, default=2.0, help="time step [fs]")
+    ap.add_argument("--constraints", default="h-bonds", help="engine: constraints (h-bonds, all-bonds, none)")
+    ap.add_argument("--tag", default="engine", help="name of the run set (pmemd: default pm)")
+    ap.add_argument("--tags", default="pmemd,engine", help="analyze: run sets to compare")
+    a = ap.parse_args(argv)
     setup_logging()
     p = Paths(a.system)
     if a.mode == "prep":
         prep(p, a.kind)
     elif a.mode == "pmemd":
-        pmemd(p, a.run, a.kind, a.ns, dt_fs=a.dt, tag=a.tag if a.tag != "engine" else "pm")
+        pmemd(p, a.run, a.kind, a.time_ns, dt_fs=a.dt_fs, tag=a.tag if a.tag != "engine" else "pm")
     elif a.mode == "engine":
-        engine_md(p, a.run, a.ns, hmr=a.hmr, dt_fs=a.dt, tag=a.tag, cons=a.constraints)
+        engine_md(p, a.run, a.time_ns, hmr=a.hmr_amu, dt_fs=a.dt_fs, tag=a.tag, cons=a.constraints)
     else:
         analyze(p, a.tags.split(","))
+
+
+if __name__ == "__main__":
+    main()

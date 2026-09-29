@@ -1,40 +1,57 @@
 """Charge flux in liquid MD (pgm_jax/md/flux.py): flexible methanol with and without flux, on a GPU.
 
-    python examples/fit_bonded_template.py methanol --wmu 1 --maxiter 4000 --out runs/flux/methanol_noflux.flex
-    python examples/fit_bonded_template.py methanol --flux 1 --wmu 1 --maxiter 4000 --out runs/flux/methanol_flux1.flex
-    python scripts/flux_md.py liquid runs/flux/methanol_flux1.flex     # NVT 2 ps + NPT 100 + 100 ps
-    python scripts/flux_md.py nve runs/flux/methanol_flux1.flex        # NVE from the liquid state
-    python scripts/flux_md.py speed runs/flux/methanol_flux1.flex --replicate 2
-    python scripts/flux_md.py gas runs/flux/methanol_flux1.flex        # isolated molecule: <U_gas>, <|mu|>
+Subcommands liquid, nve, speed and gas (docs/charge_flux.md):
 
 liquid: 216 molecules from a dilute lattice (0.55 g/cm^3), NVT 2 ps, NPT 298 K / 1 bar (dt 0.5 fs,
 Langevin 1/ps, barostat every 25 steps, MDSettings() defaults: mixed precision, 0.9 nm, dipole tol
 1e-5) 100 ps of equilibration and 100 ps sampled every 0.5 ps: density, potential energy per
 molecule (bonded + van der Waals + electrostatics), mean |molecular dipole| (charges, covalent and
 induced dipoles; md/dipoles.py) and the mean charge shift of the flux.  Writes
-runs/flux/<template>_liquid.json and the final state (<template>_liquid.npz).
-nve: NVE from that state, --nve_ps (50) ps mixed (dt 0.5 fs, tol 1e-5) and --double_ps (a fifth
+<template>_liquid.json and the final state (<template>_liquid.npz), next to the template.
+nve: NVE from that state, --nve-ps (50) ps mixed (dt 0.5 fs, tol 1e-5) and --double-ps (a fifth
 of it) double (tol 1e-8); drift of E_tot in kT per ns per degree of freedom (linear fit).
-speed: NVT from that state (replicated n x n x n; --thermostat, --fixed_iter n: exactly n CG
+speed: NVT from that state (replicated n x n x n; --thermostat, --fixed-iter n: exactly n CG
 iterations per step, which isolates the cost of the flux terms from the iteration count), ms per
 step and CG iterations per step of the template with its flux and of the same template with the
 flux switched off (the flux-free code path), alternating, so the only difference is the flux.
 gas: the isolated molecule with the gas-phase model the template was fitted with (BondedModel:
 bonded terms, pGM with every pair, intramolecular van der Waals, the flux), 256 independent copies
 (vmap), BAOAB Langevin 5/ps, dt 0.5 fs, 20 ps + 100 ps sampled every 50 fs: <U_gas> and <|mu|>;
-with the liquid's <U>/N it gives the heat of vaporization <U_gas> - <U_liq>/N + RT."""
+with the liquid's <U>/N it gives the heat of vaporization <U_gas> - <U_liq>/N + RT.
+
+Usage:
+
+    python examples/fit_bonded_template.py methanol --wmu 1 --maxiter 4000 --out runs/flux/methanol_noflux.flex
+    python examples/fit_bonded_template.py methanol --flux 1 --wmu 1 --maxiter 4000 --out runs/flux/methanol_flux1.flex
+    python scripts/validation/flux_md.py liquid runs/flux/methanol_flux1.flex     # NVT 2 ps + NPT 100 + 100 ps
+    python scripts/validation/flux_md.py nve runs/flux/methanol_flux1.flex        # NVE from the liquid state
+    python scripts/validation/flux_md.py speed runs/flux/methanol_flux1.flex --replicate 2
+    python scripts/validation/flux_md.py gas runs/flux/methanol_flux1.flex        # isolated molecule
+    python scripts/validation/flux_md.py --help
+
+Inputs: the FlexibleTemplate; <template>_liquid.npz of `liquid` (nve, speed) and
+<template>_liquid.json (gas: the heat of vaporization).
+Outputs: <template>_liquid.{json,npz}, _nve[_double].json, _speed<n>_<thermostat>[_it<k>].json,
+_gas.json; printed summaries.
+Units: --temperature-K K, durations in ps; energies kJ/mol (and kcal/mol for dHvap), density g/cm^3,
+dipoles D, drift kT/ns/dof.
+Runtime: GPU; sets jax_enable_x64.
+"""
+
+from __future__ import annotations
 
 import argparse
 import json
 import os
 import sys
 import time
+from collections.abc import Callable
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from pgm_jax.cli.args import coupling_from_options, setup_logging
+from pgm_jax.cli.args import add_temperature_arg, make_coupling, setup_logging
 from pgm_jax.md.barostats import MonteCarloBarostat
 from pgm_jax.md.dipoles import CellDipole
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
@@ -43,40 +60,25 @@ from pgm_jax.md.thermostats import Langevin
 from pgm_jax.system import System
 from pgm_jax.units import DEBYE_E_NM, KB, KCAL
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 jax.config.update("jax_enable_x64", True)
-ap = argparse.ArgumentParser()
-ap.add_argument("cmd", choices=("liquid", "nve", "speed", "gas"))
-ap.add_argument("template")
-ap.add_argument("--n", type=int, default=216)
-ap.add_argument("--temp", type=float, default=298.0)
-ap.add_argument("--equil_ps", type=float, default=100.0)
-ap.add_argument("--prod_ps", type=float, default=100.0)
-ap.add_argument("--replicate", type=int, default=1)
-ap.add_argument("--steps", type=int, default=4000)
-ap.add_argument("--nve_ps", type=float, default=50.0, help="nve: mixed-precision run length (ps; 0: skip)")
-ap.add_argument("--double_ps", type=float, default=None, help="nve: double-precision run length (default nve_ps / 5)")
-ap.add_argument("--thermostat", default="langevin", help="speed: langevin (1/ps) | bussi (1 ps)")
-ap.add_argument("--fixed_iter", type=int, default=0, help="speed: exactly this many CG iterations per step")
-a = ap.parse_args()
-setup_logging()
-tpl = FlexibleTemplate.load(a.template)
-stem = os.path.splitext(a.template)[0]
-T, dt = a.temp, 0.0005
+DT = 0.0005  # time step [ps]
 
 
-def no_flux(t):
-    """The same template with the flux switched off (the engine's flux-free path)."""
+def no_flux(t: FlexibleTemplate) -> FlexibleTemplate:
+    """Return the same template with the flux switched off (the engine's flux-free path)."""
     return FlexibleTemplate(t.specs, {**t.settings, "flux": 0}, {k: v for k, v in t.P.items() if k != "flux"}, t.index)
 
 
-def mol_dipole_fn(sim):
+def mol_dipole_fn(sim: FlexibleSimulation) -> Callable:
+    """Return a jitted function (x, H, mu) -> mean |molecular dipole| [e nm] of the simulation's molecules."""
     cd = CellDipole(sim.ff)
     return jax.jit(lambda x, H, mu: jnp.mean(jnp.linalg.norm(cd.molecular(x, H, mu, sim.integ.params), axis=1)))
 
 
-if a.cmd == "liquid":
-    N = a.n
+def cmd_liquid(a: argparse.Namespace, tpl: FlexibleTemplate, stem: str) -> None:
+    """Equilibrate and sample the liquid; write <stem>_liquid.json and .npz (the `liquid` subcommand)."""
+    T, dt = a.temperature_K, DT
+    N = a.molecules
     pos, H = liquid_box(tpl, N, 0.55, seed=1, min_dist=0.18)
     sys_ = System([tpl.pgm] * N)
     st = MDSettings()
@@ -125,6 +127,7 @@ if a.cmd == "liquid":
     steps = int(sim.state.step) - s0
 
     def mean_se(v, nb=5):
+        """Return the mean of v and its standard error from nb blocks."""
         v = np.asarray(v)
         b = np.array([x.mean() for x in np.array_split(v, nb)])
         return float(v.mean()), float(b.std(ddof=1) / np.sqrt(nb))
@@ -149,10 +152,14 @@ if a.cmd == "liquid":
         "device": str(jax.devices()[0]),
     }
     print({k: v for k, v in out.items() if k != "record"}, flush=True)
-    json.dump(out, open(stem + "_liquid.json", "w"), indent=1)
+    with open(stem + "_liquid.json", "w") as fh:
+        json.dump(out, fh, indent=1)
     np.savez(stem + "_liquid.npz", pos=sim.positions(), vel=sim.velocities(), box=np.asarray(sim.state.box))
 
-elif a.cmd == "nve":
+
+def cmd_nve(a: argparse.Namespace, tpl: FlexibleTemplate, stem: str) -> None:
+    """Measure the NVE drift from the liquid state in mixed and double precision (the `nve` subcommand)."""
+    T, dt = a.temperature_K, DT
     z = np.load(stem + "_liquid.npz")
     N = len(z["pos"]) // tpl.n
     sys_ = System([tpl.pgm] * N)
@@ -195,7 +202,10 @@ elif a.cmd == "nve":
         print(label, {k: v for k, v in r.items() if k not in ("time_ps", "etot")}, flush=True)
     json.dump(out, open(stem + f"_nve{'' if a.nve_ps > 0 else '_double'}.json", "w"), indent=1)
 
-elif a.cmd == "gas":
+
+def cmd_gas(a: argparse.Namespace, tpl: FlexibleTemplate, stem: str) -> None:
+    """Sample the isolated molecule with its gas-phase model; <U_gas>, <|mu|> and dHvap (the `gas` subcommand)."""
+    T, dt = a.temperature_K, DT
     model, P = tpl.model, jax.tree_util.tree_map(jnp.asarray, tpl.P)
     m = jnp.asarray(tpl.pgm.masses, jnp.float64)[:, None]
     kT = KB * T
@@ -203,12 +213,14 @@ elif a.cmd == "gas":
     ef = jax.value_and_grad(lambda R: model.energy(tpl.index, R, P)[0])
 
     def dipf(R):
+        """Return |dipole| [e nm] of the gas-phase model at R."""
         return jnp.linalg.norm(model.energy(tpl.index, R, P)[1])
 
     c1 = np.exp(-gamma * dt)
     c2 = np.sqrt((1.0 - c1 * c1) * kT)
 
     def step(c, key):
+        """One BAOAB Langevin step of (positions, momenta, gradient); returns the energy [kJ/mol]."""
         R, p, g = c
         p = p - 0.5 * dt * g
         R = R + 0.5 * dt * p / m
@@ -219,6 +231,7 @@ elif a.cmd == "gas":
         return (R, p, g), e
 
     def block(c, key, n):
+        """Run n steps (lax.scan) and return the final energy and |dipole|."""
         c, e = jax.lax.scan(step, c, jax.random.split(key, n))
         return c, (e[-1], dipf(c[0]))
 
@@ -240,6 +253,7 @@ elif a.cmd == "gas":
     U, D = np.array(U), np.array(D)  # (samples, replicas)
 
     def se(v):
+        """Return the standard error over the replicas (axis 1) of their time averages."""
         return float(np.std(v.mean(0), ddof=1) / np.sqrt(v.shape[1]))
 
     out = {
@@ -263,7 +277,10 @@ elif a.cmd == "gas":
     print(out, flush=True)
     json.dump(out, open(stem + "_gas.json", "w"), indent=1)
 
-else:
+
+def cmd_speed(a: argparse.Namespace, tpl: FlexibleTemplate, stem: str) -> None:
+    """Time the template with and without its flux, alternating, from the liquid state (the `speed` subcommand)."""
+    T, dt = a.temperature_K, DT
     z = np.load(stem + "_liquid.npz")
     n0 = len(z["pos"]) // tpl.n
     k = a.replicate
@@ -285,7 +302,7 @@ else:
             st,
             dt=dt,
             temperature=T,
-            thermostat=coupling_from_options("nvt", a.thermostat)[0],
+            thermostat=make_coupling(a.thermostat)[0],
             velocities=vel,
         )
         sims[label].advance(500)  # compile
@@ -328,3 +345,33 @@ else:
         open(stem + f"_speed{k}_{a.thermostat}{f'_it{a.fixed_iter}' if a.fixed_iter else ''}.json", "w"),
         indent=1,
     )
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line and run the subcommand (see the module docstring)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("cmd", choices=("liquid", "nve", "speed", "gas"), help="what to do")
+    ap.add_argument("template", help="FlexibleTemplate (.flex)")
+    ap.add_argument("--molecules", type=int, default=216, help="liquid: number of molecules")
+    add_temperature_arg(ap, 298.0)
+    ap.add_argument("--equil-ps", type=float, default=100.0, help="liquid: NPT equilibration [ps]")
+    ap.add_argument("--prod-ps", type=float, default=100.0, help="liquid, gas: production [ps]")
+    ap.add_argument("--replicate", type=int, default=1, help="speed: n x n x n copies of the liquid")
+    ap.add_argument("--steps", type=int, default=4000, help="speed: timed steps per round")
+    ap.add_argument("--nve-ps", type=float, default=50.0, help="nve: mixed-precision run length [ps] (0: skip)")
+    ap.add_argument(
+        "--double-ps", type=float, default=None, help="nve: double-precision run length [ps] (default nve-ps / 5)"
+    )
+    ap.add_argument(
+        "--thermostat", default="langevin", choices=["langevin", "bussi"], help="speed: langevin (1/ps) | bussi (1 ps)"
+    )
+    ap.add_argument("--fixed-iter", type=int, default=0, help="speed: exactly this many CG iterations per step")
+    a = ap.parse_args(argv)
+    setup_logging()
+    tpl = FlexibleTemplate.load(a.template)
+    stem = os.path.splitext(a.template)[0]
+    {"liquid": cmd_liquid, "nve": cmd_nve, "gas": cmd_gas, "speed": cmd_speed}[a.cmd](a, tpl, stem)
+
+
+if __name__ == "__main__":
+    main()
