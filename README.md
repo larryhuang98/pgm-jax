@@ -22,6 +22,13 @@ any order. Validated against Amber (sander, pmemd-pgm) and PyRESP.
 - **Parameterization:** gradients of QM losses (energies, forces, dipoles, ESP) by autodiff;
   gradients of liquid properties (density, heat of vaporization) by fluctuation formulas over MD
   frames; bonded terms for flexible pGM molecules (`pgm_jax.bonded`).
+- **Fitting to QM cluster data** (`pgm_jax.qmfit`, `docs/qmfit.md`): pGM parameters (charges,
+  covalent dipoles, radii, polarizabilities, LJ or GVDW) fitted by least squares with exact Jacobians to
+  interaction energies, SAPT components, 3-body energies and rigid-body forces of clusters; a psi4
+  water set (757 dimers incl. Smith-type structures and scans, liquid trimers to pentamers, WATER27
+  clusters; CCSD(T)/CBS-quality totals, SAPT0, MP2 many-body) in `data/qm/water_qm.json`. Refit
+  pGM3P-25: held-out interaction-energy RMSE 1.50 -> 0.75 kcal/mol (0.57 with GVDW, 3-body energies
+  0.18).
 
 **Getting started with parameterization:** `docs/howto_bonded.md` (bond, angle, torsion terms
 for flexible molecules) and `docs/howto_vdw.md` (Lennard-Jones from liquid properties and gas-phase
@@ -508,6 +515,8 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `pgm_jax/md/constraints.py` | SHAKE / RATTLE solved exactly per cluster (water, CH3, ...), vectorised; hydrogen mass repartitioning (one mass or per molecule, `hmr_masses`) |
 | `pgm_jax/md/restraints.py` | restraints for both MD drivers: positional (NPT reference scaling), distance, angle, dihedral, centre-of-mass distance (Amber NMR flat-bottom form); `Restraints` container, strain derivative |
 | `scripts/fit_liquid.py` | LJ from liquid density + heat of vaporization (ensemble gradients, Gauss-Newton) |
+| `pgm_jax/qmfit.py` | fitting to QM cluster data: `QMSet` (dataset IO), `ClusterModel` (SAPT-like components, batched), `ParamMap` (free parameters, neutral charges), `QMFit` (weighted residuals: totals, SAPT, 3-body, forces, monomer; least squares), `evaluate` / `error_table`, `rigid_minimize` |
+| `scripts/qmfit/`, `data/qm/` | the water QM set: `smith_opt.py`, `build_water_clusters.py`, `psi4_clusters.py` (psi4 worker queue), `collect_water_qm.py`, `fit_water_qm.py` (baselines, fits, summary); `water_qm.json`, `water_geoms.json`, `fits/` |
 | `examples/`, `docs/` | fit-and-run examples; how-tos for bonded and van der Waals parameterization; `protein_ff.md` |
 | `paper/` | the pGM-JAX paper (LaTeX, PDF, figure data and scripts) |
 | `pgm_jax/bonded/` | bonded terms for flexible pGM molecules: `topology.py` (incl. peptide backbone and residues from the graph), `terms/` (registry and `SETS`: `core`, `classical`, `class2`, `explore`, `cmap`), `model.py` (`BondedTerms`, `BondedModel`), `fit.py`, `bench.py`, `data.py`, `molecules.py`, `amber.py` (GAFF / ff19SB import, prmtop export), `nn/` (neural bonded terms: `features`, `layers`, `instances`, `model`) |
@@ -517,7 +526,7 @@ Findings of the first study are in `reports/bonded/README.md`.
 | `scripts/dielectric.py`, `scripts/water_dielectric.py` | eps (and IR spectrum) from `.dip` series; the water validation runs (pGM, pGM3P-25 geometry, TIP3P control) |
 | `scripts/pgm3p25_prmtop.py`, `scripts/trajectory_dipoles.py` | pGM3P-25 with its published geometry and LJ as a pmemd-pgm topology (supercells, mdin); cell-dipole series (`.dip`) of Amber trajectories (e.g. pmemd.pgm) with the induced dipoles solved by pgm_jax |
 | `scripts/bench_md.py`, `scripts/pgm_supercell.py` | MD speed benchmark (`--mts`, `--ps` / `--rdf`: drift, <U>, group temperatures, density, g_OO); replicate a pGM prmtop for larger systems |
-| `tests/` | `pytest -q`: 208 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
+| `tests/` | `pytest -q`: 216 tests, incl. finite-difference checks of every derivative, the MD engine and the model options |
 | `scripts/validate_amber.py` | comparison with sander / pmemd-pgm / PyRESP (`compare`, `pyresp`, `virial`) |
 | `scripts/bench.py` | timings on the current device |
 | `validation/` | Amber reference runs (inputs + outputs) and `validate_amber.json` |
