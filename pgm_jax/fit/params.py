@@ -1,4 +1,7 @@
-"""Fitting parameters: a vector theta <-> the parameter pytree of a ParamTable (system.py).
+"""Map a fitted vector theta to the parameter pytree of a ParamTable (system.py) and back.
+
+Contents: Param (one block of fitting parameters), ParameterSpace (the map), _Block (a resolved
+block), ALIASES, LABELS, KINDS and SCALE_GROUPS.
 
 One class, `ParameterSpace`, serves every fit and gradient in pgm_jax (liquid fits, QM fits,
 parameter gradients of free energies).  A space is a list of `Param` blocks, each acting on some
@@ -19,15 +22,24 @@ entries (tying keys) of one quantity of the table, in one of three kinds:
     space = ParameterSpace.values(sys.table, {"q": "all", "alpha": ["OW"]}, neutral=[water])
     space = ParameterSpace.values(sys.table)   # every entry: flatten / unflatten / select for gradients
 
-Units of the table: nm, e, e nm, nm^3, sqrt(kJ/mol) (lj_sqrt_eps).
+Units of the table: nm, e, e nm, nm^3, sqrt(kJ/mol) (lj_sqrt_eps); theta is dimensionless for
+scales (ln s) and in table units for shifts and values.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 import jax.numpy as jnp
 import numpy as np
+from jax.typing import ArrayLike
+
+if TYPE_CHECKING:
+    import jax
+
+    from ..system import Molecule, ParamTable
 
 # short names of the common quantities -> table quantity
 ALIASES = {
@@ -56,25 +68,25 @@ SCALE_GROUPS = {
 
 @dataclass
 class Param:
-    """One block of fitting parameters.
+    """One block of fitting parameters (a mutable dataclass).
 
-    Attributes
+    Parameters
     ----------
     quantity : str
         Table quantity (or an alias of ALIASES: "lj_r", "lj_eps", "pol", "rad").
-    kind : str
+    kind : {"scale", "shift", "values"}
         "scale" (one theta = ln s), "shift" (one theta, table units) or "values" (one theta per
         entry, the values themselves).
-    keys : list of str or None
+    keys : list of str, optional
         Tying keys acted on; None: every entry with a nonzero value (scale), every entry (shift,
         values).
-    name : str or None
+    name : str, optional
         Name of a scale / shift parameter (default "ln s_<label>" / "d <quantity>", with the keys).
-    prior_sigma : float or None
+    prior_sigma : float, optional
         Gaussian prior width on theta (None: the space's default).
-    bounds : tuple of 2 float or None
+    bounds : tuple of 2 float, optional
         "values": lower and upper bound of every entry (table units; None: unbounded).
-    step : float or None
+    step : float, optional
         "values": typical size of a change of an entry (table units), the optimizer's scaling and
         the unit of the ridge prior (None: 1).
     extra : dict
@@ -93,7 +105,25 @@ class Param:
 
 @dataclass
 class _Block:
-    """A resolved Param: the table entries it acts on and its slice of theta."""
+    """A resolved Param: the table entries it acts on and its slice of theta (a mutable dataclass).
+
+    Parameters
+    ----------
+    param : Param
+        The block, with the quantity resolved from an alias and the name filled in.
+    idx : np.ndarray (m,) int32
+        Table entries of the quantity.
+    keys : list of str (m,)
+        Tying keys of the entries.
+    names : list of str
+        Names of its theta entries (one for scale / shift, m or the null-space dimension for values).
+    sl : slice
+        Its entries of theta.
+    full : bool
+        "values" over every entry of the quantity, in table order.
+    null : jax.Array (m, k), optional
+        "values" of charges: orthonormal null-space basis of the neutrality constraints.
+    """
 
     param: Param
     idx: np.ndarray  # (m,) int32 table entries
@@ -105,9 +135,43 @@ class _Block:
 
 
 class ParameterSpace:
-    """Map between the fitted vector theta and the parameter pytree (see the module docstring)."""
+    """Map between the fitted vector theta and the parameter pytree (see the module docstring).
 
-    def __init__(self, table, params: list[Param], p0=None, prior_sigma: float = 0.1, neutral=None):
+    Not a pytree; `__call__` is a pure JAX function of theta (differentiable, jittable).
+
+    Attributes
+    ----------
+    table : ParamTable or None
+    p0 : dict of str to jax.Array or None
+        Parameters the blocks act on.
+    blocks : list of _Block
+    params : list of Param
+        The resolved blocks' parameters.
+    names : list of str (n,)
+        Names of the theta entries.
+    n : int
+        Length of theta.
+    theta0 : np.ndarray (n,)
+        Starting point (0 for scales, shifts and neutral charges; the p0 values for values),
+        clipped to the bounds.
+    lower, upper, step, prior_sigma : np.ndarray (n,)
+        Bounds, typical steps and prior widths per entry.
+    quantities : list of str
+        Quantities acted on, in block order.
+    keys : dict of str to list of str
+        Keys acted on per quantity.
+    slices : dict of str to slice
+        theta slice per quantity (the last block of a quantity if there are several).
+    """
+
+    def __init__(
+        self,
+        table: ParamTable | None,
+        params: list[Param],
+        p0: Mapping[str, ArrayLike] | None = None,
+        prior_sigma: float = 0.1,
+        neutral: Sequence[Molecule] | None = None,
+    ) -> None:
         """Resolve the parameter blocks on a table.
 
         Parameters
@@ -145,8 +209,16 @@ class ParameterSpace:
         self._finish(prior_sigma)
 
     # ----------------------------------------------------------------- construction
-    def _resolve(self, p: Param, off: int, neutral) -> _Block:
-        """Resolve Param `p` into a _Block starting at theta entry `off`."""
+    def _resolve(self, p: Param, off: int, neutral: Sequence[Molecule] | None) -> _Block:
+        """Resolve Param `p` into a _Block starting at theta entry `off`.
+
+        Raises
+        ------
+        KeyError
+            An unknown quantity.
+        ValueError
+            An unknown kind, or a block acting on no entries.
+        """
         q = ALIASES.get(p.quantity, p.quantity)
         if q not in self.p0:
             raise KeyError(f"unknown quantity {p.quantity!r}")
@@ -179,7 +251,7 @@ class ParameterSpace:
         return _Block(q_param, idx, keys, names, slice(off, off + len(names)), full, null)
 
     @staticmethod
-    def _neutral_basis(keys: list, molecules) -> np.ndarray:
+    def _neutral_basis(keys: list, molecules: Sequence[Molecule]) -> jax.Array:
         """Return an orthonormal basis (m, k) of the charge offsets on `keys` that keep molecules neutral.
 
         The null space of one constraint row per molecule (the count of each key's atoms in it):
@@ -196,7 +268,7 @@ class ParameterSpace:
         return jnp.asarray(null_space(np.array(rows)) if rows else np.eye(len(keys)))
 
     def _finish(self, prior_sigma: float) -> None:
-        """Names, sizes, starting point, bounds, steps and priors of theta."""
+        """Set the names, sizes, starting point, bounds, steps, priors and lookup tables of theta."""
         self.params = [b.param for b in self.blocks]
         self.names = [nm for b in self.blocks for nm in b.names]
         self.n = len(self.names)
@@ -227,8 +299,14 @@ class ParameterSpace:
         self.slices = {b.param.quantity: b.sl for b in self.blocks}
 
     @classmethod
-    def scales(cls, table, quantities, p0=None, prior_sigma: float = 0.1) -> ParameterSpace:
-        """One global scale factor per quantity.
+    def scales(
+        cls,
+        table: ParamTable,
+        quantities: Iterable[str],
+        p0: Mapping[str, ArrayLike] | None = None,
+        prior_sigma: float = 0.1,
+    ) -> ParameterSpace:
+        """Build a space of one global scale factor per quantity.
 
         Parameters
         ----------
@@ -236,8 +314,8 @@ class ParameterSpace:
             The parameter table.
         quantities : iterable of str
             "q", "cov", "alpha" / "pol", "radius" / "rad", "lj_r", "lj_eps", or any table quantity.
-        p0 : dict, optional
-            Starting parameters.
+        p0 : Mapping of str to ArrayLike, optional
+            Starting parameters (None: table.initial()).
         prior_sigma : float
             Gaussian prior width on each ln s.
 
@@ -250,10 +328,10 @@ class ParameterSpace:
     @classmethod
     def values(
         cls,
-        table,
-        free=None,
-        p0=None,
-        neutral=None,
+        table: ParamTable,
+        free: Mapping[str, Any] | Iterable[str] | None = None,
+        p0: Mapping[str, ArrayLike] | None = None,
+        neutral: Sequence[Molecule] | None = None,
         bounds: dict | None = None,
         steps: dict | None = None,
         prior_sigma: float = 0.1,
@@ -267,7 +345,7 @@ class ParameterSpace:
         free : dict, iterable of str or None
             {quantity: "all" | [keys]}, a list of quantities (all their keys), or None: every
             quantity that has keys (the flat table of parameter gradients, names "quantity:key").
-        p0 : dict, optional
+        p0 : Mapping of str to ArrayLike, optional
             Starting parameters (theta0 = their values).
         neutral : list of Molecule, optional
             Charges move in the null space of these molecules' neutrality constraints.
@@ -279,6 +357,11 @@ class ParameterSpace:
         Returns
         -------
         ParameterSpace
+
+        Raises
+        ------
+        ValueError
+            If a listed quantity is unknown.
         """
         from ..system import QUANTITIES
 
@@ -297,7 +380,7 @@ class ParameterSpace:
         return cls(table, params, p0, prior_sigma, neutral)
 
     @classmethod
-    def from_names(cls, names) -> ParameterSpace:
+    def from_names(cls, names: Iterable[str]) -> ParameterSpace:
         """Rebuild a "values" space from stored names "quantity:key" (in table order).
 
         The space has no table: flatten / unflatten / select / scale_direction work, evaluating
@@ -338,20 +421,27 @@ class ParameterSpace:
         """Return the number of entries of theta."""
         return self.n
 
-    def __call__(self, theta, p0=None) -> dict:
+    def __call__(self, theta: ArrayLike, p0: Mapping[str, ArrayLike] | None = None) -> dict[str, jax.Array]:
         """Return the parameter pytree at theta (JAX-differentiable in theta).
 
         Parameters
         ----------
-        theta : array (n,)
+        theta : ArrayLike (n,)
             Parameters (ln s for scales, table units for shifts and values).
-        p0 : dict, optional
+        p0 : Mapping of str to ArrayLike, optional
             Parameters the blocks act on (default: the space's p0).
 
         Returns
         -------
-        dict
+        dict of str to jax.Array
             {quantity: array} with every quantity of p0.
+
+        Notes
+        -----
+        Scale blocks multiply their entries by exp(theta) (exp(theta/2) for lj_sqrt_eps, so that eps
+        scales by exp(theta)); shift blocks add theta; values blocks set the entries (or add
+        null @ theta for neutral charges).  Blocks are applied in order, so later blocks act on the
+        result of earlier ones.
         """
         P = dict(self.p0 if p0 is None else p0)
         theta = jnp.asarray(theta)
@@ -373,7 +463,7 @@ class ParameterSpace:
         """Return theta = 0 (the starting parameters for scales and shifts)."""
         return np.zeros(self.n)
 
-    def describe(self, theta) -> str:
+    def describe(self, theta: ArrayLike) -> str:
         """Describe theta in one line: every parameter's name and value (and a scale's factor)."""
         theta = np.asarray(theta, float)
         out = []
@@ -382,7 +472,7 @@ class ParameterSpace:
                 out.append(f"{nm} {t:+.4f}" + (f" (x{np.exp(t):.4f})" if b.param.kind == "scale" else ""))
         return ", ".join(out)
 
-    def named_values(self, theta) -> dict:
+    def named_values(self, theta: ArrayLike) -> dict[str, dict[str, float]]:
         """Return {quantity: {key: value}} of the table entries the space acts on, at theta."""
         P = self(np.asarray(theta, float))
         out = {}
@@ -397,17 +487,22 @@ class ParameterSpace:
         if any(b.param.kind != "values" or b.null is not None for b in self.blocks):
             raise ValueError("flatten / unflatten need a space of plain values (ParameterSpace.values)")
 
-    def flatten(self, P):
+    def flatten(self, P: Mapping[str, ArrayLike]) -> jax.Array:
         """Return the entries of the space as one float64 vector (JAX-differentiable).
 
         Parameters
         ----------
-        P : dict
+        P : Mapping of str to ArrayLike
             Parameters {quantity: array} (e.g. a gradient with respect to the table).
 
         Returns
         -------
         jax.Array (n,)
+
+        Raises
+        ------
+        ValueError
+            Unless the space is plain "values" blocks (no scales, shifts or neutral charges).
         """
         self._values_only()
         parts = []
@@ -416,19 +511,25 @@ class ParameterSpace:
             parts.append(x if b.full else x[b.idx])
         return jnp.concatenate(parts)
 
-    def unflatten(self, v, like=None) -> dict:
+    def unflatten(self, v: jax.Array, like: Mapping[str, ArrayLike] | None = None) -> dict:
         """Return the parameter dict of a flat vector (inverse of flatten).
 
         Parameters
         ----------
-        v : array (n,)
+        v : jax.Array (n,)
             The flat vector.
-        like : dict, optional
-            Parameters providing the quantities (and entries) the space does not cover.
+        like : Mapping of str to ArrayLike, optional
+            Parameters providing the quantities (and entries) the space does not cover; required for
+            blocks that cover only some entries.
 
         Returns
         -------
         dict
+
+        Raises
+        ------
+        ValueError
+            Unless the space is plain "values" blocks.
         """
         self._values_only()
         out = dict(like) if like is not None else {}
@@ -441,7 +542,7 @@ class ParameterSpace:
         """Return the position of the parameter `name` in theta."""
         return self.names.index(name)
 
-    def select(self, quantities=None, solute: bool | None = None) -> np.ndarray:
+    def select(self, quantities: Iterable[str] | None = None, solute: bool | None = None) -> np.ndarray:
         """Return the positions in theta of the entries of some quantities ("values" spaces).
 
         Parameters
@@ -469,7 +570,7 @@ class ParameterSpace:
                     out.append(b.sl.start + j)
         return np.array(out, int)
 
-    def scale_direction(self, p_flat, group: str, solute: bool | None = True) -> np.ndarray:
+    def scale_direction(self, p_flat: ArrayLike, group: str, solute: bool | None = True) -> np.ndarray:
         """Return the direction v with dG/d ln s = grad . v for scaling a group of parameters by s.
 
         Parameters

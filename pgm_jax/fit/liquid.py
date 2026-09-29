@@ -1,5 +1,8 @@
-"""Iterative multi-target fitting of a rigid-molecule pGM liquid (NPT simulations + ensemble
-gradients + Levenberg-Marquardt), with uncertainty quantification.
+"""Fit a rigid-molecule pGM liquid to several targets by iterated simulation and ensemble gradients.
+
+Each iteration runs NPT simulations, computes ensemble gradients and takes a Levenberg-Marquardt
+step, with uncertainty quantification.  Contents: LiquidFit (the driver) and _jsonable (JSON
+conversion of the records).
 
 Each iteration:
   1. NPT MD at theta (md.Simulation), equilibration then production; every `every_ps` a frame
@@ -13,7 +16,19 @@ Each iteration:
   5. JSON record (prefix.json) and the MD state (prefix_state.npz) for resuming.
 
 The frames need no neighbour-list state (FrameAnalyzer builds its own rows), so the analysis costs
-the same whatever the MD engine does between frames."""
+the same whatever the MD engine does between frames.
+
+Trust region: with ratio = achieved / predicted chi2 decrease of the previous step, the radius
+is divided by 4 (at least 0.05) if ratio < 0.25 (or undefined), doubled (at most radius_max)
+if ratio > 0.75 and the step was at the boundary, and kept otherwise.
+
+    fit = LiquidFit(system, positions, box, space, Objective(targets, space, gas), prefix="runs/fit")
+    theta = fit.run(space.theta0, iters=8)
+
+Units: nm, ps, K, bar, kJ/mol; observables as in estimators.py.
+
+See also docs/liquid_fit.md.
+"""
 
 from __future__ import annotations
 
@@ -22,9 +37,11 @@ import json
 import logging
 import os
 import time
+from typing import IO, TYPE_CHECKING, Any
 
 import jax.numpy as jnp
 import numpy as np
+from jax.typing import ArrayLike
 
 from ..md.barostats import MonteCarloBarostat
 from ..md.forcefield import MDSettings
@@ -33,10 +50,17 @@ from ..md.thermostats import Bussi, Thermostat
 from .estimators import LiquidSamples
 from .frames import FrameAnalyzer
 
+if TYPE_CHECKING:
+    from ..system import System
+    from .frames import RDFSpec
+    from .optimize import Estimate, Objective
+    from .params import ParameterSpace
+
 logger = logging.getLogger(__name__)
 
 
-def _jsonable(x):
+def _jsonable(x: Any) -> Any:
+    """Return `x` with arrays and numpy scalars converted to JSON types (non-finite floats -> None), recursively."""
     if isinstance(x, dict):
         return {k: _jsonable(v) for k, v in x.items()}
     if isinstance(x, (list, tuple)):
@@ -53,15 +77,38 @@ def _jsonable(x):
 
 
 class LiquidFit:
-    """Iterative fit of a rigid-molecule pGM liquid to experimental targets (module docstring)."""
+    """Iterative fit of a rigid-molecule pGM liquid to experimental targets (module docstring).
+
+    Not a pytree; holds the MD state between iterations and the records of all iterations.
+
+    Attributes
+    ----------
+    sys : System
+    space : ParameterSpace
+    obj : Objective
+    pos, H, vel : np.ndarray
+        Current positions (N, 3) [nm], box (3, 3) [nm] and velocities [nm/ps] (None before the first
+        run or after batched replicas).
+    temperature, dt : float
+        [K], [ps].
+    settings : MDSettings
+        MD settings with a fixed PME grid.
+    radius, radius_max : float
+        Current and largest trust radius (prior units).
+    analyzer : FrameAnalyzer
+    records : list of dict
+        One record per iteration (iterate).
+    pending : dict or None
+        Predictions of the last step, checked by the next iteration.
+    """
 
     def __init__(
         self,
-        system,
-        positions,
-        box,
-        space,
-        objective,
+        system: System,
+        positions: ArrayLike,
+        box: ArrayLike,
+        space: ParameterSpace,
+        objective: Objective,
         *,
         temperature: float = 298.0,
         settings: MDSettings = MDSettings(),
@@ -71,7 +118,7 @@ class LiquidFit:
         equil_ps: float = 20.0,
         prod_ps: float = 200.0,
         every_ps: float = 0.5,
-        rdf=None,
+        rdf: RDFSpec | None = None,
         chunk: int = 8,
         dipole_tol: float = 1e-6,
         nblocks: int = 10,
@@ -80,13 +127,13 @@ class LiquidFit:
         prefix: str = "fit",
         exact_every: int = 0,
         bootstrap: int = 200,
-        log=None,
+        log: IO[str] | None = None,
         seed: int = 0,
         fixed: bool = False,
         save_frames: bool = True,
         replicas: int = 1,
         equil_rep_ps: float = 20.0,
-    ):
+    ) -> None:
         """Set up the fit (see the module docstring for one iteration).
 
         Parameters
@@ -124,7 +171,8 @@ class LiquidFit:
         nblocks : int
             Blocks for the jackknife errors.
         radius, radius_max : float
-            Initial and largest trust radius of the Levenberg-Marquardt step (in theta).
+            Initial and largest trust radius of the Levenberg-Marquardt step (|d / sigma_prior|,
+            in units of the prior widths).
         prefix : str
             Path prefix of the records (prefix.json, prefix_state.npz, frames).
         exact_every : int
@@ -172,14 +220,47 @@ class LiquidFit:
         self.analyzer = FrameAnalyzer(system, self.H, settings, space, rdf=rdf, dipole_tol=dipole_tol, chunk=chunk)
         self.records, self.pending = [], None
 
-    def _print(self, s):
+    def _print(self, s: str) -> None:
+        """Write a report line to `log` (nothing if log is None)."""
         if self.log is not None:
             print(s, file=self.log, flush=True)
 
     # ------------------------------------------------------------------ sampling
-    def simulate(self, theta, seed, equil_ps=None, prod_ps=None, keep_frames=False):
-        """One NPT run at theta; returns (frames dict from the analyser, stored frames or None,
-        run info).  Updates the stored coordinates, box and velocities."""
+    def simulate(
+        self,
+        theta: ArrayLike,
+        seed: int,
+        equil_ps: float | None = None,
+        prod_ps: float | None = None,
+        keep_frames: bool = False,
+    ) -> tuple[dict, list | None, dict]:
+        """Run one simulation at theta and analyse its frames.
+
+        NPT (or NVT without barostat) from the stored coordinates, box and velocities, which are updated.
+        Equilibration runs in segments of about 10 ps; during production a frame is analysed every
+        `every_ps` (in chunks as they come).
+
+        Parameters
+        ----------
+        theta : ArrayLike (n,)
+            Parameters.
+        seed : int
+            Seed of the run.
+        equil_ps, prod_ps : float, optional
+            Equilibration and production time [ps]; None: the fit's values.
+        keep_frames : bool
+            Also return the frames (for exact reweighting).
+
+        Returns
+        -------
+        frames : dict
+            FrameAnalyzer.analyze output (grad=True) of all production frames.
+        stored : list or None
+            (positions, box, dipoles) per frame if keep_frames.
+        info : dict
+            Timings [s], frame and step counts, mean CG iterations, MC acceptance, kinetic temperature
+            [K], unconverged frames.
+        """
         equil_ps = self.equil_ps if equil_ps is None else equil_ps
         prod_ps = self.prod_ps if prod_ps is None else prod_ps
         params = self.space(jnp.asarray(theta, float))
@@ -239,10 +320,18 @@ class LiquidFit:
         }
         return frames, stored, info
 
-    def _simulate_replicas(self, sim, theta, seed, every, prod_ps, keep_frames, t0):
-        """NVT: `replicas` copies advanced together (jax.vmap, md/remd.MDReplicas at one temperature),
-        each prod_ps long; frames ordered by replica, then time (contiguous blocks never mix replicas
-        when nblocks is a multiple of the number of replicas)."""
+    def _simulate_replicas(
+        self, sim: Any, theta: ArrayLike, seed: int, every: int, prod_ps: float, keep_frames: bool, t0: float
+    ) -> tuple[dict, list | None, dict]:
+        """Run `replicas` NVT copies together and analyse their frames (returns as simulate).
+
+        The copies are advanced together (jax.vmap, md/remd.MDReplicas at one temperature, offset by
+        1e-6 K per replica), each prod_ps long after equil_rep_ps of equilibration; frames are ordered
+        by replica, then time (contiguous blocks never mix replicas when nblocks is a multiple of the
+        number of replicas).  `sim` is the equilibrated Simulation, `every` the frame interval [steps],
+        `t0` the start time of the timings.  Replica 0's final state becomes the stored state (no
+        velocities).
+        """
         from ..md.remd import MDReplicas
 
         R = self.replicas
@@ -280,13 +369,15 @@ class LiquidFit:
         return fr, stored, info
 
     # ------------------------------------------------------------------ one iteration
-    def iterate(self, theta, it: int = 0) -> dict:
-        """Run one fit iteration: simulate at theta, estimate the observables and their Jacobians, check
-        the previous prediction, update the trust radius and take a trust-region step.
+    def iterate(self, theta: ArrayLike, it: int = 0) -> dict[str, Any]:
+        """Run one fit iteration.
+
+        Simulates at theta, estimates the observables and their Jacobians, checks the previous
+        prediction, updates the trust radius and takes a trust-region step.
 
         Parameters
         ----------
-        theta : array_like (n,)
+        theta : ArrayLike (n,)
             Parameters of this iteration (in the units of `space`; log scales for scale parameters).
         it : int
             Iteration number (seeds, file names).
@@ -294,8 +385,16 @@ class LiquidFit:
         Returns
         -------
         dict
-            The iteration record (also appended to self.records): "theta", "estimate", "chi2",
-            "chi2_prior", "check" (from the second iteration on), "step", "uq", "next_theta", ...
+            The iteration record (also appended to self.records): "iter", "theta", "names", "scales"
+            (exp(theta)), "estimate", "chi2", "chi2_prior", "info", "check" (from the second iteration
+            on: predicted vs measured, z scores, trust ratio), "step" (delta, radius, predictions by
+            linearisation and reweighting, n_eff, optionally exact reweighting), "uq" (parameter errors,
+            covariances, propagated errors, bootstrap), "next_theta", "radius_next".
+
+        Notes
+        -----
+        LiquidSamples is built with its default pressure (1 bar), not the barostat's.  "scales" is
+        exp(theta), meaningful for scale parameters only.
         """
         theta = np.asarray(theta, float)
         keep = self.exact_every > 0
@@ -391,7 +490,8 @@ class LiquidFit:
         self._report(rec, est)
         return rec
 
-    def _report(self, rec, est):
+    def _report(self, rec: dict, est: Estimate) -> None:
+        """Write the report of one iteration to `log`: chi2, observables vs targets and predictions, step, errors."""
         it = rec["iter"]
         self._print(
             f"== iter {it}: {self.space.describe(rec['theta'])}; chi2 {rec['chi2']:.3f} + prior "
@@ -427,9 +527,12 @@ class LiquidFit:
         )
 
     # ------------------------------------------------------------------ driver
-    def save(self):
-        """Write the fit state: prefix.json (records, pending prediction, trust radius; written atomically)
-        and prefix_state.npz (last positions [nm], box [nm], velocities [nm/ps]).
+    def save(self) -> None:
+        """Write the fit state for resuming.
+
+        prefix.json holds the records, the pending prediction and the trust radius (written atomically
+        through a temporary file); prefix_state.npz holds the last positions [nm], box [nm] and
+        velocities [nm/ps] (empty if none).
         """
         out = {
             "names": self.space.names,
@@ -448,7 +551,11 @@ class LiquidFit:
         )
 
     def resume(self) -> np.ndarray | None:
-        """Continue from prefix.json / prefix_state.npz: returns the next theta (None: fresh)."""
+        """Continue from prefix.json / prefix_state.npz and return the next theta.
+
+        Restores the records, pending prediction, trust radius and MD state; returns None (nothing
+        restored) if prefix.json does not exist or has no records.
+        """
         if not os.path.exists(self.prefix + ".json"):
             return None
         d = json.load(open(self.prefix + ".json"))
@@ -462,19 +569,20 @@ class LiquidFit:
         self.vel = s["vel"] if s["vel"].size else None
         return np.asarray(self.records[-1]["next_theta"], float) if self.records else None
 
-    def run(self, theta0, iters: int, resume: bool = True, max_seconds: float | None = None):
+    def run(self, theta0: ArrayLike, iters: int, resume: bool = True, max_seconds: float | None = None) -> np.ndarray:
         """Run fit iterations, saving after each one.
 
         Parameters
         ----------
-        theta0 : array_like (n,)
+        theta0 : ArrayLike (n,)
             Starting parameters (ignored when resuming).
         iters : int
             Total number of iterations (including those already done when resuming).
         resume : bool
             Continue from prefix.json / prefix_state.npz if they exist.
         max_seconds : float, optional
-            Wall-time budget [s]: stop early when the next iteration would not fit.
+            Wall-time budget [s]: stop early when the next iteration (estimated from the mean so far)
+            would not fit.
 
         Returns
         -------
