@@ -6,7 +6,8 @@
 # Compare with the baseline in docs/api_design.md (recorded on master e72c57c).  When a phase renames
 # bench_md.py options (units in the option names since P9), update the calls below in the same commit.
 C=${1:-$(cd "$(dirname "$0")/../.." && pwd)}
-source ~/miniconda3/etc/profile.d/conda.sh && conda activate pgmjax
+# python environment: conda.sh from $PGM_CONDA_SH (default: ~/miniconda3's), environment $PGM_CONDA_ENV
+source "${PGM_CONDA_SH:-$HOME/miniconda3/etc/profile.d/conda.sh}" && conda activate "${PGM_CONDA_ENV:-pgmjax}"
 cd "$C" || exit 1
 export PYTHONPATH="$C"  # the package of this tree (docs: README, Installation)
 echo "# $(git rev-parse --short HEAD) $(hostname) $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
