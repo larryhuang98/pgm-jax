@@ -1,5 +1,12 @@
-"""Protein bonded terms: backbone and residues from the bond graph, the CMAP family (Fourier
-phi/psi correction), the protein term set."""
+"""Protein bonded terms: backbone and residues from the bond graph, CMAP, the protein term set.
+
+What is checked, and against what: residues and backbone quintuples found from the bond graph of
+RDKit peptides; the sparse topology of large molecules equals the dense one; the Fourier CMAP
+basis (periodic, orthogonal on the grid, grid values) and phi / psi = the topology's torsions;
+protein-set gradients (fd_check) and rotation invariance; the neural bonded net with protein
+context (reuse, persistence, refusal of unseen families); the torsion sign convention (RDKit's /
+Amber's); the prmtop export / import round trip.  Every test needs RDKit (optional_deps).
+"""
 
 import jax
 import jax.numpy as jnp
@@ -15,10 +22,12 @@ pytestmark = pytest.mark.optional_deps  # every test builds its peptides with RD
 
 
 def _top(spec):
+    """Return the dense topology of a MolSpec (elements, bonds, bond orders, geometry in A)."""
     return build_topology(spec.elements, spec.bonds, (spec.bonds, spec.bond_orders), spec.ref_xyz * 10.0)
 
 
 def test_backbone_and_residues_from_graph():
+    """Residues and the backbone phi / psi quintuples come from the bond graph (Ace-Ala-Gly-Nme)."""
     s = peptide_spec(ACE_ALA_GLY_NME)
     top = _top(s)
     assert top.cmaps.shape == (2, 5)  # Ala and Gly have both torsions; the caps none
@@ -36,6 +45,7 @@ def test_backbone_and_residues_from_graph():
 
 
 def test_large_molecule_topology_is_sparse():
+    """The sparse topology has the same terms as the dense one and graph distances capped at 4."""
     s = peptide_spec(ACE_ALA_GLY_NME)
     dense = _top(s)
     sparse = build_topology(s.elements, s.bonds, (s.bonds, s.bond_orders), s.ref_xyz * 10.0, dense=False)
@@ -48,6 +58,7 @@ def test_large_molecule_topology_is_sparse():
 
 
 def test_cmap_basis_grid_and_torsions():
+    """The CMAP Fourier basis is periodic and orthogonal; its phi / psi are the proper torsions (1e-12)."""
     order = T.cmap.ORDER if hasattr(T, "cmap") else 3
     nb = (2 * order + 1) ** 2 - 1
     rng = np.random.default_rng(0)
@@ -78,6 +89,7 @@ def test_cmap_basis_grid_and_torsions():
 
 
 def test_protein_set_energy_gradients_and_invariance():
+    """The protein term set: gradients (fd_check), rotation invariance, zero CMAP = Amber set."""
     s = peptide_spec(ACE_ALA_GLY_NME)
     model = BondedModel([s], BondedSettings(families=T.SETS["protein"], lj14_scale=0.5))
     assert "cmap" in model.fams and len(model.keys["cmap"]) == 2
@@ -87,6 +99,7 @@ def test_protein_set_energy_gradients_and_invariance():
     x = s.ref_xyz + 0.003 * rng.normal(size=s.ref_xyz.shape)
 
     def E(R):
+        """Return the bonded energy at positions R."""
         return model.bonded_energy(0, R, P)
 
     fd_check(E, x, rng)
@@ -100,6 +113,7 @@ def test_protein_set_energy_gradients_and_invariance():
 
 
 def _nn_net(specs, **kw):
+    """Return an NNBonded net over the protein basis for the given MolSpecs (topologies built)."""
     from pgm_jax.bonded.nn import NNBConfig, NNBonded
 
     for s in specs:
@@ -109,10 +123,15 @@ def _nn_net(specs, **kw):
 
 
 def _randomise(P, rng, scale=0.1):
+    """Return the pytree P with Gaussian noise of the given scale added."""
     return jax.tree_util.tree_map(lambda v: v + scale * jnp.asarray(rng.normal(size=v.shape)), P)
 
 
 def test_nnb_protein_basis_context_reuse_and_persistence(tmp_path):
+    """The protein NNB: residue context reaches the CMAP, unseen molecules reuse it, save / load.
+
+    Families the training set never saw are refused (ValueError) instead of being mispredicted.
+    """
     from pgm_jax.bonded.nn import NNBonded
 
     train = [peptide_spec(ACE_ALA_NME, "ala"), peptide_spec(ACE_ALA_GLY_NME, "alagly")]
@@ -172,6 +191,7 @@ def test_nnb_protein_basis_context_reuse_and_persistence(tmp_path):
 
 
 def test_nnb_context_off_matches_head_width():
+    """Without residue context the CMAP head is 3 W narrower and shared weights are identical."""
     train = [peptide_spec(ACE_ALA_NME, "ala")]
     on, off = _nn_net(train), _nn_net([peptide_spec(ACE_ALA_NME, "ala")], context=False)
     Pon, Poff = on.init_params(), off.init_params()
@@ -197,7 +217,15 @@ def test_dihedral_sign_is_iupac():
 
 
 def _minimal_prmtop(path, elements):
-    """A prmtop with only what the bonded export / import reads (not a runnable topology)."""
+    """Write a prmtop with only what the bonded export / import reads (not a runnable topology).
+
+    Parameters
+    ----------
+    path : str
+        Output file.
+    elements : list of str
+        Element of every atom (atomic numbers are written).
+    """
     from pgm_jax.prmtop import POINTER_NAMES, Prmtop, Section
 
     Z = {"H": 1, "C": 6, "N": 7, "O": 8, "S": 16}
@@ -227,6 +255,7 @@ def _minimal_prmtop(path, elements):
 
 
 def test_prmtop_export_import_round_trip(tmp_path):
+    """Exported bonded parameters import back (1e-6; CMAP 1e-4, 5 decimals in kcal/mol)."""
     from pgm_jax.bonded.amber import export_bonded, init_from_prmtop, read_bonded
     from pgm_jax.bonded.model import BondedTerms
     from pgm_jax.prmtop import Prmtop

@@ -1,6 +1,16 @@
-"""Fitting pGM parameters to QM cluster data (pgm_jax/qmfit.py): dataset IO, model components vs
-the Model / nbody reference, charge-neutral parameter map, loss gradients vs finite differences,
-exact recovery of a synthetic target, rigid-body forces."""
+"""Fitting pGM parameters to QM cluster data (pgm_jax/fit/qm.py).
+
+What is checked, and against what: the dataset format (save / load, labels, splits); the
+cluster model's interaction components against Model and its n-body decomposition (1e-10); a
+charge-neutral parameter map; rigid-body forces and torques (zero for monomer energies, the
+interaction force = minus the derivative along a rigid translation) and the superposition of
+monomers; the loss gradient against central differences (rel 2e-5); exact recovery of a synthetic
+target made by the model itself (loss below 1e-12); with the committed QM data set (data/qm, not
+in git), its water dimer energy and a stored fit's report.
+
+The module-scope fixture shares one random generator, so the random clusters of a test depend on
+the tests run before it (deterministic for a fixed selection and order).
+"""
 
 import os
 
@@ -31,7 +41,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def water():
-    """pGM3P-25 water (values of p25_512.prmtop)."""
+    """Return the pGM3P-25 water (parameters of p25_512.prmtop, rigid O-H-H bonds).
+
+    pGM3P-25 water (values of p25_512.prmtop).
+    """
     return Molecule(
         "WAT",
         ["O", "H", "H"],
@@ -50,6 +63,7 @@ W0 = rigid_water(0.9745, 103.64)  # Angstrom
 
 
 def random_rot(rng):
+    """Return a uniformly random rotation matrix (from a random unit quaternion)."""
     q = rng.normal(size=4)
     q /= np.linalg.norm(q)
     a, b, c, d = q
@@ -63,7 +77,7 @@ def random_rot(rng):
 
 
 def cluster(rng, n, d=2.9):
-    """n rigid waters, O atoms on a loose ring of radius ~d (Angstrom), random orientations."""
+    """Return n rigid waters on a loose ring (O atoms ~d apart), random orientations [A]."""
     X = []
     for k in range(n):
         ang = 2 * np.pi * k / n
@@ -73,6 +87,25 @@ def cluster(rng, n, d=2.9):
 
 
 def synthetic_set(rng, labels_from=None, cm=None, P=None):
+    """Build a QMSet of 6 dimers, 3 trimers and a tetramer, labelled by the model itself.
+
+    Parameters
+    ----------
+    rng : numpy.random.Generator
+        Source of the cluster geometries.
+    labels_from : object, optional
+        Not used.
+    cm : ClusterModel, optional
+        Model that makes the labels (None: records without labels).
+    P : dict, optional
+        Parameters of the labelling model.
+
+    Returns
+    -------
+    QMSet
+        With total and SAPT-like component energies, 2- and 3-body energies, interaction gradients
+        [kcal/mol/A] and monomer dipole / polarizability labels when cm is given.
+    """
     recs = []
     for k in range(6):
         recs.append(
@@ -140,6 +173,7 @@ def synthetic_set(rng, labels_from=None, cm=None, P=None):
 
 @pytest.fixture(scope="module")
 def setup():
+    """Return (random generator, pGM3P-25 water, ClusterModel) shared by the module (fixture)."""
     rng = np.random.default_rng(3)
     w = water()
     cm = ClusterModel(w, monomer_xyz_nm=W0 * 0.1)
@@ -147,6 +181,7 @@ def setup():
 
 
 def test_dataset_io_roundtrip(tmp_path, setup):
+    """A QMSet saves and loads with its ids, sets and labels; split and label lookup work."""
     rng, w, cm = setup
     d = synthetic_set(rng, cm=cm, P=cm.table.initial())
     p = tmp_path / "set.json"
@@ -161,6 +196,7 @@ def test_dataset_io_roundtrip(tmp_path, setup):
 
 @pytest.mark.needs_data
 def test_committed_dataset_loads():
+    """The committed QM set loads, its CCSD(T) water dimer is ~ -5 kcal/mol, monomers are rigid."""
     path = os.path.join(ROOT, "data/qm/water_qm.json")
     if not os.path.exists(path):
         pytest.skip("data/qm/water_qm.json not built")
@@ -173,6 +209,7 @@ def test_committed_dataset_loads():
 
 
 def test_components_match_model_and_nbody(setup):
+    """Cluster-model components equal Model's interaction and n-body energies; 3-body is induction."""
     rng, w, cm = setup
     P = cm.table.initial()
     X = cluster(rng, 3) * 0.1
@@ -212,6 +249,7 @@ def test_parameter_space_keeps_neutrality(setup):
 
 
 def test_rigid_body_forces_and_superposition(setup):
+    """Rigid-body forces: none from monomer energies, -dE/dx along a translation; superposition keeps COMs."""
     rng, w, cm = setup
     # monomer energies exert no net force or torque on a rigid molecule
     X = jnp.asarray(cluster(rng, 2) * 0.1)
@@ -226,6 +264,7 @@ def test_rigid_body_forces_and_superposition(setup):
     h, u = 1e-5, jnp.array([0.3, -0.5, 0.8])
 
     def e(t):
+        """Return the dimer interaction energy with monomer 2 moved by t u."""
         return cm.components(X.at[3:].add(t * u), None, 2)["total"]
 
     assert float(F[1] @ u) == pytest.approx(-float((e(h) - e(-h)) / (2 * h)), rel=1e-6)
@@ -263,8 +302,11 @@ def test_loss_gradient_matches_finite_differences(setup):
 
 
 def test_fit_recovers_synthetic_target_exactly(setup):
-    """Labels made by the model at perturbed parameters; the fit from the original parameters
-    (no prior) finds them again and the residual vanishes."""
+    """The QM fit recovers perturbed parameters from labels made by the model itself.
+
+    Labels made by the model at perturbed parameters; the fit from the original parameters
+    (no prior) finds them again and the residual vanishes.
+    """
     rng, w, cm = setup
     free = {"q": "all", "cov": "all", "alpha": "all", "lj_rmin_half": ["OW"], "lj_sqrt_eps": ["OW"]}
     space = parameter_space(cm.table, [w], free)
@@ -284,7 +326,10 @@ def test_fit_recovers_synthetic_target_exactly(setup):
 
 @pytest.mark.needs_data
 def test_committed_fit_reproduces_its_report():
-    """data/qm/fits/all_total.json (LJ water fitted to the set) gives the dimer energy of its report."""
+    """A committed fit gives the dimer and hexamer energies of its report (2e-3 / 1e-2 kcal/mol).
+
+    data/qm/fits/all_total.json (LJ water fitted to the set) gives the dimer energy of its report.
+    """
     fitp, datap = os.path.join(ROOT, "data/qm/fits/all_total.json"), os.path.join(ROOT, "data/qm/water_qm.json")
     if not (os.path.exists(fitp) and os.path.exists(datap)):
         pytest.skip("fit or data set not present")

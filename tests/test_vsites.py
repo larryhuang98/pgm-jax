@@ -1,8 +1,15 @@
-"""Virtual sites (md/vsites.py): constructions against the OpenMM / Amber formulas, force spreading
-(the transposed Jacobian) against finite differences, Amber extra points from tleap topologies,
-the pair topology, pGM with charged and polarizable sites (forces and strain derivative against
-finite differences with the dipoles re-solved), atoms with zero polarizability, and both MD
-engines (energies, body forces, NVE, degrees of freedom)."""
+"""Virtual sites (md/vsites.py): constructions, force spreading, Amber extra points, MD.
+
+What is checked, and against what: the constructions against the published OpenMM / sander
+formulas (reference_sites, 1e-14) and under the minimum image; force spreading = the transposed
+Jacobian (VJP of the placement, total force and torque conserved, central differences); definition
+checks; Amber extra points from tleap topologies (TIP4P-Ew, TIP5P) against sander's frame and
+tleap's own coordinates; the frame rules; the pair topology (sites belong to their host); pGM with
+charged and polarizable sites (forces and strain derivative against central differences with the
+dipoles re-solved); atoms with zero polarizability; both MD engines with sites (same energies and
+body forces, NVE, degrees of freedom), a flexible molecule with sites, a protein in TIP4P-Ew and
+replica exchange.
+"""
 
 import os
 
@@ -30,8 +37,11 @@ TET = np.radians(54.735)
 
 # ----------------------------------------------------------------------------- molecules
 def methanol_sites():
-    """Methanol with one site of every kind (charged; some polarizable, some not), a covalent
-    dipole to a site, and positions (nm) with the sites placed."""
+    """Return methanol with one virtual site of every kind and its positions (sites placed) [nm].
+
+    Methanol with one site of every kind (charged; some polarizable, some not), a covalent
+    dipole to a site, and positions (nm) with the sites placed.
+    """
     m, x = methanol()  # C O H H H HO
     vs = [
         VirtualSite.average2(6, 0, 1, 0.3, 0.7),
@@ -64,10 +74,11 @@ def methanol_sites():
 
 
 def reference_sites(x):
-    """The sites of methanol_sites from the published formulas, absolute coordinates, numpy."""
+    """Return the six sites of methanol_sites from the published formulas (numpy, absolute) [nm]."""
     C, O, H1, H2, H3, HO = x[:6]
 
     def unit(v):
+        """Return v / |v|."""
         return v / np.linalg.norm(v)
 
     out = [
@@ -92,7 +103,7 @@ def reference_sites(x):
 
 
 def lattice_box(mol, x, n_side=3, spacing=0.5, seed=0):
-    """n_side^3 randomly rotated copies on a jittered cubic lattice (nm)."""
+    """Place n_side^3 randomly rotated copies of a molecule on a jittered cubic lattice [nm]."""
     rng = np.random.default_rng(seed)
     m = mol.masses
     x0 = x - (m[:, None] * x).sum(0) / m.sum()
@@ -105,6 +116,13 @@ def lattice_box(mol, x, n_side=3, spacing=0.5, seed=0):
 
 
 def settings(**kw):
+    """Return tight MD settings with LJ tail (0.6 nm cutoff, 40^3 grid of order 8, float64).
+
+    Parameters
+    ----------
+    **kw
+        Flat MDSettings names that override the defaults.
+    """
     base = dict(
         cutoff=0.6,
         skin=0.05,
@@ -123,6 +141,7 @@ def settings(**kw):
 
 # ----------------------------------------------------------------------------- constructions
 def test_constructions_match_published_formulas_and_minimum_image():
+    """Every site kind matches its published formula, also with parents in other periodic images."""
     mol, x = methanol_sites()
     vs = VirtualSites.of(System([mol]))
     assert vs.n_sites == 6 and vs.kinds == ("amber", "average2", "average3", "local", "outofplane")
@@ -144,6 +163,7 @@ def test_constructions_match_published_formulas_and_minimum_image():
 
 
 def test_spread_is_the_transposed_jacobian():
+    """Force spreading is the VJP of the placement; it conserves force and torque (1e-12)."""
     mol, x = methanol_sites()
     vs = VirtualSites.of(System([mol]))
     rng = np.random.default_rng(2)
@@ -160,6 +180,7 @@ def test_spread_is_the_transposed_jacobian():
 
     # work: F . d(place(x))/dx along random directions of the real atoms, by central differences
     def E(y):
+        """Return F . place(y), the work of the fixed forces F."""
         return float(jnp.sum(jnp.asarray(F) * vs.place(y)))
 
     for _ in range(3):
@@ -171,6 +192,7 @@ def test_spread_is_the_transposed_jacobian():
 
 
 def test_definitions_are_validated():
+    """Invalid site definitions, massive sites and degenerate frames are refused; sites round-trip."""
     with pytest.raises(ValueError):
         VirtualSite.average3(3, 0, 1, 2, 0.5, 0.3, 0.3)  # weights do not sum to 1
     with pytest.raises(ValueError):
@@ -229,7 +251,10 @@ def test_definitions_are_validated():
 
 # ----------------------------------------------------------------------------- Amber extra points
 def _amber_ep_reference(x, center, first, third, p):
-    """sander do_local_global, frame type 1."""
+    """Return an Amber extra point from sander's do_local_global, frame type 1.
+
+    sander do_local_global, frame type 1.
+    """
     u = (x[first] - x[center]) / np.linalg.norm(x[first] - x[center])
     v = (x[third] - x[center]) / np.linalg.norm(x[third] - x[center])
     f3 = -(u + v) / np.linalg.norm(u + v)
@@ -239,6 +264,12 @@ def _amber_ep_reference(x, center, first, third, p):
 
 @pytest.mark.parametrize("name,nep,req", [("tip4pew_small", 1, 0.0125), ("tip5p_small", 2, 0.07)])
 def test_amber_extra_points_from_tleap(name, nep, req):
+    """Extra points of tleap TIP4P-Ew / TIP5P boxes follow sander's frames and tleap's geometry.
+
+    Sites against the sander formula (1e-14), O-EP distance (1e-12), TIP4P sites on the bisector and
+    TIP5P lone pairs tetrahedral; tleap's coordinates to its precision (5e-3 nm; the first water, the
+    library monomer, has its own lone-pair geometry).
+    """
     mols = read_prmtop_pgm(os.path.join(DATA, name + ".prmtop"), first_residue_only=False, charges="amber")
     xyz, _, box = read_coordinates(os.path.join(DATA, name + ".inpcrd"))
     H = box_from_cell(*box) * 0.1
@@ -276,6 +307,7 @@ def test_amber_extra_points_from_tleap(name, nep, req):
 
 
 def test_amber_frame_rules():
+    """Amber's extra-point frame rules (carbonyl, sulfur, hydroxyl) and their errors."""
     # carbonyl oxygen (frame type 2): C1(=O2)(C3)N4 with two EPs on O
     types = ["C", "O", "CT", "N", "EP", "EP"]
     heavy = [(0, 1, 0), (0, 2, 0), (0, 3, 0), (1, 4, 1), (1, 5, 1)]
@@ -318,6 +350,7 @@ def test_amber_frame_rules():
 
 # ----------------------------------------------------------------------------- pair topology
 def test_topology_sites_belong_to_their_host():
+    """Sites join their host's group and inherit its special-pair weights; site constraints are refused."""
     mol, x = methanol_sites()
     rule = MoleculeRule(bonds=list(mol.bonds) + [(1, 10)], vdw="graph", lj_min_sep=4, lj14_scale=0.5)
     top = MDTopology.build(System([mol]), [rule], max_single=4)  # force heavy-atom groups
@@ -340,6 +373,7 @@ def test_topology_sites_belong_to_their_host():
 
 # ----------------------------------------------------------------------------- pGM with sites
 def _pgm_box():
+    """Return 27 methanols with sites on a lattice (System, positions with sites placed [nm], box [nm])."""
     mol, x = methanol_sites()
     pos, H = lattice_box(mol, x, 3, 0.5)
     sys = System([mol] * 27)
@@ -347,8 +381,11 @@ def _pgm_box():
 
 
 def test_pgm_forces_and_strain_derivative_with_sites():
-    """Charged, polarizable and non-polarizable sites, a covalent dipole to a site: spread forces
-    and the molecular strain derivative against central differences with the dipoles re-solved."""
+    """With sites, the spread pGM forces and the strain derivative match central differences.
+
+    Charged, polarizable and non-polarizable sites, a covalent dipole to a site: spread forces
+    and the molecular strain derivative against central differences with the dipoles re-solved.
+    """
     sys, pos, H = _pgm_box()
     vs = VirtualSites.of(sys)
     ff = PGMForceField(sys, H, settings())
@@ -378,6 +415,7 @@ def test_pgm_forces_and_strain_derivative_with_sites():
 
         # the engine assumes a lower-triangular box: strained boxes are rotated back
         def ee(s):
+            """Return the energy after strain s eps, rotated back to a lower-triangular box."""
             return float(e(*lower_triangular_frame(pos + (com @ (s * eps).T)[sys.mol], H @ (np.eye(3) + s * eps).T)))
 
         fd = (ee(1.0) - ee(-1.0)) / (2 * h) - (tail if i == j else 0.0)
@@ -387,9 +425,12 @@ def test_pgm_forces_and_strain_derivative_with_sites():
 
 
 def test_zero_polarizability_atoms():
-    """alpha = 0 atoms (real atoms and sites): mu stays 0 with every predictor, energies and
+    """Atoms and sites with alpha = 0 keep mu = 0 and finite gradients.
+
+    alpha = 0 atoms (real atoms and sites): mu stays 0 with every predictor, energies and
     parameter gradients are finite (differentiable solve), and removing them from the
-    polarizable set is the same as a limit alpha -> 0."""
+    polarizable set is the same as a limit alpha -> 0.
+    """
     sys, pos, H = _pgm_box()
     P = dict(sys.params0)
     keys = sys.table.keys["alpha"]
@@ -418,8 +459,11 @@ def test_zero_polarizability_atoms():
 
 # ----------------------------------------------------------------------------- MD engines
 def test_engines_with_sites_agree_and_conserve_energy():
-    """TIP4P-Ew (point charges, Amber's EP frame) in the rigid engine and as constrained water with a
-    placed site in the flexible engine: same energies and body forces at the same state; NVE."""
+    """Both MD engines with TIP4P-Ew sites agree and conserve energy.
+
+    TIP4P-Ew (point charges, Amber's EP frame) in the rigid engine and as constrained water with a
+    placed site in the flexible engine: same energies and body forces at the same state; NVE.
+    """
     from pgm_jax.md.forcefield import ewald_beta_for
 
     sys, pos, H = tip4pew_ideal()
@@ -461,8 +505,11 @@ def test_engines_with_sites_agree_and_conserve_energy():
 
 
 def test_flexible_molecule_with_sites_nvt_nve_and_hmr():
-    """Flexible methanol with one site of every kind: thermostat and constraints leave the sites
-    alone, the temperature counts real atoms only, and NVE conserves energy."""
+    """A flexible molecule with sites: massless sites, right dof, NVT and NVE.
+
+    Flexible methanol with one site of every kind: thermostat and constraints leave the sites
+    alone, the temperature counts real atoms only, and NVE conserves energy.
+    """
     from pgm_jax.bonded import terms as T
     from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
 
@@ -523,6 +570,7 @@ def test_flexible_molecule_with_sites_nvt_nve_and_hmr():
 
 
 def test_load_amber_protein_in_tip4pew():
+    """A protein in TIP4P-Ew loads with one site per water, minimises and runs; pmemd export refused."""
     from pgm_jax.protein.amber import amber_template, load_amber
     from pgm_jax.protein.pmemd import write_pgm_prmtop
 
@@ -561,8 +609,11 @@ def test_load_amber_protein_in_tip4pew():
 
 
 def test_replica_exchange_with_sites():
-    """TIP4P-Ew by constraints with the GLE thermostat in the batched (vmap) and sequential replica
-    engines: the same trajectories; site momenta and thermostat auxiliaries stay 0, sites placed."""
+    """Replica exchange with sites: batched = sequential, site momenta and auxiliaries zero.
+
+    TIP4P-Ew by constraints with the GLE thermostat in the batched (vmap) and sequential replica
+    engines: the same trajectories; site momenta and thermostat auxiliaries stay 0, sites placed.
+    """
     from pgm_jax.md.forcefield import ewald_beta_for
     from pgm_jax.md.remd import ReplicaExchange
 

@@ -1,5 +1,9 @@
-"""MDSettings in groups (terms, cutoffs, neighbors, pme, induction with the extended-Lagrangian
-dipoles) and its replace(**flat) convenience."""
+"""MDSettings in groups (terms, cutoffs, neighbors, pme, induction with iEL) and replace(**flat).
+
+Checked against the flat defaults of pgm_jax up to commit e72c57c (OLD_DEFAULTS): every flat name
+has a place in the groups with its old default; replace accepts flat names and whole groups and
+returns frozen, hashable settings that compare by value.
+"""
 
 import pytest
 
@@ -48,7 +52,7 @@ OLD_DEFAULTS = {
 
 
 def get(settings, path):
-    """The value at a path of nested fields."""
+    """Return the value at a path of nested fields."""
     for name in path:
         settings = getattr(settings, name)
     return settings
@@ -65,8 +69,11 @@ def test_defaults_are_the_old_ones():
 
 
 def test_replace_flat_and_groups():
-    """replace takes flat names and whole groups; the result is frozen, hashable and compares by
-    value (compiled functions are cached on it)."""
+    """replace() takes flat names and whole groups; results are frozen, hashable, compared by value.
+
+    replace takes flat names and whole groups; the result is frozen, hashable and compares by
+    value (compiled functions are cached on it).
+    """
     s = MDSettings().replace(dipole_tol=1e-8, cutoff=0.8, skin=0.05, iel="0scf", iel_omega=0.9, neighbor_list="atom")
     assert s.induction.tol == 1e-8 and s.cutoffs.cutoff == 0.8 and s.neighbors == NeighborList(0.05, "atom")
     assert s.induction.iel == ExtendedLagrangian(scheme="0scf", omega=0.9) and s.induction.max_iter == 50

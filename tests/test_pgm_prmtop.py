@@ -1,7 +1,12 @@
-"""pmemd-pgm topologies of the engine's model (protein/pmemd.py): the written sections read back
-as the molecules (q, alpha, radius, covalent dipoles, LJ), the exclusions and 1-4 pairs are the
-engine's pair rules, the 1-4 tables carry lj14_scale; and, when pmemd.pgm is installed, pmemd-pgm
-single-point energies and forces on the written file equal the engine's."""
+"""pmemd-pgm topologies of the engine's model (protein/pmemd.py).
+
+What is checked, and against what: the written pGM sections read back as the molecules (q,
+alpha, radius, covalent dipoles, LJ; 1e-8); the exclusions and 1-4 pairs are the engine's pair
+rules; the LJ and 1-4 tables are the engine's Lorentz-Berthelot pairs times lj14_scale; masses
+with HMR; without templates the prmtop's own terms are kept; the mdin has the engine's nonbonded
+settings.  With the pGM3P-25 files, a water round trip; with pmemd.pgm installed, its
+single-point energies and forces on the written file against the engine's.
+"""
 
 import importlib.util
 import os
@@ -33,7 +38,7 @@ PMEMD = resource("pmemd_pgm_bin", "pmemd.pgm")
 
 
 def _library():
-    """Placeholder parameters with covalent dipoles, some to the neighbouring residues."""
+    """Return a placeholder residue library with covalent dipoles, some to neighbouring residues."""
     lib = ResidueLibrary.placeholder(PRM)
     lib.residues["ALA"]["cov"] = [
         ["N", "H", 0.0012],
@@ -47,7 +52,10 @@ def _library():
 
 
 def _pairs_by_weight(sys_, templates, order):
-    """Engine pair rules (md/topology.py) in prmtop numbering: {(i, j): van der Waals weight} of the special pairs."""
+    """Return the engine's special pairs in prmtop numbering, {(i, j): van der Waals weight}.
+
+    Engine pair rules (md/topology.py) in prmtop numbering: {(i, j): van der Waals weight} of the special pairs.
+    """
     topo = MDTopology.build(sys_, [t.md_rule("none") for t in templates])
     out = {}
     for a in range(sys_.n):
@@ -59,6 +67,13 @@ def _pairs_by_weight(sys_, templates, order):
 
 
 def test_protein_sections_round_trip(tmp_path):
+    """A written pmemd-pgm topology of the solvated peptide reads back as the engine's model.
+
+    pGM sections and parameters (1e-8), cross-residue covalent dipoles, CHARGE = monopoles x 18.2223,
+    exclusions and flagged 1-4 dihedrals = the engine's pair weights, LJ and 1-4 tables (5e-9
+    relative), HMR masses, rigid-water bond lengths; without templates tleap's sections are kept; the
+    mdin carries the engine's cutoff, Ewald coefficient, grid and tolerance.
+    """
     asys = load_amber(PRM, CRD, electrostatics=_library())
     k = [i for i, m in enumerate(asys.molecules) if m.kind == "protein"][0]
     templates = asys.templates({k: amber_template(asys.molecules[k], PRM)})
@@ -163,6 +178,7 @@ def test_protein_sections_round_trip(tmp_path):
 @pytest.mark.skipif(not os.path.exists(WATER_TOP), reason="pGM3P-25 water prmtop not available")
 @pytest.mark.needs_data
 def test_pgm_water_round_trip(tmp_path):
+    """The pGM3P-25 water prmtop survives read / write (parameters 1e-8, sections exact)."""
     asys = load_amber(WATER_TOP, WATER_RST, electrostatics="prmtop")
     out = str(tmp_path / "w.prmtop")
     info = write_pgm_prmtop(asys, out, asys.templates())
@@ -181,9 +197,12 @@ def test_pgm_water_round_trip(tmp_path):
 @pytest.mark.skipif(not os.path.exists(PMEMD), reason="pmemd.pgm not installed")
 @pytest.mark.needs_external
 def test_pmemd_single_point_matches_engine(tmp_path, monkeypatch):
-    """pmemd.pgm (CPU, float64) on the written solvated peptide against the engine: bonded, 1-4,
+    """pmemd.pgm single-point energies and forces equal the engine's on the written topology.
+
+    pmemd.pgm (CPU, float64) on the written solvated peptide against the engine: bonded, 1-4,
     van der Waals and pGM electrostatic energies and the forces (the engine's PME with pmemd's
-    influence-function factor, the one PME convention in which they differ)."""
+    influence-function factor, the one PME convention in which they differ).
+    """
     spec = importlib.util.spec_from_file_location(
         "check_pgm_prmtop",
         os.path.join(os.path.dirname(os.path.dirname(__file__)), "scripts/protein/check_pgm_prmtop.py"),

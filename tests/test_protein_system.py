@@ -1,5 +1,10 @@
-"""Proteins from Amber topologies: molecules, backbone and residues, pGM electrostatics from a
-residue library, Amber-form bonded terms from ff19SB, a solvated peptide in MD with constraints."""
+"""Proteins from Amber topologies (pgm_jax.protein): molecules, library, templates, MD.
+
+What is checked, and against what: load_amber on the tleap peptide in TIP3P with NaCl (molecule
+kinds, backbone quintuples by Amber's atom names, residues, shared water molecules, prmtop order);
+a residue library with cross-residue covalent dipoles; the Amber-form template against the
+prmtop's ff19SB bond constants (1e-6); a solvated peptide in MD with X-H constraints and HMR.
+"""
 
 import os
 
@@ -19,6 +24,7 @@ PRM, CRD = (
 
 
 def test_load_molecules_and_library(tmp_path):
+    """load_amber finds the protein, waters and ions, and a residue library places cross-residue dipoles."""
     asys = load_amber(PRM, CRD)
     kinds = [m.kind for m in asys.molecules]
     assert kinds[0] == "protein" and kinds.count("ion") == 2 and kinds.count("water") == len(kinds) - 3
@@ -46,6 +52,7 @@ def test_load_molecules_and_library(tmp_path):
 
 
 def test_amber_template_matches_prmtop_terms():
+    """The Amber template's bond constants equal the prmtop's ff19SB values for every bond (1e-6)."""
     asys = load_amber(PRM, CRD)
     prot = asys.molecules[0]
     tpl = amber_template(prot, PRM)
@@ -62,6 +69,7 @@ def test_amber_template_matches_prmtop_terms():
 
 
 def test_solvated_peptide_md_with_constraints():
+    """A solvated peptide runs 100 steps at 2 fs with constraints and HMR (T within 150-450 K)."""
     asys = load_amber(PRM, CRD)
     tpl = amber_template(asys.molecules[0], PRM)
     s = MDSettings().replace(precision="mixed", cutoff=0.8, skin=0.1, dipole_tol=1e-5)

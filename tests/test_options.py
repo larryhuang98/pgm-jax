@@ -1,5 +1,13 @@
-"""Model options: electrostatics levels, Gaussian quadrupoles (analytic kernels vs automatic
-derivatives of the operator form, covalent quadrupole basis), GVDW kernel, old pickles."""
+"""Model options: electrostatics levels, Gaussian quadrupoles, the GVDW kernel and old pickles.
+
+What is checked, and against what: the analytic Gaussian multipole kernels (charge, dipole,
+quadrupole) against nested automatic derivatives of the operator form O_i O_j erf(a r) / r
+(1e-9); the covalent quadrupole basis (traceless, symmetric, rotates as a tensor); the
+electrostatics levels against each other and a direct charge sum (1e-12); quadrupole energies,
+forces (central differences) and rotation invariance; the GVDW kernel against pmemd-pgm's
+expressions, its series / closed-form switch and its derivative; the GVDW channel against the pair
+formula; molecules pickled before GVDW / quadrupoles existed.
+"""
 
 import pickle
 
@@ -23,15 +31,20 @@ from pgm_jax.vdw import C0, GVDWChannel, gvdw_G, gvdw_pair, set_gvdw
 
 
 def _rand_quad(rng, n):
+    """Return n random traceless symmetric 3 x 3 matrices."""
     A = rng.normal(size=(n, 3, 3))
     A = 0.5 * (A + np.swapaxes(A, 1, 2))
     return A - np.trace(A, axis1=1, axis2=2)[:, None, None] * np.eye(3) / 3
 
 
 def _operator_energy(x, a, qi, pi, Ti, qj, pj, Tj):
-    """E = O_i O_j phi by nested automatic derivatives (the definition)."""
+    """Return the pair energy O_i O_j phi of two Gaussian multipoles by nested autodiff.
+
+    E = O_i O_j phi by nested automatic derivatives (the definition).
+    """
 
     def f(v):
+        """Return erf(a |v|) / |v|."""
         return erf(a * jnp.linalg.norm(v)) / jnp.linalg.norm(v)
 
     g, H = jax.grad(f), jax.hessian(f)
@@ -45,6 +58,7 @@ def _operator_energy(x, a, qi, pi, Ti, qj, pj, Tj):
 
 
 def test_multipole_kernels_match_operator_form():
+    """The analytic multipole kernels equal the operator form, in the series and closed-form regimes."""
     rng = np.random.default_rng(0)
     for scale in (0.05, 0.3):  # a r < 1 (series) and > 1 (closed form)
         x = rng.normal(size=3) * scale
@@ -69,6 +83,7 @@ def test_multipole_kernels_match_operator_form():
 
         # field at i = -grad_x of the potential of j
         def V(v):
+            """Return the potential energy of a unit charge at v in the field of multipole j."""
             return _operator_energy(v, a, 1.0, jnp.zeros(3), jnp.zeros((3, 3)), qj, jnp.asarray(pj), jnp.asarray(Tj))
 
         E_ref = -jax.grad(V)(jnp.asarray(x))
@@ -79,6 +94,7 @@ def test_multipole_kernels_match_operator_form():
 
 
 def test_quadrupole_basis_is_traceless_and_rotates():
+    """The covalent quadrupole basis is traceless, symmetric and rotates with the molecule."""
     m, x = methanol()
     mq = with_quadrupoles(m)
     assert len(mq.quad) > 0 and all(len(t) == 4 for t in mq.quad)
@@ -100,6 +116,7 @@ def test_quadrupole_basis_is_traceless_and_rotates():
 
 
 def test_electrostatics_levels():
+    """The levels qpi / qp / q / qi agree with the full channel and with a direct charge sum."""
     sys, pos = cluster(np.random.default_rng(3))
     pos = jnp.asarray(pos)
     P = sys.expand()
@@ -122,6 +139,7 @@ def test_electrostatics_levels():
 
 
 def test_quadrupoles_zero_strength_and_forces():
+    """Zero quadrupoles change nothing; with quadrupoles forces match differences and E is invariant."""
     m, x = methanol()
     mq = with_quadrupoles(m)
     sys = System([mq, water()])
@@ -136,6 +154,7 @@ def test_quadrupoles_zero_strength_and_forces():
     P["quad"] = jnp.asarray(rng.normal(size=P["quad"].shape) * 2e-3)
 
     def E(y):
+        """Return the electrostatic energy with quadrupoles at positions y."""
         return sum(ch.energy(y, sys, P)[0].values())
 
     F = -jax.grad(E)(pos)
@@ -149,6 +168,7 @@ def test_quadrupoles_zero_strength_and_forces():
 
 
 def test_gvdw_kernel():
+    """The GVDW kernel matches pmemd-pgm's formula, is continuous at its switch, and H = G' / y."""
     y = jnp.linspace(1e-3, 6.0, 4001)
     G, H = gvdw_G(y)
     # continuity across the series / closed-form switch and the y -> 0 limit
@@ -177,6 +197,7 @@ def test_gvdw_kernel():
 
 
 def test_gvdw_channel_and_old_pickles():
+    """The GVDW channel equals the pair formula; pre-GVDW / quadrupole pickles load with defaults."""
     w = set_gvdw(water(), {"OW": (100.0, 0.05, 4.5)})
     sys = System([w, w])
     pos = jnp.asarray(

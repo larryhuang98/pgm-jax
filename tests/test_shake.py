@@ -1,6 +1,13 @@
-"""Holonomic constraints (md/constraints.py) in the flexible engine: the dense (Newton per cluster)
-and iterative (matrix-free) solvers against each other, the RATTLE projection, degrees of freedom,
-energy conservation at 1 and 2 fs, NPT and multiple time stepping with constraints."""
+"""Holonomic constraints (md/constraints.py) in the flexible engine.
+
+What is checked, and against what: the dense (Newton per cluster) and iterative (matrix-free)
+solvers against each other and the constraint lengths (1e-10 to 1e-12 relative); the RATTLE
+projection (tangent velocities, a mass-weighted orthogonal projection, no net momentum change);
+RATTLE velocities against a finite-difference tangency test (second order); constraint rules and
+degrees of freedom; energy conservation at 0.5, 1 and 2 fs (fluctuation growing as dt^2, no
+drift); an exact skipped projection; NPT, Bussi and multiple time stepping with constraints; the
+iterative solver in MD; thermostats with constraints; the half-step kinetic energy.
+"""
 
 import jax
 import jax.numpy as jnp
@@ -18,12 +25,16 @@ from pgm_jax.units import KB
 
 
 def _clusters():
-    """Water (3 constraints), CH3 (3), OH (1), methanol with every bond (5), a six-ring with its
-    bonds and hydrogens (12) and a 20-bond chain (above dense_max: the iterative solver)."""
+    """Return constrained clusters of every size: positions, pairs, lengths, masses and the generator.
+
+    Water (3 constraints), CH3 (3), OH (1), methanol with every bond (5), a six-ring with its
+    bonds and hydrogens (12) and a 20-bond chain (above dense_max: the iterative solver).
+    """
     rng = np.random.default_rng(3)
     x, pairs, m = [], [], []
 
     def add(xyz, bonds, masses, at):
+        """Append a cluster (positions shifted by `at`, its bonds and masses)."""
         o = len(np.concatenate(x)) if x else 0
         x.append(np.asarray(xyz, float) + at)
         pairs.extend((o + i, o + j) for i, j in bonds)
@@ -58,6 +69,12 @@ def _clusters():
 
 
 def test_solvers_agree_and_project():
+    """The dense, one-block and iterative solvers agree and satisfy the constraints and RATTLE.
+
+    Positions on the constraint surface (1e-10 blocks, 1e-12 one block / iterative at tol 1e-13), no
+    net momentum from constraint forces, tangent velocities, a projection (applied twice = once) that
+    is M^-1-orthogonal; the solvers agree to 1e-10 nm and 1e-9 of the momenta.
+    """
     x, pairs, d0, m, rng = _clusters()
     y = x + 0.004 * rng.normal(size=x.shape)  # an MD step's displacement
     p = rng.normal(size=x.shape) * np.sqrt(m)[:, None]
@@ -93,14 +110,18 @@ def test_solvers_agree_and_project():
 
 
 def test_rattle_velocity_is_tangent_finite_difference():
-    """After RATTLE the constraint lengths change only at second order along the velocities:
-    |r(x + e v)| - d0 = O(e^2) (halving e divides it by 4), without RATTLE O(e)."""
+    """RATTLE velocities are tangent: lengths change at second order along them.
+
+    After RATTLE the constraint lengths change only at second order along the velocities:
+    |r(x + e v)| - d0 = O(e^2) (halving e divides it by 4), without RATTLE O(e).
+    """
     x, pairs, d0, m, rng = _clusters()
     C = Constraints(pairs, d0, m)
     p = rng.normal(size=x.shape) * np.sqrt(m)[:, None]
     q = np.asarray(C.momenta(jnp.asarray(x), jnp.asarray(p), m))
 
     def dev(mom, e):
+        """Return the largest constraint violation after moving by e mom / m."""
         z = x + e * mom / m[:, None]
         return np.abs(np.linalg.norm(z[pairs[:, 0]] - z[pairs[:, 1]], axis=1) - d0).max()
 
@@ -110,14 +131,18 @@ def test_rattle_velocity_is_tangent_finite_difference():
 
 
 def _methanol_box(n=32, seed=0):
+    """Return 32 flexible methanols at 0.55 g/cm^3 (template, System, positions [nm], box [nm])."""
     tpl, _ = methanol_template()
     pos, H = liquid_box(tpl, n, 0.55, seed=seed, min_dist=0.18)
     return tpl, System([tpl.pgm] * n), pos, H
 
 
 def _cluster():
-    """Eight methanols (a 2 x 2 x 2 lattice at liquid density) in a 3.6 nm box with a 1.7 nm
-    cutoff: no pair crosses the cutoff, so NVE conserves the energy to the integration error."""
+    """Return eight methanols in a 3.6 nm box whose pairs never cross the 1.7 nm cutoff.
+
+    Eight methanols (a 2 x 2 x 2 lattice at liquid density) in a 3.6 nm box with a 1.7 nm
+    cutoff: no pair crosses the cutoff, so NVE conserves the energy to the integration error.
+    """
     tpl, _ = methanol_template()
     pos, H = liquid_box(tpl, 8, 0.75, seed=2, min_dist=0.2)
     return tpl, System([tpl.pgm] * 8), pos + 1.4, np.eye(3) * 3.6
@@ -127,6 +152,11 @@ SCL = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.7, ski
 
 
 def test_rules_and_degrees_of_freedom():
+    """Constraint rules count the right bonds and the engine the right degrees of freedom.
+
+    h-bonds (4 per methanol) and all-bonds (5), lengths at the template's references; dof = 3 N - nc
+    minus 3 for total-momentum removal (none with Langevin), which also zeroes the total momentum.
+    """
     tpl, sys_, pos, H = _cluster()
     assert len(tpl.md_rule("h-bonds").constraints) == 4 and len(tpl.md_rule("all-bonds").constraints) == 5
     assert all(abs(d - b) < 1e-12 for (i, j, d), b in zip(tpl.md_rule("all-bonds").constraints, tpl.bond_lengths()))
@@ -142,9 +172,12 @@ def test_rules_and_degrees_of_freedom():
 
 
 def test_constraints_every_step_and_nve():
-    """X-H bonds at 0.5, 1 and 2 fs, every bond at 2 fs: every step on the constraint surface
+    """Constraints hold every step, and the NVE fluctuation grows as dt^2 without drift.
+
+    X-H bonds at 0.5, 1 and 2 fs, every bond at 2 fs: every step on the constraint surface
     (1e-10) with tangent velocities; the energy fluctuation of velocity Verlet + RATTLE grows as
-    dt^2 and does not drift."""
+    dt^2 and does not drift.
+    """
     tpl, sys_, pos, H = _cluster()
     eq = FlexibleSimulation(
         sys_,
@@ -194,8 +227,11 @@ def test_constraints_every_step_and_nve():
 
 
 def test_skipped_projection_is_exact():
-    """The drift before a kick leaves RATTLE to the kick (same positions): identical trajectories to
-    projecting after every drift (NVE and Langevin)."""
+    """Skipping RATTLE after the drift gives the same trajectory as projecting.
+
+    The drift before a kick leaves RATTLE to the kick (same positions): identical trajectories to
+    projecting after every drift (NVE and Langevin).
+    """
     from pgm_jax.md import flexible as F
 
     tpl, sys_, pos, H = _cluster()
@@ -214,8 +250,11 @@ def test_skipped_projection_is_exact():
 
 
 def test_npt_bussi_and_mts_keep_constraints():
-    """Monte Carlo volume moves (molecular scaling) keep the constraints; Bussi keeps the total
-    momentum at zero; multiple time stepping with every bond constrained."""
+    """NPT, Bussi and multiple time stepping keep the constraints (1e-10).
+
+    Monte Carlo volume moves (molecular scaling) keep the constraints; Bussi keeps the total
+    momentum at zero; multiple time stepping with every bond constrained.
+    """
     from pgm_jax.md.mts import MTS
 
     tpl, sys_, pos, H = _methanol_box()
@@ -263,9 +302,11 @@ def test_npt_bussi_and_mts_keep_constraints():
 
 @requires("rdkit")
 def test_iterative_solver_in_md():
-    """A 29-atom peptide with every bond constrained (above dense_max: one iterative block), NVE at
-    2 fs in vacuum-like conditions: constraints every step, energy conserved."""
+    """The iterative solver holds a fully constrained peptide in NVE at 2 fs.
 
+    A 29-atom peptide with every bond constrained (above dense_max: one iterative block), NVE at
+    2 fs in vacuum-like conditions: constraints every step, energy conserved.
+    """
     tpl, model, P, x = peptide_template()
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.05, lj_lrc=False)
     sim = FlexibleSimulation(
@@ -292,9 +333,12 @@ def test_iterative_solver_in_md():
 
 
 def test_thermostats_with_constraints():
-    """Langevin and GLE (its auxiliary momenta projected onto the constraint tangent space at every
+    """Langevin and GLE with constraints keep them and conserve econs.
+
+    Langevin and GLE (its auxiliary momenta projected onto the constraint tangent space at every
     O step) with every X-H bond constrained: constraints and tangent velocities every block; the effective energy
-    econs = E_tot + |aux|^2/2 - heat stays conserved to the integration error."""
+    econs = E_tot + |aux|^2/2 - heat stays conserved to the integration error.
+    """
     tpl, sys_, pos, H = _cluster()
     for th in ("langevin", "gle"):
         sim = FlexibleSimulation(
@@ -322,8 +366,11 @@ def test_thermostats_with_constraints():
 
 
 def test_half_step_kinetic_energy():
-    """half_step_kinetic() is the mean kinetic energy of the RATTLE-projected half-step momenta
-    p -+ h F / 2 (the leapfrog average), reported as temp_half."""
+    """half_step_kinetic() is the mean kinetic energy of the projected half-step momenta.
+
+    half_step_kinetic() is the mean kinetic energy of the RATTLE-projected half-step momenta
+    p -+ h F / 2 (the leapfrog average), reported as temp_half.
+    """
     tpl, sys_, pos, H = _cluster()
     sim = FlexibleSimulation(sys_, [tpl] * 8, pos, H, SCL, dt=0.002, constraints="h-bonds", log=None)
     sim.advance(10)
