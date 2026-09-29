@@ -1,9 +1,23 @@
-"""pGM electrostatic reference for one molecule, the pGM/PyRESP protocol (Wang et al. JCTC 2019):
-B3LYP/aug-cc-pVTZ electrostatic potential on Merz-Kollman shells and the dipole, at the
-sampling minimum.  (Merz-Kollman shell code as in evoff/qm/psi4_monomer.py.)
+"""Compute the pGM electrostatic reference of one molecule, the pGM/PyRESP protocol (Wang et al. JCTC 2019).
 
-    python scripts/bonded/qm_esp.py runs/bonded/pgm/<name> --threads 16
-In:  input.json {name, elements, types, xyz_A, charge}.  Out: esp.dat (py_resp format), qm.json."""
+B3LYP/aug-cc-pVTZ electrostatic potential on Merz-Kollman shells (1.4, 1.6, 1.8, 2.0 x the MK
+radii, 6 points per A^2) and the dipole, at the sampling minimum (or at every conformer of
+xyz_A_list).  The Merz-Kollman shell code is that of evoff/qm/psi4_monomer.py.
+
+Usage:
+
+    <python with psi4> scripts/bonded/qm_esp.py runs/bonded/pgm/<name> --threads 16 --memory-GB 32
+    python scripts/bonded/qm_esp.py --help
+
+Inputs: <dir>/input.json {name, elements, types, xyz_A (or xyz_A_list), charge}.
+Outputs: <dir>/esp_<k>.dat per conformer and esp.dat (py_resp format, the blocks in sequence),
+<dir>/qm.json (dipoles [a.u.], number of points, time), <dir>/psi4.out.
+Units: Angstrom (input), bohr and atomic units (esp.dat), a.u. (dipoles).
+Runtime: CPU, minutes to an hour per conformer.  This script does not import pgm_jax (it runs in a
+psi4 environment).
+"""
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -12,19 +26,23 @@ import time
 
 import numpy as np
 
-BOHR = 0.52917721067
-MK_RADII = {"H": 1.20, "C": 1.50, "N": 1.50, "O": 1.40, "S": 1.75, "F": 1.35, "Cl": 1.70, "P": 1.80}
+BOHR = 0.52917721067  # A per bohr
+MK_RADII = {"H": 1.20, "C": 1.50, "N": 1.50, "O": 1.40, "S": 1.75, "F": 1.35, "Cl": 1.70, "P": 1.80}  # A
 Z = {"H": 1, "C": 6, "N": 7, "O": 8, "F": 9, "P": 15, "S": 16, "Cl": 17}
 
 
-def fibonacci_sphere(n):
+def fibonacci_sphere(n: int) -> np.ndarray:
+    """Return n points (n, 3) spread evenly on the unit sphere (Fibonacci lattice)."""
     k = np.arange(n) + 0.5
     phi = np.arccos(1 - 2 * k / n)
     th = np.pi * (1 + 5**0.5) * k
     return np.stack([np.cos(th) * np.sin(phi), np.sin(th) * np.sin(phi), np.cos(phi)], 1)
 
 
-def mk_points(xyz, elements, scales=(1.4, 1.6, 1.8, 2.0), density=6.0):
+def mk_points(
+    xyz: np.ndarray, elements: list[str], scales: tuple = (1.4, 1.6, 1.8, 2.0), density: float = 6.0
+) -> np.ndarray:
+    """Return the Merz-Kollman points [A]: shells at scales x MK radius, density [1/A^2], outside all other shells."""
     rad = np.array([MK_RADII[e] for e in elements])
     pts = []
     for s in scales:
@@ -37,7 +55,16 @@ def mk_points(xyz, elements, scales=(1.4, 1.6, 1.8, 2.0), density=6.0):
     return np.concatenate(pts)
 
 
-def write_espdat(path, xyz_A, elements, types, pts_A, esp_au, name="MOL"):
+def write_espdat(
+    path: str,
+    xyz_A: np.ndarray,
+    elements: list[str],
+    types: list[str],
+    pts_A: np.ndarray,
+    esp_au: np.ndarray,
+    name: str = "MOL",
+) -> None:
+    """Write a py_resp esp.dat: atoms and points in bohr, the ESP in atomic units."""
     n, m = len(xyz_A), len(pts_A)
     with open(path, "w") as fh:
         fh.write(f"{n:5d}{m:5d}    0 {name[:3].upper():3s}{n:9d}{m:7d}\n")
@@ -47,16 +74,18 @@ def write_espdat(path, xyz_A, elements, types, pts_A, esp_au, name="MOL"):
             fh.write(f"{v:16.7E}" + "".join(f"{c:16.7E}" for c in p) + "\n")
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line, run psi4 on every conformer and write the ESP files (see the module docstring)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("dir", help="molecule directory with input.json")
+    ap.add_argument("--threads", type=int, default=16, help="psi4 threads")
+    ap.add_argument("--memory-GB", type=float, default=30, help="psi4 memory [GB]")
+    a = ap.parse_args(argv)
     import psi4
 
-    ap = argparse.ArgumentParser()
-    ap.add_argument("dir")
-    ap.add_argument("--threads", type=int, default=16)
-    ap.add_argument("--memory", type=float, default=30)
-    a = ap.parse_args()
-    d = json.load(open(os.path.join(a.dir, "input.json")))
-    psi4.set_memory(f"{a.memory} GB")
+    with open(os.path.join(a.dir, "input.json")) as fh:
+        d = json.load(fh)
+    psi4.set_memory(f"{a.memory_GB} GB")
     psi4.set_num_threads(a.threads)
     psi4.core.set_output_file(os.path.join(a.dir, "psi4.out"), False)
     geoms = [np.array(g) for g in d.get("xyz_A_list", [d["xyz_A"]])]
@@ -82,18 +111,21 @@ if __name__ == "__main__":
         npts += len(pts)
     with open(os.path.join(a.dir, "esp.dat"), "w") as fh:  # py_resp multi-conformer input: blocks in sequence
         for p in parts:
-            fh.write(open(p).read())
-    json.dump(
-        {
-            "name": d["name"],
-            "level": "B3LYP/aug-cc-pVTZ",
-            "n_conf": len(geoms),
-            "dipole_au": dips[0],
-            "dipoles_au": dips,
-            "n_esp_points": int(npts),
-            "time_s": time.time() - t0,
-        },
-        open(os.path.join(a.dir, "qm.json"), "w"),
-        indent=1,
-    )
+            with open(p) as src:
+                fh.write(src.read())
+    qm = {
+        "name": d["name"],
+        "level": "B3LYP/aug-cc-pVTZ",
+        "n_conf": len(geoms),
+        "dipole_au": dips[0],
+        "dipoles_au": dips,
+        "n_esp_points": int(npts),
+        "time_s": time.time() - t0,
+    }
+    with open(os.path.join(a.dir, "qm.json"), "w") as fh:
+        json.dump(qm, fh, indent=1)
     print(d["name"], "done", time.time() - t0)
+
+
+if __name__ == "__main__":
+    main()

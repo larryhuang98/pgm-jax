@@ -3,14 +3,26 @@
 Charges and covalent-dipole strengths (tied by symmetry, as py_resp) are fitted to the
 B3LYP/aug-cc-pVTZ ESP of several conformers at once; the model potential includes the induced
 dipoles of each conformer (pGM, all pairs), like py_resp ipol=5.  Start: the single-conformer
-py_resp parameters.  Restraint: lam * sum (q - q_start)^2 on nothing but the free charges (weak).
+py_resp parameters (data/bonded/params/<name>.json).  Restraint: lam * sum (theta - theta_start)^2
+(weak) plus --lam0 times a restraint towards zero charges and covalent dipoles, and a penalty
+keeping the total charge.
 
-    python scripts/bonded/esp_fit_jax.py [names]     # runs/bonded/pgm2/<name>/esp_*.dat -> data/bonded/params2/
+Usage:
+
+    python scripts/bonded/esp_fit_jax.py [names] [--lam0 0.001] [--out params2]
+    python scripts/bonded/esp_fit_jax.py --help
+
+Inputs: runs/bonded/pgm2/<name>/esp_*.dat (scripts/bonded/qm_esp.py), data/bonded/params/<name>.json.
+Outputs: data/bonded/<out>/<name>.json (param.save_molecule); a printed line per molecule.
+Units: atomic units (ESP), bohr in the .dat files, e and e nm in the molecule files.
+Runtime: CPU, a minute per molecule.  Sets jax_enable_x64.
 """
 
+from __future__ import annotations
+
+import argparse
 import glob
 import os
-import sys
 
 import jax
 import jax.numpy as jnp
@@ -20,15 +32,15 @@ from scipy.optimize import minimize
 
 from pgm_jax.channels import ElecChannel
 from pgm_jax.param import load_molecule, save_molecule
+from pgm_jax.paths import repo_path
 from pgm_jax.system import System
 from pgm_jax.units import BOHR_NM
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 jax.config.update("jax_enable_x64", True)
-KE_AU = 1.0 / 138.935458  # (e^2 / nm) in kJ/mol -> we work in a.u. below
 
 
-def read_esp(path):
+def read_esp(path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return atoms (N, 3) [bohr], ESP points (M, 3) [bohr] and ESP values (M,) [a.u.] of a py_resp esp.dat."""
     lines = open(path).read().splitlines()
     n, m = int(lines[0][:5]), int(lines[0][5:10])
     X = np.array([[float(v) for v in (ln[18:34], ln[34:50], ln[50:66])] for ln in lines[1 : 1 + n]])  # bohr
@@ -36,9 +48,24 @@ def read_esp(path):
     return X, P[:, 1:], P[:, 0]  # atoms bohr, points bohr, esp a.u.
 
 
-def fit(name, lam=1e-3, lam0=0.0, out="params2", verbose=True):
-    wd = os.path.join(ROOT, "runs/bonded/pgm2", name)
-    m0 = load_molecule(os.path.join(ROOT, "data/bonded/params", f"{name}.json"))
+def fit(name: str, lam: float = 1e-3, lam0: float = 0.0, out: str = "params2", verbose: bool = True) -> None:
+    """Fit charges and covalent dipoles of one molecule to its conformers' ESP; save data/bonded/<out>/<name>.json.
+
+    Parameters
+    ----------
+    name : str
+        Molecule.
+    lam : float
+        Weight of the restraint to the start parameters.
+    lam0 : float
+        Weight of the restraint towards zero (charges [e], covalent dipoles in units of 0.01 e nm).
+    out : str
+        Output directory below data/bonded.
+    verbose : bool
+        Print the relative RMS error before and after and the charges.
+    """
+    wd = repo_path("runs", "bonded", "pgm2", name)
+    m0 = load_molecule(repo_path("data", "bonded", "params", f"{name}.json"))
     confs = [read_esp(p) for p in sorted(glob.glob(os.path.join(wd, "esp_*.dat")))]
     sys_ = System([m0])
     th0 = sys_.params0
@@ -46,6 +73,7 @@ def fit(name, lam=1e-3, lam0=0.0, out="params2", verbose=True):
     chan = ElecChannel()
 
     def potential(th, Xb, Pb):
+        """Return the model ESP [a.u.] at the points Pb [bohr] of the conformer Xb [bohr] (induced dipoles solved)."""
         P = sys_.expand(th)
         q = P["q"]
         X = jnp.asarray(Xb) * BOHR_NM
@@ -61,6 +89,7 @@ def fit(name, lam=1e-3, lam0=0.0, out="params2", verbose=True):
     ssv = sum(float(np.sum(v**2)) for _, _, v in confs)
 
     def loss(z):
+        """Return the relative squared ESP error plus the restraints and the total-charge penalty."""
         th = dict(th0)
         th.update(unravel(z))
         L = 0.0
@@ -78,6 +107,7 @@ def fit(name, lam=1e-3, lam0=0.0, out="params2", verbose=True):
     vg = jax.jit(jax.value_and_grad(loss))
 
     def f(z):
+        """Return the loss and its gradient as numpy arrays (for scipy)."""
         return tuple(np.asarray(t, float) for t in vg(jnp.asarray(z)))
 
     rr0 = float(np.sqrt(loss(z0) - 0.0))
@@ -86,11 +116,11 @@ def fit(name, lam=1e-3, lam0=0.0, out="params2", verbose=True):
     th.update(unravel(jnp.asarray(res.x)))
     P = sys_.expand(th)
     q = np.asarray(P["q"] - (jnp.sum(P["q"]) - Qtot) / sys_.n)
-    m = load_molecule(os.path.join(ROOT, "data/bonded/params", f"{name}.json"))
+    m = load_molecule(repo_path("data", "bonded", "params", f"{name}.json"))
     m.q = q
     m.cov = [(i, j, float(c)) for (i, j, _), c in zip(m.cov, np.asarray(P["cov"]))]
-    os.makedirs(os.path.join(ROOT, "data/bonded", out), exist_ok=True)
-    save_molecule(m, os.path.join(ROOT, "data/bonded", out, f"{name}.json"))
+    os.makedirs(repo_path("data", "bonded", out), exist_ok=True)
+    save_molecule(m, repo_path("data", "bonded", out, f"{name}.json"))
     Ls = float(sum(jnp.sum((potential(th, Xb, Pb) - v) ** 2) for Xb, Pb, v in confs) / ssv)
     if verbose:
         print(
@@ -100,12 +130,20 @@ def fit(name, lam=1e-3, lam0=0.0, out="params2", verbose=True):
         )
 
 
-if __name__ == "__main__":
-    lam0 = float(os.environ.get("LAM0", "0"))
-    out = os.environ.get("OUT", "params2")
-    names = sys.argv[1:] or [os.path.basename(p) for p in sorted(glob.glob(os.path.join(ROOT, "runs/bonded/pgm2/*")))]
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line and fit every molecule (failures are printed; see the module docstring)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("names", nargs="*", help="molecules (default: every directory of runs/bonded/pgm2)")
+    ap.add_argument("--lam0", type=float, default=0.0, help="weight of the restraint towards zero")
+    ap.add_argument("-o", "--out", default="params2", help="output directory below data/bonded")
+    a = ap.parse_args(argv)
+    names = a.names or [os.path.basename(p) for p in sorted(glob.glob(repo_path("runs", "bonded", "pgm2", "*")))]
     for n in names:
         try:
-            fit(n, lam0=lam0, out=out)
+            fit(n, lam0=a.lam0, out=a.out)
         except Exception as exc:
             print(n, "failed", repr(exc)[:200], flush=True)
+
+
+if __name__ == "__main__":
+    main()

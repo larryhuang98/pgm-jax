@@ -4,7 +4,10 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ipynb_checkpoints/
-/data/
+# data/: tracked files only, except the results of record (docs/api_design.md, D13)
+/data/*
+!/data/validation/
+!/data/reports/
 paper/data/
 psi.*.clean
 timer.dat
