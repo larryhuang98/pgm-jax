@@ -697,7 +697,11 @@ pip install -e .                 # from the repository root
 
 or, without installing (e.g. in a shared environment), put the repository on the path:
 `PYTHONPATH=/path/to/pGM-JAX python scripts/md/run_md.py ...` (pytest needs neither: `pyproject.toml`
-sets `pythonpath = ["."]`). External data and programs (Amber builds, the pGM3P-25 files, QM data)
+sets `pythonpath = ["."]`). The install also provides the `pgm-jax` command, one entry point for the
+main scripts (`pgm-jax md ...` runs `scripts/md/run_md.py`, `pgm-jax dielectric ...`,
+`pgm-jax fit-liquid ...`; `pgm-jax --help` lists them; without installing: `python -m pgm_jax.cli`).
+Script options carry their unit in the name (`--dt-fs`, `--time-ns`, `--temperature-K`, ...), except
+`run_md.py`, which keeps Amber's names and Angstrom. External data and programs (Amber builds, the pGM3P-25 files, QM data)
 are found through environment variables with defaults, listed in `pgm_jax/paths.py`.
 
 ## Validation (512 pGM3P-25 waters; same Coulomb constant as Amber)
