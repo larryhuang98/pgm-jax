@@ -115,7 +115,8 @@ def save(key, value):
 
 
 def cmd_start(args):
-    from pgm_jax.md.io import box_from_cell, read_coordinates
+    from pgm_jax.md.box import box_from_cell
+    from pgm_jax.md.io import read_coordinates
 
     tpl, s = setup(args)
     xyz, _, box = read_coordinates(RST)

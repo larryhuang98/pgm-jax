@@ -9,7 +9,8 @@ import struct
 import numpy as np
 from scipy.io import netcdf_file
 
-from ..ewald import box_matrix
+from ..units import ANG_NM
+from .box import box_from_cell, cell_parameters
 
 AMBER_VEL = 20.455  # Amber velocity unit: A / (1/20.455 ps)
 
@@ -49,6 +50,28 @@ def read_coordinates(path: str):
     return xyz, vel, box
 
 
+def read_coordinates_nm(path: str):
+    """Coordinates of an Amber file in pgm_jax units.
+
+    Parameters
+    ----------
+    path : str
+        ASCII inpcrd / restart or NetCDF restart (read_coordinates).
+
+    Returns
+    -------
+    positions : (N, 3) np.ndarray
+        [nm].
+    velocities : (N, 3) np.ndarray or None
+        [nm/ps].
+    box : (3, 3) np.ndarray or None
+        Lattice vectors as rows [nm].
+    """
+    xyz, vel, box = read_coordinates(path)
+    H = None if box is None else box_from_cell(*box) * ANG_NM
+    return xyz * ANG_NM, None if vel is None else vel * ANG_NM, H
+
+
 def read_trajectory(path: str, atoms=None, stride: int = 1):
     """Frames of an Amber NetCDF trajectory: (coordinates A (F, N, 3) float64, box lengths A (F, 3)
     or None, time ps (F,)); `atoms` selects atoms (e.g. the protein), `stride` frames."""
@@ -61,20 +84,6 @@ def read_trajectory(path: str, atoms=None, stride: int = 1):
     t = np.array(v["time"][::stride], float) if "time" in v else np.arange(len(X), dtype=float)
     f.close()
     return X, box, t
-
-
-def cell_parameters(H):
-    """Box matrix (rows, A or nm) -> lengths, angles (deg)."""
-    H = np.asarray(H, float)
-    a, b, c = np.linalg.norm(H, axis=1)
-    alpha = np.degrees(np.arccos(np.dot(H[1], H[2]) / (b * c)))
-    beta = np.degrees(np.arccos(np.dot(H[0], H[2]) / (a * c)))
-    gamma = np.degrees(np.arccos(np.dot(H[0], H[1]) / (a * b)))
-    return np.array([a, b, c]), np.array([alpha, beta, gamma])
-
-
-def box_from_cell(lengths, angles):
-    return box_matrix(*lengths, *angles)
 
 
 def write_restart(path: str, xyz_A, vel_A_ps, H_A, time_ps: float, title: str = "pgm_jax restart"):

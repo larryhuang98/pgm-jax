@@ -153,8 +153,9 @@ def part_box1():
 
 
 def part_nve(ps: float = 20.0, only=None):
+    from pgm_jax.md.box import box_from_cell
     from pgm_jax.md.forcefield import MDSettings
-    from pgm_jax.md.io import box_from_cell, read_coordinates
+    from pgm_jax.md.io import read_coordinates
     from pgm_jax.md.simulation import Simulation, _dedupe
 
     sys.path.insert(0, os.path.join(ROOT, "scripts"))
@@ -230,9 +231,10 @@ def part_nve(ps: float = 20.0, only=None):
 def part_speed(nsteps: int = 5000):
     """ms/step of 512 pGM3P-25 waters (rigid, 2 fs, NVT Bussi, mixed) without and with fields, and of
     batched field replicas."""
+    from pgm_jax.md.box import box_from_cell
     from pgm_jax.md.finite_field import FieldReplicas
     from pgm_jax.md.forcefield import MDSettings
-    from pgm_jax.md.io import box_from_cell, read_coordinates
+    from pgm_jax.md.io import read_coordinates
     from pgm_jax.md.simulation import Simulation, _dedupe
 
     sys.path.insert(0, os.path.join(ROOT, "scripts"))

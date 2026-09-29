@@ -46,9 +46,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 jax.config.update("jax_enable_x64", True)
 
+from pgm_jax.md.box import box_from_cell  # noqa: E402
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.io import box_from_cell, read_coordinates  # noqa: E402
+from pgm_jax.md.io import read_coordinates  # noqa: E402
 from pgm_jax.md.pimd import PIMDSimulation, flexible_water  # noqa: E402
 from pgm_jax.param import read_prmtop_pgm  # noqa: E402
 from pgm_jax.system import System  # noqa: E402

@@ -20,7 +20,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from validate_amber import RST, TOP, read_restart  # noqa: E402
 
 from pgm_jax.channels import ElecChannel  # noqa: E402
-from pgm_jax.ewald import PeriodicPGM, box_matrix  # noqa: E402
+from pgm_jax.ewald import PeriodicPGM  # noqa: E402
+from pgm_jax.md.box import box_from_cell  # noqa: E402
 from pgm_jax.model import Model  # noqa: E402
 from pgm_jax.param import read_prmtop_pgm  # noqa: E402
 from pgm_jax.periodic import PeriodicModel  # noqa: E402
@@ -59,7 +60,7 @@ def main():
     print("device:", jax.devices())
     w = read_prmtop_pgm(TOP)[0]
     xyz, (L, ang) = read_restart(RST)
-    H = box_matrix(*L, *ang) * 0.1
+    H = box_from_cell(L, ang) * 0.1
     pos = xyz * 0.1
     sys512 = System([w] * 512)
     per = PeriodicPGM(sys512, H, pos, b0=3.8, rc=1.0)

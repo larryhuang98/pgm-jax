@@ -32,7 +32,7 @@ from .box import check_box, reduce_box, volume
 from .dipoles import DipoleRecorder, InducedDipoleFile
 from .forcefield import MDSettings, PGMForceField
 from .integrate import Integrator, field_state, upgrade_state
-from .io import NetCDFTrajectory, box_from_cell, read_coordinates, write_restart
+from .io import NetCDFTrajectory, read_coordinates_nm, write_restart
 from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .rigid import RigidMolecules
 from .vsites import VirtualSites
@@ -161,11 +161,10 @@ class Simulation:
         TIP4P-Ew; with MDSettings(elec="q")); extra points become virtual sites (read_prmtop_pgm)."""
         mols = _dedupe(read_prmtop_pgm(prmtop, first_residue_only=False, charges=charges))
         sys = System(mols)
-        xyz, vel, box = read_coordinates(coords)
-        if box is None:
-            raise ValueError("coordinates have no periodic box")
-        H = box_from_cell(*box) * 0.1
-        return cls(sys, xyz * 0.1, H, vel_nm_ps=(vel * 0.1 if (use_velocities and vel is not None) else None), **kw)
+        pos, vel, H = read_coordinates_nm(coords)
+        if H is None:
+            raise ValueError(f"{coords}: the coordinates have no periodic box")
+        return cls(sys, pos, H, vel_nm_ps=vel if use_velocities else None, **kw)
 
     # ----------------------------------------------------------------- observables
     def observables(self) -> dict:

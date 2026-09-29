@@ -26,8 +26,8 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 from validate_amber import PMEMD, REF, RST, TOP, mdout_step0, read_nc_frames, read_restart  # noqa: E402
 
-from pgm_jax.ewald import box_matrix  # noqa: E402
 from pgm_jax.lj import PeriodicLJ  # noqa: E402
+from pgm_jax.md.box import box_from_cell  # noqa: E402
 from pgm_jax.md.simulation import _dedupe  # noqa: E402
 from pgm_jax.param import read_prmtop_pgm  # noqa: E402
 from pgm_jax.system import System  # noqa: E402
@@ -60,7 +60,7 @@ def run():
 
 def compare():
     xyz, cell = read_restart(RST)
-    H = box_matrix(*cell[0], *cell[1]) * 0.1
+    H = box_from_cell(cell[0], cell[1]) * 0.1
     pos = jnp.asarray(xyz * 0.1)
     mols = _dedupe(read_prmtop_pgm(TOP, first_residue_only=False))
 

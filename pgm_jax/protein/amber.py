@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..bonded.model import MolSpec
-from ..md.io import box_from_cell, read_coordinates
+from ..md.io import read_coordinates_nm
 from ..param import _prmtop_lj, _prmtop_sections, prmtop_extra_points
 from ..prmtop import Prmtop
 from ..system import Molecule, System
@@ -233,9 +233,7 @@ def load_amber(prmtop: str, inpcrd: str, electrostatics="placeholder", water: Mo
     B = np.concatenate([pt.get("BONDS_INC_HYDROGEN"), pt.get("BONDS_WITHOUT_HYDROGEN")]).reshape(-1, 3)[:, :2] // 3
     bonds = [tuple(sorted((int(a), int(b)))) for a, b in B]
     rh, se = _prmtop_lj(s)
-    xyz, _, box = read_coordinates(inpcrd)
-    pos = xyz * 0.1
-    H = box_from_cell(*box) * 0.1 if box is not None else None
+    pos, _, H = read_coordinates_nm(inpcrd)
     # electrostatics per atom
     if isinstance(electrostatics, str) and electrostatics == "placeholder":
         electrostatics = ResidueLibrary.placeholder(prmtop)

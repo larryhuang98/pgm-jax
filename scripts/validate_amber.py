@@ -35,8 +35,9 @@ jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pgm_jax.channels import ElecChannel
-from pgm_jax.ewald import PeriodicPGM, box_matrix
+from pgm_jax.ewald import PeriodicPGM
 from pgm_jax.lj import LJChannel, PeriodicLJ
+from pgm_jax.md.box import box_from_cell
 from pgm_jax.model import Model
 from pgm_jax.param import read_prmtop_pgm
 from pgm_jax.periodic import strain_derivative
@@ -107,7 +108,7 @@ def wrap_molecules(xyz, H):
 
 def prep():
     xyz, (L, ang) = read_restart(RST)
-    H = box_matrix(*L, *ang)
+    H = box_from_cell(L, ang)
     w = wrap_molecules(xyz, H)
     os.makedirs(os.path.join(REF, "sander_gas512w"), exist_ok=True)
     write_inpcrd(os.path.join(REF, "sander_gas512w", "inpcrd"), w)
@@ -151,7 +152,7 @@ def compare():
     os.makedirs(OUT, exist_ok=True)
     res = {}
     xyz, (L, ang) = read_restart(RST)
-    H = box_matrix(*L, *ang) * 0.1
+    H = box_from_cell(L, ang) * 0.1
     w = read_prmtop_pgm(TOP)[0]
     sys = System([w] * 512)
     q = np.asarray(sys.expand()["q"])
@@ -344,7 +345,7 @@ def virial():
     """Molecular virial tr(dE/d eps)/2 (Amber's VIRIAL) from JAX strain derivatives, electrostatics
     rescaled to Amber's Coulomb constant; LJ long-range correction energy and virial."""
     xyz, (L, ang) = read_restart(RST)
-    H = box_matrix(*L, *ang) * 0.1
+    H = box_from_cell(L, ang) * 0.1
     pos = xyz * 0.1
     sys = System([read_prmtop_pgm(TOP)[0]] * 512)
     per = PeriodicPGM(sys, H, pos, b0=3.8, rc=1.0)

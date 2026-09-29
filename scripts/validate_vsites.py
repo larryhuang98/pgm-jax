@@ -44,8 +44,9 @@ jax.config.update("jax_enable_x64", True)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from pgm_jax.md.box import box_from_cell  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
-from pgm_jax.md.io import box_from_cell, read_coordinates  # noqa: E402
+from pgm_jax.md.io import read_coordinates  # noqa: E402
 from pgm_jax.md.simulation import Simulation, _dedupe  # noqa: E402
 from pgm_jax.md.vsites import VirtualSites  # noqa: E402
 from pgm_jax.param import read_prmtop_pgm  # noqa: E402
@@ -614,7 +615,8 @@ import sys, numpy as np, jax
 jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, sys.argv[1])
 from pgm_jax.md.forcefield import MDSettings
-from pgm_jax.md.io import box_from_cell, read_coordinates
+from pgm_jax.md.io import read_coordinates
+from pgm_jax.md.box import box_from_cell
 from pgm_jax.md.simulation import Simulation, _dedupe
 from pgm_jax.param import read_prmtop_pgm
 from pgm_jax.system import System

@@ -42,8 +42,9 @@ MODELS = {
 
 
 def build(a, ensemble="nvt"):
+    from pgm_jax.md.box import box_from_cell
     from pgm_jax.md.forcefield import MDSettings
-    from pgm_jax.md.io import box_from_cell, read_coordinates
+    from pgm_jax.md.io import read_coordinates
     from pgm_jax.md.simulation import _dedupe
     from pgm_jax.param import read_prmtop_pgm
     from pgm_jax.system import System

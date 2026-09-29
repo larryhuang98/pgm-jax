@@ -12,10 +12,10 @@ import numpy as np
 import pytest
 from test_grad import methanol, water
 
-from pgm_jax.md.box import lower_triangular_frame, reduce_box
+from pgm_jax.md.box import box_from_cell, lower_triangular_frame, reduce_box
 from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, RigidTemplate, liquid_box
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
-from pgm_jax.md.io import box_from_cell, read_coordinates
+from pgm_jax.md.io import read_coordinates
 from pgm_jax.md.simulation import Simulation, _dedupe
 from pgm_jax.md.topology import MDTopology, MoleculeRule
 from pgm_jax.md.vsites import VirtualSite, VirtualSites, amber_extra_points

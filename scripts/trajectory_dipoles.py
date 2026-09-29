@@ -35,10 +35,12 @@ jax.config.update("jax_enable_x64", True)
 from scipy.io import netcdf_file  # noqa: E402
 
 from pgm_jax.md import dielectric as D  # noqa: E402
-from pgm_jax.md.box import reduce_box  # noqa: E402
+from pgm_jax.md.box import (
+    box_from_cell,  # noqa: E402
+    reduce_box,  # noqa: E402
+)
 from pgm_jax.md.dipoles import DIP_COLUMNS, CellDipole  # noqa: E402
 from pgm_jax.md.forcefield import MDSettings, PGMForceField  # noqa: E402
-from pgm_jax.md.io import box_from_cell  # noqa: E402
 from pgm_jax.md.neighbors import AtomNeighbors, _failed  # noqa: E402
 from pgm_jax.md.simulation import _dedupe  # noqa: E402
 from pgm_jax.param import read_prmtop_pgm  # noqa: E402

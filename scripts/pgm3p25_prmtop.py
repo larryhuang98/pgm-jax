@@ -136,8 +136,8 @@ def main(argv=None):
         f"{a.out}.prmtop / .rst7: {len(x) // 3 * a.replicate**3} waters, box {L[0]:.4f} A, angles {angles[0]:.4f} deg"
     )
     if a.mdin:
+        from pgm_jax.md.box import box_from_cell
         from pgm_jax.md.forcefield import MDSettings
-        from pgm_jax.md.io import box_from_cell
         from pgm_jax.protein.pmemd import pmemd_mdin
 
         H = box_from_cell(L, angles) * 0.1

@@ -237,8 +237,9 @@ def ff_small_box():
 @case("ff_pgm3p25_512", needs="pgm3p25", group="b")
 def ff_pgm3p25_512():
     """pGM3P-25, 512 waters (the validation box): default MDSettings (mixed) and float64."""
+    from pgm_jax.md.box import box_from_cell
     from pgm_jax.md.forcefield import PGMForceField
-    from pgm_jax.md.io import box_from_cell, read_coordinates
+    from pgm_jax.md.io import read_coordinates
     from pgm_jax.param import read_prmtop_pgm
     from pgm_jax.system import System
 

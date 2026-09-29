@@ -117,7 +117,7 @@ import numpy as np
 from ..lj import lj_long_range
 from ..system import ATOM_QUANTITIES, QUANTITIES, System
 from ..units import KB
-from .box import min_image, volume
+from .box import centers_of_mass, min_image, volume
 from .forcefield import full_strain_derivative
 from .io import write_restart
 from .remd import ExchangeStatistics, MDReplicas, _nocount, _stack, _take, exchange_pairs, metropolis
@@ -443,10 +443,7 @@ class Alchemy:
         com = None
         if molecular:
             w = ff.masses
-            com = (
-                jax.ops.segment_sum(w[:, None] * pos, ff.mol, self.sys.nmol)
-                / jax.ops.segment_sum(w, ff.mol, self.sys.nmol)[:, None]
-            )
+            com = centers_of_mass(pos, w, ff.mol, self.sys.nmol)
         W = W + full_strain_derivative(lambda x, h: self.extra_energy(x, h, cand, params, lam), pos, H, ff.mol, com)
         if self.bound[2]:
             P = self.sys.expand(self.params0 if params is None else params)

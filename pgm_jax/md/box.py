@@ -4,7 +4,10 @@ H holds the lattice vectors as rows (nm): a = (ax, 0, 0), b = (bx, by, 0), c = (
 |bx| <= ax/2, |cx| <= ax/2, |cy| <= by/2.  In that form the sequential minimum-image reduction
 (c, then b, then a) is exact for any pair closer than half the smallest of ax, by, cz, which
 therefore bounds the cutoff (OpenMM uses the same rule).  Amber's truncated octahedron is in this
-form.  JAX-MD boxes are the transpose (columns are lattice vectors, upper triangular)."""
+form.  JAX-MD boxes are the transpose (columns are lattice vectors, upper triangular).
+
+Also: box matrices from cell parameters and back (Amber files), and molecular centres of mass
+(molecular scaling of the virial and the barostat)."""
 
 from __future__ import annotations
 
@@ -115,3 +118,61 @@ def wrap_fractional(x, H):
 def jaxmd_box(H):
     """JAX-MD affine box T (upper triangular, columns are lattice vectors): x = T u."""
     return jnp.asarray(H).T
+
+
+def box_from_cell(lengths, angles) -> np.ndarray:
+    """Box matrix from cell parameters (Amber / PDB convention: a along x, b in the xy plane).
+
+    Parameters
+    ----------
+    lengths : sequence of 3 floats
+        a, b, c (any length unit; the result has the same unit).
+    angles : sequence of 3 floats
+        alpha, beta, gamma [deg].
+
+    Returns
+    -------
+    np.ndarray
+        (3, 3) lattice vectors as rows, lower triangular.
+    """
+    a, b, c = lengths
+    alpha, beta, gamma = angles
+    al, be, ga = np.radians([alpha, beta, gamma])
+    ax = np.array([a, 0.0, 0.0])
+    bx = np.array([b * np.cos(ga), b * np.sin(ga), 0.0])
+    cx = c * np.cos(be)
+    cy = c * (np.cos(al) - np.cos(be) * np.cos(ga)) / np.sin(ga)
+    cz = np.sqrt(c**2 - cx**2 - cy**2)
+    return np.array([ax, bx, [cx, cy, cz]])
+
+
+def cell_parameters(H):
+    """Box matrix (rows, A or nm) -> lengths, angles (deg)."""
+    H = np.asarray(H, float)
+    a, b, c = np.linalg.norm(H, axis=1)
+    alpha = np.degrees(np.arccos(np.dot(H[1], H[2]) / (b * c)))
+    beta = np.degrees(np.arccos(np.dot(H[0], H[2]) / (a * c)))
+    gamma = np.degrees(np.arccos(np.dot(H[0], H[1]) / (a * b)))
+    return np.array([a, b, c]), np.array([alpha, beta, gamma])
+
+
+def centers_of_mass(pos, masses, mol, nmol: int):
+    """Mass-weighted centres of the molecules (JAX, traceable).
+
+    Parameters
+    ----------
+    pos : (N, 3) array
+        Atomic positions [nm].
+    masses : (N,) array
+        Atomic masses [amu].
+    mol : (N,) int array
+        Molecule index of every atom.
+    nmol : int
+        Number of molecules.
+
+    Returns
+    -------
+    (nmol, 3) array
+        Centres of mass [nm] (no minimum image: molecules must be whole).
+    """
+    return jax.ops.segment_sum(masses[:, None] * pos, mol, nmol) / jax.ops.segment_sum(masses, mol, nmol)[:, None]

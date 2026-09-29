@@ -71,9 +71,12 @@ from pgm_jax.md.alchemy import (  # noqa: E402
     alchemical_system,
     standard_schedule,
 )
-from pgm_jax.md.box import volume  # noqa: E402
+from pgm_jax.md.box import (
+    box_from_cell,  # noqa: E402
+    volume,  # noqa: E402
+)
 from pgm_jax.md.forcefield import MDSettings  # noqa: E402
-from pgm_jax.md.io import box_from_cell, read_coordinates  # noqa: E402
+from pgm_jax.md.io import read_coordinates  # noqa: E402
 from pgm_jax.md.rigid import RigidBody  # noqa: E402
 from pgm_jax.md.simulation import Simulation, _dedupe  # noqa: E402
 from pgm_jax.param import read_prmtop_pgm  # noqa: E402

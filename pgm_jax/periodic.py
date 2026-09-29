@@ -12,6 +12,7 @@ import numpy as np
 
 from .ewald import PeriodicPGM, neighbor_list
 from .lj import PeriodicLJ
+from .md.box import centers_of_mass
 from .system import System
 from .units import BAR_PER_KJMOL_NM3
 
@@ -25,7 +26,7 @@ def strain_derivative(energy, pos, H, sys: System | None = None):
     if sys is not None:
         w = jnp.asarray(sys.masses)
         mol = jnp.asarray(sys.mol)
-        com = jax.ops.segment_sum(w[:, None] * pos, mol, sys.nmol) / jax.ops.segment_sum(w, mol, sys.nmol)[:, None]
+        com = centers_of_mass(pos, w, mol, sys.nmol)
 
     def e(eps):
         F = jnp.eye(3) + eps

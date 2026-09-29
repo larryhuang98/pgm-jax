@@ -74,7 +74,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..units import KCAL
-from .box import min_image
+from .box import centers_of_mass, min_image
 
 KCAL_A2 = 418.4  # kJ/mol/nm^2 per kcal/mol/A^2
 KCAL_RAD2 = KCAL  # kJ/mol/rad^2 per kcal/mol/rad^2
@@ -403,7 +403,7 @@ def molecular_strain(energy, pos, H, mol, masses, nmol: int):
     pos = jnp.asarray(pos, jnp.float64)
     H = jnp.asarray(H, jnp.float64)
     w = jnp.asarray(masses, jnp.float64)
-    com = jax.ops.segment_sum(w[:, None] * pos, mol, nmol) / jax.ops.segment_sum(w, mol, nmol)[:, None]
+    com = centers_of_mass(pos, w, mol, nmol)
 
     def e(eps):
         F = jnp.eye(3) + eps

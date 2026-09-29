@@ -14,8 +14,9 @@ before use; everything is validated in float64.
 """
 
 from .channels import ElecChannel, elec_decomposition, molecular_polarizability, perm_dipoles
-from .ewald import PeriodicPGM, box_matrix, neighbor_list
+from .ewald import PeriodicPGM, neighbor_list
 from .lj import LJChannel, PeriodicLJ
+from .md.box import box_from_cell
 from .model import Model
 from .param import load_molecule, read_prmtop_pgm, save_molecule
 from .periodic import PeriodicModel, pressure_bar, strain_derivative
@@ -28,7 +29,7 @@ __all__ = [
     "molecular_polarizability",
     "perm_dipoles",
     "PeriodicPGM",
-    "box_matrix",
+    "box_from_cell",
     "neighbor_list",
     "LJChannel",
     "PeriodicLJ",

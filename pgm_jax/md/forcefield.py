@@ -104,7 +104,7 @@ from ..system import System
 from ..units import KE
 from ..vdw import gvdw_long_range, gvdw_pair
 from ._jaxmd import dataclasses
-from .box import min_image, volume
+from .box import centers_of_mass, min_image, volume
 from .kernels import erf_kernels, erf_kernels_closed
 from .pme import PME, grid_size
 from .topology import MDTopology
@@ -1477,10 +1477,7 @@ class PGMForceField:
         com = None
         if molecular:
             w = self.masses
-            com = (
-                jax.ops.segment_sum(w[:, None] * pos, self.mol, self.sys.nmol)
-                / jax.ops.segment_sum(w, self.mol, self.sys.nmol)[:, None]
-            )
+            com = centers_of_mass(pos, w, self.mol, self.sys.nmol)
         mu = jnp.asarray(mu, jnp.float64)
         if efield is None:
             W = full_strain_derivative(

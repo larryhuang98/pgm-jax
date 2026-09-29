@@ -43,17 +43,6 @@ from .units import KE
 SQRT_PI = 1.7724538509055159
 
 
-def box_matrix(a, b, c, alpha, beta, gamma):
-    """Amber/PDB convention: a along x, b in the xy plane.  Angles in degrees; returns rows."""
-    al, be, ga = np.radians([alpha, beta, gamma])
-    ax = np.array([a, 0.0, 0.0])
-    bx = np.array([b * np.cos(ga), b * np.sin(ga), 0.0])
-    cx = c * np.cos(be)
-    cy = c * (np.cos(al) - np.cos(be) * np.cos(ga)) / np.sin(ga)
-    cz = np.sqrt(c**2 - cx**2 - cy**2)
-    return np.array([ax, bx, [cx, cy, cz]])
-
-
 def neighbor_list(pos: np.ndarray, H: np.ndarray, rc: float, chunk: int = 200_000):
     """All pairs i<j and lattice images with |r_i - r_j + n.H| < rc.
     Returns (i, j, n) with n (P, 3) integer image vectors."""
