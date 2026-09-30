@@ -1,19 +1,34 @@
-"""Fitting bonded parameters to QM energies, forces (and dipoles) of sampled frames.
+"""Fit bonded parameters to QM energies, forces (and dipoles) of sampled frames.
+
+Contents: `FrameSet` (labelled frames of one molecule), `Fitter` (loss, L-BFGS / Adam fit,
+metrics), the loss scales S_E, S_F, S_MU, S_ESP and the parameter scales `SCALES`.
 
 Loss per molecule (the paper's objective, both terms in kcal units):
+
     L = w_E mean_k (dE_k - <dE>)^2 / s_E^2 + w_F mean_{k,atoms,xyz} (F_QM - F)^2 / s_F^2
         [+ w_mu mean_k |mu_QM - mu|^2 / s_mu^2] + l2 |z|^2 + l1 |theta_linear|_1
-with dE = E_QM - E_model and the per-molecule mean removed (the free energy offset);
-s_E = 1 kcal/mol, s_F = 1 kcal/mol/A, s_mu = 0.1 D.  Parameters are optimised in scaled
-units z = (theta - theta_0) / scale by L-BFGS (scipy) with JAX gradients; the pGM and LJ part
-is fixed (precomputed per frame) unless charge flux or fitted charges are on; learned pair scales (escale) enter
-linearly through precomputed per-class pair energies.
+
+with dE = E_QM - E_model and the per-molecule mean removed (the free energy offset); s_E = 1
+kcal/mol, s_F = 1 kcal/mol/A, s_mu = 0.1 D.  The molecule losses are averaged; an optional ESP
+restraint adds w_esp (ESP RMSE / 2 mhartree/e)^2.  Parameters are optimised in scaled units
+z = (theta - theta_0) / scale by L-BFGS (scipy) with JAX gradients; the pGM and LJ part is fixed
+(precomputed per frame) unless charge flux or fitted charges are on; learned pair scales
+(escale) enter linearly through precomputed per-class pair energies.
+
+    fit = Fitter(model, {0: {"train": frames("methanol", "train500"), "test": frames("methanol", "test298")}})
+    P = fit.fit(model.init_params())
+    fit.metrics(P, "test")
+
+Units: positions nm, energies kJ/mol, forces kJ/mol/nm, dipoles e nm (library units); metrics
+in kcal/mol, kcal/mol/A and D (the paper's).
 """
 
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
@@ -22,9 +37,15 @@ from jax.flatten_util import ravel_pytree
 
 from ..units import DEBYE_E_NM, KCAL
 
+if TYPE_CHECKING:
+    from numpy.typing import ArrayLike
+
+    from .model import BondedModel
+
 S_E, S_F, S_MU = KCAL, KCAL * 10.0, 0.1 * DEBYE_E_NM  # kJ/mol, kJ/mol/nm, e nm (0.1 D)
 S_ESP = 0.002  # hartree/e
 
+# typical size of each parameter (by leaf name): the optimiser works in z = (theta - theta_0) / scale
 SCALES = {
     "q": 0.05,
     "c": 0.002,
@@ -56,16 +77,34 @@ SCALES = {
 
 @dataclass
 class FrameSet:
+    """Labelled frames of one molecule (a dataclass of host arrays).
+
+    Parameters
+    ----------
+    X : np.ndarray (k, n, 3)
+        Positions [nm].
+    E : np.ndarray (k,)
+        Energies [kJ/mol] (any offset).
+    F : np.ndarray (k, n, 3)
+        Forces [kJ/mol/nm].
+    mu : np.ndarray (k, 3) or None
+        Dipoles [e nm]; None: no dipole labels.
+    extra : dict or None
+        Per-frame metadata (arrays with a leading axis k: "index", "src", scan "angle", ...).
+    """
+
     X: np.ndarray  # (k, n, 3) nm
     E: np.ndarray  # (k,) kJ/mol
     F: np.ndarray  # (k, n, 3) kJ/mol/nm
     mu: np.ndarray | None = None  # (k, 3) e nm
     extra: dict | None = None
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """Return the number of frames."""
         return len(self.E)
 
-    def subset(self, idx):
+    def subset(self, idx: ArrayLike) -> FrameSet:
+        """Return the frames `idx` (index array or mask), extras included."""
         idx = np.asarray(idx)
         return FrameSet(
             self.X[idx],
@@ -77,9 +116,56 @@ class FrameSet:
 
 
 class Fitter:
-    def __init__(self, model, data: dict, w_E=1.0, w_F=1.0, w_mu=0.0, l2=1e-4, l2_elec=None, esp=None, w_esp=0.0):
-        """data: {mol index: {split: FrameSet}}.  l2_elec: ridge weight on the scaled changes of
-        fitted pGM charges / covalent dipoles (prior = the ESP-fitted values; default l2)."""
+    """Loss, optimisation and metrics of a BondedModel on labelled frames (see the module docstring).
+
+    Attributes
+    ----------
+    model : BondedModel
+        The model.
+    data : dict
+        {molecule index: {split name: FrameSet}}.
+    w : tuple of float
+        (w_E, w_F, w_mu).
+    l2, l2_elec : float
+        Ridge weights on the scaled changes z (l2_elec for fitted charges / bond-charge increments).
+    esp : dict
+        {molecule index: (R [nm], grid [nm], V [hartree/e])}: ESP restraint data.
+    w_esp : float
+        Weight of the ESP restraint.
+    """
+
+    def __init__(
+        self,
+        model: BondedModel,
+        data: dict,
+        w_E: float = 1.0,
+        w_F: float = 1.0,
+        w_mu: float = 0.0,
+        l2: float = 1e-4,
+        l2_elec: float | None = None,
+        esp: dict | None = None,
+        w_esp: float = 0.0,
+    ) -> None:
+        """Set up the fitter.
+
+        Parameters
+        ----------
+        model : BondedModel
+            The model.
+        data : dict
+            {mol index: {split: FrameSet}}; the fit uses split "train".
+        w_E, w_F, w_mu : float
+            Weights of the energy, force and dipole terms.
+        l2 : float
+            Ridge weight on the scaled parameter changes z.
+        l2_elec : float, optional
+            Ridge weight on the scaled changes of fitted pGM charges / covalent dipoles (prior = the
+            ESP-fitted values); None: l2.
+        esp : dict, optional
+            {mol index: (R nm, grid nm, V hartree/e)}: QM ESP for the restraint; None: none.
+        w_esp : float
+            Weight of the ESP restraint (0: off).
+        """
         self.model, self.data = model, data
         self.w = (w_E, w_F, w_mu)
         self.l2 = l2
@@ -89,7 +175,16 @@ class Fitter:
         self._nb_cache = {}
 
     # ------------------------------------------------------------------ nonbonded (fixed)
-    def nonbonded(self, m, split):
+    def nonbonded(self, m: int, split: str) -> tuple[np.ndarray, ...]:
+        """Return the fixed nonbonded part of every frame of (molecule m, split), cached.
+
+        Returns
+        -------
+        tuple of np.ndarray
+            (energies (k,) [kJ/mol], forces (k, n, 3) [kJ/mol/nm], dipoles (k, 3) [e nm]) and, with
+            learned pair scales, the per-class pair energies (k, C) [kJ/mol] and their gradients
+            (k, C, n, 3) [kJ/mol/nm].
+        """
         key = (m, split)
         if key not in self._nb_cache:
             fs = self.data[m][split]
@@ -104,19 +199,35 @@ class Fitter:
             self._nb_cache[key] = out
         return self._nb_cache[key]
 
-    def prepare(self, split):
-        """Precompute the fixed pGM + LJ part of every frame (outside any trace)."""
+    def prepare(self, split: str) -> None:
+        """Precompute the fixed pGM + LJ part of every frame of `split` (outside any trace; no-op if dynamic)."""
         if not self.model.nb_dynamic:
             for m in self.data:
                 if split in self.data[m]:
                     self.nonbonded(m, split)
 
-    def _predict(self, m, P, X, nb=None):
-        """Energies, forces (and dipoles) of frames X for molecule m."""
+    def _predict(
+        self, m: int, P: dict, X: jax.Array, nb: tuple | None = None
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+        """Return the model's energies, forces and dipoles of frames X of molecule m.
+
+        With a dynamic nonbonded part the full model is evaluated (vmapped over frames); otherwise the
+        bonded part is added to the cached nonbonded values `nb` (with learned pair scales applied).
+
+        Returns
+        -------
+        E : jax.Array (k,)
+            Energies [kJ/mol].
+        F : jax.Array (k, n, 3)
+            Forces [kJ/mol/nm].
+        mu : jax.Array (k, 3)
+            Dipoles [e nm].
+        """
         model = self.model
         if model.nb_dynamic:
 
-            def one(X):
+            def one(X: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
+                """Return energy, forces and dipole of one frame."""
                 (e, dip), g = jax.value_and_grad(lambda X: model.energy(m, X, P), has_aux=True)(X)
                 return e, -g, dip
 
@@ -129,7 +240,8 @@ class Fitter:
             f_nb = f_nb - jnp.einsum("fcna,c->fna", nb[4], kap)
         return eb + e_nb, f_nb - gb, d_nb
 
-    def _terms(self, P, split="train"):
+    def _terms(self, P: dict, split: str = "train") -> dict:
+        """Return {molecule: (energy term, force term, dipole term)} of the loss on `split` (dimensionless)."""
         out = {}
         for m in self.data:
             if split not in self.data[m]:
@@ -144,14 +256,19 @@ class Fitter:
             out[m] = (lE, lF, lmu)
         return out
 
-    def esp_rmse(self, m, P):
-        """(RMSE hartree/e, relative RMSE) of the model ESP against the QM ESP of molecule m."""
+    def esp_rmse(self, m: int, P: dict) -> tuple[jax.Array, jax.Array]:
+        """Return the RMSE [hartree/e] and the relative RMSE of the model ESP against the QM ESP of molecule m."""
         R, G, V = self.esp[m]
         d = self.model.esp(m, jnp.asarray(R), jnp.asarray(G), P) - V
         msd = jnp.mean(d**2)
         return jnp.sqrt(msd), jnp.sqrt(msd / jnp.mean(jnp.asarray(V) ** 2))
 
-    def loss(self, P, split="train"):
+    def loss(self, P: dict, split: str = "train") -> jax.Array:
+        """Return the loss L on `split` (without the l2 / l1 penalties, which `fit` adds).
+
+        On "train" it includes the ESP restraint (w_esp > 0) and the neural bonded residual penalty
+        (`NNBonded.penalty`, unless the network is frozen).
+        """
         t = self._terms(P, split)
         w_E, w_F, w_mu = self.w
         L = sum(w_E * a + w_F * b + w_mu * c for a, b, c in t.values()) / max(len(t), 1)
@@ -167,21 +284,52 @@ class Fitter:
     # ------------------------------------------------------------------ optimisation
     def fit(
         self,
-        P0,
-        maxiter=2000,
-        frozen=(),
-        l1=0.0,
-        mask=None,
-        verbose=True,
-        tol=1e-10,
+        P0: dict,
+        maxiter: int = 2000,
+        frozen: Sequence[str] = (),
+        l1: float = 0.0,
+        mask: dict | None = None,
+        verbose: bool = True,
+        tol: float = 1e-10,
         adam_steps: int = 0,
         lr: float = 3e-3,
-    ):
-        """L-BFGS on all parameters except the families/names in `frozen` ("ref", "Kb", ...).
-        `mask`: pytree of 0/1 (1 = free), e.g. to switch off terms for a Lasso path.
-        adam_steps > 0: first that many Adam steps (learning rate lr, cosine decay) in the same
-        scaled variables, then L-BFGS (neural bonded terms: the network is not well conditioned
-        for L-BFGS from its initial point)."""
+    ) -> dict:
+        """Fit the parameters by L-BFGS (optionally after Adam) in scaled variables; return the fitted P.
+
+        Parameters
+        ----------
+        P0 : dict
+            Initial parameters (theta_0; the ridge prior).
+        maxiter : int
+            L-BFGS iterations (function evaluations: 2 maxiter).
+        frozen : sequence of str
+            Families or parameter names kept fixed ("ref", "Kb", ...).
+        l1 : float
+            Weight of the smooth L1 penalty on the free linear parameters (in units of their scale).
+        mask : dict, optional
+            Pytree of 0/1 like P0 (1 = free), e.g. to switch off terms for a Lasso path; None: all free.
+        verbose : bool
+            Print the loss and timing.
+        tol : float
+            L-BFGS-B ftol.
+        adam_steps : int
+            > 0: first that many Adam steps (learning rate lr, cosine decay) in the same scaled
+            variables, then L-BFGS (neural bonded terms: the network is not well conditioned for
+            L-BFGS from its initial point).
+        lr : float
+            Adam learning rate (in scaled units).
+
+        Returns
+        -------
+        dict
+            The fitted parameters.
+
+        Notes
+        -----
+        theta = theta_0 + free * scale * z with scale from SCALES (by leaf name, else 1); the objective
+        is loss + sum l2 (free z)^2 + l1 sum sqrt((linear free theta / scale)^2 + 1e-8), jitted with
+        its gradient.  Adam runs as jitted lax.scan chunks of 100 steps.
+        """
         from scipy.optimize import minimize
 
         self.prepare("train")
@@ -206,13 +354,15 @@ class Fitter:
             )
         )
 
-        def theta(z):
+        def theta(z: jax.Array) -> dict:
+            """Return the parameter pytree at scaled variables z."""
             return unravel(p0 + fr * sc * z)
 
-        def obj(z):
+        def obj(z: jax.Array) -> jax.Array:
+            """Return the objective (loss + penalties) at scaled variables z."""
             th = p0 + fr * sc * z
             L = self.loss(unravel(th)) + jnp.sum(l2v * (fr * z) ** 2)
-            if l1:
+            if l1:  # smooth |theta / scale| of the free linear parameters
                 L = L + l1 * jnp.sum(jnp.sqrt((ln * fr * th / sc) ** 2 + 1e-8))
             return L
 
@@ -222,10 +372,11 @@ class Fitter:
         if adam_steps > 0:
 
             @jax.jit
-            def step(carry, k):
+            def step(carry: tuple, k: jax.Array) -> tuple[tuple, jax.Array]:
+                """Take one Adam step with cosine learning-rate decay (scan body; carry (z, m, v), step index k)."""
                 z, m, v = carry
                 L, g = jax.value_and_grad(obj)(z)
-                m = 0.9 * m + 0.1 * g
+                m = 0.9 * m + 0.1 * g  # Adam moments (beta1 0.9, beta2 0.999), bias-corrected below
                 v = 0.999 * v + 0.001 * g * g
                 kk = k + 1.0
                 eta = lr * 0.5 * (1.0 + jnp.cos(jnp.pi * k / adam_steps))
@@ -241,7 +392,8 @@ class Fitter:
             if verbose:
                 print(f"    adam: {adam_steps} steps, loss {float(Ls[-1]):.4g} ({time.time() - t0:.1f} s)", flush=True)
 
-        def f(z):
+        def f(z: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+            """Return the objective and its gradient as float64 numpy arrays (for scipy)."""
             return tuple(np.asarray(v, float) for v in vg(jnp.asarray(z)))
 
         res = minimize(
@@ -260,9 +412,16 @@ class Fitter:
         return theta(jnp.asarray(res.x))
 
     # ------------------------------------------------------------------ metrics
-    def metrics(self, P, split="test"):
-        """Per molecule: energy MAE (offset removed), mean force-error norm per atom (kcal/mol/A),
-        dipole RMSE (D), in the paper's units."""
+    def metrics(self, P: dict, split: str = "test") -> dict:
+        """Return per-molecule error metrics on `split`, in the paper's units.
+
+        Returns
+        -------
+        dict
+            {molecule: {"E_MAE" energy MAE with the mean offset removed [kcal/mol], "F_MAE" mean
+            per-atom force-error norm [kcal/mol/A], "n" frames, "mu_RMSE_D" dipole RMSE [D] (with
+            dipole labels), "esp_RMSE_mEh" [mhartree/e] and "esp_RRMSE" (with ESP data)}}.
+        """
         self.prepare(split)
         out = {}
         for m in self.data:

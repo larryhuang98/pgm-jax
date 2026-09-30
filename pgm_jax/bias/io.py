@@ -1,41 +1,97 @@
-"""Output files of biased simulations and their readers.
+"""Write the output files of biased simulations and read them back.
 
-prefix.colvar   every `colvar` steps: step, time (ps), the CVs of each bias, the energy of each
-                bias (kJ/mol) at that configuration (the bias acting on that step, before any
-                update at the same step)
-prefix.hills    metadynamics hills as deposited: step, time, centre (d), sigma (d), height
-                (prefix.hills1, ... for further metadynamics biases)
-prefix.bias     the complete bias state (hills, OPES kernels and normalisation; BiasSet.save),
-                written with the restarts; Simulation.load_bias reads it."""
+Contents: `BiasOutput` (the COLVAR and HILLS writers of a running simulation) and
+`read_table` (reader of both, with continuation segments).
+
+    prefix.colvar   every `colvar` steps: step, time (ps), the CVs of each bias, the energy of each
+                    bias (kJ/mol) at that configuration (the bias acting on that step, before any
+                    update at the same step)
+    prefix.hills    metadynamics hills as deposited: step, time (ps), centre (d), sigma (d), height
+                    (kJ/mol) (prefix.hills1, ... for further metadynamics biases)
+    prefix.bias     the complete bias state (hills, OPES kernels and normalisation; BiasSet.save),
+                    written with the restarts; Simulation.load_bias reads it
+
+The text files start with "# key = value" header lines (the last one "# columns = ...") and have
+one whitespace-separated row per record.
+
+    meta, c = read_table("md.colvar")          # c["step"], c["time_ps"], c["phi"], c["bias0_metad"]
+
+Units: time ps, energies kJ/mol, CVs in their own units (nm, rad).
+"""
 
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from .core import MetaD
 
+if TYPE_CHECKING:
+    from .core import BiasSet, BiasState
 
-def _header(meta: dict, columns) -> str:
+
+def _header(meta: dict, columns: Sequence[str]) -> str:
+    """Return the "# key = value" header lines of `meta`, then "# columns = ..." (newline-terminated)."""
     lines = [f"{k} = {v}" for k, v in meta.items()] + ["columns = " + " ".join(columns)]
     return "".join(f"# {s}\n" for s in lines)
 
 
 class BiasOutput:
-    """COLVAR and HILLS files of a running simulation (driver side)."""
+    """COLVAR and HILLS files of a running simulation (driver side).
+
+    The drivers create one per run (or walker) and call `write` at the end of every block with the
+    drained COLVAR rows and the current bias state; only hills not yet written are appended.
+
+    Attributes
+    ----------
+    bs : BiasSet
+        The biases.
+    dt : float
+        Time step [ps] (time column = step * dt).
+    colvar_path : str
+        prefix.colvar.
+    colvar : bool
+        Whether COLVAR rows are written.
+    hills : list of tuple
+        (bias index, path, hills already written) per metadynamics bias with a HILLS file.
+    """
 
     def __init__(
         self,
-        bias_set,
+        bias_set: BiasSet,
         prefix: str,
         dt: float,
         temperature: float,
         append: bool = False,
-        state=None,
+        state: BiasState | None = None,
         colvar: bool = True,
         hills: bool = True,
-    ):
+    ) -> None:
+        """Open (create or continue) the COLVAR and HILLS files and write their headers.
+
+        Parameters
+        ----------
+        bias_set : BiasSet
+            The biases of the simulation.
+        prefix : str
+            Path prefix of the files.
+        dt : float
+            Time step [ps].
+        temperature : float
+            Simulation temperature [K] (header only).
+        append : bool
+            Continue existing files (a restart): no new header, and hills up to the count in `state`
+            count as written.
+        state : BiasState, optional
+            Current bias state (with `append`: the hills already in the files); None: none written.
+        colvar : bool
+            Write prefix.colvar (only if the set has colvar > 0).
+        hills : bool
+            Write prefix.hills for the metadynamics biases.
+        """
         self.bs, self.dt = bias_set, float(dt)
         self.colvar_path = prefix + ".colvar"
         meta = {
@@ -79,7 +135,16 @@ class BiasOutput:
                     done = 0
                 self.hills.append((k, path, done))
 
-    def write(self, rows, state) -> None:
+    def write(self, rows: np.ndarray, state: BiasState) -> None:
+        """Append COLVAR rows and the hills deposited since the last call.
+
+        Parameters
+        ----------
+        rows : np.ndarray (n, ncol)
+            COLVAR rows from `BiasSet.drain` (step, CVs, bias energies [kJ/mol]).
+        state : BiasState
+            Current bias state (for the hills).
+        """
         if len(rows) and self.colvar:
             with open(self.colvar_path, "a") as fh:
                 for r in rows:
@@ -103,10 +168,25 @@ class BiasOutput:
         self.hills = new
 
 
-def read_table(path) -> tuple[dict, dict]:
-    """A COLVAR or HILLS file (or a list of continuation segments): (header, {column: array}).
-    Rows superseded by a continuation from an earlier checkpoint (where the step goes back, the rows
-    of earlier segments at that step or later) are dropped; equal steps in a row (walkers) are kept."""
+def read_table(path: str | os.PathLike | Sequence[str | os.PathLike]) -> tuple[dict, dict]:
+    """Read a COLVAR or HILLS file, or a list of continuation segments, into header and columns.
+
+    Rows superseded by a continuation from an earlier checkpoint are dropped: where the step goes
+    back, the rows of earlier segments at that step or later are removed.  Equal steps in a row
+    (walkers) are kept.
+
+    Parameters
+    ----------
+    path : str, os.PathLike, or sequence of them
+        File(s), in order.
+
+    Returns
+    -------
+    meta : dict
+        Header entries (str -> str) of the first file that has each key.
+    columns : dict
+        Column name -> np.ndarray (rows,).
+    """
     paths = [path] if isinstance(path, (str, os.PathLike)) else list(path)
     meta, rows, cols = {}, [], None
     for p in paths:
@@ -125,7 +205,7 @@ def read_table(path) -> tuple[dict, dict]:
     if len(x):  # continuation segments start where the step goes back
         step = x[:, 0]
         starts = np.append(False, step[1:] < step[:-1])
-        s_at = np.where(starts, step, np.inf)
+        s_at = np.where(starts, step, np.inf)  # first step of each continuation segment
         later = np.append(np.minimum.accumulate(s_at[::-1])[::-1][1:], np.inf)  # min over starts after i
         x = x[step < later]
     return meta, {c: x[:, k] for k, c in enumerate(cols)}

@@ -1,11 +1,21 @@
-"""Reference data of the bonded study: molecules (topology + pGM parameters) and DFT-labelled
-frames (MACE-OFF sampling, wB97M-D3(BJ)/def2-TZVPPD labels), in pGM-JAX units."""
+"""Load the reference data of the bonded study in pGM-JAX units.
+
+Molecules (topology + pGM parameters, `mol_spec`), DFT-labelled frames (MACE-OFF sampling,
+wB97M-D3(BJ)/def2-TZVPPD labels, `frames`), torsion scans, the QM ESP of the pGM fit
+(`esp_data`), and the per-molecule train / test / scan sets of the study (`load`).  Files live
+under data/bonded (`DATA`): molecules/<name>.json, frames/<name>_*.npz, dft/<name>__<key>__*.npz,
+params/<name>.json.  See docs/howto_bonded.md for how they are made.
+
+Units: positions nm, energies kJ/mol, forces kJ/mol/nm, dipoles e nm (converted from the files'
+A, hartree, hartree/bohr and atomic units).
+"""
 
 from __future__ import annotations
 
 import glob
 import json
 import os
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -16,10 +26,19 @@ from ..fit import FrameSet
 from ..model import MolSpec
 from .molecules import MOLECULES
 
-DATA = repo_path("data/bonded")
+DATA = repo_path("data/bonded")  # molecules/, frames/, dft/, params/
 
 
 def mol_spec(name: str, with_pgm: bool = True) -> MolSpec:
+    """Return the MolSpec of a study molecule (reference geometry: the first MACE-OFF minimum).
+
+    Parameters
+    ----------
+    name : str
+        Molecule name (study/molecules.py).
+    with_pgm : bool
+        Load its pGM parameters (params/<name>.json).
+    """
     d = json.load(open(os.path.join(DATA, "molecules", f"{name}.json")))
     fr = np.load(os.path.join(DATA, "frames", f"{name}_md.npz"))
     pgm = None
@@ -32,7 +51,22 @@ def mol_spec(name: str, with_pgm: bool = True) -> MolSpec:
 
 
 def frames(name: str, key: str) -> FrameSet | None:
-    """DFT-labelled frames of one set ("train500", "test298", "scan0", ..., "scan2d"), all chunks."""
+    """Return the DFT-labelled frames of one set, all chunks, or None if there are none.
+
+    Parameters
+    ----------
+    name : str
+        Molecule name.
+    key : str
+        Set: "train500", "test298", "scan0", "scan1", ..., or "scan2d".
+
+    Returns
+    -------
+    FrameSet or None
+        Frames sorted by their index in the sampled set (scan2d: file order), with extras "index",
+        "src" (chunk file) and, for scans, "angle" [deg] and, for 1D scans, "torsion" (atoms) and
+        "mace_E" (MACE-OFF energies [eV]).
+    """
     pat = (
         os.path.join(DATA, "dft", f"{name}__{key}__*.npz")
         if key != "scan2d"
@@ -71,15 +105,27 @@ def frames(name: str, key: str) -> FrameSet | None:
 
 
 def scan_keys(name: str) -> list[str]:
+    """Return the torsion-scan set names ("scan0", ...) of a molecule (empty without scans)."""
     p = os.path.join(DATA, "frames", f"{name}_scan.npz")
     if not os.path.exists(p):
         return []
     return [f"scan{t}" for t in range(len(np.load(p)["torsions"]))]
 
 
-def esp_data(name, n_points=800, seed=0):
-    """QM ESP of the pGM parameter fit (runs/bonded/pgm/<name>/esp.dat, B3LYP/aug-cc-pVTZ at the
-    MACE-OFF minimum): (atom positions nm, grid nm, potential hartree/e), `n_points` random points."""
+def esp_data(name: str, n_points: int = 800, seed: int = 0) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Return the QM ESP of the pGM parameter fit at `n_points` random points, or None without the file.
+
+    runs/bonded/pgm/<name>/esp.dat (B3LYP/aug-cc-pVTZ at the MACE-OFF minimum).
+
+    Returns
+    -------
+    R : np.ndarray (n, 3)
+        Atom positions [nm].
+    grid : np.ndarray (k, 3)
+        ESP points [nm].
+    V : np.ndarray (k,)
+        Potential [hartree/e].
+    """
     p = repo_path("runs/bonded/pgm", name, "esp.dat")
     if not os.path.exists(p):
         return None
@@ -91,7 +137,8 @@ def esp_data(name, n_points=800, seed=0):
     return R, E[k, 1:] * BOHR_NM, E[k, 0]
 
 
-def concat(sets):
+def concat(sets: Sequence[FrameSet | None]) -> FrameSet:
+    """Return the frames of several FrameSets as one (None and empty sets skipped; extras dropped)."""
     sets = [s for s in sets if s is not None and len(s)]
     return FrameSet(
         np.concatenate([s.X for s in sets]),
@@ -101,14 +148,27 @@ def concat(sets):
     )
 
 
-def mol_list(spec):
+def mol_list(spec: str) -> list[str]:
+    """Return the molecule names of a comma-separated list of names and subsets ("A1", "A2", "A3", "A4", "B")."""
     out = []
     for tok in spec.split(","):
         out += [n for n, v in MOLECULES.items() if v[2] == tok] if tok in ("A1", "A2", "A3", "A4", "B") else [tok]
     return out
 
 
-def load(names, with_scans=True):
+def load(names: Sequence[str], with_scans: bool = True) -> tuple[list[MolSpec], dict]:
+    """Return the MolSpecs and data of the named molecules for a Fitter.
+
+    Molecules without train500 or test298 frames are skipped (with a printed note).  The training
+    set includes the torsion scans with at least 20 frames.
+
+    Returns
+    -------
+    specs : list of MolSpec
+        The molecules loaded.
+    data : dict
+        {index: {"train": FrameSet, "test": FrameSet, "scans": {key: FrameSet}}}.
+    """
     data, specs = {}, []
     for n in names:
         tr = frames(n, "train500")

@@ -1,4 +1,8 @@
-"""Named sets of bonded term families of the bonded study (scripts/bonded/experiments.py, examples)."""
+"""Define named sets of bonded term families of the bonded study (scripts/bonded/experiments.py, examples).
+
+`FAMILY_SETS` maps a set name to a tuple of terms.REGISTRY families ("nnb": the neural bonded
+terms); `families_of` also combines names with "+".
+"""
 
 from __future__ import annotations
 
@@ -44,7 +48,15 @@ FAMILY_SETS = {
 
 
 def families_of(spec: str) -> tuple:
-    """A FAMILY_SETS name, or families and set names joined by '+' ("amber+cmap", "paper+twist")."""
+    """Return the families of a FAMILY_SETS name, or of families and set names joined by "+".
+
+    Duplicates are removed, keeping the first occurrence ("amber+cmap", "paper+twist").
+
+    Examples
+    --------
+    >>> families_of("diag+twist")
+    ('bond_morse', 'angle_cos', 'torsion', 'improper', 'twist')
+    """
     if spec in FAMILY_SETS:
         return tuple(FAMILY_SETS[spec])
     out = []

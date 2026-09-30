@@ -1,5 +1,9 @@
-"""Several biased simulations of one system in one compiled program (jax.vmap), for either MD
-engine (Simulation, FlexibleSimulation).
+"""Run several biased simulations of one system in one compiled program (jax.vmap).
+
+Contents: `Walkers`, a subclass of the replica engine `MDReplicas` of md/remd.py (stacked
+states, one layout of the neighbour lists, overflows resized for all), for either MD engine
+(Simulation, FlexibleSimulation).  Small systems leave most of a GPU idle, so W walkers cost
+little more than one.
 
     from pgm_jax.bias.walkers import Walkers
     sim = FlexibleSimulation(..., bias=BiasSet([MetaD([phi, psi], ...)], colvar=100))
@@ -9,21 +13,36 @@ engine (Simulation, FlexibleSimulation).
     w = Walkers(sim, 24, bias_states=[...])       # e.g. umbrella windows: one Harmonic centre per walker
     w.run(500000, prefix="ala2", report_every=5000, checkpoint_every=50000)
 
-Small systems leave most of a GPU idle, so W walkers cost little more than one (the replica
-engine of md/remd.py: stacked states, one layout of the neighbour lists, overflows resized for all).
+Two modes:
 
-shared=False  every walker carries its own bias state (BiasState batched with the MD state).
-shared=True   one bias state for all walkers (multiple walkers, Raiteri et al., JPCB 110, 3533
-              (2006)): after each step every walker's COLVAR row is recorded and, when an update is
-              due, the walkers deposit one after the other (walker 0 first) into the shared bias;
-              then the forces of all walkers are corrected to the new bias at their positions (the
-              change of V booked as heat and bias work, per walker).
+    shared=False  every walker carries its own bias state (BiasState batched with the MD state);
+                  the MD step and the bias hook of md/integrate.py are vmapped.
+    shared=True   one bias state for all walkers (multiple walkers [1]_): after each step every
+                  walker's COLVAR row is recorded and, when an update is due, the walkers deposit
+                  one after the other (walker 0 first) into the shared bias; then the forces of
+                  all walkers are corrected to the new bias at their positions (the change of V
+                  booked as heat per walker, and its sum as bias work).
+
 Walkers start from the simulation's current configuration with momenta drawn from independent
-random streams.  Outputs: prefix_wNN.colvar per walker; hills in prefix.hills (shared) or
-prefix_wNN.hills; prefix_walkers.log (per report: mean temperature, epot and bias of the walkers);
-checkpoint prefix.walkers.chk (all states; `load_checkpoint`)."""
+random streams.  They run NVT only, without multiple time stepping.  Outputs: prefix_wNN.colvar
+per walker; hills in prefix.hills (shared) or prefix_wNN.hills; prefix_walkers.log (per report:
+mean temperature, epot and bias of the walkers); checkpoint prefix.walkers.chk (all states;
+`load_checkpoint`).
+
+Units: steps, ps, K, kJ/mol (as the MD engines).
+
+References
+----------
+.. [1] P. Raiteri, A. Laio, F. L. Gervasio, C. Micheletti, M. Parrinello, J. Phys. Chem. B 110,
+   3533 (2006).
+
+See also docs/enhanced_sampling.md; md/remd.py (MDReplicas), bias/core.py (BiasSet).
+"""
 
 from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, TextIO
 
 import jax
 import jax.numpy as jnp
@@ -34,18 +53,52 @@ from ..md.engine import OPTIONAL_STATE
 from ..md.remd import MDReplicas, _nocount, _stack
 from .io import BiasOutput
 
+if TYPE_CHECKING:
+    from ..md.flexible import FlexibleSimulation
+    from ..md.integrate import MDState
+    from ..md.simulation import Simulation
+    from .core import BiasState
 
-def _unbatched_bias(S):
-    """vmap axes: 0 everywhere except the induction step counter and the (shared) bias state."""
+
+def _unbatched_bias(S: MDState) -> MDState:
+    """Return the vmap axes of a stacked state with a shared bias.
+
+    0 for every leaf except the induction step counter and the bias state (None: unbatched), so the
+    shared bias is broadcast to every walker.
+    """
     ax = jax.tree_util.tree_map(lambda _: 0, _nocount(S).set(bias=None))
     return ax.set(induction=ax.induction.set(count=None), bias=None)
 
 
 class Walkers(MDReplicas):
-    """Several biased copies of one simulation advanced together (see the module docstring)."""
+    """Several biased copies of one simulation advanced together (see the module docstring).
 
-    def __init__(self, sim, walkers: int, shared: bool = False, bias_states=None, seed: int = 0, log=None):
-        """Walkers from `sim`'s current configuration.
+    Attributes
+    ----------
+    sim : Simulation or FlexibleSimulation
+        The simulation the walkers were created from (system, force field, integrator).
+    integ : object
+        `sim.integ`, the integrator whose step and bias hook are vmapped.
+    shared : bool
+        One bias state for all walkers.
+    n : int
+        Number of walkers W.
+    S : MDState
+        The stacked walker states (leading axis W; the bias state unbatched if shared).
+    log : text stream or None
+        Echo of the log table rows.
+    """
+
+    def __init__(
+        self,
+        sim: Simulation | FlexibleSimulation,
+        walkers: int,
+        shared: bool = False,
+        bias_states: Sequence[BiasState] | None = None,
+        seed: int = 0,
+        log: TextIO | None = None,
+    ) -> None:
+        """Set up W walkers from `sim`'s current configuration.
 
         Parameters
         ----------
@@ -56,17 +109,19 @@ class Walkers(MDReplicas):
         shared : bool
             One bias state deposited into by every walker (multiple-walker metadynamics / OPES)
             instead of one per walker.
-        bias_states : sequence, optional
-            One bias state per walker (e.g. umbrella centres; not with shared=True).
+        bias_states : sequence of BiasState, optional
+            One bias state per walker (e.g. umbrella centres; not with shared=True); None: every
+            walker starts from the simulation's bias state.
         seed : int
             Seed of the walkers' momenta and thermostat streams.
-        log : text stream or None
-            Receives the rows of the log table of `run` too.
+        log : text stream, optional
+            Receives the rows of the log table of `run` too; None: file only.
 
         Raises
         ------
         ValueError
-            A simulation without a bias or thermostat, NPT, MTS, or bias_states with shared=True.
+            A simulation without a bias or thermostat, NPT, MTS, bias_states with shared=True, or a
+            number of bias states other than W.
         """
         self.log = log
         n = walkers
@@ -103,12 +158,18 @@ class Walkers(MDReplicas):
         self._rows = [[] for _ in range(self.n)]
 
     # ------------------------------------------------------------------ compiled pieces
-    def _axes(self):
+    def _axes(self) -> MDState:
+        """Return the vmap axes of the stacked state (the shared bias unbatched when shared=True)."""
         from ..md.remd import _axes
 
         return _unbatched_bias(self.S) if self.shared else _axes(self.S)
 
-    def _build(self):
+    def _build(self) -> None:
+        """Compile the vmapped pieces: the block runner, forces, wrapping, positions, extent, bias energies.
+
+        Replaces `MDReplicas._build`: `_run(S, n)` is `_run_shared` or `_run_independent`, jitted with
+        the step count `n` static (a new block length recompiles).
+        """
         integ, sim = self.integ, self.sim
         ax = self._axes()
         if self.shared:
@@ -128,15 +189,31 @@ class Walkers(MDReplicas):
         else:
             self._energies = jax.jit(jax.vmap(lambda x, box, bs: bias.energies(bs, integ._bias_atoms(x), box)))
 
-    def _run_independent(self, S, n):
-        """Every walker with its own bias: the step and the bias update vmapped, the loop over steps
-        outside vmap (the walkers share the step counter), so the steps between updates carry no
-        conditional (md/integrate.strided_loop)."""
+    def _run_independent(self, S: MDState, n: int) -> MDState:
+        """Run `n` steps of walkers that each have their own bias (traced; jitted by `_build`).
+
+        The step and the bias hook (`integ._bias_post`) are vmapped over the walkers; the loop over
+        steps is outside vmap (the walkers share the step counter), so the steps between bias events
+        carry no conditional (md/integrate.strided_loop with the bias set's stride).
+
+        Parameters
+        ----------
+        S : MDState
+            Stacked walker states (leading axis W).
+        n : int
+            Number of steps (static).
+
+        Returns
+        -------
+        MDState
+            The stacked states after n steps.
+        """
         from ..md.integrate import strided_loop
 
         integ = self.integ
         ax = self._axes()
         W = self.n
+        # per-walker solver diagnostics, reset for the block
         S = S.set(max_iters=jnp.zeros(W, jnp.int32), resid=jnp.zeros(W), overflow=jnp.zeros(W, bool))
         step = jax.vmap(
             lambda s: integ._book_field(s, integ._step(s)), in_axes=(ax,), out_axes=ax
@@ -146,7 +223,30 @@ class Walkers(MDReplicas):
         post = jax.vmap(integ._bias_post, in_axes=(ax,), out_axes=ax)
         return strided_loop(S, n, step, post, integ.bias.stride)
 
-    def _run_shared(self, S, n):
+    def _run_shared(self, S: MDState, n: int) -> MDState:
+        """Run `n` steps of walkers that share one bias state (traced; jitted by `_build`).
+
+        After every (vmapped) step, `post` records one COLVAR row per walker and, when an update is
+        due, deposits the walkers' updates in order into the shared bias and corrects every walker's
+        forces, epot and heat to the new bias at its positions.
+
+        Parameters
+        ----------
+        S : MDState
+            Stacked walker states with an unbatched bias state.
+        n : int
+            Number of steps (static).
+
+        Returns
+        -------
+        MDState
+            The states after n steps.
+
+        Notes
+        -----
+        Unlike `_run_independent`, the bias hook runs after every step (one lax.cond per walker for
+        the COLVAR row and one for the update), not in strides.
+        """
         integ, bias = self.integ, self.integ.bias
         ax = self._axes()
         W = self.n
@@ -155,29 +255,36 @@ class Walkers(MDReplicas):
         step = jax.vmap(
             lambda s: integ._book_field(s, integ._step(s)), in_axes=(ax,), out_axes=ax
         )  # E(t) work (efield.py)
+        # V and dV/dpos of every walker under one (shared) bias state
         grad = jax.vmap(jax.value_and_grad(bias.energy, argnums=1), in_axes=(None, 0, 0))
         to_engine = jax.vmap(integ._map_atom_forces)
         atoms = jax.vmap(integ._bias_atoms)
 
-        def post(S):
+        def post(S: MDState) -> MDState:
+            """Record the COLVAR rows of all walkers, then apply the shared-bias update if one is due."""
             pos = atoms(S.dyn.position)
             bs = S.bias
-            t = S.step[0]
+            t = S.step[0]  # the walkers share the step counter
             for w in range(W):
                 bs = bias.record(bs, pos[w], S.box[w], t)
             S = S.set(bias=bs)
             if not bias.dynamic:
                 return S
 
-            def dep(S):
+            def dep(S: MDState) -> MDState:
+                """Deposit every walker's update in turn, then move all walkers to the new bias.
+
+                The forces, epot and heat of each walker change by the bias change at its positions; the sum
+                of the energy changes is added to the bias work.
+                """
                 old = S.bias
                 new = old
                 for w in range(W):
                     new = bias.deposit(new, pos[w], S.box[w], t)
                 e0, g0 = grad(old, pos, S.box)
                 e1, g1 = grad(new, pos, S.box)
-                dF = to_engine(S.dyn.position, S.box, g0 - g1)
-                de = e1 - e0
+                dF = to_engine(S.dyn.position, S.box, g0 - g1)  # forces of the new bias at the same positions
+                de = e1 - e0  # (W,) change of V at fixed x: booked as heat and bias work
                 F = jax.tree_util.tree_map(jnp.add, S.dyn.force, dF)
                 return S.set(
                     bias=new._replace(work=new.work + jnp.sum(de)),
@@ -191,7 +298,8 @@ class Walkers(MDReplicas):
         return jax.lax.fori_loop(0, n, lambda _, s: post(step(s)), S)
 
     # ------------------------------------------------------------------ bias bookkeeping (host)
-    def _reserve(self, n: int):
+    def _reserve(self, n: int) -> None:
+        """Grow the bias buffers for `n` steps of every walker (host; n * W updates for a shared bias)."""
         bias = self.integ.bias
         if self.shared:
             self.S = self.S.set(bias=bias.reserve(self.S.bias, n * self.n))
@@ -199,12 +307,13 @@ class Walkers(MDReplicas):
             per = bias.reserve_many([jax.tree_util.tree_map(lambda a: a[w], self.S.bias) for w in range(self.n)], n)
             self.S = self.S.set(bias=jax.tree_util.tree_map(lambda *a: jnp.stack(a), *per))
 
-    def _drain(self):
+    def _drain(self) -> None:
+        """Move the COLVAR rows of the device buffer(s) to the per-walker host lists and empty the buffer(s)."""
         bias = self.integ.bias
         if self.shared:
             rows, bs = bias.drain(self.S.bias)
             for w in range(self.n):
-                self._rows[w].append(rows[w :: self.n])
+                self._rows[w].append(rows[w :: self.n])  # rows are recorded walker by walker at each COLVAR step
             self.S = self.S.set(bias=bs)
         else:
             log, nlog = np.asarray(self.S.bias.log), np.asarray(self.S.bias.nlog)
@@ -212,36 +321,36 @@ class Walkers(MDReplicas):
                 self._rows[w].append(log[w, : nlog[w]])
             self.S = self.S.set(bias=self.S.bias._replace(nlog=jnp.zeros(self.n, jnp.int32)))
 
-    def advance(self, n: int):
+    def advance(self, n: int) -> None:
+        """Advance every walker `n` steps: reserve the bias buffers, run (`MDReplicas.advance`), collect the rows."""
         self._reserve(int(n))
         super().advance(int(n))
         self._drain()
 
-    def bias_state(self, w: int = 0):
-        """The bias state of walker w (the shared one for shared=True)."""
+    def bias_state(self, w: int = 0) -> BiasState:
+        """Return the bias state of walker `w` (the shared one for shared=True)."""
         if self.shared:
             return self.S.bias
         return jax.tree_util.tree_map(lambda a: a[w], self.S.bias)
 
     def bias_energies(self) -> np.ndarray:
-        """(W, n_bias) bias energies of every walker."""
+        """Return the bias energies of every walker, np.ndarray (W, n_bias) [kJ/mol]."""
         return np.asarray(self._energies(self.S.dyn.position, self.S.box, self.S.bias))
 
     def rows(self, w: int) -> np.ndarray:
-        """COLVAR rows of walker w collected since the last call."""
+        """Return the COLVAR rows of walker `w` collected since the last call, np.ndarray (n, ncol)."""
         r = self._rows[w]
         self._rows[w] = []
         return np.concatenate(r) if r else np.zeros((0, self.integ.bias.ncol))
 
-    def _slot(self, S, k: int):
-        """The MDState of walker k of the stacked state S, with its bias state (the shared one
-        for shared=True)."""
+    def _slot(self, S: MDState, k: int) -> MDState:
+        """Return the MDState of walker `k` of the stacked state `S`, with its bias state (the shared one if shared)."""
         T = jax.tree_util.tree_map(lambda x: x[k], _nocount(S.set(bias=None)))
         T = T.set(induction=T.induction.set(count=S.induction.count))
         return T.set(bias=S.bias if self.shared else jax.tree_util.tree_map(lambda a: a[k], S.bias))
 
-    def state(self, k: int):
-        """The MDState of walker k (with its bias state)."""
+    def state(self, k: int) -> MDState:
+        """Return the MDState of walker `k` (with its bias state)."""
         return self._slot(self.S, k)
 
     # ------------------------------------------------------------------ driver
@@ -254,18 +363,18 @@ class Walkers(MDReplicas):
         checkpoint_every: int = 0,
         append: bool = False,
     ) -> None:
-        """Advance every walker nsteps with output files.
+        """Advance every walker `nsteps` steps with output files.
 
         Parameters
         ----------
         nsteps : int
-            Steps.
+            Steps [steps].
         prefix : str
             Path prefix of the files: COLVAR rows prefix_wNN.colvar per walker, hills in
             prefix.hills (shared) or prefix_wNN.hills.
         report_every : int
-            Steps between rows of prefix_walkers.log (mean temperature [K], mean potential and bias
-            energies and total bias work [kJ/mol], aggregate ns/day); 0: none.
+            Steps between rows of prefix_walkers.log (mean temperature [K] of up to 64 walkers, mean
+            potential and bias energies and total bias work [kJ/mol], aggregate ns/day); 0: none.
         checkpoint_every : int
             Steps between checkpoints prefix.walkers.chk (0: none; with checkpoints also at the end).
         append : bool
@@ -318,7 +427,7 @@ class Walkers(MDReplicas):
             self.save_checkpoint(prefix + ".walkers.chk")
 
     def state_dict(self) -> dict:
-        """The walkers' content for a checkpoint.
+        """Return the walkers' content for a checkpoint.
 
         Returns
         -------
@@ -334,7 +443,7 @@ class Walkers(MDReplicas):
         }
 
     def load_state_dict(self, d: dict) -> None:
-        """Walker states from `state_dict` content; neighbour lists are rebuilt in one layout.
+        """Restore the walker states from `state_dict` content; neighbour lists are rebuilt in one layout.
 
         Parameters
         ----------
@@ -375,8 +484,10 @@ class Walkers(MDReplicas):
         write_checkpoint(path, "walkers", self.state_dict())
 
     def load_checkpoint(self, path: str) -> None:
-        """Continue from a checkpoint written by `save_checkpoint`, or from a legacy pickle ``.walkers.chk`` of
-        pgm_jax up to commit e72c57c (same system, walker count and mode).
+        """Continue from a checkpoint written by `save_checkpoint`.
+
+        Legacy pickle ``.walkers.chk`` files of pgm_jax up to commit e72c57c are read too (same
+        system, walker count and mode).
 
         Parameters
         ----------

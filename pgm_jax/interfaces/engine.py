@@ -1,4 +1,8 @@
-"""pGM energies, forces, virials and dipoles for external MD codes: one jitted call per configuration.
+"""Compute pGM energies, forces, virials and dipoles for external MD codes: one jitted call per configuration.
+
+Contents: `PGMEngine` (periodic pGM with the MD engine's force field), `GasPhaseEngine` (the
+gas-phase Model), `EngineResult` (one evaluation), `standard_cell` (cell -> reduced
+lower-triangular box and rotation), `match_previous` (one-to-one assignment of structures).
 
 External drivers (ASE, i-PI, OpenMM; pgm_jax/interfaces/) hand over positions and a cell and want
 the energy and forces back; they integrate the equations of motion themselves.  `PGMEngine` keeps
@@ -35,32 +39,46 @@ triangular form of the engine (a along x, b in the xy plane), and forces and vir
 back.
 
 Virial W = dE/d eps (3 x 3, kJ/mol) at the converged dipoles (the energy is variational in them):
-  stress="atomic"     every atom scaled with the box (x -> (1 + eps) x), the derivative external
-                      codes expect for flexible molecules (ASE stress = W / V, i-PI virial = -W);
-                      the default with flexible templates;
-  stress="molecular"  molecular centres of mass scaled, molecules translated rigidly (the native
-                      pressure; for rigid molecules held by constraints, whose atomic virial would
-                      miss the constraint forces); the default for the rigid-molecule model.
+
+    stress="atomic"     every atom scaled with the box (x -> (1 + eps) x), the derivative external
+                        codes expect for flexible molecules (ASE stress = W / V, i-PI virial = -W);
+                        the default with flexible templates;
+    stress="molecular"  molecular centres of mass scaled, molecules translated rigidly (the native
+                        pressure; for rigid molecules held by constraints, whose atomic virial would
+                        miss the constraint forces); the default for the rigid-molecule model.
+
 Both include, with MDSettings.lj_lrc, the long-range correction's impulse term, exactly as
 Simulation.pressure(): W = PGMForceField.strain_derivative (+ the bonded terms for "atomic").
 
-Units: nm, kJ/mol, kJ/mol/nm, e nm, amu (conversions in the driver modules)."""
+Units: nm, kJ/mol, kJ/mol/nm, e nm, amu (conversions in the driver modules).
+
+See also docs/interfaces.md.
+"""
 
 from __future__ import annotations
 
 import math
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.typing import ArrayLike
 
 from ..md.box import check_box, inv3, max_cutoff, min_image, reduce_box
 from ..md.forcefield import MDSettings, PGMForceField
 from ..md.neighbors import AtomNeighbors, MoleculeNeighbors
 from ..md.topology import MDTopology
 from ..system import System
+
+if TYPE_CHECKING:
+    from ..md.flexible import FlexibleTemplate, RigidTemplate
+    from ..md.forcefield import InductionState
+    from ..md.restraints import Restraint, Restraints
+    from ..model import Model
 
 __all__ = ["PGMEngine", "GasPhaseEngine", "EngineResult", "standard_cell"]
 
@@ -73,10 +91,32 @@ _LIST_ERRORS = int(_PEC.NEIGHBOR_LIST_OVERFLOW | _PEC.CELL_LIST_OVERFLOW | _PEC.
 
 
 # ----------------------------------------------------------------------------- cells
-def standard_cell(cell):
-    """(H, Q) for a right-handed cell (rows are lattice vectors, nm): H = reduce_box(cell @ Q) is
-    lower triangular and reduced, Q a rotation (Q = I when the cell is already lower triangular).
-    Positions map as x -> x @ Q, forces back as f -> f @ Q.T, a virial W -> Q W Q.T."""
+def standard_cell(cell: ArrayLike) -> tuple[np.ndarray, np.ndarray | None]:
+    """Return (H, Q) for a right-handed cell: the reduced lower-triangular box and the rotation to it.
+
+    Parameters
+    ----------
+    cell : ArrayLike (3, 3)
+        Cell, lattice vectors as rows [nm].
+
+    Returns
+    -------
+    H : np.ndarray (3, 3)
+        reduce_box(cell @ Q), lower triangular and reduced [nm].
+    Q : np.ndarray (3, 3) or None
+        Rotation (None when the cell is already lower triangular).  Positions map as x -> x @ Q,
+        forces back as f -> f @ Q.T, a virial W -> Q W Q.T.
+
+    Raises
+    ------
+    ValueError
+        For a singular (not 3D periodic) or left-handed cell.
+
+    Notes
+    -----
+    From the QR decomposition cell^T = Qr Rr, cell Qr = Rr^T is lower triangular; the columns of Qr
+    are flipped so that the diagonal is positive.
+    """
     C = np.asarray(cell, float)
     if not np.all(np.isfinite(C)) or abs(np.linalg.det(C)) < 1e-12:
         raise ValueError("the cell must be periodic in three dimensions (non-singular)")
@@ -91,9 +131,22 @@ def standard_cell(cell):
     return reduce_box(np.tril(L)), Qr
 
 
-def _bond_tree(sys: System, bonds_of=None):
-    """Parent of every atom along a spanning tree of its molecule's bond graph (roots: the first atom
-    of each molecule; atoms not connected to it hang from the root) and the tree depth."""
+def _bond_tree(
+    sys: System, bonds_of: Callable[[int], Sequence[tuple[int, int]]] | None = None
+) -> tuple[np.ndarray, int]:
+    """Return the parent of every atom along a spanning tree of its molecule's bond graph, and the tree depth.
+
+    Breadth-first from the first atom of each molecule; atoms not connected to it hang from it
+    directly (depth 1).  `bonds_of(k)` gives the bonds of molecule k (molecule-local indices;
+    None: `Molecule.bonds`).
+
+    Returns
+    -------
+    parent : np.ndarray (N,) int
+        Global index of each atom's parent (roots are their own parent).
+    depth : int
+        Largest tree depth over the molecules.
+    """
     N = sys.n
     parent = np.arange(N)
     depth = 0
@@ -126,10 +179,24 @@ def _bond_tree(sys: System, bonds_of=None):
     return parent, depth
 
 
-def match_previous(X, prev):
-    """perm with prev[perm[k]] the previous structure closest to X[k] (a one-to-one assignment
-    minimising the summed squared displacements: i-PI does not keep the order of the beads in its
-    batches).  X: (n, N, 3), prev: (P, N, 3), n <= P."""
+def match_previous(X: np.ndarray, prev: np.ndarray) -> np.ndarray:
+    """Return perm with prev[perm[k]] the previous structure closest to X[k] (one-to-one assignment).
+
+    The assignment minimises the summed squared displacements (scipy's linear_sum_assignment; a
+    greedy fallback without scipy): i-PI does not keep the order of the beads in its batches.
+
+    Parameters
+    ----------
+    X : np.ndarray (n, N, 3)
+        New structures [nm].
+    prev : np.ndarray (P, N, 3)
+        Previous structures [nm], n <= P.
+
+    Returns
+    -------
+    np.ndarray (n,) int
+        Index into prev for each new structure.
+    """
     B = X.shape[0]
     a, b = X.reshape(B, -1), prev.reshape(prev.shape[0], -1)
     C = np.sum(a * a, 1)[:, None] + np.sum(b * b, 1)[None, :] - 2.0 * a @ b.T
@@ -151,7 +218,26 @@ def match_previous(X, prev):
 
 @dataclass
 class EngineResult:
-    """One evaluation, host arrays in engine units (kJ/mol, kJ/mol/nm), in the caller's frame."""
+    """One evaluation: host arrays in engine units (kJ/mol, kJ/mol/nm), in the caller's frame.
+
+    Induced dipoles, the cell dipole and the virial are fetched from the device (or computed) on
+    first access and rotated back to the caller's frame.
+
+    Parameters
+    ----------
+    energy : float
+        Total energy [kJ/mol].
+    forces : np.ndarray (N, 3)
+        Forces [kJ/mol/nm].
+    terms : dict
+        "elec", "vdw", "bonded", "restraint" [kJ/mol] (GasPhaseEngine: the Model's terms).
+    iterations : int
+        CG iterations of the dipole solve.
+    _dev : dict
+        Device arrays or callables: "mu" / "mu_fn", "dip" / "dip_fn", "W".
+    _Q : np.ndarray (3, 3) or None
+        Rotation of standard_cell (None: the caller's frame is the engine's).
+    """
 
     energy: float
     forces: np.ndarray
@@ -160,34 +246,38 @@ class EngineResult:
     _dev: dict = field(default_factory=dict, repr=False)  # device arrays: mu, dipole parts, virial
     _Q: np.ndarray | None = None
 
-    def _rot_vec(self, v):
+    def _rot_vec(self, v: ArrayLike) -> np.ndarray:
+        """Return vectors (..., 3) rotated from the engine's frame to the caller's (v @ Q.T)."""
         v = np.asarray(v, float)
         return v if self._Q is None else v @ self._Q.T
 
     @property
     def induced_dipoles(self) -> np.ndarray:
-        """(N, 3) e nm, the converged induced dipoles."""
+        """Converged induced dipoles, np.ndarray (N, 3) [e nm]."""
         if "mu" not in self._dev:
             self._dev["mu"] = self._dev.pop("mu_fn")()
         return self._rot_vec(self._dev["mu"])
 
     @property
     def dipole_components(self) -> np.ndarray:
-        """(3, 3) e nm: rows M_q (charges, molecules whole, about their centres of mass), M_perm
-        (covalent dipoles), M_ind (induced dipoles); md/dipoles.py conventions.  Computed in the
-        engine call (engine.with_dipole) or on first access."""
+        """Cell dipole parts, np.ndarray (3, 3) [e nm]: rows M_q, M_perm, M_ind.
+
+        M_q from the charges (molecules whole, about their centres of mass), M_perm from the covalent
+        dipoles, M_ind from the induced dipoles (md/dipoles.py conventions).  Computed in the engine
+        call (engine.with_dipole) or on first access.
+        """
         if "dip" not in self._dev:
             self._dev["dip"] = self._dev.pop("dip_fn")()
         return self._rot_vec(self._dev["dip"])
 
     @property
     def dipole(self) -> np.ndarray:
-        """Total dipole of the cell (e nm), M_q + M_perm + M_ind."""
+        """Total dipole of the cell, M_q + M_perm + M_ind, np.ndarray (3,) [e nm]."""
         return self.dipole_components.sum(0)
 
     @property
     def virial(self) -> np.ndarray | None:
-        """dE/d eps (3, 3) kJ/mol, or None when not computed."""
+        """Virial dE/d eps, np.ndarray (3, 3) [kJ/mol], or None when not computed."""
         if "W" not in self._dev:
             return None
         W = np.asarray(self._dev["W"], float)
@@ -195,15 +285,19 @@ class EngineResult:
 
 
 class _Slot:
-    def __init__(self):
+    """One induced-dipole history: the last positions (host, standard frame), InductionState and neighbour list."""
+
+    def __init__(self) -> None:
+        """Set up an empty slot (x, ind, nbr None: the next call starts from scratch)."""
         self.x = None  # last positions (host, standard frame)
         self.ind = None  # InductionState (device)
         self.nbr = None  # neighbour list (device)
 
 
 class PGMEngine:
-    """Periodic pGM (+ Lennard-Jones / GVDW, + bonded terms of flexible templates) for external
-    drivers.  Build it like a native simulation:
+    """Periodic pGM (+ Lennard-Jones / GVDW, + bonded terms of flexible templates) for external drivers.
+
+    Build it like a native simulation:
 
         eng = PGMEngine(system, pos_nm, H_nm, MDSettings(...))                # rigid-molecule model
         eng = PGMEngine(system, pos_nm, H_nm, settings, templates=[tpl] * n)  # flexible molecules
@@ -212,25 +306,98 @@ class PGMEngine:
 
     templates=None gives the model of the rigid-molecule engine (Simulation): pGM with every pair,
     no intramolecular van der Waals, no bonded terms; the external code must then hold the
-    molecules rigid (ASE FixBondLengths, OpenMM constraints).  With templates (FlexibleTemplate /
-    RigidTemplate, one per molecule) the model is FlexibleSimulation's.  params: parameter pytree
-    (None: the system's values).  Virtual sites and alchemical regions are not supported here."""
+    molecules rigid (ASE `rigid_constraints`, OpenMM constraints).  With templates
+    (FlexibleTemplate / RigidTemplate, one per molecule) the model is FlexibleSimulation's.
+    Virtual sites, extended-Lagrangian dipoles, external fields, biases and alchemical regions are
+    not supported here.  The engine is not a pytree; it holds device state between calls and is
+    not thread safe.
+
+    Attributes
+    ----------
+    sys : System
+        The system.
+    settings : MDSettings
+        Force-field settings.
+    params : dict or None
+        Parameter pytree (None: the system's values).
+    stress_mode : {"atomic", "molecular"}
+        Virial convention.
+    with_dipole : bool
+        Compute the cell dipole inside every call (set by the i-PI client); else on first access.
+    n : int
+        Number of atoms.
+    masses : np.ndarray (N,)
+        Masses [amu].
+    flex : FlexibleMolecules or None
+        Bonded terms of the flexible templates.
+    ff : PGMForceField
+        The force field.
+    restraints : Restraints or None
+        Restraints.
+    initial_positions : np.ndarray (N, 3)
+        Starting positions, molecules whole, standard frame [nm].
+    initial_box : np.ndarray (3, 3)
+        Starting box, standard frame (OpenMM's box form) [nm].
+    r_list : float
+        Neighbour-list group radius [nm].
+    slots : list
+        Induced-dipole histories.
+    stats : dict
+        Counters: calls, repeats, rebuilds, cg (iterations), resets, time [s] (and batches,
+        slot_evaluations for compute_batch).
+    """
 
     def __init__(
         self,
         sys: System,
-        pos,
-        H,
+        pos: ArrayLike,
+        H: ArrayLike,
         settings: MDSettings = MDSettings(),
-        templates=None,
-        params=None,
+        templates: Sequence[FlexibleTemplate | RigidTemplate] | None = None,
+        params: dict | None = None,
         stress: str | None = None,
         slots: int = 1,
         r_margin: float = 0.05,
         jump: float = 0.05,
-        restraints=None,
+        restraints: Restraints | Restraint | Sequence[Restraint] | None = None,
         bead_margin: float = 0.08,
-    ):
+    ) -> None:
+        """Build the force field, neighbour list and jitted calls for a system at a starting configuration.
+
+        Parameters
+        ----------
+        sys : System
+            The system (atoms in the order the driver uses).
+        pos : ArrayLike (N, 3)
+            Starting positions [nm] (list radius and capacities are sized on them).
+        H : ArrayLike (3, 3)
+            Starting cell, lattice vectors as rows [nm]; any right-handed cell.
+        settings : MDSettings
+            Force-field settings (induction.iel must be "none").
+        templates : sequence of FlexibleTemplate / RigidTemplate, optional
+            One template per molecule (FlexibleSimulation's model); None: the rigid-molecule model.
+        params : dict, optional
+            Parameter pytree; None: the system's values.
+        stress : {"atomic", "molecular"}, optional
+            Virial convention; None: "molecular" without templates, "atomic" with them.
+        slots : int
+            Number of induced-dipole histories (P beads sent one after the other).
+        r_margin : float
+            Margin added to the largest group radius for the molecular list [nm].
+        jump : float
+            Largest displacement (minimum image) that keeps a slot's predictor [nm]; larger restarts it.
+        restraints : Restraints, Restraint or sequence of Restraint, optional
+            Restraints (md/restraints.py); None: none.
+        bead_margin : float
+            Extra list radius for batches of beads around their mean [nm].
+
+        Raises
+        ------
+        NotImplementedError
+            With virtual sites or extended-Lagrangian dipoles.
+        ValueError
+            For an unknown stress mode or an invalid cell, or restraints on atoms outside the system.
+        """
         from ..md.vsites import VirtualSites
 
         if VirtualSites.of(sys) is not None:
@@ -276,7 +443,8 @@ class PGMEngine:
                 for k, t in enumerate(templates)
             ]
 
-            def bonds_of(k):
+            def bonds_of(k: int) -> Sequence[tuple[int, int]]:
+                """Return the bonds of molecule k (the template's topology or the molecule's)."""
                 return tb[k]
 
         from ..md.restraints import as_restraints
@@ -286,7 +454,7 @@ class PGMEngine:
             self.restraints.check(sys.n)
         parent, depth = _bond_tree(sys, bonds_of)
         self._parent = jnp.asarray(parent)
-        self._nhop = max(1, int(math.ceil(math.log2(depth + 1)))) if depth > 0 else 0
+        self._nhop = max(1, int(math.ceil(math.log2(depth + 1)))) if depth > 0 else 0  # doubling steps
         self._mol = jnp.asarray(sys.mol)
         self._nmol = sys.nmol
         mm = np.bincount(np.asarray(sys.mol), weights=self.masses, minlength=sys.nmol)
@@ -311,8 +479,25 @@ class PGMEngine:
 
     # ------------------------------------------------------------------ constructors
     @classmethod
-    def from_amber(cls, prmtop: str, coords: str, charges: str = "pgm", **kw) -> PGMEngine:
-        """Rigid-molecule model from a pGM prmtop and coordinates (as Simulation.from_amber)."""
+    def from_amber(cls, prmtop: str, coords: str, charges: str = "pgm", **kw: Any) -> PGMEngine:
+        """Return a rigid-molecule-model engine from a pGM prmtop and coordinates (as Simulation.from_amber).
+
+        Parameters
+        ----------
+        prmtop : str
+            pGM prmtop.
+        coords : str
+            Coordinates with a periodic box (read_coordinates_nm).
+        charges : str
+            Charge set of System.from_prmtop.
+        **kw
+            Further PGMEngine arguments (settings, slots, stress, ...).
+
+        Raises
+        ------
+        ValueError
+            If the coordinates have no periodic box.
+        """
         from ..md.io import read_coordinates_nm
 
         sys = System.from_prmtop(prmtop, charges=charges)
@@ -322,9 +507,19 @@ class PGMEngine:
         return cls(sys, pos, H, **kw)
 
     @classmethod
-    def from_simulation(cls, sim, **kw) -> PGMEngine:
-        """The model of a native Simulation / FlexibleSimulation at its current state (same system,
-        settings, parameters and templates; restraints included)."""
+    def from_simulation(cls, sim: Any, **kw: Any) -> PGMEngine:
+        """Return an engine with the model of a native Simulation / FlexibleSimulation at its current state.
+
+        Same system, settings, parameters and templates; restraints included.  `**kw` are further
+        PGMEngine arguments; a FlexibleSimulation needs `templates=`.
+
+        Raises
+        ------
+        ValueError
+            For a FlexibleSimulation without `templates=`.
+        NotImplementedError
+            If the simulation has an external field or biases.
+        """
         templates = kw.pop("templates", None)
         if templates is None and hasattr(sim, "flex"):
             raise ValueError("FlexibleSimulation: pass its templates, PGMEngine.from_simulation(sim, templates=...)")
@@ -338,7 +533,8 @@ class PGMEngine:
         return cls(sim.sys, sim.positions(), np.asarray(sim.state.box), sim.settings, templates=templates, **kw)
 
     # ------------------------------------------------------------------ neighbour lists
-    def _make_neighbors(self, H):
+    def _make_neighbors(self, H: ArrayLike) -> None:
+        """Create the neighbour-list object for box H: molecular-centre list if it fits the box, else an atom list."""
         s = self.settings
         mode = s.neighbors.mode
         if mode == "auto":
@@ -351,10 +547,16 @@ class PGMEngine:
             self.nb = AtomNeighbors(self.n, H, s.pair_cutoff, s.neighbors.skin)
         self._nb_volume = float(np.linalg.det(np.asarray(H)))
 
-    def _centers(self, x):
+    def _centers(self, x: jax.Array) -> jax.Array:
+        """Return the mass-weighted centres of the list groups, jax.Array (G, 3) [nm]."""
         return jax.ops.segment_sum(self._wgroup[:, None] * x, self._group, self._ngroup)
 
-    def _size(self, x, H, factor: float = 1.2, nbr=None):
+    def _size(self, x: ArrayLike, H: ArrayLike, factor: float = 1.2, nbr: Any = None) -> Any:
+        """Size the list and the force field's row capacities on configuration x (host side).
+
+        Allocates a list unless `nbr` is given; `factor` is the headroom of the capacities.  Returns the
+        neighbour list.
+        """
         x, H = jnp.asarray(x), jnp.asarray(H)
         c = self._centers(x)
         nbr = self.nb.allocate(x, c, H) if nbr is None else nbr
@@ -365,10 +567,14 @@ class PGMEngine:
         return nbr
 
     # ------------------------------------------------------------------ jitted pieces
-    def _whole(self, x, H):
-        """Molecules made whole along their bond trees, then shifted by lattice vectors so that
-        their centres of mass lie in the primary cell."""
-        if self._nhop:
+    def _whole(self, x: jax.Array, H: jax.Array) -> jax.Array:
+        """Return x with molecules made whole along their bond trees and their centres of mass in the primary cell.
+
+        Traced (inside the jitted call).  Pointer doubling: every atom accumulates its minimum-image
+        displacement to its ancestor 2^k levels up, _nhop + 1 times, which reaches the root for any tree
+        depth up to 2^_nhop.
+        """
+        if self._nhop:  # pointer doubling: s = displacement to the root, a = ancestor 2^k levels up
             s = min_image(x - x[self._parent], H)
             a = self._parent
             for _ in range(self._nhop + 1):
@@ -380,18 +586,54 @@ class PGMEngine:
         f = jnp.matmul(com, inv3(H), precision=hi)
         return x - jnp.matmul(jnp.floor(f), H, precision=hi)[self._mol]
 
-    def _whole_jit(self):
+    def _whole_jit(self) -> Callable[[jax.Array, jax.Array], jax.Array]:
+        """Return the jitted `_whole` (compiled once and cached)."""
         if getattr(self, "_whole_c", None) is None:
             self._whole_c = jax.jit(self._whole)
         return self._whole_c
 
-    def _list_fits(self, H) -> bool:
+    def _list_fits(self, H: ArrayLike) -> bool:
+        """Return whether the current list (radius) is valid for box H."""
         s = self.settings
         if self.nb.kind == "molecule":
             return MoleculeNeighbors.fits(H, s.pair_cutoff, s.neighbors.skin, self.r_list)
         return self.nb.rlist <= max_cutoff(H)
 
-    def _eval(self, x, H, ind, nbr, virial: bool, dipole: bool = True):
+    def _eval(
+        self, x: jax.Array, H: jax.Array, ind: InductionState, nbr: Any, virial: bool, dipole: bool = True
+    ) -> tuple[jax.Array, InductionState, Any, dict]:
+        """Evaluate one configuration (traced; jitted with `virial`, `dipole` static by `_compile`).
+
+        Makes the molecules whole, updates the neighbour list, computes the force field, bonded terms
+        and restraints, and packs the results.
+
+        Parameters
+        ----------
+        x : jax.Array (N, 3)
+            Positions, standard frame [nm].
+        H : jax.Array (3, 3)
+            Box [nm].
+        ind : InductionState
+            Dipole history of the slot.
+        nbr : neighbour list
+            The slot's list.
+        virial : bool
+            Also compute the virial.
+        dipole : bool
+            Also compute the cell dipole.
+
+        Returns
+        -------
+        packed : jax.Array (10 + 3N,)
+            [total, elec, vdw, bonded, restraint energies [kJ/mol], CG iterations, residual, overflow
+            flag, list error code, largest atom-to-group-centre distance [nm]] + forces [kJ/mol/nm].
+        ind : InductionState
+            Updated dipole history.
+        nbr : neighbour list
+            Updated list.
+        dev : dict
+            Device arrays "mu" (N, 3) [e nm] and optionally "dip" (3, 3) [e nm], "W" (3, 3) [kJ/mol].
+        """
         x = self._whole(x, H)
         c = self._centers(x)
         nbr = self.nb.update(nbr, x, c, H)
@@ -407,7 +649,9 @@ class PGMEngine:
         if self.restraints is not None:
             er, gr = jax.value_and_grad(self.restraints.energy)(x, H)
             F = F - gr
-        ext = jnp.max(jnp.sqrt(jnp.sum((x - c[self._group]) ** 2, axis=1)))
+        ext = jnp.max(jnp.sqrt(jnp.sum((x - c[self._group]) ** 2, axis=1)))  # farthest atom from its group centre
+        # packed layout: [total, elec, vdw, bonded, restraint, CG iterations, residual, overflow, list error
+        # code, extent] + forces (3N); one host transfer per call
         head = jnp.stack(
             [
                 E + eb + er,
@@ -430,10 +674,18 @@ class PGMEngine:
             dev["W"] = self._virial(x, H, cand, res.induction.mu, gb)
         return packed, res.induction, nbr, dev
 
-    def _dipole_only(self, x, H, mu):
+    def _dipole_only(self, x: jax.Array, H: jax.Array, mu: jax.Array) -> jax.Array:
+        """Return the cell dipole parts (3, 3) [e nm] of configuration x with dipoles mu."""
         return self._celldip.components(self._whole(x, H), H, mu, self.params)
 
-    def _virial(self, x, H, cand, mu, gb):
+    def _virial(self, x: jax.Array, H: jax.Array, cand: Any, mu: jax.Array, gb: jax.Array | None) -> jax.Array:
+        """Return the symmetric virial dE/d eps (3, 3) [kJ/mol] at the converged dipoles (traced).
+
+        PGMForceField.strain_derivative (atomic or molecular), symmetrised from its upper triangle
+        (for the molecular virial this drops the antisymmetric torque part), plus the bonded terms'
+        sum_i g_i (x) x_i ("atomic" only; `gb` the bonded energy gradient) and the restraints' strain
+        derivative.
+        """
         molecular = self.stress_mode == "molecular"
         W = self.ff.strain_derivative(x, H, cand, mu, self.params, molecular=molecular)
         # strain_derivative returns the full tensor (its lower components from rotation invariance);
@@ -450,19 +702,24 @@ class PGMEngine:
             )
         return W
 
-    def _restraint_strain_atomic(self, x, H):
-        def e(eps):
+    def _restraint_strain_atomic(self, x: jax.Array, H: jax.Array) -> jax.Array:
+        """Return the restraints' atomic strain derivative dE/d eps (3, 3) [kJ/mol] by autodiff (x -> x (1 + eps)^T)."""
+
+        def e(eps: jax.Array) -> jax.Array:
+            """Return the restraint energy under strain eps."""
             F = jnp.eye(3) + eps
             return self.restraints.energy(x @ F.T, H @ F.T)
 
         return jax.grad(e)(jnp.zeros((3, 3)))
 
-    def _compile(self):
+    def _compile(self) -> None:
+        """(Re)create the jitted evaluation, dipole and virial functions (after sizes or lists changed)."""
         self._fn = jax.jit(self._eval, static_argnames=("virial", "dipole"))
         self._dip_fn = jax.jit(self._dipole_only)
         self._vir_fn = jax.jit(self._virial_only)
 
-    def _virial_only(self, x, H, ind, nbr):
+    def _virial_only(self, x: jax.Array, H: jax.Array, ind: InductionState, nbr: Any) -> jax.Array:
+        """Return the virial (3, 3) [kJ/mol] at the dipoles `ind.mu`, without a new solve (traced)."""
         x = self._whole(x, H)
         c = self._centers(x)
         cand, _ = self.nb.candidates(nbr, c, H, x)
@@ -471,9 +728,12 @@ class PGMEngine:
 
     # ------------------------------------------------------------------ host side
     @staticmethod
-    def _displacement(a, b, H) -> float:
-        """Largest displacement between two configurations (nm), each atom by its minimum image:
-        drivers may wrap atoms or molecules back into the cell between calls."""
+    def _displacement(a: np.ndarray, b: np.ndarray, H: np.ndarray) -> float:
+        """Return the largest displacement between two configurations [nm], each atom by its minimum image.
+
+        Drivers may wrap atoms or molecules back into the cell between calls.  Plain differences are
+        used when no lattice jump is possible (all below a quarter of the smallest box diagonal).
+        """
         d = b - a
         m = float(np.max(np.abs(d)))
         if m < 0.25 * float(np.min(np.diag(H))):  # no lattice jump possible: the common case
@@ -481,9 +741,11 @@ class PGMEngine:
         f = d @ np.linalg.inv(H)
         return float(np.max(np.abs(d - np.round(f) @ H)))
 
-    def _slot_for(self, x, H) -> _Slot:
-        """An unused slot while there is one (the first calls of interleaved configurations fill the
-        slots in turn), then the slot whose last configuration is closest to x."""
+    def _slot_for(self, x: np.ndarray, H: np.ndarray) -> _Slot:
+        """Return an unused slot while there is one, then the slot whose last configuration is closest to x.
+
+        The first calls of interleaved configurations fill the slots in turn.
+        """
         if len(self.slots) == 1:
             return self.slots[0]
         for s in self.slots:
@@ -492,9 +754,24 @@ class PGMEngine:
         d = [self._displacement(s.x, x, H) for s in self.slots]
         return self.slots[int(np.argmin(d))]
 
-    def batch_slots(self, positions, cell) -> np.ndarray:
-        """Slots for a batch of structures evaluated one by one: the one-to-one assignment to the
-        slots' last configurations (first batches: slot k for structure k)."""
+    def batch_slots(self, positions: ArrayLike, cell: ArrayLike) -> np.ndarray:
+        """Return the slots for a batch of structures evaluated one by one.
+
+        The one-to-one assignment to the slots' last configurations (`match_previous`); for the first
+        batches (or more structures than slots) slot k % P for structure k.
+
+        Parameters
+        ----------
+        positions : ArrayLike (B, N, 3)
+            Structures [nm].
+        cell : ArrayLike (3, 3)
+            Their common cell [nm].
+
+        Returns
+        -------
+        np.ndarray (B,) int
+            Slot per structure.
+        """
         X = np.asarray(positions, float)
         B = X.shape[0]
         if B > len(self.slots) or any(self.slots[k].x is None for k in range(B)):
@@ -503,15 +780,46 @@ class PGMEngine:
         Xs = X if Q is None else X @ Q
         return match_previous(Xs, np.stack([self.slots[k].x for k in range(B)]))
 
-    def reset(self):
-        """Forget the dipole histories (the next call starts every slot from scratch)."""
+    def reset(self) -> None:
+        """Forget the dipole histories and lists (the next call starts every slot from scratch)."""
         for s in self.slots:
             s.x = s.ind = s.nbr = None
 
-    def compute(self, pos, cell, virial: bool = False, slot: int | None = None) -> EngineResult:
-        """Energy and forces (and the virial if asked) at positions pos (N, 3) nm and cell (3, 3)
-        nm, rows = lattice vectors; any right-handed cell, atoms wrapped or not.  slot: the
-        induced-dipole history to use (default: the closest one)."""
+    def compute(self, pos: ArrayLike, cell: ArrayLike, virial: bool = False, slot: int | None = None) -> EngineResult:
+        """Return the energy and forces (and the virial if asked) of one configuration.
+
+        Parameters
+        ----------
+        pos : ArrayLike (N, 3)
+            Positions [nm] in the system's atom order, wrapped or not.
+        cell : ArrayLike (3, 3)
+            Cell, lattice vectors as rows [nm]; any right-handed cell.
+        virial : bool
+            Also compute the virial (EngineResult.virial).
+        slot : int, optional
+            The induced-dipole history to use; None: `_slot_for` (the closest one).
+
+        Returns
+        -------
+        EngineResult
+            Energy [kJ/mol], forces [kJ/mol/nm] in the caller's frame, terms, CG iterations; dipoles
+            and virial on access.
+
+        Raises
+        ------
+        ValueError
+            For positions of the wrong shape or an invalid cell (check_box).
+        FloatingPointError
+            If the energy is not finite.
+        RuntimeError
+            If the list or row capacities keep overflowing (8 attempts).
+
+        Notes
+        -----
+        A cell different from the last one is standardised and checked; a volume change above 10 % or
+        a list that no longer fits rebuilds the list.  After the jitted call, overflows grow the
+        capacities and repeat, an atom beyond the list radius enlarges r_margin and rebuilds.
+        """
         t0 = time.perf_counter()
         cell = np.asarray(cell, float)
         x = np.array(pos, float)  # a copy: kept as the slot's last configuration
@@ -595,14 +903,24 @@ class PGMEngine:
         )
 
     def virial_of_last(self, res: EngineResult) -> np.ndarray:
-        """The virial (kJ/mol, caller's frame) of the last computed configuration without a new
-        dipole solve (e.g. when a driver asks for the stress after the forces)."""
+        """Return the virial [kJ/mol] (caller's frame) of the last computed configuration without a new dipole solve.
+
+        For a driver that asks for the stress after the forces; stores it in `res`.
+
+        Parameters
+        ----------
+        res : EngineResult
+            The result of the last `compute`.
+        """
         xd, Hd, slot = self._last
         res._dev["W"] = self._vir_fn(xd, Hd, slot.ind, slot.nbr)
         return res.virial
 
-    def _rebuild(self, x, H):
-        """New neighbour-list object for box H (large volume change, list radius exceeded)."""
+    def _rebuild(self, x: np.ndarray, H: np.ndarray) -> Any:
+        """Create a new neighbour-list object for box H and size it on x (large volume change, list radius exceeded).
+
+        Invalidates every slot's list and recompiles; returns the new list.
+        """
         self.stats["rebuilds"] += 1
         xw = np.asarray(self._whole_jit()(jnp.asarray(x), jnp.asarray(H)))
         self.r_list = max(self.r_list, self.topology.group_radius(xw, self.masses) + self.r_margin)
@@ -614,18 +932,65 @@ class PGMEngine:
         return nbr
 
     # ------------------------------------------------------------------ batches (ring-polymer beads)
-    def _whole_batch(self, X, H):
-        """Every structure made whole and wrapped (as _whole), then each molecule of structure k
-        shifted by the lattice vector that puts its centre of mass nearest to that of structure 0,
-        so that the batch mean (the centroid of a ring polymer) is meaningful."""
+    def _whole_batch(self, X: jax.Array, H: jax.Array) -> jax.Array:
+        """Return every structure made whole and wrapped, each molecule moved next to structure 0's copy.
+
+        As `_whole`, then each molecule of structure k is shifted by the lattice vector that puts its
+        centre of mass nearest to that of structure 0, so that the batch mean (the centroid of a ring
+        polymer) is meaningful.  X (B, N, 3) [nm].
+        """
         Xw = jax.vmap(self._whole, in_axes=(0, None))(X, H)
         com = jax.vmap(lambda x: jax.ops.segment_sum(self._wmol[:, None] * x, self._mol, self._nmol))(Xw)
         d = min_image(com - com[0][None], H)
         return Xw + (com[0][None] + d - com)[:, self._mol]
 
-    def _eval_batch(self, X, H, ind, nbr, idx, virial: bool, chunk, dipole: bool = True):
-        """X: (P, N, 3) the slots' configurations (the list is built on their mean); idx: (n,) the
-        slots evaluated (repeats allowed: identical inputs give identical results)."""
+    def _eval_batch(
+        self,
+        X: jax.Array,
+        H: jax.Array,
+        ind: InductionState,
+        nbr: Any,
+        idx: jax.Array,
+        virial: bool,
+        chunk: int | None,
+        dipole: bool = True,
+    ) -> tuple[jax.Array, jax.Array, InductionState, Any, dict]:
+        """Evaluate the slots `idx` of a batch in one vmapped call (traced; jitted by `_batch_setup`).
+
+        Parameters
+        ----------
+        X : jax.Array (P, N, 3)
+            The slots' configurations [nm]; the list is built on their mean.
+        H : jax.Array (3, 3)
+            Box [nm].
+        ind : InductionState
+            Stacked dipole histories (leading axis P; the step counter shared).
+        nbr : neighbour list
+            The batch list.
+        idx : jax.Array (n,) int32
+            Slots evaluated (repeats allowed: identical inputs give identical results).
+        virial : bool
+            Also compute the virials (static).
+        chunk : int or None
+            Structures per vmapped chunk, run one after the other with lax.map (static; None: one vmap).
+        dipole : bool
+            Also compute the cell dipoles (static).
+
+        Returns
+        -------
+        packed : jax.Array (n, 8 + 3N)
+            Per evaluated slot: [total, elec, vdw, bonded, restraint, CG iterations, residual,
+            overflow] + forces.
+        flags : jax.Array (2,)
+            List error code and the largest atom distance from its reference (group centre or centroid
+            atom) [nm].
+        ind : InductionState
+            All P histories, the evaluated ones updated.
+        nbr : neighbour list
+            Updated list.
+        dev : dict
+            Stacked "mu" and optionally "dip", "W".
+        """
         X = self._whole_batch(X, H)
         qc = jnp.mean(X, 0)
         c = self._centers(qc)
@@ -633,7 +998,8 @@ class PGMEngine:
         nbr = nb.update(nbr, qc, c, H)
         ff, params = self.ff, self.params
 
-        def one(xk, indk):
+        def one(xk: jax.Array, indk: InductionState) -> tuple[jax.Array, InductionState, dict]:
+            """Evaluate one structure with its dipole history (vmapped over the slots)."""
             cand, ovf = nb.candidates(nbr, c, H, xk)
             res = ff.compute(xk, H, cand, indk, params)
             E, F = res.energy["total"], res.forces
@@ -675,13 +1041,16 @@ class PGMEngine:
         else:  # chunks of vmapped structures, one after the other
             count = ind.count
 
-            def split(a):
+            def split(a: jax.Array) -> jax.Array:
+                """Reshape a leading axis B into (B / chunk, chunk)."""
                 return a.reshape((B // chunk, chunk) + a.shape[1:])
 
-            def merge(a):
+            def merge(a: jax.Array) -> jax.Array:
+                """Reshape (B / chunk, chunk, ...) back to (B, ...)."""
                 return a.reshape((B,) + a.shape[2:])
 
-            def body(args):
+            def body(args: tuple) -> tuple[tuple, jax.Array]:
+                """Evaluate one chunk (lax.map body), passing the shared step counter out separately."""
                 xc, ic = args
                 p, i2, d = vf(xc, ic.set(count=count))
                 return (p, i2.set(count=None), d), i2.count
@@ -695,7 +1064,8 @@ class PGMEngine:
         ext = jnp.max(jnp.sqrt(jnp.sum((Xall - ref[None]) ** 2, axis=-1)))
         flags = jnp.stack([nbr.error.code.astype(jnp.float64), ext])
 
-        def put(full, new):
+        def put(full: jax.Array, new: jax.Array) -> jax.Array:
+            """Scatter the evaluated slots' new values into the full stacked array."""
             return full.at[idx].set(new)
 
         ind_new = jax.tree_util.tree_map(put, ind_full.set(count=None), ind_new.set(count=None)).set(
@@ -703,9 +1073,14 @@ class PGMEngine:
         )
         return packed, flags, ind_new, nbr, dev
 
-    def _batch_setup(self, B, X, H):
-        """Batch state: a molecular-centre neighbour list of the batch mean with the list radius
-        enlarged by bead_margin, stacked dipole histories (the predictor's step counter shared)."""
+    def _batch_setup(self, B: int, X: np.ndarray, H: np.ndarray) -> bool:
+        """Set up the batch state for B slots on configurations X; return False if no list can serve them.
+
+        A molecular-centre neighbour list of the batch mean with the list radius enlarged by
+        bead_margin (or, when it does not fit the box, an atom list of the centroid with the cutoff
+        enlarged by two margins), stacked dipole histories (the predictor's step counter shared) and
+        the jitted `_eval_batch`.
+        """
         s = self.settings
         r = self.r_list + self.bead_margin
         if MoleculeNeighbors.fits(H, s.pair_cutoff, s.neighbors.skin, r):
@@ -739,20 +1114,43 @@ class PGMEngine:
         self._bfn = jax.jit(self._eval_batch, static_argnames=("virial", "chunk", "dipole"))
         return True
 
-    def compute_batch(self, positions, cell, virial: bool = False, chunk="auto") -> list:
-        """Structures that share one cell and stay close to each other (the beads of a ring polymer:
-        i-PI's batched requests) in one vmapped call; positions (B, N, 3) nm.
+    def compute_batch(
+        self, positions: ArrayLike, cell: ArrayLike, virial: bool = False, chunk: int | str | None = "auto"
+    ) -> list[EngineResult]:
+        """Evaluate structures that share one cell and stay close to each other in one vmapped call.
 
-        The engine keeps P = B (first batch) slots, each with its own induced-dipole history and
-        last configuration; one neighbour list of the slots' mean (radius + bead_margin) serves them
-        all.  Every batch is matched to the slots: exact duplicates (i-PI pads partial batches with
-        copies of the last structure) are evaluated once, the distinct structures are assigned
-        one-to-one to the slots with the closest last configurations (i-PI does not keep the order
-        of the beads), and the vmapped call runs over these slots only (padded to P/4, P/2 or P
-        structures: one compiled program per size); the list is built on the mean of all slots'
-        last configurations.  chunk: structures per vmapped chunk ("auto": 8 when that divides
-        more than 8).  Falls back to one compute() per structure when the
-        slots cannot share a list.  Returns one EngineResult per input structure."""
+        The beads of a ring polymer: i-PI's batched requests.  The engine keeps P = B (first batch)
+        slots, each with its own induced-dipole history and last configuration; one neighbour list of
+        the slots' mean (radius + bead_margin) serves them all.  Every batch is matched to the slots:
+        exact duplicates (i-PI pads partial batches with copies of the last structure) are evaluated
+        once, the distinct structures are assigned one-to-one to the slots with the closest last
+        configurations (i-PI does not keep the order of the beads), and the vmapped call runs over these
+        slots only (padded to P/4, P/2 or P structures: one compiled program per size); the list is
+        built on the mean of all slots' last configurations.  Falls back to one compute() per structure
+        when the slots cannot share a list.
+
+        Parameters
+        ----------
+        positions : ArrayLike (B, N, 3)
+            Structures [nm].
+        cell : ArrayLike (3, 3)
+            Their common cell, lattice vectors as rows [nm].
+        virial : bool
+            Also compute the virials.
+        chunk : int, "auto" or None
+            Structures per vmapped chunk ("auto": 8 when that divides a padded batch of more than 8;
+            None: one vmap).
+
+        Returns
+        -------
+        list of EngineResult
+            One per input structure (duplicates share one result object).
+
+        Raises
+        ------
+        RuntimeError
+            If the list or row capacities keep overflowing (8 attempts).
+        """
         X = np.array(positions, float)
         B = X.shape[0]
         cell = np.asarray(cell, float)
@@ -793,7 +1191,7 @@ class PGMEngine:
         present[slot_of] = True
         # evaluate the slots of this batch only, padded to P/4, P/2 or P structures (one compiled
         # program per size); i-PI often splits the beads of a step over two batches
-        m = next((b for b in (max(1, P // 4), max(1, P // 2)) if b >= n and P % b == 0), P)
+        m = next((b for b in (max(1, P // 4), max(1, P // 2)) if b >= n and P % b == 0), P)  # padded batch size
         idx = np.concatenate([slot_of, np.full(m - n, slot_of[0])]).astype(np.int32)
         if chunk == "auto":
             chunk = 8 if (m > 8 and m % 8 == 0) else None
@@ -885,6 +1283,7 @@ class PGMEngine:
         return [res_u[where[k]] for k in range(B)]
 
     def describe(self) -> str:
+        """Return a one-line description of the engine (model, precision, PME, lists, slots, device)."""
         s = self.settings
         return (
             f"pgm_jax engine: {self.sys.nmol} molecules, {self.n} atoms, "
@@ -897,17 +1296,44 @@ class PGMEngine:
 
 # ----------------------------------------------------------------------------- gas phase
 class GasPhaseEngine:
-    """Gas-phase pGM (pgm_jax.Model: every pair, dense induction solve) for external drivers:
-    energy, forces, induced dipoles and the total dipole of a cluster or molecule, no cell.
+    """Gas-phase pGM (pgm_jax.Model: every pair, dense induction solve) for external drivers.
+
+    Energy, forces, induced dipoles and the total dipole of a cluster or molecule, no cell.
 
         eng = GasPhaseEngine(Model([ElecChannel(), LJChannel()]), system, params=None)
-        res = eng.compute(pos_nm)"""
+        res = eng.compute(pos_nm)
 
-    def __init__(self, model, sys: System, params=None):
+    Attributes
+    ----------
+    model : Model
+        The gas-phase model.
+    sys : System
+        The system.
+    params : dict or None
+        Parameter pytree (None: the system's values).
+    n : int
+        Number of atoms.
+    stats : dict
+        Counters: calls, time [s].
+    """
+
+    def __init__(self, model: Model, sys: System, params: dict | None = None) -> None:
+        """Build the model's channels for the system and jit the evaluation.
+
+        Parameters
+        ----------
+        model : Model
+            The gas-phase model (pgm_jax.model.Model).
+        sys : System
+            The system.
+        params : dict, optional
+            Parameter pytree; None: the system's values.
+        """
         self.model, self.sys, self.params, self.n = model, sys, params, sys.n
         chans = model.build(sys)
 
-        def f(pos, params):
+        def f(pos: jax.Array, params: dict | None) -> tuple[jax.Array, tuple[dict, dict]]:
+            """Return the total energy and (terms, auxiliary outputs) of the channels."""
             out, aux = {}, {}
             for ch in chans:
                 e, a = ch.energy(pos, sys, params)
@@ -917,7 +1343,8 @@ class GasPhaseEngine:
             total = sum(out.values())
             return total, (out, aux)
 
-        def run(pos, params):
+        def run(pos: jax.Array, params: dict | None) -> tuple:
+            """Return energy, forces, terms, induced dipoles and the dipole parts (about the centre of mass)."""
             (E, (terms, aux)), g = jax.value_and_grad(f, has_aux=True)(pos, params)
             P = sys.expand(params)
             mu = aux.get("mu", jnp.zeros((sys.n, 3)))
@@ -929,7 +1356,14 @@ class GasPhaseEngine:
         self._fn = jax.jit(run)
         self.stats = {"calls": 0, "time": 0.0}
 
-    def compute(self, pos, cell=None, virial: bool = False) -> EngineResult:
+    def compute(self, pos: ArrayLike, cell: ArrayLike | None = None, virial: bool = False) -> EngineResult:
+        """Return the energy and forces of positions `pos` (N, 3) [nm] (`cell` is ignored).
+
+        Raises
+        ------
+        ValueError
+            If a virial is asked for (none in the gas phase).
+        """
         if virial:
             raise ValueError("no virial in the gas phase")
         t0 = time.perf_counter()

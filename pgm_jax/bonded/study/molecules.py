@@ -1,8 +1,8 @@
-"""Molecule set for the bonded-term study (after Abdullah et al., arXiv 2504.14398, Fig. 1).
+"""Define the molecule set of the bonded-term study (after Abdullah et al., arXiv 2504.14398, Fig. 1).
 
-Each entry: SMILES (explicit charge), total charge and the subset it belongs to:
-  A1 flexible neutral, A2 strong Coulombic 1-4 (the paper's worst cases for fixed-charge force
-  fields), A3 charged, A4 rigid (rings, double bonds), B alanine dipeptide.
+Each entry of `MOLECULES`: SMILES (explicit charge), total charge and the subset it belongs to:
+A1 flexible neutral, A2 strong Coulombic 1-4 (the paper's worst cases for fixed-charge force
+fields), A3 charged, A4 rigid (rings, double bonds), B alanine dipeptide.
 `build(name)` gives elements, bonds and a few low-energy conformers (Angstrom) from RDKit
 (ETKDG + MMFF); geometries are refined later at the sampling level.
 """
@@ -36,8 +36,31 @@ MOLECULES = {
 }
 
 
-def build(name: str, n_conf: int = 30, keep: int = 4, rms: float = 0.3, seed: int = 7):
-    """-> dict(name, smiles, charge, subset, elements, bonds, conformers [list of (n,3) A], mmff_E)."""
+def build(name: str, n_conf: int = 30, keep: int = 4, rms: float = 0.3, seed: int = 7) -> dict:
+    """Return the topology and a few distinct low-energy conformers of a study molecule (needs RDKit).
+
+    Embeds `n_conf` ETKDGv3 conformers, optimises them with MMFF, and keeps up to `keep` of the
+    lowest in energy that differ by more than `rms` A (RDKit conformer RMS over all atoms).
+
+    Parameters
+    ----------
+    name : str
+        Key of MOLECULES.
+    n_conf : int
+        Conformers embedded.
+    keep : int
+        Conformers kept.
+    rms : float
+        Smallest RMS difference between kept conformers [A].
+    seed : int
+        Embedding seed.
+
+    Returns
+    -------
+    dict
+        name, smiles, charge, subset, elements, bonds, bond_orders, conformers (list of (n, 3)
+        [A]), mmff_E (MMFF energies [kcal/mol]).
+    """
     import numpy as np
     from rdkit import Chem
     from rdkit.Chem import AllChem
@@ -52,7 +75,7 @@ def build(name: str, n_conf: int = 30, keep: int = 4, rms: float = 0.3, seed: in
     energies = [e for _, e in res]
     order = np.argsort(energies)
     kept = []
-    heavy = [a.GetIdx() for a in mol.GetAtoms()]
+    heavy = [a.GetIdx() for a in mol.GetAtoms()]  # every atom, hydrogens included (despite the name)
     for i in order:
         cid = cids[int(i)]
         if all(AllChem.GetConformerRMS(mol, cid, cids[int(j)], atomIds=heavy) > rms for j in kept):
