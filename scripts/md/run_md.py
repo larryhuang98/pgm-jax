@@ -162,6 +162,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_seed_arg(ap)
     ap.add_argument("--no-velocities", action="store_true", help="ignore velocities in the coordinates (irest=0)")
+    ap.add_argument(
+        "--leapfrog-velocities",
+        action="store_true",
+        help="the restart velocities are Amber leapfrog velocities v(-dt/2) (sander/pmemd): advance them a half step "
+        "to v(0), so the trajectory equals sander's from the same restart",
+    )
     add_output_args(ap, out="md", report_every=1000, traj_every=0, checkpoint_every=0, continue_from=True)
     g = ap.add_argument_group("more output")
     g.add_argument("--report-pressure", action="store_true", help="also report the virial pressure")
@@ -239,6 +245,7 @@ def main(argv: list[str] | None = None) -> None:
         a.prmtop,
         a.coords,
         use_velocities=not a.no_velocities,
+        leapfrog_velocities=a.leapfrog_velocities,
         settings=st,
         charges=a.charges,
         dt=a.dt_fs / 1000,

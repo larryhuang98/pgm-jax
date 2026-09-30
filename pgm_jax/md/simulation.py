@@ -81,6 +81,7 @@ class Simulation(MDEngine):
         thermostat: Thermostat | str | None = "langevin",
         barostat: MonteCarloBarostat | None = None,
         velocities: ArrayLike | None = None,
+        leapfrog_velocities: bool = False,
         seed: int = 0,
         params: dict | None = None,
         restraints: Restraints | Restraint | list | None = None,
@@ -116,6 +117,9 @@ class Simulation(MDEngine):
         velocities : ArrayLike (N, 3), optional
             Atom velocities [nm/ps] (their rigid-body part is kept); default: drawn at the
             temperature.
+        leapfrog_velocities : bool
+            Treat `velocities` as Amber's leapfrog velocities v(-dt/2) and advance them by a half kick
+            (with the forces at step 0) to v(0), which is what this velocity-Verlet integrator starts from.
         seed : int
             Seed of the random stream (momenta, thermostat, barostat).
         params : dict, optional
@@ -172,6 +176,11 @@ class Simulation(MDEngine):
         if velocities is not None:
             mom = self.rigid.momenta_from_velocities(body, self.rigid.positions(body), jnp.asarray(velocities))
         self.state = self.integ.init(body, H, jax.random.PRNGKey(seed), mom)
+        if leapfrog_velocities and mom is not None:  # Amber's velocities are v(-dt/2): v(0) = v(-dt/2) + a dt/2
+            from jax_md import simulate
+
+            st = self.state
+            self.state = st.set(dyn=simulate.momentum_step(st.dyn, dt / 2))
         self.time_ps = 0.0
         self._log.info(
             f"pgm_jax MD: {system.nmol} rigid molecules, {system.n} atoms"

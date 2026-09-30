@@ -431,6 +431,7 @@ JAX 0.11.
 |---|---|
 | Single point vs pmemd-pgm (PME 72^3, order 8, float64) | EELEC 4e-5 kcal/mol; forces 9e-7 kcal/mol/A RMS; induced dipoles 2e-11 e A RMS; VDW exact |
 | Same, mixed precision | EELEC 0.05 kcal/mol of 5e5; forces 4e-4 kcal/mol/A RMS (RMS force 36); dipoles 8e-7 e A RMS |
+| 10 NVE steps vs sander-pgm from the same rst7 (cut 9 A, PME 48^3 order 6, SHAKE vs rigid, tol 1e-8, `--leapfrog-velocities`) | EPtot within 0.05 kcal/mol of 5e5 (1e-7 relative) at every step; without the flag the two differ by a half-step velocity offset (sander reads v(-dt/2)) |
 | Analytic row forces vs autodiff; forces and virial vs finite differences | 2e-10 (float64); pytest |
 | NVE, mixed, dt 1 fs, 20 ps | drift 0.0001 kT/ns per degree of freedom at dipole_scf_tol 1e-5 (default), 0.02 at 1e-4; dt 2 fs, 1e-4: 0.06 |
 | NVT, gamma 2/ps | T 297-299 K; translational = rotational temperature |
