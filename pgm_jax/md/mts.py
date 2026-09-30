@@ -596,7 +596,7 @@ class _MTSMixin:
             An unknown van der Waals form.
         """
         cd, vdw = self.ff.cd, self.ff.s.terms.vdw
-        if vdw == "lj":
+        if vdw in ("lj", "de"):
             rh, se = P["lj_rmin_half"].astype(cd), P["lj_sqrt_eps"].astype(cd)
             return (at(rh)[:, None] + rh[k], at(se)[:, None] * se[k])
         if vdw == "gvdw":

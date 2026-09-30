@@ -54,6 +54,7 @@ import numpy as np
 from jax.typing import ArrayLike
 
 from ..channels import ElecChannel, elec_decomposition, molecular_polarizability
+from ..de import DEChannel
 from ..lj import LJChannel
 from ..system import Molecule, ParamTable, System
 from ..units import ANG_NM, DEBYE_E_NM, KCAL
@@ -235,8 +236,8 @@ class ClusterModel:
         ----------
         mol : Molecule
             The rigid monomer.
-        vdw : {"lj", "gvdw"}
-            Van der Waals form (any value other than "lj" gives GVDW).
+        vdw : {"lj", "de", "gvdw"}
+            Van der Waals form (any value other than "lj" and "de" gives GVDW).
         rep : {"gauss", "slater"}
             GVDW repulsion.
         table : ParamTable, optional
@@ -247,7 +248,7 @@ class ClusterModel:
         self.mol = mol
         self.m = mol.n
         self.table = ParamTable([mol]) if table is None else table
-        self.vdw = LJChannel() if vdw == "lj" else GVDWChannel(rep=rep)
+        self.vdw = LJChannel() if vdw == "lj" else DEChannel() if vdw == "de" else GVDWChannel(rep=rep)
         self.vdw_kind = vdw
         self._sys, self._fn = {}, {}
         self.monomer_xyz = None if monomer_xyz_nm is None else jnp.asarray(monomer_xyz_nm)

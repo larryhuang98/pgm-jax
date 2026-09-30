@@ -1219,7 +1219,7 @@ class PGMBeads:
                 Fm = jnp.eye(3) + eps
                 return ff.energy_fixed_mu(xk + (com @ eps.T)[flex.mol], box @ Fm.T, muk, cand, P)[0]
 
-            return jax.grad(en)(jnp.zeros((3, 3))) - ff._vdw_tail(P, box) * jnp.eye(3)
+            return jax.grad(en)(jnp.zeros((3, 3))) - ff._vdw_tail_impulse(P, box) * jnp.eye(3)
 
         return jnp.mean(jax.vmap(W)(x, mu), 0)
 

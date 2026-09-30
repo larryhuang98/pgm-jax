@@ -118,6 +118,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ..de import DE_ALPHA, DE_BETA, de_groups, de_long_range, de_pair_grad, de_tail_impulse
 from ..lj import lj_long_range
 from ..options import check_vdw, elec_flags
 from ..system import System
@@ -147,18 +148,24 @@ class Terms:
         Electrostatics: "q" charges, "qp" charges + permanent dipoles, "qi" charges + induction,
         "qpi" pGM (charges, permanent and induced dipoles; options.py).  Quadrupoles are not in
         the MD engine.
-    vdw : {"lj", "gvdw", "none"}
-        Van der Waals term: "lj" (Lennard-Jones), "gvdw" (vdw.py; pmemd-pgm igvdw=1) or "none".
+    vdw : {"lj", "de", "gvdw", "none"}
+        Van der Waals term: "lj" (Lennard-Jones), "de" (double exponential of DEGAUSS, de.py, with the
+        LJ well depth and minimum), "gvdw" (vdw.py; pmemd-pgm igvdw=1) or "none".
     gvdw_rep : {"gauss", "slater"}
         GVDW repulsion: "gauss" (gvdw_rep_form=0) or "slater" (=1).
     lj_lrc : bool
-        Long-range correction of the r^-6 tail of LJ or of the GVDW dispersion (vdwmeth = 1).
+        Long-range correction of the r^-6 tail of LJ or of the GVDW dispersion, or of the DE tail
+        (vdwmeth = 1).
+    de_alpha, de_beta : float
+        Repulsive and attractive exponents of the DE form (alpha > beta > 0; vdw = "de").
     """
 
     elec: str = "qpi"
     vdw: str = "lj"
     gvdw_rep: str = "gauss"
     lj_lrc: bool = True
+    de_alpha: float = DE_ALPHA
+    de_beta: float = DE_BETA
 
 
 @_dc.dataclass(frozen=True)
@@ -310,6 +317,8 @@ FLAT_SETTINGS = {
     "vdw": ("terms", "vdw"),
     "gvdw_rep": ("terms", "gvdw_rep"),
     "lj_lrc": ("terms", "lj_lrc"),
+    "de_alpha": ("terms", "de_alpha"),
+    "de_beta": ("terms", "de_beta"),
     "cutoff": ("cutoffs", "cutoff"),
     "elec_cutoff": ("cutoffs", "elec_cutoff"),
     "skin": ("neighbors", "skin"),
@@ -848,6 +857,10 @@ class PGMForceField:
             another system.
         """
         self.sys, self.s = sys, settings
+        P0 = sys.expand(None) if settings.terms.vdw == "de" else None  # concrete: the groups feed jitted code
+        self._de_groups_cache = (
+            de_groups(np.asarray(P0["lj_rmin_half"]), np.asarray(P0["lj_sqrt_eps"])) if P0 is not None else None
+        )
         if settings.induction.predictor not in ("mu4", "mu3", "ls", "none"):
             raise ValueError(f"unknown predictor {settings.induction.predictor!r}")
         check_vdw(settings.terms.vdw, settings.terms.gvdw_rep)
@@ -1990,10 +2003,10 @@ class PGMForceField:
     def _vdw_params(self, P: dict, k: jax.Array) -> tuple:
         """Return the row pair parameters of the van der Waals form (tuple of (N, C) arrays).
 
-        LJ: (rmin_ij [nm], eps_ij [kJ/mol]); GVDW: (A_ij, C6_ij, b_ij, a_ij); none: ().
+        LJ and DE: (rmin_ij [nm], eps_ij [kJ/mol]); GVDW: (A_ij, C6_ij, b_ij, a_ij); none: ().
         """
         cd = self.cd
-        if self.s.terms.vdw == "lj":
+        if self.s.terms.vdw in ("lj", "de"):
             rh, se = P["lj_rmin_half"].astype(cd), P["lj_sqrt_eps"].astype(cd)
             return (rh[:, None] + rh[k], se[:, None] * se[k])
         if self.s.terms.vdw == "gvdw":
@@ -2012,13 +2025,17 @@ class PGMForceField:
         """Return the row pair energies (and (1/r) dU/dr) of the van der Waals form times the weights.
 
         The weights wv are 0 for excluded pairs and outside the cutoff.  LJ:
-        e = eps (s^12 - 2 s^6), s = rmin / r.  r [nm]; energies [kJ/mol], (1/r) dU/dr [kJ/mol/nm^2].
+        e = eps (s^12 - 2 s^6), s = rmin / r; DE: de.de_pair.  r [nm]; energies [kJ/mol],
+        (1/r) dU/dr [kJ/mol/nm^2].
         """
         if self.s.terms.vdw == "lj":
             rminp, epsp = vp
             s6 = (rminp / r) ** 6
             e = epsp * (s6 * s6 - 2.0 * s6)
             d = epsp * 12.0 * (s6 - s6 * s6) / (r * r)
+        elif self.s.terms.vdw == "de":
+            rminp, epsp = vp
+            e, d = de_pair_grad(r, rminp, epsp, self.s.terms.de_alpha, self.s.terms.de_beta)
         elif self.s.terms.vdw == "gvdw":
             A, C6, B, a = vp
             e, d = gvdw_pair(r, a, A, C6, B, self.s.terms.gvdw_rep, grad=True)
@@ -2032,8 +2049,26 @@ class PGMForceField:
         """Return the long-range correction of the van der Waals term [kJ/mol] (0 without lj_lrc)."""
         if not self.s.terms.lj_lrc or self.s.terms.vdw == "none":
             return 0.0
+        if self.s.terms.vdw == "de":
+            t = self.s.terms
+            return de_long_range(P, volume(H), self.s.cutoffs.cutoff, self._de_groups(), t.de_alpha, t.de_beta)
         f = lj_long_range if self.s.terms.vdw == "lj" else gvdw_long_range
         return f(P, volume(H), self.s.cutoffs.cutoff)
+
+    def _de_groups(self) -> tuple:
+        """Return the distinct (R*, sqrt(eps)) parameter sets with their populations (de_groups; built in __init__)."""
+        return self._de_groups_cache
+
+    def _vdw_tail_impulse(self, P: dict, H: jax.Array) -> jax.Array | float:
+        """Return the scalar X of the cutoff impulse -X I of the van der Waals tail in the strain derivative [kJ/mol].
+
+        X = E_lrc for the power-law tails of LJ and GVDW (`_vdw_tail`); for DE, X = 2 pi rc^3 / (3 V) sum_ij u_ij(rc)
+        (de.de_tail_impulse).  Zero without lj_lrc.
+        """
+        if self.s.terms.vdw == "de" and self.s.terms.lj_lrc:
+            t = self.s.terms
+            return de_tail_impulse(P, volume(H), self.s.cutoffs.cutoff, self._de_groups(), t.de_alpha, t.de_beta)
+        return self._vdw_tail(P, H)
 
     def _pair_sum(
         self,
@@ -2530,4 +2565,4 @@ class PGMForceField:
                 com,
                 vecs,
             )
-        return W - self._vdw_tail(P, H) * jnp.eye(3)
+        return W - self._vdw_tail_impulse(P, H) * jnp.eye(3)

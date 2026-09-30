@@ -29,6 +29,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.typing import ArrayLike
 
+from .de import DE_ALPHA, DE_BETA, PeriodicDE
 from .ewald import PeriodicPGM, neighbor_list
 from .lj import PeriodicLJ
 from .md.box import centers_of_mass
@@ -132,6 +133,8 @@ class PeriodicModel:
         elec: str = "qpi",
         vdw: str = "lj",
         gvdw_rep: str = "gauss",
+        de_alpha: float = DE_ALPHA,
+        de_beta: float = DE_BETA,
     ) -> None:
         """Build the model.
 
@@ -192,6 +195,10 @@ class PeriodicModel:
             self.vdw = None
         elif vdw == "lj":
             self.vdw = PeriodicLJ(system, self.H, positions_ref, rc=vdw_cutoff, lrc=lj_lrc, nlist=nl)
+        elif vdw == "de":
+            self.vdw = PeriodicDE(
+                system, self.H, positions_ref, rc=vdw_cutoff, lrc=lj_lrc, nlist=nl, alpha=de_alpha, beta=de_beta
+            )
         else:
             self.vdw = PeriodicGVDW(system, self.H, positions_ref, rc=vdw_cutoff, lrc=lj_lrc, nlist=nl, rep=gvdw_rep)
 

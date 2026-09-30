@@ -47,6 +47,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..channels import _dipole_tensor, _field_at_i, _pair_perm, perm_dipoles, quadrupole_field
+from ..de import DE_ALPHA, DE_BETA, de_pair
 from ..densities import DENSITIES
 from ..md.kernels import erf_kernels
 from ..multipole import quadrupole_pair_terms
@@ -99,7 +100,7 @@ class BondedSettings:
         Electrostatics level (options.py).
     quadrupoles : bool
         Permanent Gaussian quadrupoles (the molecules' quad terms).
-    vdw : {"lj", "gvdw", "none"}
+    vdw : {"lj", "de", "gvdw", "none"}
         van der Waals form (vdw.py).
     gvdw_rep : {"gauss", "slater"}
         GVDW repulsion.
@@ -147,7 +148,9 @@ class BondedSettings:
     # the fixed weight): learned partial exclusion
     elec: str = "qpi"  # electrostatics level (options.py): "q" | "qp" | "qi" | "qpi"
     quadrupoles: bool = False  # permanent Gaussian quadrupoles (the molecules' quad terms)
-    vdw: str = "lj"  # "lj" | "gvdw" | "none" (vdw.py)
+    vdw: str = "lj"  # "lj" | "de" | "gvdw" | "none" (de.py, vdw.py)
+    de_alpha: float = DE_ALPHA  # DE exponents (vdw = "de")
+    de_beta: float = DE_BETA
     gvdw_rep: str = "gauss"  # GVDW repulsion "gauss" | "slater"
     nn_width: int = 32  # "nnb" (bonded/nn.py): embedding width, message-passing layers,
     nn_layers: int = 3  # reference values ("geometry": minimum geometry + learned
@@ -754,6 +757,10 @@ class BondedModel(BondedTerms):
         if self.s.vdw == "lj":
             s6 = ((Q["lj_rmin_half"][ii] + Q["lj_rmin_half"][jj]) / r) ** 6
             return jnp.sum(w * Q["lj_sqrt_eps"][ii] * Q["lj_sqrt_eps"][jj] * (s6 * s6 - 2.0 * s6))
+        if self.s.vdw == "de":
+            rm = Q["lj_rmin_half"][ii] + Q["lj_rmin_half"][jj]
+            eps = Q["lj_sqrt_eps"][ii] * Q["lj_sqrt_eps"][jj]
+            return jnp.sum(w * de_pair(r, rm, eps, self.s.de_alpha, self.s.de_beta))
         A = Q["gvdw_sqrt_a"][ii] * Q["gvdw_sqrt_a"][jj]
         C6 = Q["gvdw_sqrt_c6"][ii] * Q["gvdw_sqrt_c6"][jj]
         B = 0.5 * (Q["gvdw_b"][ii] + Q["gvdw_b"][jj])

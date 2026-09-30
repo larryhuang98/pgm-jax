@@ -13,14 +13,15 @@ Electrostatics (`elec`), all with Gaussian distributions and every atom pair int
 `quadrupoles=True` adds permanent Gaussian quadrupoles from the covalent quadrupole basis
 (multipole.py): gas phase and bonded fitting only for now, not yet in PME / MD.
 
-Van der Waals (`vdw`): "lj" (Amber form, Lorentz-Berthelot), "gvdw" (Gaussian-density vdW,
-vdw.py; `gvdw_rep` "gauss" | "slater"), "none".
+Van der Waals (`vdw`): "lj" (Amber form, Lorentz-Berthelot), "de" (double exponential of DEGAUSS,
+de.py; exponents `de_alpha`, `de_beta`; the well depth and minimum of the LJ parameters), "gvdw"
+(Gaussian-density vdW, vdw.py; `gvdw_rep` "gauss" | "slater"), "none".
 
 See also docs/model_options.md.
 """
 
 ELEC_LEVELS = {"q": (False, False), "qp": (True, False), "qi": (False, True), "qpi": (True, True)}
-VDW_FORMS = ("lj", "gvdw", "none")
+VDW_FORMS = ("lj", "de", "gvdw", "none")
 GVDW_REP = ("gauss", "slater")
 
 
@@ -52,7 +53,7 @@ def check_vdw(vdw: str, rep: str = "gauss") -> None:
 
     Parameters
     ----------
-    vdw : {"lj", "gvdw", "none"}
+    vdw : {"lj", "de", "gvdw", "none"}
         Van der Waals form.
     rep : {"gauss", "slater"}
         GVDW repulsion form (checked even when `vdw` is not "gvdw").
