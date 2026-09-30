@@ -42,6 +42,29 @@ pgm-jax md -p examples/water512/pgm3p25_512.prmtop -c examples/water512/pgm3p25_
 pytest -q tests/test_water512.py   # the same run on CPU (double) and GPU (double, mixed); GPU tests skip without a GPU
 ```
 
+
+## Outputs
+
+`-o out` sets the prefix. Only `out.log` is always written; the other files appear when their `-every`
+option is given (steps between writes):
+
+| File | Written with | Content |
+|---|---|---|
+| `out.log` | always (`--report-every N`) | table of step, time_ps, temp_K, etot, ekin, epot, elec, vdw, econs, volume_nm3, density, solver iterations, ns/day (energies in kJ/mol) |
+| `out.nc` | `--traj-every N` | Amber NetCDF trajectory (cpptraj, VMD and MDTraj read it) |
+| `out.chk`, `out.rst7` | `--checkpoint-every N` | full state (continue with `--continue-from out.chk`) and the Amber NetCDF restart |
+| `out.dip` | `--dipoles-every N` | cell dipole (charge, permanent and induced parts) and volume, for the dielectric constant |
+| `out.mu.nc` | `--induced-every N` | per-atom induced dipoles |
+
+All of them, for the 512-water box (10 NVE steps, a few seconds), and the dielectric constant from `out.dip`:
+
+```bash
+pgm-jax md -p examples/water512/pgm3p25_512.prmtop -c examples/water512/pgm3p25_512.rst7 -o out \
+    --nsteps 10 --report-every 5 --thermostat none --barostat none --dt-fs 1.0 --precision double \
+    --traj-every 5 --checkpoint-every 10 --dipoles-every 2
+pgm-jax dielectric out.dip --skip-ps 0 --blocks 2 --eps-inf 1.0     # needs a longer run for a meaningful value
+```
+
 ---
 
 The polarizable Gaussian multipole (pGM) model with Lennard-Jones, in JAX. **Fixed functional
