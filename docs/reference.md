@@ -9,8 +9,10 @@ any order. Validated against Amber (sander, pmemd-pgm) and PyRESP.
   with every atom pair interacting (no 1-2/1-3 masking). Levels `elec = "q" | "qp" | "qi" | "qpi"`
   (charges only, + permanent dipoles, charges + induction, full pGM); covalent Gaussian
   quadrupoles (derived and tested; gas phase and fitting only for now).
-- **Van der Waals:** Lennard-Jones (Amber form, Lorentz-Berthelot) or GVDW, the Gaussian-density
-  van der Waals of pmemd-pgm (`vdw = "lj" | "gvdw"`, Gaussian or Slater repulsion).
+- **Van der Waals:** Lennard-Jones (Amber form, Lorentz-Berthelot), the double exponential (DE) of
+  DEGAUSS (`pgm_jax/de.py`: finite at zero separation, the LJ well depth and minimum, exponents
+  `de_alpha = 18.17`, `de_beta = 3.65`, continuum tail correction) or GVDW, the Gaussian-density
+  van der Waals of pmemd-pgm (`vdw = "lj" | "de" | "gvdw"`, Gaussian or Slater repulsion).
 - **Bonded term sets** for flexible molecules: Amber/GAFF forms (GAFF import), the explored
   class II and new families, and fast neural bonded terms (a graph network writes the
   parameters of analytic terms once; MD cost = classical terms).
@@ -52,7 +54,7 @@ software paper (LaTeX + PDF) is in `paper/`. The September 2026 merge of nine fe
 each adds, which combinations work or are refused, the integration fixes) is summarised in
 `docs/CHANGES_2026-09.md`.
 
-Started on 2026-09-23 from the pGM core of `~/project/evoff` (commit `73d961c`); this repository
+Started on 2026-09-23 from the pGM core of the evoff project (commit `73d961c`); this repository
 is where the two projects diverge (evoff searches over functional forms, pGM-JAX keeps pGM's).
 
 ## Parameters are inputs
@@ -667,25 +669,16 @@ Findings of the first study are in `data/reports/bonded/README.md`.
 | `scripts/benchmarks/bench.py` | timings on the current device |
 | `data/validation/` | Amber reference runs (inputs + outputs) and `validate_amber.json` |
 
-## Running on rayl8
-
-The login node's glibc is too old for jaxlib: run on a GPU node (all nodes share /home8).
+## Running
 
 ```bash
-ssh gpu-2-3
-source ~/miniconda3/etc/profile.d/conda.sh && conda activate pgmjax   # clone of evoff + jax-md 0.2.29
-cd ~/project/pGM-JAX
-pytest -q                                    # ~2 min
+pytest -q
 python scripts/validation/validate_amber.py compare     # gas phase + periodic vs Amber, ~1 min
 python scripts/validation/validate_amber.py pyresp      # monomer vs PyRESP
 python scripts/validation/validate_amber.py virial      # molecular virial vs sander (ntp=1)
 python scripts/benchmarks/bench.py
 python scripts/benchmarks/bench_md.py --replicate 2     # MD speed, 4096 waters
 ```
-
-The `pgmjax` environment was made with `conda create -n pgmjax --clone evoff` plus
-`pip install --no-index --find-links ~/project/pGM-JAX-wheels jax-md==0.2.29` (the GPU nodes have no
-internet; the wheels were downloaded elsewhere). evoff's environment is untouched.
 
 **Installation.** The scripts, examples and tests import `pgm_jax` as a package; they do not edit
 `sys.path`. Install the repository into the environment once (editable, so that changes of the
@@ -715,7 +708,7 @@ are found through environment variables with defaults, listed in `pgm_jax/paths.
 | water monomer vs PyRESP | induced dipoles to 8 × 10⁻¹⁰ a.u. |
 | 4-water Amber test (`pgm_4wat`) | EELEC −2164.48, VDWAALS 6.7727 (pytest) |
 
-Speed on gpu-2-3 (float64), 512 periodic waters with LJ: energy 25 ms, forces 27 ms, dE/dparams 26 ms,
+Speed on an NVIDIA GPU (float64), 512 periodic waters with LJ: energy 25 ms, forces 27 ms, dE/dparams 26 ms,
 virial 28 ms, gradient of a force-matching loss 50 ms.
 
 Conventions worth knowing:
@@ -778,7 +771,7 @@ Conventions worth knowing:
   NVE checked in small boxes); not validated in production runs.
 - Interfaces to other codes (`docs/interfaces.md`): rigid molecules are held by the external code
   (ASE: up to three atoms; OpenMM constraints; i-PI needs flexible templates); OpenMM's CUDA platform
-  cannot share a GPU with JAX on rayl8 (use its CPU platform) and gives no virial to a PythonForce;
+  cannot share a GPU with JAX when the GPUs are in exclusive-process mode (use its CPU platform) and gives no virial to a PythonForce;
   virtual sites, alchemical regions, multiple time stepping, external fields, biases and
   extended-Lagrangian dipoles of the native engine are not exposed (refused where a simulation or
   settings carry them).
