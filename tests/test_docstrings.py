@@ -50,7 +50,6 @@ def _report(missing):
     return f"{len(missing)} missing docstrings:\n" + "\n".join(lines)
 
 
-@pytest.mark.xfail(strict=False, reason="documentation phase P8 being merged")
 def test_library_docstrings_complete():
     """Every module, class, function and method of pgm_jax/ has a docstring."""
     missing = _find_missing("pgm_jax")
