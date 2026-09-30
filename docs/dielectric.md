@@ -14,7 +14,7 @@ python scripts/dielectric/dielectric.py ir.dip --ir ir_spectrum.dat             
 ```
 
 ```python
-sim.run(nsteps, prefix="md", report_every=5000, traj_every=5000, dipoles_every=25, induced_every=5000)  # also md.mu.nc
+sim.run(nsteps, prefix="md", report_every=5000, traj_every=5000, dipoles_every=25, multipole_every=5000)  # also md.mpole.nc
 from pgm_jax.md.dipoles import cell_dipole, CellDipole, read_dipoles
 
 cell_dipole(sim)  # {"charge", "perm", "ind", "total"} e nm, "debye": the same in D, "molecular" (nmol, 3)
@@ -37,8 +37,8 @@ electrostatics level) and the columns
 (dipoles in e nm; `mol_dipole`: mean |dipole| of the molecules; `alpha_nm3`: the cell's
 electronic polarizability, 1/3 of its trace, every 100th sample (`DipoleRecorder.alpha_every`), `nan`
 otherwise or when a solve did not converge; `temp_K`: the
-kinetic temperature). `prefix.mu.nc` holds per-atom induced dipoles (NetCDF-3: `time`, `step`,
-`induced_dipoles (frame, atom, spatial)` in e nm, float32).
+kinetic temperature). `prefix.mpole.nc` holds the multipoles of every atom (NetCDF-3, float32: `time`, `step`,
+`charge (frame, atom)` in e, `permanent_dipole` and `induced_dipole (frame, atom, spatial)` in e nm).
 
 ## Definitions and conventions
 

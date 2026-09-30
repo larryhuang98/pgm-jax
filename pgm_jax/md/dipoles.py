@@ -2,7 +2,7 @@
 
 Contents: `CellDipole` (cell and molecular dipoles, cell polarizability of a PGMForceField's
 system), `cell_dipole` (of a simulation's current state), `DipoleRecorder` and `read_dipoles`
-(the .dip time series), and `InducedDipoleFile` (per-atom induced dipoles, NetCDF).
+(the .dip time series), and `MultipoleFile` (per-atom charges, permanent and induced dipoles, NetCDF).
 
 Cell dipole (e nm; 1 D = units.DEBYE_E_NM = 0.020819434 e nm):
 
@@ -49,7 +49,7 @@ every step but eps = eps_inf > 1.  For water eps_inf - 1 is about 0.7, one per c
 `CellDipole.polarizability` solves A m_a = e_a for a = x, y, z with the force field's induction
 operator A = alpha^-1 - T and CG, and returns alpha_ab = sum_i (m_b)_{i,a}.
 
-Recording during Simulation.run (arguments dipoles_every=, induced_every=; the Amber trajectory
+Recording during Simulation.run (arguments dipoles_every=, multipole_every=; the Amber trajectory
 and restart files are unchanged):
   * DipoleRecorder, prefix.dip: every `dipoles` steps M_q, M_perm, M_ind, the volume, the kinetic
     temperature and the mean molecular dipole, and every `alpha_every`-th sample the cell
@@ -57,8 +57,9 @@ and restart files are unchanged):
     device inside the driver's blocks (lax.scan over sub-blocks of the integrator), so sampling
     every step needs no host round trip; the samples of a block are kept only once the driver has
     accepted the block (not when it is repeated after a list overflow).
-  * InducedDipoleFile, prefix.mu.nc: per-atom induced dipoles (e nm, float32) every `induced`
-    steps, NetCDF-3 (dimensions frame, atom, spatial; variables time, step, induced_dipoles).
+  * MultipoleFile, prefix.mpole.nc: the multipoles of every atom (float32) every `multipole` steps,
+    NetCDF-3 (dimensions frame, atom, spatial; variables time, step, charge (e), permanent_dipole
+    and induced_dipole (e nm)).
 
 Units: nm, ps, e, e nm, nm^3 (polarizability volume), K.
 
@@ -153,6 +154,18 @@ class CellDipole:
         qr = P["q"][:, None] * (pos - com[self.mol])
         p = self.ff.perm_dipoles(pos, H, P["cov"])
         return qr, p, jnp.asarray(mu, jnp.float64)
+
+    def atomic(
+        self, pos: ArrayLike, H: ArrayLike, mu: ArrayLike, params: dict | None = None
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+        """Return the multipoles of every atom: charges (N,) [e], permanent and induced dipoles (N, 3) [e nm].
+
+        Charges and covalent (permanent) dipoles at this geometry (charge flux); pos (N, 3) [nm], H (3, 3) [nm],
+        mu (N, 3) the induced dipoles [e nm] converged at pos.
+        """
+        pos, H = jnp.asarray(pos, jnp.float64), jnp.asarray(H, jnp.float64)
+        P = self.ff.charges_at(pos, H, self.ff._atoms(params))
+        return P["q"], self.ff.perm_dipoles(pos, H, P["cov"]), jnp.asarray(mu, jnp.float64)
 
     def components(self, pos: ArrayLike, H: ArrayLike, mu: ArrayLike, params: dict | None = None) -> jax.Array:
         """Return the cell dipole components (3, 3) float64 [e nm]: rows M_q, M_perm, M_ind.
@@ -488,14 +501,16 @@ def read_dipoles(paths: str | os.PathLike | Sequence[str | os.PathLike]) -> tupl
 
 
 # ----------------------------------------------------------------------------- per-atom induced dipoles
-class InducedDipoleFile:
-    """Per-atom induced dipoles in an appendable NetCDF-3 file (64-bit offsets).
+class MultipoleFile:
+    """Per-atom charges, permanent dipoles and induced dipoles in an appendable NetCDF-3 file (64-bit offsets).
 
-    Dimensions frame (unlimited), atom, spatial; variables time (ps, float64), step (int32) and
-    induced_dipoles (frame, atom, spatial; e nm, float32).  The header is written once; each frame
-    appends one record and bumps the record count, so the file is valid after every frame
-    (scipy.io.netcdf_file, netCDF4, xarray read it).  The writer is the same byte-level scheme as
-    io.NetCDFTrajectory.
+    Dimensions frame (unlimited), atom, spatial; variables time (ps, float64), step (int32),
+    charge (frame, atom; e, float32), permanent_dipole and induced_dipole (frame, atom, spatial;
+    e nm, float32).  The permanent dipole is the covalent (bond) dipole assigned to the atom; the sum
+    charge * r + permanent_dipole + induced_dipole over the atoms is the cell dipole of the .dip file.
+    The header is written once; each frame appends one record and bumps the record count, so the file
+    is valid after every frame (scipy.io.netcdf_file, netCDF4, xarray read it).  The writer is the same
+    byte-level scheme as io.NetCDFTrajectory.
 
     Attributes
     ----------
@@ -504,7 +519,7 @@ class InducedDipoleFile:
     n : int
         Number of atoms.
     recsize : int
-        Bytes per record (8 + 4 + 12 n).
+        Bytes per record (8 + 4 + 28 n).
     nframes : int
         Frames in the file.
     """
@@ -525,7 +540,7 @@ class InducedDipoleFile:
             If the file exists, append to it (the frame count is read from its header).
         """
         self.path, self.n = path, int(n_atoms)
-        self.recsize = 8 + 4 + 12 * self.n
+        self.recsize = 8 + 4 + 28 * self.n
         if append and os.path.exists(path):
             with open(path, "rb") as fh:
                 fh.seek(4)
@@ -556,9 +571,11 @@ class InducedDipoleFile:
         vars_ = [
             ("time", [0], self.DOUBLE, {"units": "picosecond"}, 8),
             ("step", [0], self.INT, {}, 4),
-            ("induced_dipoles", [0, 1, 2], self.FLOAT, {"units": "e nm"}, 12 * self.n),
+            ("charge", [0, 1], self.FLOAT, {"units": "e"}, 4 * self.n),
+            ("permanent_dipole", [0, 1, 2], self.FLOAT, {"units": "e nm"}, 12 * self.n),
+            ("induced_dipole", [0, 1, 2], self.FLOAT, {"units": "e nm"}, 12 * self.n),
         ]
-        gatts = {"title": "pgm_jax induced dipoles", "program": "pgm_jax", "Conventions": "pgm_jax induced dipoles 1.0"}
+        gatts = {"title": "pgm_jax atomic multipoles", "program": "pgm_jax", "Conventions": "pgm_jax multipoles 1.0"}
 
         def header(begins: Sequence[int]) -> bytes:
             """Return the header bytes for the given begin offsets of the variables."""
@@ -573,22 +590,25 @@ class InducedDipoleFile:
             return h
 
         off = len(header([0] * len(vars_)))
-        begins = [off, off + 8, off + 12]  # record layout: time (8 bytes), step (4), dipoles
+        n = self.n
+        begins = [off, off + 8, off + 12, off + 12 + 4 * n, off + 12 + 16 * n]  # record: time, step, charge, dipoles
         with open(self.path, "wb") as fh:
             fh.write(header(begins))
 
-    def write(self, step: int, time_ps: float, mu: ArrayLike) -> None:
-        """Append one frame of induced dipoles mu (N, 3) [e nm] at `step` and `time_ps` [ps].
+    def write(self, step: int, time_ps: float, q: ArrayLike, p: ArrayLike, mu: ArrayLike) -> None:
+        """Append one frame at `step` and `time_ps` [ps]: charges q (N,) [e], dipoles p and mu (N, 3) [e nm].
 
         Raises
         ------
         ValueError
-            If mu does not hold N dipoles.
+            If the arrays do not hold N atoms.
         """
-        mu = np.asarray(mu, ">f4").reshape(-1)
-        if mu.size != 3 * self.n:
-            raise ValueError(f"expected {self.n} induced dipoles, got {mu.size // 3}")
-        rec = struct.pack(">d", float(time_ps)) + struct.pack(">i", int(step)) + mu.tobytes()
+        q, p, mu = (np.asarray(x, ">f4").reshape(-1) for x in (q, p, mu))
+        if q.size != self.n or p.size != 3 * self.n or mu.size != 3 * self.n:
+            raise ValueError(f"expected {self.n} atoms, got {q.size} charges, {p.size // 3} and {mu.size // 3} dipoles")
+        rec = (
+            struct.pack(">d", float(time_ps)) + struct.pack(">i", int(step)) + q.tobytes() + p.tobytes() + mu.tobytes()
+        )
         with open(self.path, "r+b") as fh:
             fh.seek(0, 2)
             fh.write(rec)

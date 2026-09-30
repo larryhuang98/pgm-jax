@@ -37,7 +37,7 @@ import numpy as np
 
 from ..units import AMU_NM3_TO_G_CM3, BAR_PER_KJMOL_NM3, KB
 from .box import volume
-from .dipoles import DipoleRecorder, InducedDipoleFile
+from .dipoles import CellDipole, DipoleRecorder, MultipoleFile
 from .driver import (
     LogTable,
     Stopwatch,
@@ -527,7 +527,7 @@ class MDEngine:
         report_pressure: bool = False,
         append: bool = False,
         dipoles_every: int = 0,
-        induced_every: int = 0,
+        multipole_every: int = 0,
     ) -> None:
         """Advance nsteps with output files.
 
@@ -551,27 +551,28 @@ class MDEngine:
         dipoles_every : int
             Steps between samples of the cell dipole, written to prefix.dip (sampled inside the
             blocks; does not shorten them).
-        induced_every : int
-            Steps between frames of the per-atom induced dipoles prefix.mu.nc.
+        multipole_every : int
+            Steps between frames of the per-atom charges, permanent and induced dipoles prefix.mpole.nc.
 
         Raises
         ------
         NotImplementedError
             Cell dipoles with an alchemical region (its charges are not scaled).
         """
-        report, traj, restart, dipoles, induced = (
+        report, traj, restart, dipoles, multipole = (
             report_every,
             traj_every,
             checkpoint_every,
             dipoles_every,
-            induced_every,
+            multipole_every,
         )
-        block = block_length(nsteps, report, traj, restart, induced)
+        block = block_length(nsteps, report, traj, restart, multipole)
         if dipoles and self.integ.alchemy is not None:
             raise NotImplementedError("the cell dipole (dipoles_every) does not scale an alchemical region's charges")
         tfile = NetCDFTrajectory(prefix + ".nc", self.sys.n, append=append) if traj else None
         self._recorder = DipoleRecorder(self, prefix + ".dip", dipoles, append=append) if dipoles else None
-        mufile = InducedDipoleFile(prefix + ".mu.nc", self.sys.n, append=append) if induced else None
+        mpfile = MultipoleFile(prefix + ".mpole.nc", self.sys.n, append=append) if multipole else None
+        cell = CellDipole(self.ff) if multipole else None
         bout = None
         if self.integ.bias is not None:
             from ..bias.io import BiasOutput
@@ -590,8 +591,10 @@ class MDEngine:
                 self._recorder.flush()
             if bout is not None:
                 bout.write(self.bias_rows(), self.state.bias)
-            if mufile is not None and step % induced == 0:
-                mufile.write(step, self.time_ps, self.state.induction.mu)
+            if mpfile is not None and step % multipole == 0:
+                mpfile.write(
+                    step, self.time_ps, *cell.atomic(self.positions(), self.state.box, self.state.induction.mu)
+                )
             if report and step % report == 0:
                 obs = self.observables()
                 if report_pressure:

@@ -239,7 +239,7 @@ def _run(tmp_path, name, report, engine="rigid"):
         tpl = RigidTemplate(sys.molecules[0], pos[sys.atom_slice(0)])
         sim = FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=0.001, thermostat="bussi", seed=4)
     prefix = str(tmp_path / name)
-    sim.run(40, report_every=report, prefix=prefix, dipoles_every=5, induced_every=20)
+    sim.run(40, report_every=report, prefix=prefix, dipoles_every=5, multipole_every=20)
     return sim, prefix
 
 
@@ -274,9 +274,16 @@ def test_recorded_series_match_the_state(tmp_path, monkeypatch, engine):
     assert abs(d["alpha_nm3"][-1] - a) < 1e-7 * a
     from scipy.io import netcdf_file
 
-    f = netcdf_file(prefix + ".mu.nc", "r", mmap=False)
-    assert list(f.variables["step"][:]) == [20, 40] and f.variables["induced_dipoles"].units == b"e nm"
-    assert np.allclose(np.array(f.variables["induced_dipoles"][-1]), np.asarray(st.induction.mu), atol=1e-7)
+    f = netcdf_file(prefix + ".mpole.nc", "r", mmap=False)
+    assert list(f.variables["step"][:]) == [20, 40] and f.variables["induced_dipole"].units == b"e nm"
+    assert f.variables["charge"].units == b"e" and f.variables["charge"].shape == (2, sim.sys.n)
+    assert np.allclose(np.array(f.variables["induced_dipole"][-1]), np.asarray(st.induction.mu), atol=1e-7)
+    q, p, _ = CellDipole(sim.ff).atomic(pos, st.box, st.induction.mu)  # the last frame is the current state
+    assert np.allclose(np.array(f.variables["charge"][-1]), np.asarray(q), atol=1e-7)
+    assert np.allclose(np.array(f.variables["permanent_dipole"][-1]), np.asarray(p), atol=1e-7)
+    # the per-atom dipoles of the file add up to the recorded M_perm and M_ind
+    assert np.allclose(np.array(f.variables["permanent_dipole"][-1]).sum(0), d["M_perm"][-1], atol=1e-6)
+    assert np.allclose(np.array(f.variables["induced_dipole"][-1]).sum(0), d["M_ind"][-1], atol=1e-6)
     f.close()
     if engine == "rigid":  # the same run sampled at block ends only
         _, prefix_b = _run(tmp_path, "b", 5, engine)

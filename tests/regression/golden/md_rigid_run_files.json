@@ -1,6 +1,6 @@
 {
  "case": "md_rigid_run_files",
- "seconds": 20.1,
+ "seconds": 21.1,
  "keys": 76,
  "environment": {
   "jax": "0.11.2",
@@ -9,11 +9,11 @@
   "python": "3.12.14",
   "host": "cpu-node",
   "cpu": "Intel(R) Xeon(R) Gold 6418H",
-  "threads": "16",
+  "threads": null,
   "devices": [
    "cpu:0"
   ],
-  "commit": "e72c57c3d7ba1049b469afbdc1c85f8a60c98d51",
-  "date": "2026-09-28 22:56:35"
+  "commit": "b00f694b0303c0c85caa3fbd5e360aaf52ef0e50",
+  "date": "2026-09-29 21:54:01"
  }
 }

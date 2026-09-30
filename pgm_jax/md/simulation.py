@@ -13,7 +13,7 @@ and writes files.  Molecules are the prmtop residues; identical residues share o
 Virtual sites (Amber extra points, Molecule.vsites; md/vsites.py) are massless points of the rigid
 templates, placed from their parents at the start.
 Options: run(dipoles_every=n) also samples the cell dipole every n steps (on the device, inside the blocks)
-into prefix.dip, and run(induced_every=n) writes per-atom induced dipoles to prefix.mu.nc
+into prefix.dip, and run(multipole_every=n) writes per-atom charges and dipoles to prefix.mpole.nc
 (md/dipoles.py).
 mts=MTS(...) integrates force groups with their own time steps (md/mts.py; dt is the outer step).
 bias=... adds biases on collective variables (pgm_jax.bias: metadynamics, OPES, static biases);

@@ -407,7 +407,7 @@ flex = FlexibleSimulation(system, templates, positions, box, ...same keywords...
 
 sim.advance(n)                     # public, no files (was _advance)
 sim.run(nsteps, prefix="md", report_every=1000, traj_every=0, checkpoint_every=0,
-        dipoles_every=0, induced_every=0, report_pressure=False, append=False)
+        dipoles_every=0, multipole_every=0, report_pressure=False, append=False)
 sim.observables(); sim.pressure(); sim.positions(); sim.velocities()
 sim.save_checkpoint(path); sim.load_checkpoint(path); sim.write_restart(path)
 sim.set_field(E); sim.set_restraints(r); sim.set_bias_state(b)          # unchanged
@@ -542,7 +542,7 @@ docs + README + examples (D). Every phase updates all of them in the same commit
 | `vel_nm_ps=` / `pos_nm`, `H_nm` | `velocities=` / `positions`, `box` | 23/12 | 11/9 | 3 |
 | `Simulation.from_amber(prmtop, coords, use_velocities, charges, **kw)` | unchanged name, new keywords as above | 5/3 | 4/3 | 3/2 |
 | `sim._advance(n)` | `sim.advance(n)` | 67/21 | 89/19 | 0 |
-| `sim.run(nsteps, report, traj, restart, prefix, pressure_every_report, append, dipoles, induced)` | `sim.run(nsteps, *, prefix, report_every, traj_every, checkpoint_every, report_pressure, append, dipoles_every, induced_every)` | 62 (all `.run(`) | 37 | 19 |
+| `sim.run(nsteps, report, traj, restart, prefix, pressure_every_report, append, dipoles, induced)` | `sim.run(nsteps, *, prefix, report_every, traj_every, checkpoint_every, report_pressure, append, dipoles_every, multipole_every)` | 62 (all `.run(`) | 37 | 19 |
 | `sim.save(prefix)`, `sim.load(path)` | `sim.save_checkpoint(path)`, `sim.write_restart(path)`, `sim.load_checkpoint(path)` (run() still writes `prefix.chk` + `prefix.rst7`, and `prefix.bias` with biases) | 16/9 | 19/15 | 3/3 |
 | `sim.positions_nm()`, `sim.velocities_nm_ps()` | `sim.positions()`, `sim.velocities()`, `sim.box()` | 41/16 | 47/15 | 10/5 |
 | `simulation._dedupe(read_prmtop_pgm(p, first_residue_only=False, charges=c))` | `System.from_prmtop(p, charges=c)` (identical molecules share one template) | 19/15 | 2/1 | 1/1 |
@@ -692,7 +692,7 @@ end: Q3 decides whether intermediate releases need compatibility shims).
   integrator steps (rigid, flexible, MTS, PIMD), SHAKE/RATTLE solvers, thermostat O steps, bias
   deposition, alchemical Hamiltonian, the order of operations in all of them.
 - Random-number streams (how keys are derived from `seed`), so trajectories stay identical.
-- File formats of trajectories, restarts, logs (columns), `.dip`, `.mu.nc`, `.ffd`, COLVAR / HILLS,
+- File formats of trajectories, restarts, logs (columns), `.dip`, `.mpole.nc`, `.ffd`, COLVAR / HILLS,
   `_fe.npz`, REMD / FE JSON summaries; only the checkpoint header is new.
 - The physics content of the docs (numbers, validation tables).
 - Reference implementations `ewald.PeriodicPGM` / `PeriodicModel` stay separate from the MD force
@@ -771,7 +771,7 @@ python tests/regression/regress.py check
 | `ff_pgm3p25_512` | the 512-water pGM3P-25 validation box at the default `MDSettings` (mixed) and in double |
 | `efield_point`, `iel_point` | force field with an external field; iEL/0-SCF shadow energy and forces (block preconditioner) |
 | `md_rigid_nve/langevin/bussi/gle/npt/mixed` | rigid pGM3P-25 water (64), 200 steps, snapshots every 50 steps: all observables, positions, velocities, box, induced dipoles; NPT pressure |
-| `md_rigid_run_files` | `Simulation.run` with every output: log columns (except ns/day), NetCDF frames, rst7, `.dip` series, `.mu.nc`; continuation from the checkpoint in a new simulation |
+| `md_rigid_run_files` | `Simulation.run` with every output: log columns (except ns/day), NetCDF frames, rst7, `.dip` series, `.mpole.nc`; continuation from the checkpoint in a new simulation |
 | `md_rigid_mts`, `md_iel`, `md_efield`, `md_vsites`, `md_restraints_npt` | r-RESPA (short split); iEL/0-SCF MD; static field and constant D; TIP4P-Ew from a tleap prmtop (rigid engine and constrained flexible engine with a placed site); restraints of every kind under NPT |
 | `flex_methanol_hbonds`, `flex_methanol_npt`, `flex_water_constraints`, `flex_flux`, `flex_mts` | flexible engine: minimize + X-H constraints (Bussi), NPT without constraints (Langevin), rigid water by SHAKE/RATTLE (GLE), charge flux (NVE), MTS special-pair split |
 | `pimd`, `remd_batched`, `bias_metad`, `bias_walkers`, `field_replicas` | PIMD 4 beads (PILE-L, then TRPMD) with bead positions / momenta and estimators; batched REMD with exchanges (replica map, acceptance, energies, states); metadynamics + restraint (hills, COLVAR rows, bias energies); shared-bias walkers; FieldReplicas `.ffd` series |

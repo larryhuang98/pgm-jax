@@ -431,7 +431,7 @@ def md_rigid_run_files():
             checkpoint_every=50,
             prefix=prefix,
             dipoles_every=10,
-            induced_every=50,
+            multipole_every=50,
             report_pressure=True,
         )
         rows = [line.split() for line in open(prefix + ".log") if not line.startswith("#")]

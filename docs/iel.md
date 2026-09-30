@@ -77,7 +77,7 @@ inside M (the intramolecular row pairs of the blocks; 0 for Jacobi); a constant
 passes over the rows and the same PME call as the forces (a delta argument of `_row_terms` and
 `_nonpair`): no response derivative, no iteration. U~ - U* = -(omega/2) r^T (W - A^-1/omega) r is
 second order in the error of x. mu = x + delta are the dipoles of every observable (cell dipole,
-`induced_every=` files, virial).
+`multipole_every=` files, virial).
 
 Block preconditioner: M is assembled every step from the special (intramolecular) row entries,
 G1 I - G2 x x^T per pair plus 1/alpha on the diagonal, one dense 9 x 9 block per water, and solved in

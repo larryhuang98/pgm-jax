@@ -24,8 +24,8 @@ Inputs: the prmtop (-p) and coordinates with a periodic box (-c; ASCII or NetCDF
 Outputs: <out>.log (energies, temperature, density, solver iterations, speed), <out>.nc (Amber
 NetCDF trajectory, --traj-every), <out>.rst7 (Amber NetCDF restart), <out>.chk (checkpoint;
 continue with --continue-from <out>.chk); with --dipoles-every N, <out>.dip (cell dipole every N
-steps, for scripts/dielectric/dielectric.py); with --induced-every N, <out>.mu.nc (per-atom induced
-dipoles).  With --mts N, --dt-fs is the outer step and --nsteps, --report-every, ... count outer
+steps, for scripts/dielectric/dielectric.py); with --multipole-every N, <out>.mpole.nc (per-atom charges,
+permanent and induced dipoles).  With --mts N, --dt-fs is the outer step and --nsteps, --report-every, ... count outer
 steps.  With --efield-V-nm or --displacement-V-nm the log has the columns efield, field_energy and
 the cell dipole Mx My Mz (e nm).
 Units: Angstrom and Amber's units as listed above; --dt-fs fs; fields V/nm; frequencies cm^-1.
@@ -169,7 +169,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--dipoles-every", type=int, default=0, help="steps between cell-dipole samples (<out>.dip; 0: none)"
     )
     g.add_argument(
-        "--induced-every", type=int, default=0, help="steps between per-atom induced dipole frames (<out>.mu.nc)"
+        "--multipole-every",
+        type=int,
+        default=0,
+        help="steps between per-atom multipole frames: charges, permanent and induced dipoles (<out>.mpole.nc)",
     )
     g = ap.add_argument_group("external electric field (docs/efield.md)")
     g.add_argument("--efield-V-nm", type=float, nargs=3, help="uniform external field E0 [V/nm]")
@@ -258,7 +261,7 @@ def main(argv: list[str] | None = None) -> None:
         report_pressure=a.report_pressure,
         append=bool(a.continue_from),
         dipoles_every=a.dipoles_every,
-        induced_every=a.induced_every,
+        multipole_every=a.multipole_every,
     )
 
 
