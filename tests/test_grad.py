@@ -1,10 +1,20 @@
-"""Differentiability: gradients with respect to parameters, box and positions agree with finite
-differences, including second derivatives through the induction solves; parameter tying."""
+"""Differentiability of the gas-phase and periodic models, and parameter tying.
+
+What is checked, and against what: gradients with respect to parameters, box and positions
+against central differences, including second derivatives through the induction solve (force
+matching functionals) and the derivative of the induced dipoles; the default tying keys and the
+tied gradient as the sum of per-atom gradients; no recompilation when parameters change; the
+neutralising background of a charged periodic system (independent of the Ewald splitting).
+
+Tolerances: parameter gradients rtol 2e-6 / atol 1e-8 by default (h = 1e-6 relative steps),
+looser (1e-5 to 1e-4) for second derivatives through the iterative CG solve of the periodic model.
+"""
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from _systems import cluster, methanol
 
 from pgm_jax.channels import ElecChannel, molecular_polarizability
 from pgm_jax.ewald import PeriodicPGM
@@ -14,68 +24,11 @@ from pgm_jax.periodic import PeriodicModel
 from pgm_jax.system import QUANTITIES, Molecule, System
 
 
-def water():
-    return Molecule(
-        "WAT",
-        ["O", "H", "H"],
-        ["OW", "HW", "HW"],
-        np.array([-0.8, 0.4, 0.4]),
-        np.array([0.06, 0.05, 0.05]),
-        np.array([1.0e-3, 0.3e-3, 0.3e-3]),
-        cov=[(0, 1, -0.02), (0, 2, -0.02), (1, 0, 0.008), (2, 0, 0.008)],
-        lj_rmin_half=[0.178, 0.0, 0.0],
-        lj_sqrt_eps=[0.80, 0.0, 0.0],
-        bonds=[(0, 1), (0, 2)],
-    )
-
-
-def methanol():
-    x = (
-        np.array(
-            [
-                [-0.0467, 0.6590, 0.0],
-                [-0.0467, -0.7598, 0.0],
-                [-1.0830, 0.9930, 0.0],
-                [0.4406, 1.0735, 0.8902],
-                [0.4406, 1.0735, -0.8902],
-                [0.8785, -1.0591, 0.0],
-            ]
-        )
-        * 0.1
-    )
-    m = Molecule(
-        "MeOH",
-        ["C", "O", "H", "H", "H", "H"],
-        ["c3", "oh", "h1", "h1", "h1", "ho"],
-        np.array([0.12, -0.62, 0.02, 0.02, 0.02, 0.44]),
-        np.array([0.07, 0.06, 0.05, 0.05, 0.05, 0.05]),
-        np.array([1.2e-3, 0.8e-3, 0.4e-3, 0.4e-3, 0.4e-3, 0.3e-3]),
-        cov=[(0, 1, 0.01), (1, 0, -0.01), (1, 5, -0.02), (5, 1, 0.005)]
-        + [c for h in (2, 3, 4) for c in ((0, h, 0.002), (h, 0, -0.002))],
-        lj_rmin_half=[0.19, 0.172, 0.139, 0.139, 0.139, 0.02],
-        lj_sqrt_eps=[0.33, 0.85, 0.20, 0.20, 0.20, 0.1],
-        bonds=[(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)],
-    )
-    return m, x
-
-
-def _rot(rng):
-    return np.linalg.qr(rng.normal(size=(3, 3)))[0]
-
-
-def cluster(rng):
-    """Water + methanol + water, ~0.3 nm apart (nm)."""
-    t = np.radians(104.52 / 2)
-    w = np.array(
-        [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
-    )
-    m, xm = methanol()
-    pos = np.concatenate([w, (xm - xm.mean(0)) @ _rot(rng).T + [0.33, 0.05, 0.0], w @ _rot(rng).T + [0.12, 0.30, 0.08]])
-    return System([water(), m, water()]), pos
-
-
 def perturbed(params, rng, scale=0.05):
-    """Parameters moved off the initial values so no gradient is accidentally zero by symmetry."""
+    """Return parameters moved off their initial values by a random relative scale (and q, cov shifts).
+
+    Parameters moved off the initial values so no gradient is accidentally zero by symmetry.
+    """
     return {
         k: v * (1 + scale * rng.uniform(-1, 1, size=v.shape))
         + (0.001 * rng.uniform(-1, 1, size=v.shape) if k in ("q", "cov") else 0)
@@ -84,6 +37,19 @@ def perturbed(params, rng, scale=0.05):
 
 
 def check_param_grad(f, params, h=1e-6, rtol=2e-6, atol=1e-8):
+    """Assert that jax.grad(f) matches central differences for every parameter entry.
+
+    Parameters
+    ----------
+    f : callable
+        Scalar function of the parameter dict [kJ/mol].
+    params : dict
+        Parameters (dict of arrays by quantity).
+    h : float
+        Relative step (at least h in absolute terms).
+    rtol, atol : float
+        Tolerance atol + rtol max(1, |fd|) on each entry.
+    """
     g = jax.jit(jax.grad(f))(params)
     f = jax.jit(f)
     for qn in QUANTITIES:
@@ -99,6 +65,7 @@ def check_param_grad(f, params, h=1e-6, rtol=2e-6, atol=1e-8):
 
 
 def test_default_tying_keys():
+    """The default tying keys are per molecule for charges and per type for alpha, independent of atom order."""
     sys, _ = cluster(np.random.default_rng(0))
     t = sys.table
     assert t.keys["q"] == ["WAT:OW", "WAT:HW", "MeOH:c3", "MeOH:oh", "MeOH:h1", "MeOH:ho"]
@@ -132,6 +99,7 @@ def test_default_tying_keys():
 
 
 def test_tied_gradient_is_sum_of_atom_gradients():
+    """The gradient of a tied parameter is the sum of the per-atom (untied) gradients (1e-10)."""
     sys, pos = cluster(np.random.default_rng(1))
     untied = [
         Molecule(
@@ -142,6 +110,7 @@ def test_tied_gradient_is_sum_of_atom_gradients():
     sys_u = System(untied)
 
     def f(s):
+        """Return the energy of system s as a function of its parameters."""
         return lambda P: Model([ElecChannel(), LJChannel()]).energy_fn(s)(jnp.asarray(pos), P)["total"]
 
     g_t = jax.grad(f(sys))(sys.params0)
@@ -153,6 +122,7 @@ def test_tied_gradient_is_sum_of_atom_gradients():
 
 
 def test_no_recompile_when_parameters_change():
+    """Changing parameter values reuses the compiled batch energy (one jit cache entry)."""
     sys, pos = cluster(np.random.default_rng(2))
     model = Model([ElecChannel(), LJChannel()])
     P0 = sys.params0
@@ -168,6 +138,7 @@ def test_no_recompile_when_parameters_change():
 
 
 def test_gas_parameter_gradients():
+    """Gas-phase parameter gradients of the energy match central differences."""
     rng = np.random.default_rng(4)
     sys, pos = cluster(rng)
     P = perturbed(sys.params0, rng)
@@ -176,7 +147,10 @@ def test_gas_parameter_gradients():
 
 
 def test_gas_force_parameter_gradients():
-    """d/dparams of a force-matching-like functional (second derivatives through the solve)."""
+    """Parameter gradients of a force functional match central differences (rtol 1e-5).
+
+    d/dparams of a force-matching-like functional (second derivatives through the solve).
+    """
     rng = np.random.default_rng(5)
     sys, pos = cluster(rng)
     P = perturbed(sys.params0, rng)
@@ -186,6 +160,7 @@ def test_gas_force_parameter_gradients():
 
 
 def test_polarizability_parameter_gradients():
+    """Parameter gradients of the molecular polarizability trace match central differences."""
     rng = np.random.default_rng(6)
     m, x = methanol()
     sys = System([m])
@@ -198,7 +173,7 @@ def test_polarizability_parameter_gradients():
 
 @pytest.fixture(scope="module")
 def periodic():
-    """A perturbed periodic cluster in a triclinic box with its PeriodicModel (fixture)."""
+    """Return a perturbed cluster in a triclinic box with its PeriodicModel (fixture, module scope)."""
     rng = np.random.default_rng(7)
     sys, pos = cluster(rng)
     H = np.array([[1.45, 0.0, 0.0], [0.15, 1.40, 0.0], [-0.10, 0.20, 1.35]])  # triclinic, nm
@@ -209,11 +184,13 @@ def periodic():
 
 
 def test_periodic_forces(periodic):
+    """Periodic forces match central differences of the energy (1e-5 relative, h = 1e-6 nm)."""
     model, sys, pos, H, P = periodic
     F = np.asarray(jax.jit(model.forces)(pos, P))
     ej = jax.jit(lambda x: model.energy(x, P)["total"])
 
     def e(x):
+        """Return the periodic energy at x [kJ/mol]."""
         return float(ej(x))
 
     h = 1e-6
@@ -225,23 +202,29 @@ def test_periodic_forces(periodic):
 
 
 def test_periodic_parameter_gradients(periodic):
+    """Periodic parameter gradients match central differences (rtol 1e-5)."""
     model, sys, pos, H, P = periodic
     check_param_grad(lambda p: model.energy(pos, p)["total"], P, rtol=1e-5, atol=1e-7)
 
 
 def test_periodic_force_parameter_gradients(periodic):
-    """Second derivatives through the CG solve (custom_jvp + custom_linear_solve)."""
+    """Second derivatives through the periodic CG solve match central differences (rtol 1e-4).
+
+    Second derivatives through the CG solve (custom_jvp + custom_linear_solve).
+    """
     model, sys, pos, H, P = periodic
     w = np.random.default_rng(8).normal(size=pos.shape)
     check_param_grad(lambda p: jnp.sum(model.forces(pos, p) * w), P, rtol=1e-4, atol=1e-5)
 
 
 def test_periodic_box_gradient(periodic):
+    """The gradient with respect to the box matrix matches central differences (1e-5 relative)."""
     model, sys, pos, H, P = periodic
     ej = jax.jit(lambda h: model.energy(pos, P, h)["total"])
     g = np.asarray(jax.grad(ej)(jnp.asarray(H)))
 
     def e(h):
+        """Return the periodic energy for box h [kJ/mol]."""
         return float(ej(h))
 
     step = 1e-6
@@ -254,7 +237,10 @@ def test_periodic_box_gradient(periodic):
 
 
 def test_periodic_pressure_is_minus_dE_dV(periodic):
-    """Molecular strain derivative vs finite differences of isotropic scaling of box and centres of mass."""
+    """The molecular strain derivative matches isotropic scaling of box and centres.
+
+    Molecular strain derivative vs finite differences of isotropic scaling of box and centres of mass.
+    """
     model, sys, pos, H, P = periodic
     W = np.asarray(jax.jit(model.strain_derivative)(pos, P))
     w = sys.masses
@@ -263,6 +249,7 @@ def test_periodic_pressure_is_minus_dE_dV(periodic):
     ej = jax.jit(lambda s: model.energy(pos + (s * com)[sys.mol], P, H * (1 + s))["total"])
 
     def e(s):
+        """Return the energy with box and molecular centres scaled by 1 + s."""
         return float(ej(s))
 
     h = 1e-6
@@ -271,6 +258,7 @@ def test_periodic_pressure_is_minus_dE_dV(periodic):
 
 
 def test_induced_dipole_derivative(periodic):
+    """The JVP of the induced dipoles in alpha matches central differences (1e-5 relative)."""
     model, sys, pos, H, P = periodic
     mu = jax.jit(lambda p: model.elec.induced_dipoles(pos, p))
     k = 0
@@ -283,7 +271,10 @@ def test_induced_dipole_derivative(periodic):
 
 
 def test_charged_system_independent_of_ewald_splitting():
-    """With a net charge the neutralising-background term keeps the energy independent of b0."""
+    """A charged periodic system's energy does not depend on the Ewald splitting (1e-4 kJ/mol).
+
+    With a net charge the neutralising-background term keeps the energy independent of b0.
+    """
     rng = np.random.default_rng(9)
     sys, pos = cluster(rng)
     P = dict(sys.params0)

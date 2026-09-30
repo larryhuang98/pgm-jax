@@ -1,6 +1,8 @@
 #!/usr/bin/env python
-"""Regression harness: record golden outputs of the cases in regression_cases.py, or check the
-current code against them.
+"""Regression harness: record the golden outputs of the cases, or check the code against them.
+
+The cases are in regression_cases.py; their golden outputs are golden/<case>.npz, recorded on
+master and never edited.
 
     python tests/regression/regress.py list
     python tests/regression/regress.py record [--only a,b] [--group a]     # writes golden/<case>.npz
@@ -8,10 +10,11 @@ current code against them.
 
 pgm_jax must be importable (pip install -e ., or PYTHONPATH=<repository>).  Run on the CPU
 (JAX_PLATFORMS=cpu) with a fixed thread count; the golden files were recorded with
-16 threads (OMP_NUM_THREADS=16) on the cpu-short nodes of rayl8, see golden/meta_<group>.json.
+16 threads (OMP_NUM_THREADS=16) on the cpu-short nodes of rayl8, see golden/<case>.json.
 check compares every array bitwise (NaNs equal) by default; with --rtol / --atol it accepts
 |a - b| <= atol + rtol |b| and reports the largest deviations.  Exit status 1 on any mismatch,
-missing key or failed case.  Keys that exist only in the new output are reported, not failed."""
+missing key or failed case.  Keys that exist only in the new output are reported, not failed.
+"""
 
 from __future__ import annotations
 
@@ -37,6 +40,7 @@ GOLDEN = os.path.join(HERE, "golden")
 
 
 def _select(only: str | None, group: str | None) -> list[str]:
+    """Return the case names selected by --only (comma-separated names) and --group (labels)."""
     names = list(C.CASES)
     if only:
         want = only.split(",")
@@ -50,6 +54,7 @@ def _select(only: str | None, group: str | None) -> list[str]:
 
 
 def _environment() -> dict:
+    """Return the recording / checking environment: versions, host, CPU, threads, devices, commit, date."""
     import jaxlib
 
     try:
@@ -79,6 +84,13 @@ def _environment() -> dict:
 
 
 def _run(name: str) -> tuple[dict, float]:
+    """Run one case; return its outputs as numpy arrays and the wall time [s].
+
+    Raises
+    ------
+    TypeError
+        If an output is not a numeric or string array.
+    """
     t0 = time.time()
     out = C.CASES[name]["fn"]()
     clean = {}
@@ -91,6 +103,22 @@ def _run(name: str) -> tuple[dict, float]:
 
 
 def _compare(new: dict, old: dict, rtol: float, atol: float) -> dict:
+    """Compare new outputs with golden ones; return a report dict.
+
+    Parameters
+    ----------
+    new, old : dict
+        Arrays by key (new outputs, golden outputs).
+    rtol, atol : float
+        Accept |a - b| <= atol + rtol |b| for floating-point arrays (0, 0: bitwise); NaNs compare equal.
+
+    Returns
+    -------
+    dict
+        missing (keys only in old), extra (only in new), diff (per differing key: max_abs, max_rel,
+        within_tol, or a reason), ok (nothing missing and every difference within tolerance) and
+        bitwise (nothing missing and no difference).
+    """
     rep = {"missing": sorted(set(old) - set(new)), "extra": sorted(set(new) - set(old)), "diff": {}}
     for k in sorted(set(old) & set(new)):
         a, b = new[k], old[k]
@@ -113,6 +141,7 @@ def _compare(new: dict, old: dict, rtol: float, atol: float) -> dict:
 
 
 def main():
+    """Parse the command line and list, record or check the cases (see the module docstring)."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("action", choices=["list", "record", "check"])
     ap.add_argument("--only", help="comma-separated case names")

@@ -1,12 +1,21 @@
-"""Cell dipole, cell polarizability, dipole recording during MD and the dielectric analysis
-(pgm_jax/md/dipoles.py, pgm_jax/md/dielectric.py)."""
+"""Cell dipole, cell polarizability, dipole recording during MD and the dielectric analysis.
+
+Modules: pgm_jax/md/dipoles.py (CellDipole, DipoleRecorder, read_dipoles) and
+pgm_jax/analysis/dielectric.py.  What is checked, and against what: the decomposition of the cell
+dipole into charge, permanent and induced parts (direct sums); one molecule in a large box against
+the gas-phase molecule (the image field of tin-foil Ewald falls as 1 / V); invariance to wrapping
+molecules and to the origin, also for a charged cell; the fluctuation formula, jackknife errors
+and correlation time on Gaussian and AR(1) series with known answers; the IR line shape and sum
+rule of an oscillating dipole; the .dip file format with continuations; dipoles recorded inside
+the compiled MD blocks against the final state; scripts/dielectric/trajectory_dipoles.py on an Amber
+trajectory against the dipoles the run recorded.
+"""
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import methanol, water
-from test_md import need_water_box, settings, small_box
+from _systems import PGM3P25_RST, PGM3P25_TOP, md_settings, methanol, requires_pgm3p25, small_box, water, water_geometry
 
 from pgm_jax import ElecChannel, Molecule, System
 from pgm_jax.analysis import dielectric as D
@@ -18,12 +27,18 @@ from pgm_jax.units import C_LIGHT_M_S, DEBYE_E_NM, E_NM_C_M, EPS0_SI, KB, KE
 
 
 def _solve(sys, pos, H, **kw):
-    ff = PGMForceField(sys, H, settings(**kw))
+    """Return a PGMForceField (md_settings(**kw)), its neighbour rows and the solved result at pos."""
+    ff = PGMForceField(sys, H, md_settings(**kw))
     idx = ff.rows_for(pos, H)
     return ff, idx, jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
 
 
 def test_decomposition_sums_to_charge_perm_and_induced_dipoles():
+    """The cell dipole is the sum of the charge, permanent and induced dipoles (1e-12 e nm).
+
+    For neutral molecules the charge part is sum q r; the permanent part equals perm_dipoles and the
+    induced part the solved mu; the per-molecule dipoles add up to the total.
+    """
     sys, pos, H = small_box(3)
     ff, idx, res = _solve(sys, pos, H)
     cd = CellDipole(ff)
@@ -39,15 +54,18 @@ def test_decomposition_sums_to_charge_perm_and_induced_dipoles():
 
 @pytest.mark.parametrize("mol", ["water", "methanol"])
 def test_single_molecule_in_large_box_is_the_gas_phase_molecule(mol):
-    """Induced dipoles, total dipole and polarizability of one molecule in a periodic box approach
+    """One molecule in a periodic box approaches the gas-phase molecule as 1 / V.
+
+    Induced dipoles, total dipole and polarizability of one molecule in a periodic box approach
     the gas-phase model's (pgm_jax.Model / ElecChannel); the difference is the field of the
-    periodic images, ~ 4 pi alpha p / (3 V) under tin-foil Ewald, so it falls as 1 / V."""
+    periodic images, ~ 4 pi alpha p / (3 V) under tin-foil Ewald, so it falls as 1 / V.
+
+    Tolerance: 3 times the image-field bound 4 pi alpha / (3 L^3); the error ratio between L = 3 and
+    4.5 nm must lie in 1.5-6 around (4.5 / 3)^3 = 3.4.
+    """
     if mol == "water":
         m = water()
-        t = np.radians(104.52 / 2)
-        x = np.array(
-            [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
-        )
+        x = water_geometry()
     else:
         m, x = methanol()
     rng = np.random.default_rng(1)
@@ -74,9 +92,14 @@ def test_single_molecule_in_large_box_is_the_gas_phase_molecule(mol):
 
 
 def test_cell_dipole_invariant_to_wrapping_and_origin():
-    """Neutral molecules: M is unchanged when whole molecules are moved by lattice vectors or the
+    """The cell dipole is invariant to wrapping molecules and to translations, also when charged.
+
+    Neutral molecules: M is unchanged when whole molecules are moved by lattice vectors or the
     system is translated.  A charged molecule contributes its dipole about its centre of mass, so
-    M stays invariant for a charged (even net-charged) cell too."""
+    M stays invariant for a charged (even net-charged) cell too.
+
+    Charges and covalent dipoles are exact (1e-12); the induced part follows the PME grid (1e-6).
+    """
     sys, pos, H = small_box(5)
     ff, idx, res = _solve(sys, pos, H)
     M0 = np.asarray(CellDipole(ff).components(pos, H, res.induction.mu))
@@ -120,6 +143,13 @@ def test_cell_dipole_invariant_to_wrapping_and_origin():
 
 
 def test_dielectric_formula_on_gaussian_series():
+    """The fluctuation formula, jackknife error and correlation time match analytic Gaussian results.
+
+    Uncorrelated Gaussian M (sigma 1.3 e nm, 200,000 frames): eps - eps_inf = <dM^2> / (3 eps0 V kB T)
+    within 5 standard errors (sqrt(2 / 3F)); the same in model units; eps_inf = 1 + 4 pi alpha / V;
+    the jackknife error within 0.7-1.3 of theory.  AR(1) series (rho = 0.95): tau = -dt / ln(rho)
+    within 10 %, the block jackknife error within 0.7-1.3 of sqrt(2 (1 + rho^2) / (3 F (1 - rho^2))).
+    """
     rng = np.random.default_rng(0)
     V, T, sigma, F = 15.0, 298.0, 1.3, 200000
     M = rng.normal(size=(F, 3)) * sigma + np.array([0.4, -0.2, 0.1])
@@ -150,7 +180,12 @@ def test_dielectric_formula_on_gaussian_series():
 
 
 def test_ir_spectrum_of_an_oscillating_dipole():
-    """Peak at the oscillation frequency and the sum rule int alpha n dw = pi beta <dM/dt^2> / (6 c eps0 V)."""
+    """A rotating dipole gives an IR peak at its frequency and the analytic sum rule.
+
+    Peak at the oscillation frequency and the sum rule int alpha n dw = pi beta <dM/dt^2> / (6 c eps0 V).
+
+    Peak within 2 cm^-1 of 500 cm^-1; the integral within 2 %.
+    """
     dt, nu = 0.002, 500.0  # ps, cm^-1
     w0 = 2 * np.pi * C_LIGHT_M_S * 100 * nu * 1e-12  # rad/ps
     t = np.arange(200000) * dt
@@ -166,6 +201,7 @@ def test_ir_spectrum_of_an_oscillating_dipole():
 
 
 def test_read_dipoles_drops_records_superseded_by_a_continuation(tmp_path):
+    """read_dipoles keeps the header metadata and drops rows that a continuation overwrote."""
     p = tmp_path / "x.dip"
     rows = [
         (s, 0.001 * s, 300.0, 15.0) + tuple(np.full(9, v)) + (0.04, np.nan)
@@ -180,8 +216,21 @@ def test_read_dipoles_drops_records_superseded_by_a_continuation(tmp_path):
 
 
 def _run(tmp_path, name, report, engine="rigid"):
+    """Run 40 steps of a small box (rigid or flexible engine) recording dipoles; return (sim, prefix).
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Output directory.
+    name : str
+        File prefix.
+    report : int
+        Block length [steps] (report_every); dipoles every 5 steps, induced dipoles every 20.
+    engine : {"rigid", "flexible"}
+        Rigid bodies (waters and methanols) or rigid waters by constraints (waters only).
+    """
     sys, pos, H = small_box(0, nw=30, nm=0 if engine == "flexible" else 4)
-    s = settings(cutoff=0.6, pme_grid=(32, 32, 32), pme_order=6, dipole_tol=1e-9, max_iter=200)
+    s = md_settings(cutoff=0.6, pme_grid=(32, 32, 32), pme_order=6, dipole_tol=1e-9, max_iter=200)
     if engine == "rigid":
         sim = Simulation(sys, pos, H, settings=s, dt=0.001, thermostat="bussi", log=None, seed=4)
     else:
@@ -195,10 +244,17 @@ def _run(tmp_path, name, report, engine="rigid"):
 
 
 @pytest.mark.parametrize("engine", ["rigid", "flexible"])
+@pytest.mark.slow
 def test_recorded_series_match_the_state(tmp_path, monkeypatch, engine):
-    """Samples taken on the device inside the blocks equal those taken at block ends, the last one
+    """Dipoles recorded inside the compiled blocks equal direct evaluations of the state.
+
+    Samples taken on the device inside the blocks equal those taken at block ends, the last one
     equals the final state's M, the polarizability rows equal a direct evaluation, and the per-atom
-    induced dipoles are written (NetCDF)."""
+    induced dipoles are written (NetCDF).
+
+    The in-block samples equal those taken at block ends to 1e-8 e nm, the last sample equals the final state's M (1e-9)
+    and the polarizability rows a direct evaluation (1e-7 relative, the iterative solve).
+    """
     monkeypatch.setattr(DipoleRecorder, "alpha_every", 2)
     sim, prefix = _run(tmp_path, "a", 20, engine)  # blocks of 20 steps, samples inside them
     meta, d = read_dipoles(prefix + ".dip")
@@ -228,14 +284,17 @@ def test_recorded_series_match_the_state(tmp_path, monkeypatch, engine):
         assert np.abs(db["M"] - d["M"]).max() < 1e-8, np.abs(db["M"] - d["M"]).max()
 
 
-@need_water_box
+@requires_pgm3p25
 def test_trajectory_dipoles_of_an_amber_trajectory(tmp_path):
-    """scripts/dielectric/trajectory_dipoles.py on the Amber NetCDF trajectory of a run (the format pmemd
-    writes) re-solves the induced dipoles and reproduces the cell dipoles the run recorded."""
+    """scripts/dielectric/trajectory_dipoles.py reproduces the dipoles an MD run recorded (float32 frames).
+
+    scripts/dielectric/trajectory_dipoles.py on the Amber NetCDF trajectory of a run (the format pmemd
+    writes) re-solves the induced dipoles and reproduces the cell dipoles the run recorded.
+
+    Tolerance 1e-4 of the largest M: the NetCDF trajectory stores float32 coordinates.
+    """
     import importlib.util
     import os
-
-    from test_md import RST, TOP
 
     from pgm_jax.md.forcefield import MDSettings
 
@@ -262,13 +321,13 @@ def test_trajectory_dipoles_of_an_amber_trajectory(tmp_path):
         max_iter=300,
         precision="double",
     )
-    sim = Simulation.from_amber(TOP, RST, settings=s, dt=0.002, thermostat="bussi", log=None, seed=2)
+    sim = Simulation.from_amber(PGM3P25_TOP, PGM3P25_RST, settings=s, dt=0.002, thermostat="bussi", log=None, seed=2)
     prefix = str(tmp_path / "w")
     sim.run(20, report_every=10, traj_every=10, prefix=prefix, dipoles_every=10)
     out = str(tmp_path / "t.dip")
     trajectory_dipoles.main(
         [
-            TOP,
+            PGM3P25_TOP,
             prefix + ".nc",
             "-o",
             out,

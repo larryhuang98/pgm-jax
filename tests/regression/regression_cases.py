@@ -1,14 +1,18 @@
-"""Regression cases: single points and short trajectories whose outputs are recorded on master
-(golden files) and compared after every refactoring step.
+"""Regression cases: single points and short trajectories recorded on master and compared later.
+
+The outputs of every case were recorded on master (golden/<case>.npz, never edited) and are
+compared after every refactoring step by regress.py (bitwise by default).
 
 Every case returns a flat dict {name: numpy array}.  All cases run on the CPU in float64 (one
 mixed-precision case), with fixed seeds, so the outputs are deterministic for a given JAX / XLA
-build and thread count.
+build and thread count.  The first line of a case's docstring is its description in
+`regress.py list`.
 
 API policy: the only places that know the engine API are the helpers in the "API adapter" section
 and the case bodies.  When a phase of the clean-up changes a public name, update the calls here in
 the same commit; the recorded numbers must not change (bitwise, or to the tolerance stated in the
-phase)."""
+phase).
+"""
 
 from __future__ import annotations
 
@@ -27,10 +31,21 @@ CASES: dict = {}
 
 
 def case(name: str, needs: str | None = None, group: str = "a"):
-    """Register a case.  needs: "pgm3p25" (the pGM3P-25 files of ~/pgm-gvdw-data); group: a label
-    for splitting the cases over several jobs."""
+    """Return a decorator that registers a case function in CASES.
+
+    Parameters
+    ----------
+    name : str
+        Case name (the golden file is golden/<name>.npz).
+    needs : {None, "pgm3p25"}
+        External data the case needs ("pgm3p25": the pGM3P-25 files of PGM_GVDW_DATA); the case is
+        skipped without them.
+    group : str
+        Label for splitting the cases over several jobs (a..g).
+    """
 
     def deco(fn):
+        """Register fn under name, with the first line of its docstring as its description."""
         CASES[name] = {"fn": fn, "needs": needs, "group": group, "doc": (fn.__doc__ or "").strip().split("\n")[0]}
         return fn
 
@@ -38,12 +53,14 @@ def case(name: str, needs: str | None = None, group: str = "a"):
 
 
 def available(name: str) -> bool:
+    """Return whether the external data a case needs is present."""
     needs = CASES[name]["needs"]
     return needs is None or (needs == "pgm3p25" and S.pgm3p25_available())
 
 
 # ----------------------------------------------------------------------------- helpers
 def _np(x):
+    """Return x as a numpy array."""
     return np.asarray(x)
 
 
@@ -66,19 +83,21 @@ def _put(out: dict, prefix: str, tree):
 
 # ----------------------------------------------------------------------------- API adapter
 def md_settings(**kw):
+    """Return MDSettings().replace(**kw) (the API adapter of the settings)."""
     from pgm_jax.md.forcefield import MDSettings
 
     return MDSettings().replace(**kw)
 
 
 def tight(**kw):
-    """float64, tight induction, small cutoffs for the small boxes."""
+    """Return float64 settings with tight induction (1e-10) and a 0.55 nm cutoff for the small boxes."""
     base = dict(precision="double", dipole_tol=1e-10, max_iter=300, cutoff=0.55, skin=0.05)
     base.update(kw)
     return md_settings(**base)
 
 
 def rigid_sim(sys, pos, H, settings, **kw):
+    """Return a rigid-body Simulation without log output (the API adapter of the rigid engine)."""
     from pgm_jax.md.simulation import Simulation
 
     kw.setdefault("log", None)
@@ -86,6 +105,7 @@ def rigid_sim(sys, pos, H, settings, **kw):
 
 
 def flexible_sim(sys, templates, pos, H, settings, **kw):
+    """Return a FlexibleSimulation without log output (the API adapter of the flexible engine)."""
     from pgm_jax.md.flexible import FlexibleSimulation
 
     kw.setdefault("log", None)
@@ -93,18 +113,22 @@ def flexible_sim(sys, templates, pos, H, settings, **kw):
 
 
 def rigid_template(mol, xyz):
+    """Return a RigidTemplate of molecule mol at geometry xyz [nm]."""
     from pgm_jax.md.flexible import RigidTemplate
 
     return RigidTemplate(mol, xyz)
 
 
 def advance(sim, n: int):
-    """n steps without files (the driver's block loop: overflow checks, re-wrapping)."""
+    """Advance an engine n steps without files (the driver's block loop: overflow checks, re-wrapping)."""
     sim.advance(n)
 
 
 def snapshot(sim, out: dict, tag: str, mu: bool = True):
-    """Observables, positions, velocities, box (and induced dipoles) of an engine's current state."""
+    """Store observables, positions, velocities, box (and induced dipoles) of an engine in out.
+
+    Observables, positions, velocities, box (and induced dipoles) of an engine's current state.
+    """
     for k, v in sim.observables().items():
         if isinstance(v, (bool, int, float, np.integer, np.floating)):
             out[f"{tag}.obs.{k}"] = np.asarray(v)
@@ -116,6 +140,7 @@ def snapshot(sim, out: dict, tag: str, mu: bool = True):
 
 
 def trajectory(sim, out: dict, nsteps: int = 200, every: int = 50, tag: str = "t"):
+    """Store snapshots every `every` steps up to nsteps (keys <tag><step>.*) and return out."""
     snapshot(sim, out, f"{tag}{0:04d}")
     for s in range(every, nsteps + 1, every):
         advance(sim, every)
@@ -124,6 +149,19 @@ def trajectory(sim, out: dict, nsteps: int = 200, every: int = 50, tag: str = "t
 
 
 def water_system(n_side=4, spacing=0.31, seed=0, pgm3p25: bool = False):
+    """Return (System, positions [nm], box [nm], molecule, geometry) of a water lattice.
+
+    Parameters
+    ----------
+    n_side : int
+        Waters per box edge.
+    spacing : float
+        Lattice spacing [nm].
+    seed : int
+        Seed of the orientations.
+    pgm3p25 : bool
+        pGM3P-25 water (parameters and geometry of the prmtop) instead of the toy water.
+    """
     from pgm_jax.system import System
 
     if pgm3p25:
@@ -136,7 +174,10 @@ def water_system(n_side=4, spacing=0.31, seed=0, pgm3p25: bool = False):
 
 
 def force_field_point(ff, pos, H, params=None, efield=None, out=None, tag="sp"):
-    """Energy terms, forces, induced dipoles, CG iterations and strain derivative of one frame."""
+    """Store the energy terms, forces, dipoles, CG iterations and strain derivative of one frame.
+
+    Energy terms, forces, induced dipoles, CG iterations and strain derivative of one frame.
+    """
     out = {} if out is None else out
     idx = ff.rows_for(pos, H)
     kw = {} if efield is None else {"efield": efield}
@@ -158,8 +199,11 @@ def force_field_point(ff, pos, H, params=None, efield=None, out=None, tag="sp"):
 # ============================================================================= single points
 @case("gas_model")
 def gas_model():
-    """Gas phase Model: every electrostatics level, LJ and GVDW, forces, induced dipoles, parameter
-    gradient, molecular polarizability, n-body decomposition, external field."""
+    """Gas-phase Model: energies, forces, dipoles, parameter gradients, n-body, field.
+
+    Gas phase Model: every electrostatics level, LJ and GVDW, forces, induced dipoles, parameter
+    gradient, molecular polarizability, n-body decomposition, external field.
+    """
     from pgm_jax import ElecChannel, LJChannel, Model, System, molecular_polarizability
     from pgm_jax.vdw import PGM3P_GVDW, GVDWChannel, set_gvdw
 
@@ -185,8 +229,11 @@ def gas_model():
 
 @case("periodic_model")
 def periodic_model():
-    """PeriodicModel (Ewald) in a skewed triclinic box: energies, forces, strain derivative,
-    pressure, induced dipoles; GVDW variant."""
+    """PeriodicModel (Ewald) in a skewed triclinic box, with a GVDW variant.
+
+    PeriodicModel (Ewald) in a skewed triclinic box: energies, forces, strain derivative,
+    pressure, induced dipoles; GVDW variant.
+    """
     from pgm_jax import PeriodicModel
 
     sys, pos, H = S.small_box(1)
@@ -206,8 +253,11 @@ def periodic_model():
 
 @case("ff_small_box")
 def ff_small_box():
-    """MD force field (PME, rows, CG) on the triclinic water/methanol box, float64 and mixed; the
-    differentiable path (parameter gradient of a force/dipole loss)."""
+    """MD force field on the triclinic water / methanol box, float64 and mixed, differentiable.
+
+    MD force field (PME, rows, CG) on the triclinic water/methanol box, float64 and mixed; the
+    differentiable path (parameter gradient of a force/dipole loss).
+    """
     from pgm_jax.md.forcefield import PGMForceField
 
     sys, pos, H = S.small_box(0)
@@ -230,6 +280,7 @@ def ff_small_box():
     x, h = jnp.asarray(pos), jnp.asarray(H)
 
     def loss(theta):
+        """Return a force / dipole functional of the parameters (for the gradient)."""
         r = ff.compute(x, h, idx, ff.init_induction(), theta)
         return jnp.sum(r.forces**2) * 1e-6 + jnp.sum(r.induction.mu**2) * 1e2
 
@@ -361,8 +412,11 @@ def md_rigid_mixed():
 
 @case("md_rigid_run_files", needs="pgm3p25", group="c")
 def md_rigid_run_files():
-    """Simulation.run with every output (log, NetCDF trajectory, restart + checkpoint, cell dipoles,
-    induced dipoles); a second simulation continued from the checkpoint."""
+    """Simulation.run with every output file, and a continuation from its checkpoint.
+
+    Simulation.run with every output (log, NetCDF trajectory, restart + checkpoint, cell dipoles,
+    induced dipoles); a second simulation continued from the checkpoint.
+    """
     from pgm_jax.md.dipoles import read_dipoles
     from pgm_jax.md.io import read_coordinates, read_trajectory
 
@@ -421,8 +475,11 @@ def md_iel():
 
 @case("md_vsites", group="c")
 def md_vsites():
-    """TIP4P-Ew (Amber point charges, extra points as virtual sites) from a tleap prmtop, rigid
-    engine (Simulation.from_amber) and constrained water with a placed site (flexible engine)."""
+    """TIP4P-Ew with virtual sites from a tleap prmtop in the rigid and flexible engines.
+
+    TIP4P-Ew (Amber point charges, extra points as virtual sites) from a tleap prmtop, rigid
+    engine (Simulation.from_amber) and constrained water with a placed site (flexible engine).
+    """
     from pgm_jax.md.forcefield import ewald_beta_for
     from pgm_jax.md.simulation import Simulation
 
@@ -466,6 +523,7 @@ def md_efield():
 
 # ============================================================================= flexible engine
 def _methanol_box(n=32, density=0.55, flux=0):
+    """Return a liquid of flexible methanols (template, System, positions [nm], box [nm])."""
     from pgm_jax.md.flexible import liquid_box
     from pgm_jax.system import System
 
@@ -476,8 +534,11 @@ def _methanol_box(n=32, density=0.55, flux=0):
 
 @case("flex_methanol_hbonds", group="d")
 def flex_methanol_hbonds():
-    """32 flexible methanols (class II bonded terms, scaled 1-4 LJ), X-H constraints, Bussi, 1 fs;
-    minimize first."""
+    """32 flexible methanols with X-H constraints, Bussi NVT at 1 fs after a minimisation.
+
+    32 flexible methanols (class II bonded terms, scaled 1-4 LJ), X-H constraints, Bussi, 1 fs;
+    minimize first.
+    """
     tpl, sys, pos, H = _methanol_box()
     s = tight(cutoff=0.6, lj_lrc=False, dipole_tol=1e-10)
     sim = flexible_sim(sys, [tpl] * sys.nmol, pos, H, s, dt=0.001, thermostat=Bussi(0.1), constraints="h-bonds", seed=4)
@@ -606,6 +667,7 @@ def remd_batched():
 
 
 def _cluster_bias(pace, height):
+    """Return a well-tempered MetaD on the O-O distance and H-O-O-H dihedral, and the distance CV."""
     from pgm_jax.bias import MetaD, cv
 
     d, phi = cv.Distance(0, 9), cv.Dihedral(1, 0, 9, 10)
@@ -614,8 +676,11 @@ def _cluster_bias(pace, height):
 
 @case("bias_metad", group="e")
 def bias_metad():
-    """Well-tempered metadynamics (distance + dihedral, hills every 10 steps) + harmonic restraint on
-    8 rigid waters, NVE 0.5 fs, 200 steps; COLVAR rows."""
+    """Well-tempered metadynamics with a harmonic restraint on 8 rigid waters, NVE.
+
+    Well-tempered metadynamics (distance + dihedral, hills every 10 steps) + harmonic restraint on
+    8 rigid waters, NVE 0.5 fs, 200 steps; COLVAR rows.
+    """
     from pgm_jax.bias import BiasSet, Harmonic
     from pgm_jax.system import System
 
@@ -678,6 +743,7 @@ def field_replicas():
 
 # ============================================================================= free energies
 def _alch_windows(batched=True, seed=1, dipole_tol=1e-9):
+    """Return (LambdaWindows of the alchemical water box, parameters, simulation, Alchemy)."""
     from pgm_jax.md.alchemy import Alchemy, LambdaWindows, alchemical_system, standard_schedule
 
     sys0, pos, H, w, _ = water_system()
@@ -712,8 +778,11 @@ def alchemy_point():
 
 @case("fe_windows", group="f")
 def fe_windows():
-    """Batched lambda windows (5), 12 samples of reduced energies, dU/dlambda and dU/dtheta; TI / BAR /
-    MBAR and the parameter-gradient estimators on the stored samples; FreeEnergyRun 40 steps."""
+    """Batched lambda windows: samples, estimators, parameter gradients, FreeEnergyRun.
+
+    Batched lambda windows (5), 12 samples of reduced energies, dU/dlambda and dU/dtheta; TI / BAR /
+    MBAR and the parameter-gradient estimators on the stored samples; FreeEnergyRun 40 steps.
+    """
     from pgm_jax.analysis import free_energy as fe
     from pgm_jax.fit.free_energy import gradient_estimate
     from pgm_jax.md import fe_grad as fg
@@ -780,8 +849,11 @@ def fit_frames():
 
 @case("interfaces_engine", group="f")
 def interfaces_engine():
-    """PGMEngine (external codes): energy, forces, dipoles, atomic virial; a second, displaced call
-    through the predictor; a rotated general cell."""
+    """PGMEngine: energy, forces, dipoles, virial; a displaced call; a rotated cell.
+
+    PGMEngine (external codes): energy, forces, dipoles, atomic virial; a second, displaced call
+    through the predictor; a rotated general cell.
+    """
     from pgm_jax.interfaces.engine import PGMEngine
 
     sys, pos, H = S.small_box(0)
@@ -811,8 +883,11 @@ def interfaces_engine():
 # analysis
 @case("md_restraints_npt", needs="pgm3p25", group="g")
 def md_restraints_npt():
-    """Rigid pGM3P-25 water, NPT with restraints of every kind (position: fixed / fractional / com,
-    distance, angle, dihedral, com distance), 200 steps; restraint energies by kind."""
+    """Rigid pGM3P-25 water in NPT with restraints of every kind.
+
+    Rigid pGM3P-25 water, NPT with restraints of every kind (position: fixed / fractional / com,
+    distance, angle, dihedral, com distance), 200 steps; restraint energies by kind.
+    """
     from pgm_jax.md.restraints import (
         AngleRestraint,
         COMDistanceRestraint,
@@ -855,9 +930,12 @@ def md_restraints_npt():
 
 @case("protein_peptide", group="g")
 def protein_peptide():
-    """Solvated ACE-ALA-SER-NME (ff19SB bonded terms, placeholder pGM, TIP3P as pGM, NaCl):
+    """Solvated peptide in the flexible engine, and the pmemd-pgm prmtop / mdin written from it.
+
+    Solvated ACE-ALA-SER-NME (ff19SB bonded terms, placeholder pGM, TIP3P as pGM, NaCl):
     load_amber + amber_template, flexible engine with X-H constraints and HMR, 2 fs, 60 steps;
-    the pmemd-pgm prmtop and mdin written from it."""
+    the pmemd-pgm prmtop and mdin written from it.
+    """
     from pgm_jax.protein import ResidueLibrary, amber_template, load_amber, pmemd_grid, pmemd_mdin, write_pgm_prmtop
 
     prm, crd = os.path.join(S.DATA, "pep_wat.prmtop"), os.path.join(S.DATA, "pep_wat.inpcrd")
@@ -899,8 +977,11 @@ def protein_peptide():
 
 @case("qmfit_synthetic", group="g")
 def qmfit_synthetic():
-    """QM cluster fitting: ClusterModel components of synthetic water clusters (dimers to a
-    tetramer), the fit's residuals, loss and exact gradient at a displaced theta."""
+    """QM cluster fitting on synthetic water clusters: components, residuals, loss, gradient.
+
+    QM cluster fitting: ClusterModel components of synthetic water clusters (dimers to a
+    tetramer), the fit's residuals, loss and exact gradient at a displaced theta.
+    """
     import pgm_jax.fit.qm as Q
     from pgm_jax.system import Molecule
 
@@ -921,10 +1002,12 @@ def qmfit_synthetic():
     rng = np.random.default_rng(3)
 
     def rot():
+        """Return a random proper rotation."""
         R = np.linalg.qr(rng.normal(size=(3, 3)))[0]
         return R if np.linalg.det(R) > 0 else -R
 
     def cluster(n, d):
+        """Return n rigid waters on a loose ring (O atoms ~d apart), random orientations [A]."""
         X = []
         for k in range(n):
             ang = 2 * np.pi * k / n
@@ -970,8 +1053,11 @@ def qmfit_synthetic():
 
 @case("analysis_estimators", group="g")
 def analysis_estimators():
-    """Pure analysis code on synthetic data: dielectric fluctuation formula and jackknife, BAR,
-    MBAR, TI, statistical inefficiency, WHAM, liquid-fit jackknife covariance, finite-field fits."""
+    """Pure analysis code on synthetic data: dielectric, free-energy and fitting estimators.
+
+    Pure analysis code on synthetic data: dielectric fluctuation formula and jackknife, BAR,
+    MBAR, TI, statistical inefficiency, WHAM, liquid-fit jackknife covariance, finite-field fits.
+    """
     from pgm_jax.analysis import dielectric as D
     from pgm_jax.analysis import finite_field as FF
     from pgm_jax.analysis import free_energy as fe

@@ -1,7 +1,14 @@
-"""Path-integral MD (md/pimd.py): normal modes, contraction, exact free ring-polymer propagation,
-estimators against the exact discretised harmonic oscillator, thermostat mode temperatures, RPMD
-energy conservation, the pGM bead engine (vmapped beads = beads one by one, contraction forces =
--dU/dq, contraction to P beads = no contraction) and the flexible-water fit."""
+"""Path-integral MD (md/pimd.py): ring polymers, estimators, thermostats and the pGM bead engine.
+
+What is checked, and against what: normal-mode matrices (orthogonal, diagonalise the ring
+springs with eigenvalues 4 sin^2(pi k / P)) and ring-polymer contraction; contracted potentials
+(forces = -dU/dq); the exact free ring-polymer propagation against the analytic normal-mode
+motion; estimators against the exact discretised harmonic oscillator (2.5 %, statistical) and its
+1 / P^2 convergence; PILE mode temperatures and the free spread kT_P / (m omega_k^2); RPMD energy
+conservation (second order in dt); the pGM bead engine (vmapped beads = beads one by one, chunked
+= vmapped, contraction forces = -dU/dq, P' = P is no contraction), NPT with the Monte Carlo
+barostat, and the flexible-water fit.
+"""
 
 import math
 
@@ -9,11 +16,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import water
+from _systems import flexible_water_box, water
 
-from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
 from pgm_jax.md.barostats import MonteCarloBarostat
-from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate
+from pgm_jax.md.flexible import FlexibleSimulation
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.pimd import (
     PILE,
@@ -24,20 +30,28 @@ from pgm_jax.md.pimd import (
     contraction_matrix,
     normal_modes,
 )
-from pgm_jax.models.water import WATER_FAMILIES, flexible_water, harmonic_frequencies, qtip4pf_intra, water_geometry
-from pgm_jax.system import System
+from pgm_jax.models.water import flexible_water, harmonic_frequencies, qtip4pf_intra, water_geometry
 from pgm_jax.units import HBAR_KJMOL_PS, KB
 
 T = 300.0
 
 
 def exact_ho(P, w, T=T):
-    """<V> = <K> per degree of freedom of the P-bead discretised harmonic oscillator (kJ/mol)."""
+    """Return <V> per degree of freedom of the P-bead harmonic oscillator [kJ/mol].
+
+    <V> = <K> per degree of freedom of the P-bead discretised harmonic oscillator (kJ/mol).
+    """
     r = RingPolymer(P, T)
     return 0.5 * KB * T * float(np.sum(w**2 / (r.omega**2 + w**2)))
 
 
 def test_normal_modes_and_contraction():
+    """Normal modes diagonalise the ring springs; contraction matrices are orthogonal projections.
+
+    C^T C = 1 and C^T S C = diag(4 sin^2(pi k / P)) (1e-12); normal-mode transforms round-trip; the
+    spring energy is m omega_P^2 sum (q_k - q_k+1)^2 / 2; T T^T = (P' / P) 1, rows sum to 1, and a
+    smooth path is contracted exactly.
+    """
     for P in (1, 2, 5, 8):
         C, idx = normal_modes(P)
         assert np.allclose(C.T @ C, np.eye(P), atol=1e-12)
@@ -67,14 +81,19 @@ def test_normal_modes_and_contraction():
 
 
 def test_potential_engine_contraction():
-    """Contracted soft potential: forces are -dU/dq, P' = P is no contraction, P' = 1 gives every bead
-    the centroid force (the model of scripts/pimd/pimd_openmm.py, checked there against OpenMM)."""
+    """A contracted soft potential gives forces -dU/dq; P' = P is no contraction.
+
+    Contracted soft potential: forces are -dU/dq, P' = P is no contraction, P' = 1 gives every bead
+    the centroid force (the model of scripts/pimd/pimd_openmm.py, checked there against OpenMM).
+    """
     P, n = 8, 5
 
     def stiff(x, box):
+        """Return the stiff (full-bead) test potential."""
         return jnp.sum(1e4 * x[:, 0] ** 2 + 3e5 * x[:, 0] ** 4)
 
     def soft(x, box):
+        """Return the soft (contracted) test potential."""
         return jnp.sum(50.0 * jnp.sum(x * x, -1) + 400.0 * x[:, 1] ** 3)
 
     q = 0.05 * jax.random.normal(jax.random.PRNGKey(0), (P, n, 3))
@@ -94,8 +113,11 @@ def test_potential_engine_contraction():
 
 @pytest.mark.parametrize("kind", ["exact", "cayley"])
 def test_free_ring_polymer_propagation(kind):
-    """V = 0, no thermostat: 'exact' reproduces the analytic normal-mode motion; both conserve the
-    energy of every mode exactly."""
+    """A free ring polymer conserves mode energies and 'exact' follows the analytic motion.
+
+    V = 0, no thermostat: 'exact' reproduces the analytic normal-mode motion; both conserve the
+    energy of every mode exactly.
+    """
     P, m, dt, n = 8, 2.0, 0.001, 25
     eng = PotentialEngine(lambda x, box: 0.0 * jnp.sum(x))
     integ = PIMDIntegrator(eng, [m], P, T, dt, mode="rpmd", propagator=kind)
@@ -107,6 +129,7 @@ def test_free_ring_polymer_propagation(kind):
     w = r.omega[:, None, None]
 
     def e(q, p):
+        """Return the energy of each normal mode."""
         return 0.5 * p * p / m + 0.5 * m * w * w * q * q
 
     assert np.allclose(e(q1, p1), e(q0, p0), rtol=1e-10, atol=1e-12)
@@ -119,8 +142,11 @@ def test_free_ring_polymer_propagation(kind):
 
 @pytest.mark.parametrize("thermostat", ["pile-l", "pile-g"])
 def test_harmonic_oscillator_estimators(thermostat):
-    """<V>, primitive and centroid-virial <K> of 3D harmonic oscillators (beta hbar omega = 2.5)
-    against the exact P-bead values; the exact quantum limit is approached as 1/P^2."""
+    """PIMD estimators of harmonic oscillators match the exact P-bead values (2.5 %).
+
+    <V>, primitive and centroid-virial <K> of 3D harmonic oscillators (beta hbar omega = 2.5)
+    against the exact P-bead values; the exact quantum limit is approached as 1/P^2.
+    """
     w, m, n = 100.0, 1.0, 64
     for P in (1, 8):
         eng = PotentialEngine(lambda x, box: 0.5 * m * w**2 * jnp.sum(x * x))
@@ -129,6 +155,7 @@ def test_harmonic_oscillator_estimators(thermostat):
         est = jax.jit(integ.estimators)
 
         def body(st, _):
+            """Advance 25 steps and return (state, [epot, primitive K, centroid-virial K])."""
             st = integ._run(st, 25)
             e = integ.estimators(st)
             return st, jnp.stack([e["epot"], e["prim"].sum(), e["cv"].sum()])
@@ -146,9 +173,12 @@ def test_harmonic_oscillator_estimators(thermostat):
 
 
 def test_free_particle_mode_temperatures():
-    """V = 0: PILE-L gives every normal mode (centroid included) the temperature T_P and the
+    """PILE-L thermalises every free-particle mode; TRPMD leaves the centroid momentum alone.
+
+    V = 0: PILE-L gives every normal mode (centroid included) the temperature T_P and the
     internal modes the free ring-polymer spread kT_P / (m omega_l^2); TRPMD leaves the centroid
-    momentum alone."""
+    momentum alone.
+    """
     P, n, m = 8, 128, 1.008
     eng = PotentialEngine(lambda x, box: 0.0 * jnp.sum(x))
     integ = PIMDIntegrator(eng, np.full(n, m), P, T, 0.0005, "pimd", PILE("l", tau_centroid=0.05))
@@ -156,6 +186,7 @@ def test_free_particle_mode_temperatures():
     r = integ.ring
 
     def body(st, _):
+        """Advance 20 steps and return (state, (mode temperatures, <q_k^2>))."""
         st = integ._run(st, 20)
         e = integ.estimators(st)
         qn = r.to_nm(st.q)
@@ -171,10 +202,14 @@ def test_free_particle_mode_temperatures():
 
 
 def test_rpmd_energy_conservation():
-    """NVE ring polymer in an anharmonic potential: H_P conserved to O(dt^2), no drift."""
+    """RPMD in an anharmonic potential conserves H_P (std 2e-4, drift 5e-4 of the kinetic scale).
+
+    NVE ring polymer in an anharmonic potential: H_P conserved to O(dt^2), no drift.
+    """
     P, n = 8, 16
 
     def V(x, box):
+        """Return the anharmonic test potential."""
         return jnp.sum(0.5 * 1e4 * x * x + 2e5 * x**4)
 
     integ = PIMDIntegrator(PotentialEngine(V), np.full(n, 1.008), P, T, 0.0002, "rpmd")
@@ -190,41 +225,18 @@ def test_rpmd_energy_conservation():
 
 
 # ----------------------------------------------------------------------------- pGM engine
-def _water_template():
-    m = water()
-    t = math.radians(104.5)
-    x = np.array([[0, 0, 0], [0.0957, 0, 0], [0.0957 * math.cos(t), 0.0957 * math.sin(t), 0]])
-    spec = MolSpec("WAT", ["O", "H", "H"], [(0, 1), (0, 2)], [1, 1], 0, x, m)
-    model = BondedModel([spec], BondedSettings(families=WATER_FAMILIES))
-    P = model.init_params()
-    P["bond_quartic"]["K2"] = jnp.full_like(P["bond_quartic"]["K2"], 4.5e5)
-    P["angle_harm"]["Ka"] = jnp.full_like(P["angle_harm"]["Ka"], 350.0)
-    return FlexibleTemplate.from_fit(model, P), x
-
-
-def _water_box(n_side=2, L=1.5, seed=0):
-    tpl, x = _water_template()
-    rng = np.random.default_rng(seed)
-    pos = []
-    for i in range(n_side):
-        for j in range(n_side):
-            for k in range(n_side):
-                R = np.linalg.qr(rng.normal(size=(3, 3)))[0]
-                c = (np.array([i, j, k]) + 0.5) * L / n_side + rng.normal(scale=0.02, size=3)
-                pos.append((x - x.mean(0)) @ R.T + c)
-    n = n_side**3
-    return tpl, System([tpl.pgm] * n), np.concatenate(pos), np.eye(3) * L
-
-
 def _sim(**kw):
-    tpl, sys, pos, H = _water_box()
+    """Build the flexible pGM water box for PIMD (8 waters, Bussi, 0.2 fs, float64)."""
+    tpl, sys, pos, H = flexible_water_box()
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=0.5, skin=0.05, lj_lrc=False, max_iter=200)
     return FlexibleSimulation(
         sys, [tpl] * sys.nmol, pos, H, s, dt=0.0002, thermostat="bussi", temperature=T, log=None, **kw
     )
 
 
+@pytest.mark.slow
 def test_pgm_beads_match_single_evaluations():
+    """Vmapped bead forces and U equal one force evaluation per bead (1e-7 / 1e-8 relative)."""
     sim = _sim()
     P = 4
     pi = PIMDSimulation(sim, beads=P, log=None, seed=1)
@@ -249,7 +261,9 @@ def test_bead_chunks_match_vmap():
     assert int(a.state.eng.induction.count) == int(b.state.eng.induction.count) == 21
 
 
+@pytest.mark.slow
 def test_contraction_forces_and_identity():
+    """Contracted bead forces are -dU/dq (2e-6); P' = P is no contraction; contracted U is close."""
     sim = _sim()
     P = 4
     full = PIMDSimulation(sim, beads=P, log=None, seed=2)
@@ -261,6 +275,7 @@ def test_contraction_forces_and_identity():
         eng = rpc.engine
 
         def f(q):
+            """Return the contracted engine's (forces, U, state) at bead positions q."""
             return eng.compute(q, st.box, st.eng)
 
         d = jnp.asarray(np.random.default_rng(Pc).normal(size=st.q.shape))
@@ -272,8 +287,11 @@ def test_contraction_forces_and_identity():
 
 
 def test_pgm_rpmd_conserves_ring_polymer_energy():
-    """RPMD of pGM water (NVE ring polymer): the fluctuation of H_P is a second-order integration
-    error (a quarter when dt is halved) and small at dt = 0.05 fs."""
+    """RPMD of pGM water conserves H_P to second order in dt.
+
+    RPMD of pGM water (NVE ring polymer): the fluctuation of H_P is a second-order integration
+    error (a quarter when dt is halved) and small at dt = 0.05 fs.
+    """
     sd = []
     for dt in (1e-4, 5e-5):
         pi = PIMDSimulation(_sim(), beads=4, mode="rpmd", log=None, seed=3, dt=dt)
@@ -287,9 +305,13 @@ def test_pgm_rpmd_conserves_ring_polymer_energy():
     assert np.isfinite(pi.pressure()) and pi.observables()["ke_H_cv_meV"] > 0
 
 
+@pytest.mark.slow
 def test_pgm_npt_barostat():
-    """Monte Carlo trial energy = the U of the force evaluation at the same state; at 3 kbar the box
-    of a dilute water system shrinks, with accepted moves."""
+    """The PIMD Monte Carlo barostat uses the right trial energy and compresses a dilute box.
+
+    Monte Carlo trial energy = the U of the force evaluation at the same state; at 3 kbar the box
+    of a dilute water system shrinks, with accepted moves.
+    """
     sim = _sim()
     pi = PIMDSimulation(
         sim,
@@ -313,7 +335,12 @@ def test_pgm_npt_barostat():
     assert o["mc_accept"] > 0 and o["volume_nm3"] < V0, (o["mc_accept"], V0, o["volume_nm3"])
 
 
+@pytest.mark.slow
 def test_flexible_water_fit_reproduces_target():
+    """The flexible-water fit reproduces its target energies and frequencies (3 %); q-TIP4P/F bands.
+
+    The energy at a distorted geometry is only checked to be finite (below 1e6 kJ/mol).
+    """
     tpl, rep = flexible_water(water(), n_samples=300)
     assert rep["rms_energy_kJmol"] < 1.0
     assert np.allclose(rep["freq_fit_cm"], rep["freq_target_cm"], rtol=0.03)

@@ -24,6 +24,17 @@ include = ["pgm_jax"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = "--strict-markers"
+# tests/README.md: `pytest -m "not slow"` is the fast suite; the other markers label tests that
+# are skipped when their data, program or package is missing (they never fail for that reason)
+markers = [
+    "slow: takes more than about 20 s on 32 CPU cores (deselect with -m 'not slow': ~30 instead of ~70 min)",
+    "gpu: needs a JAX GPU backend; skipped without one (tests/conftest.py); no test needs one at present",
+    "needs_data: needs data files outside the repository (pGM3P-25 box, Amber test inputs, data/qm); skipped without them",
+    "needs_external: needs an external program (pmemd.pgm, i-PI, OpenMM >= 8.4); skipped without it",
+    "optional_deps: needs an optional Python package (rdkit, ase, networkx); skipped without it",
+    "regression: the golden-output harness of tests/regression (opt-in, PGM_REGRESSION=1)",
+]
 
 [tool.ruff]
 line-length = 120

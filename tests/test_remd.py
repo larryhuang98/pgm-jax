@@ -1,9 +1,13 @@
-"""Replica exchange (md/remd.py): the Metropolis criterion and the exchange bookkeeping on replicas
-with known energies (stationary distribution over replica permutations, acceptance per pair),
-sampled distributions of harmonic oscillators at every temperature (a broken criterion fails the
-same check), thermostats with the temperature as a traced value, swaps of MD states (what moves,
-what stays, rescaled momenta and auxiliaries, heat booked), batched (vmap) and sequential engines
-giving the same run, and restarts from checkpoints."""
+"""Replica exchange (md/remd.py): the criterion, the bookkeeping, and swaps of MD states.
+
+What is checked, and against what: the Metropolis criterion and neighbour pairing; the exchange
+chain on replicas with fixed energies against the exact stationary distribution over permutations
+(total variation below 0.01) and the exact acceptance per pair; sampled distributions of harmonic
+oscillators at every temperature against Gamma(d/2, kT) (a broken criterion fails the same check);
+thermostats with a traced temperature; swaps of MD states (what moves with the configuration, what
+stays with the slot, rescaled momenta and auxiliaries, energy booked as heat); batched (vmap) and
+sequential engines giving the same run, overflow handling, and restarts from checkpoints.
+"""
 
 import itertools
 import os
@@ -12,8 +16,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import water
-from test_md_macro import _water_box
+from _systems import md_settings, small_box, water, water_lattice
 
 from pgm_jax import System
 from pgm_jax.md.barostats import MonteCarloBarostat
@@ -40,29 +43,51 @@ class FixedEnergies:
     dt, pressure, time_ps = 0.001, None, 0.0
 
     def __init__(self, temperatures, energies):
+        """Set up configurations with the given potential energies [kJ/mol] at the given temperatures [K]."""
         self.temperatures = np.asarray(temperatures, float)
         self.n = len(self.temperatures)
         self.E = np.asarray(energies, float)
         self.config = np.arange(self.n)  # configuration at each temperature
 
     def advance(self, n):
+        """Advance the clock by n steps (the configurations do not move)."""
         self.time_ps += n * self.dt
 
     def potentials(self):
+        """Return the potential energy at each temperature slot [kJ/mol]."""
         return self.E[self.config]
 
     def permute(self, src):
+        """Move configurations: slot k receives the configuration of slot src[k]."""
         self.config = self.config[np.asarray(src)]
 
 
 class Harmonic:
-    """One overdamped particle in U = k |x|^2 / 2 (d dimensions) per temperature, sampled by the exact
+    """Replica engine of harmonic oscillators sampled by an exact Ornstein-Uhlenbeck step.
+
+    One overdamped particle in U = k |x|^2 / 2 (d dimensions) per temperature, sampled by the exact
     Ornstein-Uhlenbeck step x -> c x + sqrt((1 - c^2) kT / k) xi (slow for c near 1, so that the
-    exchanges carry much of the sampling)."""
+    exchanges carry much of the sampling).
+    """
 
     dt, pressure = 0.001, None
 
     def __init__(self, temperatures, d=10, k=1.0, c=0.95, seed=0):
+        """Set up one d-dimensional particle per temperature, drawn from its Boltzmann distribution.
+
+        Parameters
+        ----------
+        temperatures : sequence of float
+            Temperatures [K].
+        d : int
+            Dimension.
+        k : float
+            Force constant [kJ/mol/nm^2].
+        c : float
+            Memory of the Ornstein-Uhlenbeck step (0: independent samples).
+        seed : int
+            Seed of the generator.
+        """
         self.temperatures = np.asarray(temperatures, float)
         self.n, self.k, self.c, self.time_ps = len(self.temperatures), k, c, 0.0
         kT = KB * self.temperatures
@@ -71,28 +96,35 @@ class Harmonic:
         self.s = np.sqrt((1.0 - c * c) * kT / k)
 
     def advance(self, n):
+        """Take n Ornstein-Uhlenbeck steps at every temperature."""
         for _ in range(n):
             self.x = self.c * self.x + self.s[:, None] * self.rng.normal(size=self.x.shape)
         self.time_ps += n * self.dt
 
     def potentials(self):
+        """Return U = k |x|^2 / 2 at each temperature slot [kJ/mol]."""
         return 0.5 * self.k * np.sum(self.x**2, axis=1)
 
     def permute(self, src):
+        """Move configurations: slot k receives the configuration of slot src[k]."""
         self.x = self.x[np.asarray(src)]
 
     def observables(self, k):
+        """Return the time and potential energy of slot k."""
         return {"time_ps": self.time_ps, "epot": float(self.potentials()[k])}
 
     def state_dict(self):
+        """Return the state for a checkpoint (positions, generator state, time)."""
         return {"x": self.x.copy(), "rng": self.rng.bit_generator.state, "time_ps": self.time_ps}
 
     def load_state_dict(self, d):
+        """Restore the state of state_dict."""
         self.x, self.time_ps = d["x"].copy(), d["time_ps"]
         self.rng.bit_generator.state = d["rng"]
 
 
 def _sample(rex, steps):
+    """Alternate one step and one exchange attempt `steps` times; return the potentials (steps, K)."""
     U = []
     for _ in range(steps):
         rex.replicas.advance(1)
@@ -103,6 +135,7 @@ def _sample(rex, steps):
 
 # ----------------------------------------------------------------------------- exchange logic
 def test_ladder_pairs_and_criterion():
+    """Geometric ladders, alternating neighbour pairs and the Metropolis criterion (also with P V)."""
     T = geometric_ladder(300.0, 450.0, 5)
     assert np.isclose(T[0], 300.0) and np.isclose(T[-1], 450.0) and np.allclose(T[1:] / T[:-1], 1.5**0.25)
     assert exchange_pairs(5, 0) == [(0, 1), (2, 3)] and exchange_pairs(5, 1) == [(1, 2), (3, 4)]
@@ -124,8 +157,11 @@ def test_ladder_pairs_and_criterion():
 
 
 def test_metropolis_statistics_known_energies():
-    """Exchange-only chain over replica permutations: the visited permutations follow
-    pi(sigma) ~ exp(-sum_k beta_k E_sigma(k)) and each pair's acceptance is E_pi[min(1, e^-Delta)]."""
+    """The exchange chain samples the exact distribution over replica permutations.
+
+    Exchange-only chain over replica permutations: the visited permutations follow
+    pi(sigma) ~ exp(-sum_k beta_k E_sigma(k)) and each pair's acceptance is E_pi[min(1, e^-Delta)].
+    """
     T = geometric_ladder(300.0, 420.0, 4)
     E = np.array([0.0, 25.0, 60.0, 110.0])
     rex = ReplicaExchange(FixedEnergies(T, E), exchange_every=1, seed=3, log=None)
@@ -153,9 +189,12 @@ def test_metropolis_statistics_known_energies():
 
 
 def test_harmonic_distributions_at_every_temperature():
-    """Detailed balance: U of a d-dimensional oscillator is Gamma(d/2, kT) at every temperature of
+    """REMD samples the canonical energy distribution at every temperature.
+
+    Detailed balance: U of a d-dimensional oscillator is Gamma(d/2, kT) at every temperature of
     the ladder, although much of the sampling at each temperature comes from exchanges.  Accepting
-    every swap (no energy criterion) fails the same check."""
+    every swap (no energy criterion) fails the same check.
+    """
     from scipy import stats
 
     T, d = geometric_ladder(300.0, 600.0, 4), 10
@@ -170,7 +209,10 @@ def test_harmonic_distributions_at_every_temperature():
     assert np.all((acc > 0.2) & (acc < 0.8)), acc
 
     class AlwaysSwap(ReplicaExchange):
+        """A broken exchange that accepts every swap."""
+
         def reduced_energies(self):
+            """Return zero reduced energies (every swap accepted)."""
             return np.zeros((self.n, self.n))
 
     bad = AlwaysSwap(Harmonic(T, d, seed=2), exchange_every=1, seed=1, log=None)
@@ -179,6 +221,7 @@ def test_harmonic_distributions_at_every_temperature():
 
 
 def test_driver_restart_reproduces_toy_run(tmp_path):
+    """A run restarted from a checkpoint equals the uninterrupted run; the exchange log is written."""
     T = geometric_ladder(300.0, 500.0, 5)
     ref = ReplicaExchange(Harmonic(T, seed=4), exchange_every=3, seed=9, log=None)
     ref.run(60, report_every=6, prefix=None)
@@ -197,12 +240,16 @@ def test_driver_restart_reproduces_toy_run(tmp_path):
 
 @pytest.mark.parametrize("th", [Langevin(2.0), Bussi(0.2), GLE.band()], ids=["langevin", "bussi", "gle"])
 def test_thermostats_take_traced_temperature(th):
-    """kB T enters the O steps as a traced value (one per replica in a batched run)."""
+    """Thermostat O steps accept kB T as a traced value (jit result = eager, 1e-12).
+
+    kB T enters the O steps as a traced value (one per replica in a batched run).
+    """
     key = jax.random.PRNGKey(0)
     v = jax.random.normal(key, (40, 3))
     aux = th.init_aux(jax.random.PRNGKey(1), v.shape, 2.5)
 
     def f(kT):
+        """Return the O step at thermal energy kT."""
         return th.apply(v, aux, jax.random.PRNGKey(2), 0.002, kT, 120.0, lambda u: u, None)
 
     a, b = f(2.5), jax.jit(f)(jnp.asarray(2.5))
@@ -211,15 +258,20 @@ def test_thermostats_take_traced_temperature(th):
 
 # ----------------------------------------------------------------------------- MD engines
 def _econs(integ, st):
+    """Return the conserved energy K + U + |aux|^2 / 2 - heat of an MD state [kJ/mol]."""
     return float(integ.kinetic(st)[0] + st.epot + 0.5 * jnp.sum(st.aux * st.aux) - st.heat)
 
 
+@pytest.mark.slow
 def test_md_swap_and_batched_equals_sequential():
-    """Rigid water by constraints with the GLE thermostat (auxiliaries): batched and sequential
+    """Batched and sequential MD replicas agree; a swap moves the right parts of the state.
+
+    Rigid water by constraints with the GLE thermostat (auxiliaries): batched and sequential
     replica engines give the same exchanges and trajectories; a swap moves the configuration (with
     dipoles, predictor history, forces and neighbour list) and the rescaled momenta and auxiliaries,
-    keeps temperature, random stream and step with the slot and books the energy as heat."""
-    pos, H, w = _water_box()
+    keeps temperature, random stream and step with the slot and books the energy as heat.
+    """
+    pos, H, w = water_lattice()
     wat = water()
     sys = System([wat] * (len(pos) // 3))
     s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
@@ -261,6 +313,7 @@ def test_md_swap_and_batched_equals_sequential():
     f = np.sqrt(T[0] / T[1])
 
     def same(x, y):
+        """Return whether x and y are bitwise equal."""
         return np.array_equal(np.asarray(x), np.asarray(y))
 
     for moved, src in ((n0, s1), (n1, s0)):
@@ -313,10 +366,14 @@ def test_md_swap_and_batched_equals_sequential():
     assert sim.ff.mc > 16 and rep._template.max_occupancy > 4 and not rep._nb_failed(rep.S)
 
 
+@pytest.mark.slow
 def test_md_npt_sequential_restart(tmp_path):
-    """Rigid-body water, NPT (P V in the criterion), sequential engine: files, and a restart from the
-    checkpoint reproduces the continued run."""
-    pos, H, _ = _water_box()
+    """NPT replica exchange (sequential engine) writes its files and restarts exactly.
+
+    Rigid-body water, NPT (P V in the criterion), sequential engine: files, and a restart from the
+    checkpoint reproduces the continued run.
+    """
+    pos, H, _ = water_lattice()
     sys = System([water()] * (len(pos) // 3))
     s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
     sim = Simulation(
@@ -346,9 +403,12 @@ def test_md_npt_sequential_restart(tmp_path):
 
 
 def test_md_rigid_batched_checkpoint_continues_sequentially(tmp_path):
-    """Rigid-body water, NVT, batched engine: a checkpoint loads into the sequential engine, which
-    continues exactly as the batched run does."""
-    pos, H, _ = _water_box()
+    """A batched REMD checkpoint continues in the sequential engine as in the batched one.
+
+    Rigid-body water, NVT, batched engine: a checkpoint loads into the sequential engine, which
+    continues exactly as the batched run does.
+    """
+    pos, H, _ = water_lattice()
     sys = System([water()] * (len(pos) // 3))
     s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
     sim = Simulation(sys, pos, H, s, dt=0.001, thermostat=Langevin(5.0), log=None, seed=4)
@@ -367,16 +427,19 @@ def test_md_rigid_batched_checkpoint_continues_sequentially(tmp_path):
         assert abs(rs.replicas.observables(k)["econs"] - rb.replicas.observables(k)["econs"]) < 1e-6
 
 
+@pytest.mark.slow
 def test_md_replicas_split_rows_fit_every_part():
-    """Split rows (elec_cutoff < cutoff): shared capacities fit each part of the rows for every
-    replica, and an overflow of the electrostatic part in the batched engine re-sizes both parts
-    and repeats the block (same run as replicas that never overflowed)."""
-    from test_md import settings, small_box
+    """Batched replicas with split rows size both parts and recover from an overflow.
 
+    Split rows (elec_cutoff < cutoff): shared capacities fit each part of the rows for every
+    replica, and an overflow of the electrostatic part in the batched engine re-sizes both parts
+    and repeats the block (same run as replicas that never overflowed).
+    """
     sys, pos, H = small_box(4)
-    s = settings(cutoff=0.6, elec_cutoff=0.45, dipole_tol=1e-9, max_iter=100)
+    s = md_settings(cutoff=0.6, elec_cutoff=0.45, dipole_tol=1e-9, max_iter=100)
 
     def make():
+        """Build the small-box simulation with split rows (Bussi NVT)."""
         return Simulation(sys, pos, H, s, dt=0.001, thermostat="bussi", temperature=300.0, log=None, seed=2)
 
     sim = make()

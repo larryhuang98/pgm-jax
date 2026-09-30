@@ -1,53 +1,33 @@
-"""Multiple time stepping (md/mts.py): one fast step per outer step is the ordinary integrator, the
-force groups sum to the full force and the fast forces are the gradient of the fast energy (short-
-range and special-pair splits, every fast induction model), the list rebuild, the NVE step is
-time-reversible, energy conservation, per-group kinetic temperatures with thermostats (two and
-three levels), NPT + restraints + checkpoints, and the settings that must be refused."""
+"""Multiple time stepping (md/mts.py): force splits, integrator identities and thermostats.
+
+What is checked, and against what: one fast step per outer step is the ordinary integrator
+(positions 1e-11 nm, for every thermostat and O-step placement); the force groups sum to the full
+force and the fast forces are the gradient of the fast energy (short-range and special-pair
+splits, every fast induction model), with the fast list rebuilt after large moves; the NVE step is
+time-reversible (1e-8 nm); energy conservation between the ordinary integrator at h and 2h;
+per-group kinetic temperatures with thermostats (two and three levels, within 15-20 K of 300 K,
+statistical); NPT with restraints and exact checkpoint continuation; the refused settings.
+"""
 
 import jax
 import numpy as np
 import pytest
-from test_flexible import _box
-from test_grad import water
-from test_md_macro import _water_box
+from _systems import methanol_liquid, water_lattice, water_sim
 
-from pgm_jax import System
 from pgm_jax.md.barostats import MonteCarloBarostat
-from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
+from pgm_jax.md.flexible import FlexibleSimulation
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.mts import MTS
-from pgm_jax.md.simulation import Simulation
 from pgm_jax.md.thermostats import Bussi, Langevin
 from pgm_jax.units import KB
 
-S_WATER = MDSettings().replace(precision="double", dipole_tol=1e-12, max_iter=300, cutoff=0.55, skin=0.05)
-
-
-def water_sim(engine, mts=None, dt=0.002, thermostat=None, seed=3, settings=S_WATER, **kw):
-    """64 pGM-like waters (rigid bodies or constraints), 0.55 nm cutoff, float64; NVE by default."""
-    pos, H, w = _water_box(n_side=4, spacing=0.31)
-    wat = water()
-    sys = System([wat] * (len(pos) // 3))
-    if engine == "rigid":
-        return Simulation(sys, pos, H, settings, dt=dt, thermostat=thermostat, log=None, seed=seed, mts=mts, **kw)
-    return FlexibleSimulation(
-        sys,
-        [RigidTemplate(wat, w)] * sys.nmol,
-        pos,
-        H,
-        settings,
-        dt=dt,
-        thermostat=thermostat,
-        log=None,
-        seed=seed,
-        mts=mts,
-        **kw,
-    )
-
 
 def methanol_sim(mts=None, dt=0.001, thermostat=None, **kw):
-    """32 flexible methanols (class II bonded terms, 1-4 scaled LJ), 0.6 nm cutoff, float64; NVE by default."""
-    tpl, sys, pos, H = _box(n=32, density=0.55)
+    """Build the flexible-methanol MTS test system (32 molecules, 0.6 nm cutoff, float64).
+
+    32 flexible methanols (class II bonded terms, 1-4 scaled LJ), 0.6 nm cutoff, float64; NVE by default.
+    """
+    tpl, sys, pos, H = methanol_liquid(n=32, density=0.55)
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, max_iter=300, cutoff=0.6, skin=0.05, lj_lrc=False)
     return FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=dt, thermostat=thermostat, log=None, mts=mts, **kw)
 
@@ -58,8 +38,11 @@ MTS1 = MTS(inner=1, r_short=0.4, buffer=0.1, anchor=False)
 @pytest.mark.parametrize("engine", ["rigid", "constraints"])
 @pytest.mark.parametrize("thermo", ["nve", "bussi", "langevin", "gle", "langevin-inner"])
 def test_one_fast_step_is_the_ordinary_integrator(engine, thermo):
-    """inner = 1: B_slow B_fast A O A B_fast B_slow is BAOAB with F = F_slow + F_fast (the O step at
-    the outer or the inner level is the same step)."""
+    """With one fast step per outer step MTS is the ordinary integrator.
+
+    inner = 1: B_slow B_fast A O A B_fast B_slow is BAOAB with F = F_slow + F_fast (the O step at
+    the outer or the inner level is the same step).
+    """
     th = None if thermo == "nve" else "langevin" if thermo == "langevin-inner" else thermo
     mts = MTS(inner=1, r_short=0.4, buffer=0.1, anchor=False, o_step="inner" if thermo.endswith("inner") else "outer")
     out = []
@@ -72,7 +55,14 @@ def test_one_fast_step_is_the_ordinary_integrator(engine, thermo):
     assert abs(out[0][2] - out[1][2]) < 1e-8 * abs(out[0][2])
 
 
+@pytest.mark.slow
 def test_groups_sum_to_the_full_force_and_fast_forces_are_gradients():
+    """Force groups sum to the full force, the fast forces are -grad of the fast energy, lists rebuild.
+
+    After 100 steps: sum of groups = full force (1e-12 of RMS) = the ordinary engine's force (1e-7);
+    the fast force is the gradient of the short-range + bonded energy (1e-10) before and after a
+    displacement; moving two atoms by 0.06 nm rebuilds the fast list with the forces of a fresh list.
+    """
     sim = methanol_sim(MTS(inner=2, r_short=0.4, buffer=0.1), dt=0.001, thermostat=Langevin(10.0))
     sim.advance(100)
     st, integ = sim.state, sim.integ
@@ -100,10 +90,14 @@ def test_groups_sum_to_the_full_force_and_fast_forces_are_gradients():
 
 
 @pytest.mark.parametrize("pol", ["none", "direct", "mutual"])
+@pytest.mark.slow
 def test_special_pair_split(pol):
-    """split="special": the fast level (bonded terms + the pGM and van der Waals interactions of the
+    """split="special": fast forces are gradients and inner = 1 is the ordinary integrator.
+
+    split="special": the fast level (bonded terms + the pGM and van der Waals interactions of the
     special pairs, unswitched) is the gradient of its energy, and one fast step per outer step is the
-    ordinary integrator."""
+    ordinary integrator.
+    """
     sim = methanol_sim(MTS(inner=2, split="special", polarization=pol), dt=0.001, thermostat=Langevin(10.0))
     sim.advance(40)
     st, integ = sim.state, sim.integ
@@ -119,7 +113,10 @@ def test_special_pair_split(pol):
 
 
 def _reverse(integ, st, n):
+    """Run n steps, negate the momenta, run n steps; return (start state, final state)."""
+
     def flip(s):
+        """Return the state with negated momenta."""
         return s.set(dyn=s.dyn.set(momentum=jax.tree_util.tree_map(lambda p: -p, s.dyn.momentum)))
 
     back = integ.run(flip(integ.run(st, n)), n)
@@ -128,6 +125,7 @@ def _reverse(integ, st, n):
 
 @pytest.mark.parametrize("case", ["rigid", "constraints", "flexible-3-levels"])
 def test_nve_step_is_time_reversible(case):
+    """The NVE MTS step is time-reversible (back to the start within 1e-8 nm after 25 + 25 steps)."""
     if case == "flexible-3-levels":
         sim = methanol_sim(MTS(inner=2, bonded=2, r_short=0.4, buffer=0.1), dt=0.002)
     else:
@@ -138,15 +136,19 @@ def test_nve_step_is_time_reversible(case):
     assert np.abs(x1 - x0).max() < 1e-8, np.abs(x1 - x0).max()
 
 
+@pytest.mark.slow
 def test_energy_conservation():
-    """Flexible methanol, NVE: MTS with outer 2h / fast h conserves the energy nearly as well as the
-    ordinary integrator at h, much better than at 2h; no drift."""
+    """MTS at outer 2h / fast h conserves the energy much better than a plain 2h step.
+
+    Flexible methanol, NVE: MTS with outer 2h / fast h conserves the energy nearly as well as the
+    ordinary integrator at h, much better than at 2h; no drift.
+    """
     base = methanol_sim(MTS(inner=2, r_short=0.4, buffer=0.1), dt=0.001, thermostat=Langevin(10.0))
     base.advance(200)
     x, H, v = base.positions(), np.asarray(base.state.box), base.velocities()
     res = {}
     for name, dt, m in (("h", 0.001, None), ("2h", 0.002, None), ("mts", 0.002, MTS(inner=2, r_short=0.4, buffer=0.1))):
-        tpl, sys, _, _ = _box(n=32, density=0.55)
+        tpl, sys, _, _ = methanol_liquid(n=32, density=0.55)
         s = base.settings
         sim = FlexibleSimulation(sys, [tpl] * sys.nmol, x, H, s, dt=dt, thermostat=None, velocities=v, log=None, mts=m)
         E = []
@@ -169,9 +171,13 @@ def test_energy_conservation():
         ("constraints", "langevin", "inner"),
     ],
 )
+@pytest.mark.slow
 def test_group_temperatures(engine, thermostat, o_step):
-    """NVT with MTS (outer 4 fs, fast 2 fs): translational and rotational (rigid bodies) or centre-of-
-    mass and internal (constraints) temperatures at the target."""
+    """NVT with MTS gives the target temperature for every degree-of-freedom group.
+
+    NVT with MTS (outer 4 fs, fast 2 fs): translational and rotational (rigid bodies) or centre-of-
+    mass and internal (constraints) temperatures at the target.
+    """
     s = MDSettings().replace(precision="mixed", dipole_tol=1e-5, cutoff=0.55, skin=0.05)
     sim = water_sim(
         engine,
@@ -191,9 +197,13 @@ def test_group_temperatures(engine, thermostat, o_step):
     assert np.all(np.abs(T - 300.0) < 15.0), T
 
 
+@pytest.mark.slow
 def test_three_levels_thermostat():
-    """Flexible methanol with three levels (slow 2 fs, short-range 1 fs, bonded 0.5 fs) and the O step
-    in the middle of the outer step: centre-of-mass and internal temperatures at the target."""
+    """Three MTS levels with the O step in the middle keep the group temperatures at the target.
+
+    Flexible methanol with three levels (slow 2 fs, short-range 1 fs, bonded 0.5 fs) and the O step
+    in the middle of the outer step: centre-of-mass and internal temperatures at the target.
+    """
     sim = methanol_sim(
         MTS(inner=2, bonded=2, r_short=0.4, buffer=0.1), dt=0.002, thermostat=Langevin(5.0), temperature=300.0
     )
@@ -207,16 +217,21 @@ def test_three_levels_thermostat():
     assert np.all(np.abs(T - 300.0) < 20.0), T
 
 
+@pytest.mark.slow
 def test_npt_restraints_and_checkpoint(tmp_path):
-    """NPT with the barostat at outer steps and a positional restraint in the fast group; a checkpoint
-    continues the run exactly."""
+    """NPT with a restraint in the fast group runs and a checkpoint continues it exactly.
+
+    NPT with the barostat at outer steps and a positional restraint in the fast group; a checkpoint
+    continues the run exactly.
+    """
     from pgm_jax.md.restraints import PositionRestraint
 
-    pos, H, w = _water_box(n_side=4, spacing=0.31)
+    pos, H, w = water_lattice(n_side=4, spacing=0.31)
     rest = PositionRestraint([0, 3], pos[[0, 3]], k=500.0)
     s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
 
     def mk():
+        """Build the constrained-water NPT simulation with MTS and the restraint."""
         return water_sim(
             "constraints",
             MTS(inner=2, r_short=0.4, buffer=0.1),
@@ -240,6 +255,11 @@ def test_npt_restraints_and_checkpoint(tmp_path):
 
 
 def test_refused_settings():
+    """MTS refuses settings it does not support, with errors naming them.
+
+    A bonded split of rigid bodies, a short range beyond the cutoff, direct fast induction with elec
+    = qp, the ls predictor with an anchor, and MD replicas.
+    """
     with pytest.raises(ValueError, match="bonded"):
         water_sim("rigid", MTS(inner=2, split="bonded"))
     with pytest.raises(ValueError, match="cutoff"):

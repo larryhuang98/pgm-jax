@@ -1,10 +1,22 @@
-"""Bonded package: topology, every term family's gradient vs finite differences, rigid-motion
-invariance, the pGM part equal to the gas-phase ElecChannel, classical exclusions, flux."""
+"""Bonded package (pgm_jax.bonded): topology, term families, the pGM part, exclusions, flux and fitting.
+
+What is checked, and against what: topology counts of acetaldehyde (hand-counted bonds, angles,
+torsions, impropers, 1-4 pairs and cross terms); the gradient of every term family against central
+differences and its invariance under rigid motion; the model's gas-phase pGM energy and dipole
+against ElecChannel; classical exclusions and 1-4 scaling; charge flux (charge conservation,
+differentiability); learned pair scales, fitted charges and bond-charge increments against the
+direct energy; the twist angle and the F12 electronic families against their geometric
+definitions; a synthetic fit that must recover known parameters.
+
+Tolerances: finite differences 1e-5 relative (h = 1e-6 nm);
+identities of two code paths 1e-8 to 1e-12 (float64).
+"""
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from test_grad import methanol
+import pytest
+from _systems import ethanal, methanol
 
 from pgm_jax.bonded import terms as T
 from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
@@ -13,25 +25,8 @@ from pgm_jax.channels import ElecChannel
 from pgm_jax.system import System
 
 
-def ethanal():
-    """Acetaldehyde, nm (planar carbonyl carbon -> improper)."""
-    x = np.array(
-        [
-            [0.0000, 0.0000, 0.0],
-            [0.1500, 0.0000, 0.0],
-            [0.2180, 0.1030, 0.0],
-            [0.1980, -0.0990, 0.0],
-            [-0.0360, -0.1030, 0.0],
-            [-0.0380, 0.0520, 0.0890],
-            [-0.0380, 0.0520, -0.0890],
-        ]
-    )
-    el = ["C", "C", "O", "H", "H", "H", "H"]
-    bonds = [(0, 1), (1, 2), (1, 3), (0, 4), (0, 5), (0, 6)]
-    return el, bonds, [1, 2, 1, 1, 1, 1], x
-
-
 def test_topology_counts():
+    """The acetaldehyde topology has the hand-counted numbers of terms and its one improper."""
     el, bonds, orders, x = ethanal()
     top = build_topology(el, bonds, (bonds, orders), x * 10)
     assert len(top.bonds) == 6 and len(top.angles) == 9 and len(top.propers) == 6
@@ -41,13 +36,32 @@ def test_topology_counts():
 
 
 def _all_families_model(settings_kw=None):
+    """Return a BondedModel of acetaldehyde with every registered term family (except bond_harm).
+
+    Parameters
+    ----------
+    settings_kw : dict, optional
+        Further BondedSettings options.
+
+    Returns
+    -------
+    tuple
+        (BondedModel, geometry [nm]).
+    """
     el, bonds, orders, x = ethanal()
     fams = tuple(f for f in T.REGISTRY if f != "bond_harm")
     spec = MolSpec("ethanal", el, bonds, orders, 0, x)
     return BondedModel([spec], BondedSettings(families=fams, **(settings_kw or {}))), x
 
 
+@pytest.mark.slow
 def test_every_family_gradient_and_invariance():
+    """Every term family: gradient vs central differences, rigid-motion invariance, a nonzero energy.
+
+    Random parameters (linear ones shifted, nonlinear ones scaled by 1 %) on a distorted geometry:
+    autodiff forces equal central differences (1e-5 relative, h = 1e-6 nm), the energy is invariant
+    under a rotation and translation (1e-8 relative), and each family with instances contributes.
+    """
     model, x = _all_families_model()
     P = model.init_params()
     rng = np.random.default_rng(0)
@@ -77,6 +91,11 @@ def test_every_family_gradient_and_invariance():
 
 
 def test_pgm_part_matches_elec_channel_and_exclusions():
+    """The bonded model's pGM energy and dipole equal ElecChannel's; removing 1-2/1-3/1-4 pairs removes all.
+
+    Energy to 1e-9 relative, molecular dipole (charges, covalent and induced dipoles) to 1e-12 e nm;
+    with elec_exclude=3 methanol (at most three bonds apart) has no electrostatics left.
+    """
     m, x = methanol()
     spec = MolSpec("MeOH", m.elements, m.bonds, [1] * len(m.bonds), 0, x, pgm=m)
     model = BondedModel([spec], BondedSettings(families=("angle_cos",), lj_min_sep=99))
@@ -96,6 +115,7 @@ def test_pgm_part_matches_elec_channel_and_exclusions():
 
 
 def test_flux_conserves_charge_and_is_differentiable():
+    """Charge flux changes the charges but not the total charge, and its parameters get gradients."""
     m, x = methanol()
     spec = MolSpec("MeOH", m.elements, m.bonds, [1] * len(m.bonds), 0, x, pgm=m)
     model = BondedModel([spec], BondedSettings(families=("bond_harm", "angle_cos"), flux=True))
@@ -110,8 +130,15 @@ def test_flux_conserves_charge_and_is_differentiable():
     assert float(jnp.max(jnp.abs(g["flux"]["jb"]))) > 0
 
 
+@pytest.mark.slow
 def test_fit_recovers_synthetic_parameters():
-    """Frames labelled by a known model (class II + pGM): the fitter recovers energies and forces."""
+    """The bonded fitter recovers a known class II + pGM model from its own frames.
+
+    Frames labelled by a known model (class II + pGM): the fitter recovers energies and forces.
+
+    80 training frames with an energy offset of 50 kJ/mol (fitted away), 40 test frames: energy MAE
+    below 0.01 and force MAE below 0.1 kJ/mol/nm on the test frames.
+    """
     from pgm_jax.bonded.fit import Fitter, FrameSet
 
     m, x = methanol()
@@ -137,6 +164,7 @@ def test_fit_recovers_synthetic_parameters():
 
 
 def test_elec14_scaling_between_pgm_and_exclusion():
+    """elec14_scale interpolates between full pGM and excluded 1-4 electrostatics (0 = exclude 3)."""
     m, x = methanol()
     X = jnp.asarray(x)
     e = {}
@@ -155,14 +183,18 @@ def test_elec14_scaling_between_pgm_and_exclusion():
 
 
 def test_twist_angle():
-    """Twist of a 3-coordinated centre: equals the dihedral for a planar centre, follows a rigid
-    rotation about the bond, and stays at 90 deg when the rotated centre pyramidalises symmetrically."""
+    """The twist angle of a 3-coordinated centre follows its geometric definition.
+
+    Twist of a 3-coordinated centre: equals the dihedral for a planar centre, follows a rigid
+    rotation about the bond, and stays at 90 deg when the rotated centre pyramidalises symmetrically.
+    """
     el, bonds, orders, x = ethanal()
     top = build_topology(el, bonds, (bonds, orders), x * 10)
     I, keys = T.REGISTRY["twist"].index(top, lambda a, k: "x")
     assert len(keys) == 3  # one per methyl H (pair O, H on C1); sp3 C0 has none
 
     def tau(X):
+        """Return the twist angles and the first dihedrals [rad] of the twist instances at X."""
         G = T.geometry(jnp.asarray(X), top)
         p1, p2 = G["phi"][I["u"]], G["phi"][I["v"]]
         return np.asarray(jnp.arctan2(jnp.sin(p1) - jnp.sin(p2), jnp.cos(p1) - jnp.cos(p2))), np.asarray(p1)
@@ -173,6 +205,7 @@ def test_twist_angle():
     ax = (x[1] - x[0]) / np.linalg.norm(x[1] - x[0])
 
     def rot(v, a):
+        """Rotate v by angle a about the C0-C1 axis (Rodrigues)."""
         return v * np.cos(a) + np.cross(ax, v) * np.sin(a) + ax * np.dot(ax, v) * (1 - np.cos(a))
 
     y = x.copy()
@@ -186,6 +219,7 @@ def test_twist_angle():
     t3, p3 = tau(y)
 
     def perp(v):
+        """Return the part of v perpendicular to the C0-C1 axis."""
         return v - ax * np.dot(ax, v)
 
     n = np.cross(ax, perp(y[2] - x[1]))
@@ -199,8 +233,11 @@ def test_twist_angle():
 
 
 def test_learned_pair_scales():
-    """escale: E = pGM + sum_c kappa_c E_perm,c; the fitter's cached linear path equals the direct
-    energy and forces, and kappa = -1 on every 1-2/1-3/1-4 class removes those permanent pairs."""
+    """Learned pair scales (escale): cached fitter path = direct energy; kappa = -1 removes the pairs.
+
+    escale: E = pGM + sum_c kappa_c E_perm,c; the fitter's cached linear path equals the direct
+    energy and forces, and kappa = -1 on every 1-2/1-3/1-4 class removes those permanent pairs.
+    """
     from pgm_jax.bonded.fit import Fitter, FrameSet
 
     m, x = methanol()
@@ -240,14 +277,18 @@ def test_learned_pair_scales():
 
 
 def test_fitted_typed_charges():
-    """qfit: typed pGM charges / covalent dipoles start at the ESP values (deep typing reproduces
-    the fixed-parameter energy), keep the molecular charge, and the fitter runs the dynamic path."""
+    """Fitted typed charges (qfit) start at the ESP values, stay neutral, and the fitter runs.
+
+    qfit: typed pGM charges / covalent dipoles start at the ESP values (deep typing reproduces
+    the fixed-parameter energy), keep the molecular charge, and the fitter runs the dynamic path.
+    """
     from pgm_jax.bonded.fit import Fitter, FrameSet
 
     m, x = methanol()
     R = jnp.asarray(x)
 
     def mk(q):
+        """Build the methanol BondedModel with qfit typing depth q."""
         return BondedModel(
             [MolSpec("MeOH", m.elements, m.bonds, [1] * 5, 0, x, pgm=m)],
             BondedSettings(families=("angle_cos",), qfit=q),
@@ -272,7 +313,7 @@ def test_fitted_typed_charges():
 
 
 def test_bond_charge_increments():
-    """qbci: zero increments reproduce the ESP-parameter energy; increments keep the total charge."""
+    """Bond-charge increments (qbci): zero is the ESP energy; increments keep the total charge."""
     m, x = methanol()
     R = jnp.asarray(x)
     model = BondedModel(
@@ -287,12 +328,16 @@ def test_bond_charge_increments():
 
 
 def test_separate_induction_exclusion():
-    """ind_exclude: excluding only the permanent 1-2/1-3 pairs keeps pGM's induced dipoles (same
-    molecular dipole); excluding only their induction keeps the permanent energy."""
+    """ind_exclude: permanent and induction exclusions act separately.
+
+    ind_exclude: excluding only the permanent 1-2/1-3 pairs keeps pGM's induced dipoles (same
+    molecular dipole); excluding only their induction keeps the permanent energy.
+    """
     m, x = methanol()
     R = jnp.asarray(x)
 
     def mk(**kw):
+        """Build the methanol BondedModel with the given exclusion settings."""
         return BondedModel(
             [MolSpec("MeOH", m.elements, m.bonds, [1] * 5, 0, x, pgm=m)],
             BondedSettings(families=("angle_cos",), lj_min_sep=99, **kw),
@@ -307,7 +352,10 @@ def test_separate_induction_exclusion():
 
 
 def methyl_formate():
-    """HC(=O)OCH3, nm: a conjugated C-O bond and an sp3 neighbour of the ester O."""
+    """Return methyl formate (elements, bonds, bond orders, geometry [nm]).
+
+    HC(=O)OCH3, nm: a conjugated C-O bond and an sp3 neighbour of the ester O.
+    """
     x = np.array(
         [
             [0.0, 0.0, 0.0],
@@ -326,9 +374,18 @@ def methyl_formate():
 
 
 def test_electronic_families():
-    """F12 families: finite-difference gradients, rigid-motion invariance, and their physics:
-    pi-axis p fraction 1 planar / 3/4 tetrahedral, conj = cos^2 of the rotation, volume double well,
-    self-consistent hybrids = fixed hybrids at the reference geometry."""
+    """The F12 electronic families: gradients, invariance, and their geometric physics.
+
+    On methyl formate (a conjugated ester C-O bond): every family has instances; with random
+    parameters the gradient matches central differences (1e-5 relative, h = 1e-6 nm) and the energy is
+    invariant under a proper rotation and translation (1e-8 relative).  Physics: the p fraction of the
+    pi axis is 3/4 at a tetrahedral and 1 at a planar centre (1e-6); the conjugation energy (K = 1)
+    is 0, 1/2 and 1 after rotating the ester's O substituent by 0, 45 and 90 deg about C-O (within
+    0.02 kJ/mol); the hybrid angle terms are nearly zero at the
+    reference geometry (below 5 % of the fixed-hybrid energy of a distorted one; the least-squares
+    hybrids cannot make every angle of this rough geometry exact), and the self-consistent hybrids are
+    softer than the fixed ones.
+    """
     el, bonds, orders, x = methyl_formate()
     fams = (
         "conj",
@@ -375,6 +432,7 @@ def test_electronic_families():
     ax = (x[3] - x[0]) / np.linalg.norm(x[3] - x[0])
 
     def rot(v, a):
+        """Rotate v by angle a about the ester C-O axis (Rodrigues)."""
         return v * np.cos(a) + np.cross(ax, v) * np.sin(a) + ax * np.dot(ax, v) * (1 - np.cos(a))
 
     for ang, e_exp in ((0.0, 0.0), (90.0, 1.0), (45.0, 0.5)):
@@ -393,6 +451,7 @@ def test_electronic_families():
     Y = jnp.asarray(x + 0.01 * rng.normal(size=x.shape))
 
     def only(f):
+        """Return the hybrid-only parameters with every family but f set to zero."""
         return {
             **{k: jax.tree_util.tree_map(jnp.zeros_like, v) for k, v in Ph.items() if k != "ref"},
             "ref": Ph["ref"],

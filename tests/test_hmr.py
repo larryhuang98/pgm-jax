@@ -1,12 +1,17 @@
-"""Hydrogen mass repartitioning per molecule (md/constraints.py hmr_masses, AmberSystem.hmr,
-FlexibleSimulation(hmr=...)): which atoms change, total masses conserved, no silent defaults."""
+"""Hydrogen mass repartitioning per molecule (md/constraints.py hmr_masses, AmberSystem.hmr).
+
+What is checked, and against what: which atoms change mass (hydrogens and their bonded heavy
+atoms only), that every molecule keeps its total mass (1e-9 amu), the refusal of incomplete or
+unknown specifications and of masses that would go negative; FlexibleSimulation(hmr=...) using
+the repartitioned masses in dynamics and constraints, and NVE at 2 fs of a cluster whose pairs
+never cross the cutoff (energy deviation below 1e-3 of the kinetic energy).
+"""
 
 import os
 
 import numpy as np
 import pytest
-from test_grad import water
-from test_md_macro import _water_box
+from _systems import water, water_cluster_box
 
 from pgm_jax import System
 from pgm_jax.md.constraints import hmr_masses, repartition_masses
@@ -16,17 +21,12 @@ DATA = os.path.join(os.path.dirname(__file__), "data")
 PRM, CRD = os.path.join(DATA, "pep_wat.prmtop"), os.path.join(DATA, "pep_wat.inpcrd")  # ACE-ALA-SER-NME, TIP3P, NaCl
 
 
-def _cluster():
-    """Eight waters (2 x 2 x 2 lattice) in a 3 nm box with a 1.2 nm cutoff: no pair crosses the
-    cutoff, so NVE conserves the energy to the integration error (a hard cutoff in a small box
-    makes the energy jump by several kJ/mol)."""
-    pos, _, w = _water_box(n_side=2, spacing=0.31)
-    return pos + 1.2, np.eye(3) * 3.0, w
-
-
 def test_per_molecule_hydrogen_masses():
-    """Solvated peptide: protein hydrogens 3.024, water hydrogens 4.0, ions untouched; each
-    molecule keeps its mass and only hydrogens and the heavy atoms bonded to them change."""
+    """Per-molecule HMR changes only hydrogens and their heavy partners, keeping each molecule's mass.
+
+    Solvated peptide: protein hydrogens 3.024, water hydrogens 4.0, ions untouched; each
+    molecule keeps its mass and only hydrogens and the heavy atoms bonded to them change.
+    """
     from pgm_jax.protein import load_amber
 
     asys = load_amber(PRM, CRD)
@@ -81,12 +81,15 @@ def test_per_molecule_hydrogen_masses():
 
 
 def test_flexible_simulation_per_molecule_hmr():
-    """FlexibleSimulation(hmr=[per molecule]): dynamics, constraints and the molecular centres use
+    """FlexibleSimulation(hmr=[...]) uses the repartitioned masses and conserves the energy.
+
+    FlexibleSimulation(hmr=[per molecule]): dynamics, constraints and the molecular centres use
     the repartitioned masses; a water cluster with half the waters at 4 amu hydrogens conserves
-    the energy at 2 fs (NVE, no pair crosses the cutoff)."""
+    the energy at 2 fs (NVE, no pair crosses the cutoff).
+    """
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
 
-    pos, H, w = _cluster()
+    pos, H, w = water_cluster_box()
     wat = water()
     nmol = len(pos) // 3
     sys = System([wat] * nmol)

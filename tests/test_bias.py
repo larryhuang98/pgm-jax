@@ -1,8 +1,24 @@
-"""Enhanced sampling (pgm_jax.bias): collective variables and bias forces against finite
-differences, metadynamics hills and grids, OPES against a plain re-implementation of PLUMED's
-OPES_METAD, the MD hook in both engines (forces, NVE with a static and a growing bias, deposition
-inside the compiled loop, files, checkpoints, pressure), the model-potential engine with walkers,
-and the analysis tools (c(t), WHAM, histograms)."""
+"""Enhanced sampling (pgm_jax.bias): collective variables, biases, the MD hook and the analysis tools.
+
+What is checked, and against what:
+
+- collective variables: gradients against central differences, values against direct formulas
+  (restraints.dihedral, the rational switching function, a Kabsch RMSD in numpy);
+- static biases and walls against their closed forms; metadynamics hills (well-tempered heights,
+  periodic CVs) against a numpy hill sum; the Hermite grid against the exact hill sum;
+- OPES against _opes_reference, a plain list-based transcription of PLUMED's OPES_METAD
+  (kernels, merging, normalisation Z, sum of weights);
+- the MD hook in both engines: bias forces = -dV/dx (mapped to rigid bodies), NVE with a static
+  and with a growing bias (econs books the deposition work), deposition inside the compiled loop,
+  COLVAR / HILLS files, checkpoints, the pressure contribution, multiple time stepping, REMD refusal;
+- the model-potential engine (ToyLangevin) with shared and independent walkers, c(t), WHAM and
+  reweighted histograms against analytic free-energy surfaces.
+
+Tolerances: closed forms and reference algorithms ~1e-9 to 1e-12 (float64 arithmetic);
+finite-difference gradients 2e-7 to 1e-6 relative (h = 1e-6); energy conservation relative to the
+energy moved through the bias (2e-3); free-energy surfaces from short biased runs within a few
+kJ/mol (statistical).
+"""
 
 import os
 
@@ -10,27 +26,33 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import water
-from test_hmr import _cluster
+from _systems import random_atoms_box, rigid_water_sim, water_cluster_box
 
-from pgm_jax import System
 from pgm_jax.bias import OPES, BiasSet, Harmonic, LowerWall, MetaD, StaticBias, UpperWall, cv
 from pgm_jax.bias import analysis as A
 from pgm_jax.bias.toy import ToyLangevin, double_well, ring
-from pgm_jax.md.box import reduce_box
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.units import BAR_PER_KJMOL_NM3, KB
 
 DATA = os.path.join(os.path.dirname(__file__), "data")
 
 
-def _system(seed=0, n=14):
-    rng = np.random.default_rng(seed)
-    H = reduce_box(np.array([[1.6, 0.0, 0.0], [0.5, 1.5, 0.0], [-0.4, 0.6, 1.45]]))
-    return rng.uniform(size=(n, 3)) @ H, H
-
-
 def _fd_grad(f, x, h=1e-6):
+    """Return the central-difference gradient of f at x, one coordinate at a time.
+
+    Parameters
+    ----------
+    f : callable
+        Scalar function of positions (N, 3).
+    x : np.ndarray (N, 3)
+        Point [nm].
+    h : float
+        Step [nm].
+
+    Returns
+    -------
+    np.ndarray (N, 3)
+    """
     g = np.zeros_like(x)
     for i in range(x.shape[0]):
         for k in range(3):
@@ -42,6 +64,18 @@ def _fd_grad(f, x, h=1e-6):
 
 
 def _cvs(pos, H):
+    """Return one collective variable of every kind on the random-atom system.
+
+    Distance, angle, dihedral, coordination number, centre-of-mass distance, RMSD with and without
+    alignment, a linear combination and a custom function.
+
+    Parameters
+    ----------
+    pos : np.ndarray (14, 3)
+        Positions [nm] (the RMSD references are made from them).
+    H : np.ndarray (3, 3)
+        Box [nm].
+    """
     return [
         cv.Distance(0, 9),
         cv.Angle(1, 2, 3),
@@ -56,7 +90,8 @@ def _cvs(pos, H):
 
 
 def test_cv_gradients_match_finite_differences():
-    pos, H = _system()
+    """CV gradients of every kind match central differences (2e-7 relative, h = 1e-6)."""
+    pos, H = random_atoms_box()
     for c in _cvs(pos, H):
         g = np.asarray(c.grad(pos, H))
         fd = _fd_grad(lambda x: c(x, H), pos)
@@ -65,9 +100,15 @@ def test_cv_gradients_match_finite_differences():
 
 
 def test_cv_values():
+    """CV values match direct formulas.
+
+    The dihedral equals restraints.dihedral (1e-14), the rational switching function has its limit
+    1/2 at r = r0 and (1 - x^6) / (1 - x^12) elsewhere, and the RMSD after optimal superposition is 0
+    for a rotated, translated copy and equals a numpy Kabsch RMSD for a noisy one (1e-10).
+    """
     from pgm_jax.md.restraints import dihedral
 
-    pos, H = _system()
+    pos, H = random_atoms_box()
     x = np.asarray(pos)
     assert abs(float(cv.Dihedral(4, 5, 6, 7)(pos, None)) - float(dihedral(*x[[4, 5, 6, 7]]))) < 1e-14
     # rational switching: the limit at r = r0 and the value away from it
@@ -92,7 +133,8 @@ def test_cv_values():
 
 
 def test_static_biases_and_walls():
-    pos, H = _system()
+    """Harmonic (periodic CV), upper / lower walls and a custom static bias give their closed forms."""
+    pos, H = random_atoms_box()
     d, phi = cv.Distance(0, 9), cv.Dihedral(4, 5, 6, 7)
     s = np.array([float(d(pos, H)), float(phi(pos, H))])
     h = Harmonic([d, phi], at=[0.3, s[1] + 2 * np.pi - 0.1], kappa=[100.0, 20.0], temperature=300.0)
@@ -106,6 +148,7 @@ def test_static_biases_and_walls():
 
 
 def _deposit(b, s_list, step0=1):
+    """Deposit one hill per CV value in s_list (steps step0, step0 + 1, ...) and return the bias state."""
     st = b.init()
     for i, s in enumerate(s_list):
         st = b.update(st, jnp.asarray(s, jnp.float64), step0 + i)
@@ -113,6 +156,12 @@ def _deposit(b, s_list, step0=1):
 
 
 def test_metad_hills_heights_and_periodicity():
+    """Well-tempered metadynamics hills have the right heights, sum and periodicity.
+
+    Heights are w = h exp(-V(s) / (kT (gamma - 1))) with V the sum of the previous hills (numpy,
+    1e-12); the potential equals the hill sum, a hill near +pi acts across the periodic boundary, the
+    hill record lists steps and centres, and biasfactor=None gives constant heights.
+    """
     kT = KB * 300.0
     phi, d = cv.Dihedral(0, 1, 2, 3), cv.Distance(0, 3)
     b = MetaD([d, phi], sigma=[0.05, 0.4], height=1.5, pace=10, biasfactor=6.0, temperature=300.0, capacity=4)
@@ -123,6 +172,7 @@ def test_metad_hills_heights_and_periodicity():
     assert st.heights.shape[0] >= 12
 
     def V(C, H, s):
+        """Return the numpy hill sum at s of hills with centres C and heights H (sigma 0.05, 0.4 rad)."""
         return sum(
             h
             * np.exp(
@@ -159,8 +209,14 @@ def test_metad_hills_heights_and_periodicity():
 
 @pytest.mark.parametrize("periodic", [False, True])
 def test_metad_grid_matches_hill_sum(periodic):
-    """Hermite-interpolated grid vs the exact hill sum: 1D and 2D, values and gradients, and C1
-    continuity of the interpolated bias (forces continuous across grid lines)."""
+    """The Hermite-interpolated bias grid matches the exact hill sum (values, gradients, C1).
+
+    Hermite-interpolated grid vs the exact hill sum: 1D and 2D, values and gradients, and C1
+    continuity of the interpolated bias (forces continuous across grid lines).
+
+    Tolerances: 2e-3 of the largest bias for values and 2e-2 for gradients (interpolation error of
+    160 / 120 bins); the gradient jump across a node is below 1e-5 (C1 interpolation).
+    """
     c1 = cv.Dihedral(0, 1, 2, 3) if periodic else cv.Distance(0, 1)
     c2 = cv.Dihedral(1, 2, 3, 4) if periodic else cv.Angle(0, 1, 2)
     lo, hi = (-np.pi, np.pi) if periodic else (0.0, 3.0)
@@ -190,7 +246,40 @@ def test_metad_grid_matches_hill_sum(periodic):
 
 
 def _opes_reference(S, sigma0, barrier, kT, periods, compression=1.0, fixed_sigma=False, recursive=True):
-    """PLUMED OPES_METAD (update() and calculate()) written out with lists, one CV set per call."""
+    """Run PLUMED's OPES_METAD on a sequence of CV values, written out with plain lists.
+
+    PLUMED OPES_METAD (update() and calculate()) written out with lists, one CV set per call.
+
+    Parameters
+    ----------
+    S : array (T, d)
+        CV values, one deposition per row.
+    sigma0 : sequence of float (d,)
+        Initial kernel widths.
+    barrier : float
+        Barrier parameter [kJ/mol].
+    kT : float
+        Thermal energy [kJ/mol].
+    periods : sequence of float (d,)
+        Period of each CV (0: not periodic).
+    compression : float
+        Merging threshold in units of the kernel width (0: no merging).
+    fixed_sigma : bool
+        Keep sigma0 instead of the adaptive width.
+    recursive : bool
+        Merge recursively after a merge.
+
+    Returns
+    -------
+    V : list of float
+        Bias at each CV value before its deposition [kJ/mol].
+    kernels : list
+        Final kernels [height, centre, sigma].
+    Z : float
+        Final normalisation.
+    sum_w : float
+        Final sum of weights.
+    """
     d = len(sigma0)
     g = barrier / kT
     pref = 1 - 1 / g
@@ -200,6 +289,7 @@ def _opes_reference(S, sigma0, barrier, kT, periods, compression=1.0, fixed_sigm
     P = np.asarray(periods, float)
 
     def diff(a, b):
+        """Return a - b with the minimum image of periodic components."""
         x = np.asarray(a) - np.asarray(b)
         return np.where(P > 0, x - P * np.round(x / np.where(P > 0, P, 1)), x)
 
@@ -209,10 +299,12 @@ def _opes_reference(S, sigma0, barrier, kT, periods, compression=1.0, fixed_sigm
     Z = 1.0
 
     def kern(k, s):
+        """Return the truncated Gaussian kernel k at s (shifted by its value at the cutoff)."""
         n2 = np.sum((diff(s, k[1]) / k[2]) ** 2)
         return k[0] * (np.exp(-0.5 * n2) - vac) if n2 < cut2 else 0.0
 
     def bias(s):
+        """Return the OPES bias at s [kJ/mol]."""
         return kT * pref * np.log(sum(kern(k, s) for k in K) / sw / Z + eps)
 
     out = []
@@ -230,6 +322,7 @@ def _opes_reference(S, sigma0, barrier, kT, periods, compression=1.0, fixed_sigm
         h = w * np.prod(np.asarray(sigma0) / sig)
 
         def merge(t, g):  # g merged into t (moments about t's centre)
+            """Return kernel t with kernel g merged into it (moments about t's centre)."""
             dc = diff(g[1], t[1])
             hm = t[0] + g[0]
             c = t[1] + g[0] / hm * dc
@@ -237,6 +330,7 @@ def _opes_reference(S, sigma0, barrier, kT, periods, compression=1.0, fixed_sigm
             return [hm, np.where(P > 0, c - P * np.round(c / np.where(P > 0, P, 1)), c), np.sqrt(s2)]
 
         def mergeable(center, skip):
+            """Return the index of the nearest kernel within the compression threshold (or None)."""
             best, bn = None, compression**2
             for i, k in enumerate(K):
                 if i == skip:
@@ -266,7 +360,15 @@ def _opes_reference(S, sigma0, barrier, kT, periods, compression=1.0, fixed_sigm
 
 
 @pytest.mark.parametrize("fixed,recursive", [(False, True), (True, True), (False, False)])
+@pytest.mark.slow
 def test_opes_matches_reference_algorithm(fixed, recursive):
+    """OPES reproduces the reference algorithm step by step.
+
+    Bias values at every step (1e-9 kJ/mol), the same kernels after merging (heights, centres and
+    widths, 1e-9 relative), Z and the sum of weights (1e-10 / 1e-9 relative) and the final bias, for
+    adaptive / fixed widths and recursive / single merging.  The bias starts at -barrier; a full
+    buffer merges new kernels into their nearest neighbour instead of losing them.
+    """
     kT = KB * 300.0
     phi, d = cv.Dihedral(0, 1, 2, 3), cv.Distance(0, 3)
     b = OPES(
@@ -329,6 +431,7 @@ def test_opes_matches_reference_algorithm(fixed, recursive):
 
 
 def test_bias_set_state_io(tmp_path):
+    """A BiasSet records COLVAR rows, deposits, drains its log and survives save / load exactly."""
     d = cv.Distance(0, 1)
     bs = BiasSet(
         [MetaD(d, 0.05, 1.0, 5, temperature=300.0), OPES(d, 0.05, 5, 20.0, temperature=300.0), Harmonic(d, 0.3, 10.0)],
@@ -351,18 +454,21 @@ def test_bias_set_state_io(tmp_path):
 
 
 # ----------------------------------------------------------------------------- MD engines
-def _water_sim(engine, pos, H, w, settings, **kw):
-    from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
-    from pgm_jax.md.simulation import Simulation
-
-    wat = water()
-    sys = System([wat] * (len(pos) // 3))
-    if engine == "rigid":
-        return Simulation(sys, pos, H, settings, log=None, **kw)
-    return FlexibleSimulation(sys, [RigidTemplate(wat, w)] * sys.nmol, pos, H, settings, log=None, **kw)
-
-
 def _cluster_bias(pace=0, height=2.0):
+    """Return a two-CV metadynamics bias (O-O distance, H-O-O-H dihedral) of the water cluster.
+
+    Parameters
+    ----------
+    pace : int
+        Deposition interval [steps]; 0 makes a static bias that never deposits.
+    height : float
+        Hill height [kJ/mol].
+
+    Returns
+    -------
+    tuple
+        (MetaD, distance CV, dihedral CV).
+    """
     d, phi = cv.Distance(0, 9), cv.Dihedral(1, 0, 9, 10)
     m = MetaD([d, phi], sigma=[0.03, 0.4], height=height, pace=max(pace, 1), biasfactor=5.0, temperature=300.0)
     if pace == 0:
@@ -372,10 +478,13 @@ def _cluster_bias(pace=0, height=2.0):
 
 @pytest.mark.parametrize("engine", ["rigid", "atoms"])
 def test_md_bias_forces_and_static_nve(engine):
-    """A metadynamics bias with pre-deposited hills, held static: the state's forces minus the
+    """A static metadynamics bias adds -dV/dx to the MD forces, and NVE conserves E_tot.
+
+    A metadynamics bias with pre-deposited hills, held static: the state's forces minus the
     unbiased ones equal -dV/dx (mapped to the bodies for rigid molecules) and the bias forces match
-    finite differences of V(s(x)); NVE conserves E_tot while ~20 kJ/mol move in and out of the bias."""
-    pos, H, w = _cluster()
+    finite differences of V(s(x)); NVE conserves E_tot while ~20 kJ/mol move in and out of the bias.
+    """
+    pos, H, w = water_cluster_box()
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, d, phi = _cluster_bias(pace=0)
     s0 = np.array([float(d(pos, H)), float(phi(pos, H))])
@@ -384,9 +493,9 @@ def test_md_bias_forces_and_static_nve(engine):
     for k in range(30):
         st = m.update(st, jnp.asarray(s0 + [0.03 * rng.normal(), 0.5 * rng.normal()]), k)
     bs = BiasSet([m, UpperWall(d, 0.6, 1000.0)], colvar=10)
-    sim = _water_sim(engine, pos, H, w, s, dt=0.0005, thermostat=None, bias=bs)
+    sim = rigid_water_sim(engine, pos, H, w, s, dt=0.0005, thermostat=None, bias=bs)
     sim.set_bias_state(bs.init()._replace(parts=(st, bs.biases[1].init())))
-    ref = _water_sim(engine, pos, H, w, s, dt=0.0005, thermostat=None)
+    ref = rigid_water_sim(engine, pos, H, w, s, dt=0.0005, thermostat=None)
     x = sim.rigid.positions(sim.state.dyn.position)
     g = jax.grad(lambda p: bs.energy(sim.state.bias, p, H))(x)
     fd = _fd_grad(lambda p: bs.energy(sim.state.bias, jnp.asarray(p), H), np.asarray(x), h=1e-6)
@@ -414,18 +523,22 @@ def test_md_bias_forces_and_static_nve(engine):
 
 
 @pytest.mark.parametrize("engine", ["rigid", "atoms"])
+@pytest.mark.slow
 def test_md_deposition_in_loop(engine, tmp_path):
-    """Hills deposited inside the compiled loop every `pace` steps; after a block the stored forces
+    """Hills deposited inside the compiled MD loop: forces, energy bookkeeping, files, restart.
+
+    Hills deposited inside the compiled loop every `pace` steps; after a block the stored forces
     and epot equal a fresh evaluation with the grown bias; NVE: econs (E_tot - work of the updates,
     booked as heat) stays constant while the bias pumps in tens of kJ/mol; COLVAR / HILLS files,
-    checkpoint and continuation."""
+    checkpoint and continuation.
+    """
     from pgm_jax.bias.io import read_table
 
-    pos, H, w = _cluster()
+    pos, H, w = water_cluster_box()
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, d, phi = _cluster_bias(pace=10, height=1.0)
     bs = BiasSet([m, Harmonic(d, 0.30, 2000.0)], colvar=5)
-    sim = _water_sim(engine, pos, H, w, s, dt=0.0005, thermostat=None, bias=bs)
+    sim = rigid_water_sim(engine, pos, H, w, s, dt=0.0005, thermostat=None, bias=bs)
     o0 = sim.observables()
     prefix = str(tmp_path / "md")
     sim.run(200, report_every=100, checkpoint_every=100, prefix=prefix)
@@ -447,7 +560,7 @@ def test_md_deposition_in_loop(engine, tmp_path):
     assert cvs["bias0_metad"][1] == 0.0 and cvs["bias0_metad"][2] > 0.0  # step 10: before the first hill
     # continuation from the checkpoint reproduces the next block
     a = sim.integ.run(sim.state, 20)
-    sim2 = _water_sim(
+    sim2 = rigid_water_sim(
         engine,
         pos,
         H,
@@ -465,17 +578,21 @@ def test_md_deposition_in_loop(engine, tmp_path):
     assert int(st3.parts[0].n) == 20
 
 
+@pytest.mark.slow
 def test_md_opes_nvt_pressure_and_mts():
-    """OPES in NVT (Bussi) through the rigid engine and a bias with multiple time stepping (bias in the
-    slow group): runs, deposits, and the pressure includes the bias's strain derivative."""
+    """OPES in NVT: the pressure includes the bias virial; a bias in the slow MTS group runs.
+
+    OPES in NVT (Bussi) through the rigid engine and a bias with multiple time stepping (bias in the
+    slow group): runs, deposits, and the pressure includes the bias's strain derivative.
+    """
     from pgm_jax.md.mts import MTS
     from pgm_jax.md.restraints import molecular_strain
 
-    pos, H, w = _cluster()
+    pos, H, w = water_cluster_box()
     s = MDSettings().replace(precision="double", dipole_tol=1e-8, cutoff=1.2, skin=0.1, lj_lrc=False)
     d = cv.Distance(0, 9)
     op = OPES(d, sigma=0.02, pace=20, barrier=15.0)
-    sim = _water_sim(
+    sim = rigid_water_sim(
         "rigid", pos, H, w, s, dt=0.001, thermostat="bussi", temperature=300.0, bias=[op, UpperWall(d, 0.7, 500.0)]
     )
     sim.advance(200)
@@ -487,22 +604,26 @@ def test_md_opes_nvt_pressure_and_mts():
         lambda p, h: sim.integ.bias.energy(st.bias, p, h), x, st.box, sim.ff.mol, sim.ff.masses, sim.sys.nmol
     )
     p_with = sim.pressure()
-    ref = _water_sim("rigid", pos, H, w, s, dt=0.001, temperature=300.0)
+    ref = rigid_water_sim("rigid", pos, H, w, s, dt=0.001, temperature=300.0)
     ref.state = st.set(bias=None)
     dP = -float(jnp.trace(W)) / (3.0 * float(jnp.linalg.det(st.box))) * BAR_PER_KJMOL_NM3
     assert abs(p_with - ref.pressure() - dP) < 1e-6 * max(1.0, abs(dP))
     # multiple time stepping: the bias is part of the slow force
     m, _, _ = _cluster_bias(pace=5, height=1.0)
-    sim = _water_sim("atoms", pos, H, w, s, dt=0.002, thermostat=None, bias=m, mts=MTS(inner=2, split="bonded"))
+    sim = rigid_water_sim("atoms", pos, H, w, s, dt=0.002, thermostat=None, bias=m, mts=MTS(inner=2, split="bonded"))
     E0 = sim.observables()["econs"]
     sim.advance(40)
     o = sim.observables()
     assert o["hills"] == 8 and abs(o["econs"] - E0) < 0.05 * max(o["bias_work"], 1.0), (E0, o)
 
 
+@pytest.mark.slow
 def test_flexible_peptide_dihedral_bias():
-    """Solvated peptide (flexible, h-bond constraints): metadynamics on its backbone phi/psi (grid)
-    inside the atom engine; the CV follows ensemble.backbone_torsions."""
+    """Metadynamics on a solvated peptide's phi / psi: deposits, and the CVs are the backbone torsions.
+
+    Solvated peptide (flexible, h-bond constraints): metadynamics on its backbone phi/psi (grid)
+    inside the atom engine; the CV follows ensemble.backbone_torsions.
+    """
     from pgm_jax.fit.reweighting import backbone_torsions
     from pgm_jax.md.flexible import FlexibleSimulation
     from pgm_jax.protein import amber_template, load_amber
@@ -542,21 +663,25 @@ def test_flexible_peptide_dihedral_bias():
 
 
 def test_remd_refuses_dynamic_bias():
+    """Temperature replica exchange refuses a bias that deposits (NotImplementedError)."""
     from pgm_jax.md.remd import ReplicaExchange
 
-    pos, H, w = _cluster()
+    pos, H, w = water_cluster_box()
     s = MDSettings().replace(precision="double", dipole_tol=1e-8, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, _, _ = _cluster_bias(pace=10)
-    sim = _water_sim("rigid", pos, H, w, s, dt=0.001, temperature=300.0, bias=m)
+    sim = rigid_water_sim("rigid", pos, H, w, s, dt=0.001, temperature=300.0, bias=m)
     with pytest.raises(NotImplementedError):
         ReplicaExchange(sim, [300.0, 320.0], exchange_every=10)
 
 
 # ----------------------------------------------------------------------------- model engine and analysis
 def test_toy_walkers_and_analysis():
-    """Double well: shared-bias walkers deposit W hills per pace; independent walkers each their own;
+    """Toy double well: walkers deposit as configured, and the FES estimates match the exact one.
+
+    Double well: shared-bias walkers deposit W hills per pace; independent walkers each their own;
     c(t) against a direct evaluation; the reweighted histogram of the biased run and the bias
-    estimate agree with the exact FES to a few kJ/mol after a short run."""
+    estimate agree with the exact FES to a few kJ/mol after a short run.
+    """
     U = double_well(barrier=15.0)
     x = cv.Component(0, 0)
     b = MetaD(x, sigma=0.1, height=1.0, pace=50, biasfactor=8.0, grid=(-2.5, 2.5, 250))
@@ -598,8 +723,11 @@ def test_toy_walkers_and_analysis():
 
 
 def test_toy_ring_periodic_opes():
-    """A particle on a ring (periodic CV theta): OPES flattens the angular barriers (both minima
-    visited) and its FES estimate is within a few kJ/mol of the exact one after a short run."""
+    """OPES on a periodic CV (a particle on a ring) recovers the exact FES.
+
+    A particle on a ring (periodic CV theta): OPES flattens the angular barriers (both minima
+    visited) and its FES estimate is within a few kJ/mol of the exact one after a short run.
+    """
     U = ring()
     th = cv.Custom(lambda x, H: jnp.arctan2(x[0, 1], x[0, 0]), period=2 * np.pi, name="theta")
     b = OPES(th, sigma=0.2, pace=50, barrier=20.0)
@@ -623,7 +751,12 @@ def test_toy_ring_periodic_opes():
 
 
 def test_wham_and_histogram():
-    """WHAM recovers a known 1D FES from exact samples of harmonic umbrella windows."""
+    """WHAM and an unweighted histogram recover a known 1D free-energy surface.
+
+    Exact samples of 15 harmonic umbrella windows on F(x) = 8 (x^2 - 1)^2 (kT = 2.5): WHAM within
+    0.3 kJ/mol RMSD where F < 10, and a histogram of Boltzmann samples within 0.2 where F < 6
+    (sampling noise of 20,000 / 400,000 samples).
+    """
     rng = np.random.default_rng(0)
     kT = 2.5
     ax = np.linspace(-1.5, 1.5, 61)
@@ -643,17 +776,21 @@ def test_wham_and_histogram():
 
 
 @pytest.mark.parametrize("shared", [False, True])
+@pytest.mark.slow
 def test_walkers(shared, tmp_path):
-    """Walkers of the rigid engine in one vmapped program: independent (each its own bias; walker 0
+    """Walkers in one vmapped program: independent walkers or one shared bias; files and restart.
+
+    Walkers of the rigid engine in one vmapped program: independent (each its own bias; walker 0
     reproduces a single simulation with the same start) or sharing one bias (W hills per pace, the
-    state's forces equal a fresh evaluation with the shared bias); files and checkpoint."""
+    state's forces equal a fresh evaluation with the shared bias); files and checkpoint.
+    """
     from pgm_jax.bias.io import read_table
     from pgm_jax.bias.walkers import Walkers
 
-    pos, H, w = _cluster()
+    pos, H, w = water_cluster_box()
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     m, d, phi = _cluster_bias(pace=10, height=1.0)
-    sim = _water_sim(
+    sim = rigid_water_sim(
         "rigid", pos, H, w, s, dt=0.001, thermostat="bussi", temperature=300.0, bias=BiasSet([m], colvar=5)
     )
     W = 3
@@ -672,7 +809,7 @@ def test_walkers(shared, tmp_path):
     else:
         assert np.all(np.asarray(wk.S.bias.parts[0].n) == 10)
         # walker 0 vs the same state advanced alone
-        one = _water_sim(
+        one = rigid_water_sim(
             "rigid",
             pos,
             H,

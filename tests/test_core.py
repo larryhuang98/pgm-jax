@@ -1,9 +1,18 @@
-"""Kernels, solvers and parameter plumbing (no Amber files needed)."""
+"""Kernels, solvers and parameter plumbing (no Amber files needed).
+
+What is checked, and against what: the Gaussian Coulomb kernel against its r -> 0 limit
+2 b / sqrt(pi) and erf(b r) / r; the normalisation of the Gaussian overlap density (numerical
+radial integral); the gd6 / tt6 damping functions (monotonic, limits, continuity at the switch to
+their series); minimize_newton against the direct linear induction solve and its implicit
+derivative; the molecule JSON format (round trip, evoff's older format); parameter mapping by
+bond graph (the same pGM energy after shuffling the atoms).
+"""
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from _systems import requires
 
 from pgm_jax.channels import ElecChannel
 from pgm_jax.densities import gauss_bij, gauss_coulomb, gauss_overlap, gd6_jax, tt6_jax
@@ -13,6 +22,11 @@ from pgm_jax.system import Molecule, System
 
 
 def _methanol():
+    """Return a toy methanol in Angstrom (no LJ; bonds set after construction) and its geometry.
+
+    Unlike _systems.methanol this one keeps the geometry in Angstrom (the atom-mapping test scales it)
+    and has no Lennard-Jones parameters.
+    """
     x = np.array(
         [
             [-0.0467, 0.6590, 0.0],
@@ -38,6 +52,11 @@ def _methanol():
 
 
 def test_gauss_coulomb_continuous_at_small_r():
+    """gauss_coulomb has the r -> 0 limit 2 b / sqrt(pi), no jump at its series switch, and erf(b r) / r.
+
+    The switch between the small-r series and the closed form is at b r = 1e-4; values just below and
+    above agree to 1e-9 relative.
+    """
     b = gauss_bij(0.06, 0.05)
     r = jnp.array([0.0, 0.5e-4 / b, 0.99e-4 / b, 1.01e-4 / b, 0.1])
     v = np.asarray(gauss_coulomb(r, b))
@@ -47,7 +66,7 @@ def test_gauss_coulomb_continuous_at_small_r():
 
 
 def test_gauss_overlap_is_normalised():
-    """Integral over all separations of the overlap of two unit clouds is 1."""
+    """The overlap density of two unit Gaussian clouds integrates to 1 (1e-8, trapezoidal rule)."""
     b = float(gauss_bij(0.06, 0.05))
     r = np.linspace(0, 12 / b, 20001)
     trap = getattr(np, "trapezoid", None) or np.trapz
@@ -56,9 +75,12 @@ def test_gauss_overlap_is_normalised():
 
 
 def test_damping_functions_limits():
-    """Both dampings rise monotonically to 1; tt6 is continuous (to 1e-6) where it switches to its series.
+    """gd6 and tt6 rise monotonically to 1 and tt6 is continuous at its series switch.
+
+    Both dampings rise monotonically to 1; tt6 is continuous (to 1e-6) where it switches to its series.
     (gd6 switches to its leading term 8x^6/(9 pi) at x = 0.15, which is ~4 % off there: inherited
-    from evoff, not relied on by the electrostatics.)"""
+    from evoff, not relied on by the electrostatics.)
+    """
     x = jnp.array([1e-3, 0.1, 0.2, 0.49, 0.51, 1.0, 2.0, 4.0, 30.0])
     g, t = np.asarray(gd6_jax(x)), np.asarray(tt6_jax(x))
     assert np.all(np.diff(g) > 0) and np.all(np.diff(t) > 0)
@@ -70,8 +92,11 @@ def test_damping_functions_limits():
 
 
 def test_newton_solver_matches_linear_induction_and_its_gradient():
-    """minimize_newton on the quadratic induction functional = direct linear solve, and the implicit
-    derivative of the minimum w.r.t. the field matches the linear-solve derivative."""
+    """minimize_newton equals the linear induction solve, and its implicit derivative too.
+
+    minimize_newton on the quadratic induction functional = direct linear solve, and the implicit
+    derivative of the minimum w.r.t. the field matches the linear-solve derivative.
+    """
     rng = np.random.default_rng(0)
     n = 4
     A = rng.normal(size=(3 * n, 3 * n)) * 0.05
@@ -82,6 +107,7 @@ def test_newton_solver_matches_linear_induction_and_its_gradient():
     Tm = T.transpose(0, 2, 1, 3).reshape(3 * n, 3 * n)
 
     def G(m, f):
+        """Return the induction functional mu^2 / (2 alpha) - mu.F + mu.T.mu / 2."""
         return jnp.sum(m.reshape(n, 3) ** 2 / (2 * alpha[:, None])) - m @ f.reshape(-1) + 0.5 * m @ Tm @ m
 
     mu_lin = solve_linear_induction(T, alpha, F).reshape(-1)
@@ -89,15 +115,18 @@ def test_newton_solver_matches_linear_induction_and_its_gradient():
     assert np.allclose(mu_new, mu_lin, atol=1e-10)
 
     def e_lin(f):
+        """Return G at the linear-solve minimum for field f."""
         return G(solve_linear_induction(T, alpha, f).reshape(-1), f)
 
     def e_new(f):
+        """Return G at the Newton minimum for field f."""
         return G(minimize_newton(G, jnp.zeros(3 * n), f), f)
 
     assert np.allclose(jax.grad(e_new)(F), jax.grad(e_lin)(F), atol=1e-9)
 
 
 def test_molecule_json_roundtrip():
+    """A Molecule survives molecule_to_dict / molecule_from_dict exactly; evoff's older format loads."""
     m, _ = _methanol()
     m.lj_rmin_half[:] = 0.15
     m.keys = {"alpha": [f"a{k}" for k in range(m.n)]}
@@ -115,8 +144,12 @@ def test_molecule_json_roundtrip():
     assert np.array_equal(m3.q, m.q) and np.all(m3.lj_sqrt_eps == 0) and m3.bonds == []
 
 
+@requires("networkx")
 def test_atom_mapping_permutation_invariance():
-    """Shuffle the atom order of a geometry, map parameters onto it by bond graph: same pGM energy."""
+    """Parameters mapped by bond graph onto shuffled atoms give the same pGM energy (1e-8).
+
+    Shuffle the atom order of a geometry, map parameters onto it by bond graph: same pGM energy.
+    """
     pytest.importorskip("networkx")
     from pgm_jax.param import map_atoms, reorder
 

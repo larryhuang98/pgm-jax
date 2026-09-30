@@ -1,62 +1,33 @@
-"""Macromolecules in the MD engine: neighbour-list groups and special pairs (md/topology.py),
-constraints (md/constraints.py), rigid water by constraints, a flexible peptide against the
-gas-phase model it was fitted with."""
+"""Macromolecules in the MD engine: groups and special pairs, constraints, a flexible peptide.
+
+What is checked, and against what: heavy-atom neighbour-list groups and special pairs with weights
+from graph distances (md/topology.py); SHAKE / RATTLE on water, CH3 and OH clusters (constraint
+lengths and velocities to 1e-12, no net momentum) and mass repartitioning; rigid water by
+constraints against rigid bodies (energy 1e-8 relative, comparable NVE fluctuation); a flexible
+29-atom peptide against the gas-phase model it was fitted with (forces 2e-3 of the RMS force); a
+solvated peptide with X-H constraints and HMR at 2 fs.  The peptides need RDKit.
+"""
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import water
+from _systems import peptide, peptide_template, requires, water, water_lattice
 
 from pgm_jax import System
-from pgm_jax.bonded import terms as T
-from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
 from pgm_jax.md.constraints import Constraints, repartition_masses
-from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, RigidTemplate
+from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.topology import MDTopology, MoleculeRule, heavy_atom_groups
-from pgm_jax.system import Molecule
-
-PEPTIDE = "CC(=O)N[C@@H](C)C(=O)NCC(=O)NC"  # Ace-Ala-Gly-Nme, 29 atoms
-_RAD = {"H": 0.05, "C": 0.07, "N": 0.065, "O": 0.06}
-_ALP = {"H": 0.4e-3, "C": 1.2e-3, "N": 1.0e-3, "O": 0.8e-3}
-_RMH = {"H": 0.13, "C": 0.19, "N": 0.18, "O": 0.17}
-_SEP = {"H": 0.12, "C": 0.33, "N": 0.40, "O": 0.45}
 
 
-def peptide(smiles=PEPTIDE, seed=5):
-    """(MolSpec with a pGM molecule of plausible parameters, geometry nm)."""
-    Chem = pytest.importorskip("rdkit.Chem")
-    from rdkit.Chem import AllChem
-
-    m = Chem.AddHs(Chem.MolFromSmiles(smiles))
-    AllChem.EmbedMolecule(m, randomSeed=seed)
-    AllChem.MMFFOptimizeMolecule(m)
-    AllChem.ComputeGasteigerCharges(m)
-    x = m.GetConformer().GetPositions() * 0.1
-    el = [a.GetSymbol() for a in m.GetAtoms()]
-    q = np.array([a.GetDoubleProp("_GasteigerCharge") for a in m.GetAtoms()])
-    q -= q.mean()
-    bonds = [(b.GetBeginAtomIdx(), b.GetEndAtomIdx()) for b in m.GetBonds()]
-    orders = [b.GetBondTypeAsDouble() for b in m.GetBonds()]
-    rng = np.random.default_rng(seed)
-    cov = [c for i, j in bonds for c in ((i, j, 0.004 * rng.normal()), (j, i, 0.004 * rng.normal()))]
-    mol = Molecule(
-        "pep",
-        el,
-        el,
-        q,
-        [_RAD[e] for e in el],
-        [_ALP[e] for e in el],
-        cov=cov,
-        lj_rmin_half=[_RMH[e] for e in el],
-        lj_sqrt_eps=[_SEP[e] for e in el],
-        bonds=bonds,
-    )
-    return MolSpec("pep", el, bonds, orders, 0, x, mol), x
-
-
+@requires("rdkit")
 def test_groups_and_special_pairs():
+    """Topology groups are the heavy atoms and special pairs carry graph-distance weights.
+
+    Every pair within three bonds is special, weights are symmetric (0 for 1-2 / 1-3, 0.5 for 1-4, 1
+    beyond); rigid molecules form one group each with every intramolecular pair excluded.
+    """
     s, x = peptide()
     top = MDTopology.build(System([s.pgm]), [MoleculeRule(bonds=s.bonds, vdw="graph", lj_min_sep=4, lj14_scale=0.5)])
     g = top.group
@@ -84,6 +55,7 @@ def test_groups_and_special_pairs():
 
 
 def test_constraints_shake_rattle():
+    """SHAKE / RATTLE hold bond lengths and tangent velocities; mass repartitioning keeps the total mass."""
     rng = np.random.default_rng(0)
     # water triangle (0-2), CH3 (3-6), OH (7-8)
     x = np.array(
@@ -122,20 +94,15 @@ def test_constraints_shake_rattle():
     assert abs(mh.sum() - m.sum()) < 1e-12 and np.allclose(mh[[1, 2, 4, 5, 6, 8]], 3.024)
 
 
-def _peptide_template():
-    s, x = peptide()
-    model = BondedModel([s], BondedSettings(families=T.PROTEIN, lj14_scale=0.5))
-    P = model.init_params()
-    rng = np.random.default_rng(1)
-    P["cmap"]["cm"] = jnp.asarray(rng.normal(size=P["cmap"]["cm"].shape))
-    P["torsion_amber"]["K"] = jnp.asarray(rng.normal(size=P["torsion_amber"]["K"].shape))
-    return FlexibleTemplate.from_fit(model, P), model, P, x
-
-
+@requires("rdkit")
+@pytest.mark.slow
 def test_peptide_forces_match_gas_phase_model():
-    """A 29-atom peptide split into heavy-atom groups: MD forces (PME pGM + bonded + intramolecular
-    van der Waals from the special pairs, 1-4 scaled) equal the gradient of the gas-phase model."""
-    tpl, model, P, x = _peptide_template()
+    """MD forces of a flexible peptide equal the gradient of its gas-phase model.
+
+    A 29-atom peptide split into heavy-atom groups: MD forces (PME pGM + bonded + intramolecular
+    van der Waals from the special pairs, 1-4 scaled) equal the gradient of the gas-phase model.
+    """
+    tpl, model, P, x = peptide_template()
     y = x + 0.003 * np.random.default_rng(0).normal(size=x.shape)
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=2.2, skin=0.05, lj_lrc=False)
     sim = FlexibleSimulation(System([tpl.pgm]), [tpl], y + 3.0, np.eye(3) * 6.0, s, thermostat=None, log=None)
@@ -146,25 +113,11 @@ def test_peptide_forces_match_gas_phase_model():
     assert np.abs(F + g).max() < 2e-3 * rms, (np.abs(F + g).max(), rms)
 
 
-def _water_box(n_side=4, spacing=0.31, seed=0):
-    rng = np.random.default_rng(seed)
-    t = np.radians(104.52 / 2)
-    w = np.array(
-        [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
-    )
-    pos = []
-    for i in range(n_side):
-        for j in range(n_side):
-            for k in range(n_side):
-                Q = np.linalg.qr(rng.normal(size=(3, 3)))[0]
-                pos.append(w @ Q.T + (np.array([i, j, k]) + 0.5) * spacing)
-    return np.concatenate(pos), np.eye(3) * n_side * spacing, w
-
-
 def test_rigid_water_by_constraints_matches_rigid_bodies():
+    """Rigid water by constraints equals rigid bodies and conserves energy as well at 2 fs."""
     from pgm_jax.md.simulation import Simulation
 
-    pos, H, w = _water_box()
+    pos, H, w = water_lattice()
     wat = water()
     sys = System([wat] * (len(pos) // 3))
     s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=0.55, skin=0.05)
@@ -188,11 +141,15 @@ def test_rigid_water_by_constraints_matches_rigid_bodies():
     assert dev["constraints"] < 2.0 * dev["rigid"] + 1.0, dev
 
 
+@requires("rdkit")
 def test_peptide_in_water_hbond_constraints_hmr():
-    """Flexible peptide + rigid water, X-H constraints and hydrogen mass repartitioning: runs at
-    2 fs with the constraints held and a bounded energy drift."""
-    tpl, model, P, x = _peptide_template()
-    pos_w, H, w = _water_box(n_side=6, spacing=0.31)
+    """A solvated flexible peptide with X-H constraints and HMR runs stably at 2 fs.
+
+    Flexible peptide + rigid water, X-H constraints and hydrogen mass repartitioning: runs at
+    2 fs with the constraints held and a bounded energy drift.
+    """
+    tpl, model, P, x = peptide_template()
+    pos_w, H, w = water_lattice(n_side=6, spacing=0.31)
     c = H.diagonal() / 2
     xp = x - x.mean(0) + c
     keep = [

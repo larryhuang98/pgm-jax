@@ -1,9 +1,18 @@
-"""Electrostatics channel: parity with sander/pmemd-pgm, forces, many-body structure."""
+"""Gas-phase electrostatics channel (ElecChannel): parity with sander, forces, many-body structure.
+
+What is checked, and against what: the energy of the Amber pgm_4wat regression test against
+sander's EELEC and VDWAALS (1e-4); the pGM3P-25 prmtop reader against the file's values; forces
+against central differences; the permanent energy pairwise and the induction many-body (n-body
+decomposition); invariance under rigid motion, zero net force and torque; Ewald in a large box
+against the gas phase; the elst / ind decomposition.  The first two tests need Amber and pGM3P-25
+files outside the repository (needs_data).
+"""
 
 import os
 
 import numpy as np
 import pytest
+from _systems import water_geometry
 
 from pgm_jax.channels import ElecChannel
 from pgm_jax.lj import LJChannel
@@ -23,14 +32,19 @@ def _water_4wat() -> Molecule:
 
 
 def _restart_coords(path):
+    """Return the 12 atom positions [nm] of an Amber restart file in Angstrom (four waters)."""
     lines = open(path).read().split("\n")
     vals = [float(x) for l in lines[2:8] for x in l.split()]
     return np.array(vals[:36]).reshape(12, 3) * 0.1
 
 
 @pytest.mark.skipif(not os.path.exists(AMBER_TEST), reason="Amber pgm_4wat test not available")
+@pytest.mark.needs_data
 def test_sander_parity_4wat():
-    """sander pGM (ipgm=1, gas phase, dipole_scf_tol=1e-7): EELEC = -2164.4829, VDWAALS = 6.7727 kcal/mol."""
+    """The pgm_4wat energies equal sander's EELEC and VDWAALS (1e-4 relative / 1e-4 kcal/mol).
+
+    sander pGM (ipgm=1, gas phase, dipole_scf_tol=1e-7): EELEC = -2164.4829, VDWAALS = 6.7727 kcal/mol.
+    """
     w = _water_4wat()
     sys = System([w] * 4)
     pos = _restart_coords(os.path.join(AMBER_TEST, "restrt0"))
@@ -42,7 +56,9 @@ def test_sander_parity_4wat():
 
 
 @pytest.mark.skipif(not os.path.exists(PGM3P25_TOP), reason="pGM3P-25 topology not available")
+@pytest.mark.needs_data
 def test_prmtop_reader_pgm3p25():
+    """read_prmtop_pgm returns the pGM3P-25 water parameters of the prmtop (charges, radii, LJ, bonds)."""
     w = read_prmtop_pgm(PGM3P25_TOP)[0]
     assert w.elements == ["O", "H", "H"]
     assert np.isclose(w.q[0], -2.0405622) and np.isclose(w.radius[0], 0.0605150752)
@@ -56,6 +72,7 @@ def test_prmtop_reader_pgm3p25():
 
 
 def _water_generic():
+    """Return a toy pGM water without LJ and bonds (types ow / hw)."""
     return Molecule(
         "WAT",
         ["O", "H", "H"],
@@ -68,15 +85,15 @@ def _water_generic():
 
 
 def _monomer(shift, rot):
-    t = np.radians(104.52 / 2)
-    m = np.array(
-        [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
-    )
-    return m @ rot.T + shift
+    """Return the rigid water geometry rotated by rot and shifted by shift [nm]."""
+    return water_geometry() @ rot.T + shift
 
 
 def _trimer(rng):
+    """Return a water trimer ~0.29 nm apart, the second and third monomers randomly rotated [nm]."""
+
     def R():
+        """Return a random orthogonal matrix."""
         return np.linalg.qr(rng.normal(size=(3, 3)))[0]
 
     return np.concatenate(
@@ -89,6 +106,7 @@ def _trimer(rng):
 
 
 def test_forces_match_finite_difference():
+    """ElecChannel forces of a water trimer match central differences (1e-5 relative, h = 1e-6 nm)."""
     rng = np.random.default_rng(0)
     sys = System([_water_generic()] * 3)
     pos = _trimer(rng)
@@ -104,6 +122,7 @@ def test_forces_match_finite_difference():
 
 
 def test_permanent_is_pairwise_and_induction_is_not():
+    """The permanent energy has no 3-body part, the induction has; 2-body + 3-body = interaction."""
     rng = np.random.default_rng(1)
     sys = System([_water_generic()] * 3)
     coords = _trimer(rng)[None]
@@ -116,7 +135,7 @@ def test_permanent_is_pairwise_and_induction_is_not():
 
 
 def test_invariances_and_net_force_torque():
-    """Energy invariant under rigid translation/rotation; net force and net torque vanish (isolated cluster)."""
+    """Energy invariant under rigid motion; net force and torque vanish (isolated cluster)."""
     rng = np.random.default_rng(3)
     sys = System([_water_generic()] * 3)
     pos = _trimer(rng)
@@ -131,8 +150,11 @@ def test_invariances_and_net_force_torque():
 
 
 def test_ewald_matches_gas_phase_in_a_large_box():
-    """Two waters in a 6 nm cubic box: periodic energy -> isolated energy (image dipole terms ~1e-3 kJ/mol);
-    and independent of the Ewald splitting parameter."""
+    """Ewald in a 6 nm box equals the gas-phase energy and does not depend on the splitting.
+
+    Two waters in a 6 nm cubic box: periodic energy -> isolated energy (image dipole terms ~1e-3 kJ/mol);
+    and independent of the Ewald splitting parameter.
+    """
     from pgm_jax.ewald import PeriodicPGM
 
     rng = np.random.default_rng(4)
@@ -147,7 +169,10 @@ def test_ewald_matches_gas_phase_in_a_large_box():
 
 
 def test_elec_decomposition():
-    """elst + ind = supermolecular interaction; ind <= 0; a monomer's elst/ind are zero."""
+    """The elst / ind decomposition adds up to the supermolecular interaction.
+
+    elst + ind = supermolecular interaction; ind <= 0; a monomer's elst/ind are zero.
+    """
     from pgm_jax.channels import elec_decomposition
 
     w = _water_generic()

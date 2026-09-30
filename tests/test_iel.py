@@ -1,15 +1,20 @@
-"""Extended-Lagrangian induced dipoles (MDSettings.iel, docs/iel.md): exact shadow forces of
-iEL/0-SCF (finite differences), second-order shadow energy error, time reversibility of the
-auxiliary-dipole propagation, agreement with converged SCF along a trajectory, energy conservation
-in a tiny box, iEL/SCF, the barostat path and the flexible engine."""
+"""Extended-Lagrangian induced dipoles (MDSettings.iel, md/iel.py, docs/iel.md).
+
+What is checked, and against what: the stability of the Niklasson dissipation recurrence on the
+eigenvalue range of pGM water (spectral radius < 1); exact shadow forces of iEL/0-SCF (central
+differences of the shadow energy, 1e-7 relative + 1e-3 absolute for h = 3e-6 nm, while the
+fixed-dipole Hellmann-Feynman forces are 10 times further off); a shadow energy error second order
+in the auxiliary-dipole error (ratio 3-5 when the error is halved); time reversibility of the
+propagation without dissipation; agreement with converged SCF dipoles and energies along a
+trajectory; energy conservation in a tiny box comparable to SCF; the iEL/SCF variant, the barostat
+path, the flexible engine, the response spectrum and the refused settings.
+"""
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import water
-from test_md import small_box
-from test_md_macro import _water_box
+from _systems import small_box, water, water_lattice
 
 from pgm_jax import System
 from pgm_jax.md.barostats import MonteCarloBarostat
@@ -22,6 +27,13 @@ from pgm_jax.units import KB
 
 
 def _settings(**kw):
+    """Return MD settings of the iEL tests (0.55 nm cutoff, 24^3 grid of order 6, float64, SCF 1e-10).
+
+    Parameters
+    ----------
+    **kw
+        Flat MDSettings names that override the defaults.
+    """
     base = dict(
         cutoff=0.55, skin=0.05, pme_grid=(24, 24, 24), pme_order=6, precision="double", dipole_tol=1e-10, max_iter=200
     )
@@ -30,11 +42,17 @@ def _settings(**kw):
 
 
 def _water(**kw):
-    pos, H, _ = _water_box()
+    """Return 64 toy waters on the 0.31 nm lattice (System, positions [nm], box [nm]); kw is ignored."""
+    pos, H, _ = water_lattice()
     return System([water()] * (len(pos) // 3)), pos, H
 
 
 def test_niklasson_recurrence_is_stable_on_the_pgm_water_spectrum():
+    """The dissipative recurrence is stable on pGM water's alpha A spectrum (0.68 - 1.85).
+
+    For every order K the spectral radius stays below 1 (+1e-9; below 0.9999 with dissipation), and it
+    exceeds 1 beyond the stability limit (kappa lambda = 2.2 at K = 5).
+    """
     # eigenvalues of alpha A for 512 pGM waters: 0.68 - 1.85 (docs/iel.md)
     for K in (0, 3, 4, 5, 6, 7):
         lam = np.linspace(0.68, 1.85, 40)
@@ -47,6 +65,7 @@ def test_niklasson_recurrence_is_stable_on_the_pgm_water_spectrum():
 
 
 def _ff_state(settings, seed=1):
+    """Return (PGMForceField, positions, box, neighbour rows) of small_box(seed) with the given settings."""
     sys, pos, H = small_box(seed)
     ff = PGMForceField(sys, H, settings)
     idx = AtomNeighbors(sys.n, H, settings.cutoffs.cutoff, settings.neighbors.skin).allocate(pos, None, H).idx
@@ -55,6 +74,13 @@ def _ff_state(settings, seed=1):
 
 @pytest.mark.parametrize("omega,precond", [(1.0, "jacobi"), (0.8, "jacobi"), (1.0, "block"), (0.9, "block")])
 def test_shadow_forces_are_exact_and_energy_error_second_order(omega, precond):
+    """iEL/0-SCF shadow forces are the exact gradient of the shadow energy, whose error is second order.
+
+    For Jacobi and block preconditioners and omega 0.8 - 1: the forces match central differences
+    along random directions, the plain fixed-dipole forces do not, the shadow energy error scales as
+    the square of the auxiliary-dipole error, and one step brings the dipoles closer to the SCF
+    solution than the auxiliary ones (0.9).
+    """
     s = _settings(
         cutoff=0.6, pme_grid=(48, 48, 48), pme_order=8, ewald_beta=6.0, iel="0scf", iel_omega=omega, iel_precond=precond
     )
@@ -67,6 +93,7 @@ def test_shadow_forces_are_exact_and_energy_error_second_order(omega, precond):
     noise = jnp.asarray(rng.normal(size=mu_star.shape)) * float(jnp.sqrt(jnp.mean(mu_star**2)))
 
     def shadow(eps):
+        """Return the induction state with the auxiliary dipoles mu* + eps noise."""
         ind = ref.induction.set(count=jnp.asarray(100, jnp.int32), xl=ref.induction.xl.at[0].set(mu_star + eps * noise))
         return ind
 
@@ -95,6 +122,7 @@ def test_shadow_forces_are_exact_and_energy_error_second_order(omega, precond):
 
 
 def _reverse(sim):
+    """Reverse a rigid-body simulation in place: negate the momenta and swap the auxiliary-dipole history."""
     st = sim.state
     X = st.induction.xl
     Xr = X.at[0].set(X[2]).at[2].set(X[0])
@@ -104,6 +132,7 @@ def _reverse(sim):
 
 @pytest.mark.parametrize("mode", ["0scf", "scf"])
 def test_time_reversibility_without_dissipation(mode):
+    """Without dissipation (iel_order 0) 60 steps forward and 60 back return to the start (1e-6 nm)."""
     sys, pos, H = _water()
     s = _settings(iel=mode, iel_order=0, iel_iter=2)
     sim = Simulation(sys, pos, H, s, dt=0.0005, thermostat=None, log=None, seed=3)
@@ -118,6 +147,7 @@ def test_time_reversibility_without_dissipation(mode):
 
 
 def test_dissipation_breaks_reversibility_only_slightly():
+    """With dissipation (iel_order 5) the reversed run returns within 1e-4 nm."""
     sys, pos, H = _water()
     s = _settings(iel="0scf", iel_order=5)
     sim = Simulation(sys, pos, H, s, dt=0.0005, thermostat=None, log=None, seed=3)
@@ -130,7 +160,20 @@ def test_dissipation_breaks_reversibility_only_slightly():
 
 
 def _trajectory(settings, n=8, block=25, dt=0.001, seed=5, nvt=False):
-    """64 waters in a small box, NVE, or NVT with Bussi 0.1 ps (nvt=True)."""
+    """Build a 64-water simulation (NVE, or NVT with Bussi 0.1 ps); n and block are not used.
+
+    64 waters in a small box, NVE, or NVT with Bussi 0.1 ps (nvt=True).
+
+    Parameters
+    ----------
+    settings : MDSettings
+    dt : float
+        Time step [ps].
+    seed : int
+        Random seed (initial velocities at 300 K).
+    nvt : bool
+        Bussi thermostat instead of NVE.
+    """
     sys, pos, H = _water()
     sim = Simulation(
         sys,
@@ -147,6 +190,11 @@ def _trajectory(settings, n=8, block=25, dt=0.001, seed=5, nvt=False):
 
 
 def test_dipoles_and_energy_follow_the_converged_solution():
+    """Along a trajectory iEL dipoles and energies stay close to the converged SCF solution.
+
+    Every 25 steps the dipoles are re-solved to convergence at the same positions: RMS relative dipole
+    error below 2e-3 and energy difference below 0.05 kJ/mol (64 waters, |U| ~ 2500 kJ/mol).
+    """
     s = _settings(iel="0scf")
     sim = _trajectory(s)
     ref = PGMForceField(sim.sys, np.asarray(sim.state.box), s.replace(iel="none"))
@@ -169,6 +217,10 @@ def test_dipoles_and_energy_follow_the_converged_solution():
 
 
 def _drift_and_noise(settings, dt=0.001, n=12, block=50):
+    """Return the NVE energy drift [kT / ns / dof] and the detrended fluctuation (relative to 0.5 dof kT).
+
+    A Bussi run relaxes the lattice start for 100 steps, then NVE is measured over n blocks.
+    """
     sim = _trajectory(settings, dt=dt, nvt=True)
     sim.advance(100)  # relax the lattice start (Bussi 0.1 ps)
     nve = Simulation(
@@ -192,7 +244,9 @@ def _drift_and_noise(settings, dt=0.001, n=12, block=50):
     return slope, np.std(E - np.polyval(np.polyfit(t, E, 1), t)) / (0.5 * nve.integ.dof * KB * 300.0)
 
 
+@pytest.mark.slow
 def test_energy_conservation_in_a_tiny_box():
+    """The iEL dipoles conserve the energy as well as converged SCF (drift and noise within 3x)."""
     base = _settings()
     d_scf, n_scf = _drift_and_noise(base)
     d_iel, n_iel = _drift_and_noise(base.replace(iel="0scf"))
@@ -202,6 +256,7 @@ def test_energy_conservation_in_a_tiny_box():
 
 
 def test_iel_scf_modes():
+    """The iEL/SCF variant needs no more CG iterations from the auxiliary dipoles than mu4 (+3)."""
     base = _settings(dipole_tol=1e-8)
     sim = _trajectory(base.replace(iel="scf", iel_iter=0))  # CG from x to tolerance
     sim.advance(40)
@@ -215,7 +270,9 @@ def test_iel_scf_modes():
     assert int(sim2.state.iters) == 2 and np.isfinite(sim2.observables()["etot"])
 
 
+@pytest.mark.slow
 def test_barostat_and_flexible_engine():
+    """The iEL dipoles run with the Monte Carlo barostat and in the flexible engine (same energy, 1e-8)."""
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
 
     sys, pos, H = _water()
@@ -226,7 +283,7 @@ def test_barostat_and_flexible_engine():
     sim.advance(100)
     o = sim.observables()
     assert int(sim.state.mc[0]) == 20 and np.isfinite(o["epot"]) and 0.5 < o["density_g_cm3"] < 1.5
-    _, _, w = _water_box()
+    _, _, w = water_lattice()
     tpl = RigidTemplate(water(), w)
     fl = FlexibleSimulation(sys, [tpl] * sys.nmol, pos, H, s, dt=0.001, thermostat=None, log=None)
     rg = Simulation(sys, pos, H, s, dt=0.001, thermostat=None, log=None)
@@ -236,6 +293,7 @@ def test_barostat_and_flexible_engine():
 
 
 def test_refuses_unsupported_combinations():
+    """Unknown iEL schemes, iEL with the differentiable solve and odd dissipation orders are refused."""
     with pytest.raises(ValueError):
         PGMForceField(*_water()[:1], np.eye(3) * 1.24, _settings(iel="xl"))
     with pytest.raises(ValueError):
@@ -245,6 +303,12 @@ def test_refuses_unsupported_combinations():
 
 
 def test_response_spectrum_and_positive_auxiliary_energy():
+    """The preconditioned response spectrum brackets 1, and a time-reversible iEL conserves energy.
+
+    Block preconditioning narrows the spectrum relative to Jacobi; with omega lambda_max < 1 every
+    auxiliary mode has positive energy and the NVE deviation stays within 3 times SCF's (plus 0.2 %
+    of the kinetic energy).
+    """
     from pgm_jax.md.iel import response_spectrum
 
     s = _settings(cutoff=0.6, pme_grid=(48, 48, 48), pme_order=8, ewald_beta=6.0, iel="0scf")

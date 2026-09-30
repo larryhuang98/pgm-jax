@@ -1,7 +1,13 @@
-"""Restraints (md/restraints.py): Amber's flat-bottom forms, forces and the molecular strain
-derivative against finite differences, dihedral sign and periodicity, positional references under
-box scaling, both MD drivers (energy conservation, rigid-body force mapping, a restrained atom
-held, Monte Carlo trials with restraints, the pressure), protein selections."""
+"""Restraints (md/restraints.py): Amber's flat-bottom forms in both MD drivers.
+
+What is checked, and against what: the flat-bottom form against Amber's NMR restraint piece by
+piece (1e-13) and its continuity; forces and the molecular strain derivative of every kind
+against central differences (1e-6 relative, h = 1e-6); distances as true minimum images (27
+images); dihedral sign and periodicity through +-180 deg; positional references under box scaling
+("none", "fractional", "com"); both MD drivers (NVE with energy moving through the restraints,
+rigid-body force mapping, the pressure contribution, a restrained atom held, Monte Carlo trials
+that include the restraint energy); protein selections and position restraints.
+"""
 
 import os
 
@@ -9,13 +15,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import water
-from test_hmr import _cluster
-from test_md_macro import _water_box
+from _systems import random_atoms_box, rigid_water_sim, water, water_cluster_box, water_lattice
 
 from pgm_jax import System
 from pgm_jax.md.barostats import MonteCarloBarostat
-from pgm_jax.md.box import reduce_box
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.restraints import (
     AngleRestraint,
@@ -36,7 +39,10 @@ PRM, CRD = os.path.join(DATA, "pep_wat.prmtop"), os.path.join(DATA, "pep_wat.inp
 
 
 def _amber_nmr(x, r1, r2, r3, r4, k2, k3):
-    """Amber's NMR restraint, piece by piece."""
+    """Return Amber's NMR restraint energy at x, piece by piece (reference implementation).
+
+    Amber's NMR restraint, piece by piece.
+    """
     if x < r1:
         return k2 * (r1 - r2) ** 2 + 2 * k2 * (r1 - r2) * (x - r1)
     if x < r2:
@@ -49,6 +55,7 @@ def _amber_nmr(x, r1, r2, r3, r4, k2, k3):
 
 
 def test_flat_bottom_form():
+    """nmr_energy equals Amber's piecewise form, is C1 at the knots, and validates its bounds."""
     b, k2, k3 = (0.1, 0.3, 0.4, 0.7), 150.0, 250.0
     xs = np.linspace(-0.3, 1.2, 61)
     e = np.asarray(nmr_energy(jnp.asarray(xs), *b, k2, k3))
@@ -70,16 +77,12 @@ def test_flat_bottom_form():
         DistanceRestraint([0, 1], (0.1, 0.2, 0.3, 0.4), k=1.0, k2=2.0)
 
 
-def _system(seed=0, n=14):
-    """Random atoms in a skewed box (most pairs are minimum images across the boundary)."""
-    rng = np.random.default_rng(seed)
-    H = reduce_box(np.array([[1.6, 0.0, 0.0], [0.5, 1.5, 0.0], [-0.4, 0.6, 1.45]]))
-    return rng.uniform(size=(n, 3)) @ H, H
-
-
 def _all_kinds(pos, H):
-    """One restraint set of every kind, parameters chosen so that every region of the forms is
-    visited (some restraints inside the flat bottom, some on the linear walls)."""
+    """Return one restraint of every kind on the random-atom system.
+
+    One restraint set of every kind, parameters chosen so that every region of the forms is
+    visited (some restraints inside the flat bottom, some on the linear walls).
+    """
     m = np.arange(1.0, len(pos) + 1)
     return Restraints(
         [
@@ -106,7 +109,8 @@ def _all_kinds(pos, H):
 
 
 def test_forces_and_strain_derivative_match_finite_differences():
-    pos, H = _system()
+    """Restraint forces and the molecular strain derivative match central differences."""
+    pos, H = random_atoms_box()
     rs = _all_kinds(pos, H)
     E = jax.jit(rs.energy)
     assert set(rs.energies(pos, H)) == {"position", "distance", "angle", "dihedral", "com_distance"}
@@ -137,6 +141,7 @@ def test_forces_and_strain_derivative_match_finite_differences():
             eps[i, j] = h
 
             def ep(s):
+                """Return the energy with box and molecular centres strained by s eps."""
                 return float(E(pos + (com @ (s * eps).T)[mol], H @ (np.eye(3) + s * eps).T))
 
             fd = (ep(1.0) - ep(-1.0)) / (2 * h)
@@ -144,12 +149,14 @@ def test_forces_and_strain_derivative_match_finite_differences():
 
 
 def test_dihedral_sign_and_periodicity():
+    """Dihedral restraints: the bonded code's sign, windows across +-180 deg, periodicity, smoothness."""
     from pgm_jax.bonded.terms.core import _dihedral
 
     x = jnp.asarray(np.random.default_rng(1).normal(size=(50, 4, 3)))
     assert np.allclose(dihedral(*(x[:, a] for a in range(4))), _dihedral(*(x[:, a] for a in range(4))), atol=1e-14)
 
     def quad(phi):  # dihedral 0-1-2-3 equal to phi (checked)
+        """Return four atoms whose dihedral 0-1-2-3 is phi [rad]."""
         return (
             np.array([[0.1, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.15], [0.1 * np.cos(phi), 0.1 * np.sin(phi), 0.15]])
             + 0.5
@@ -162,6 +169,7 @@ def test_dihedral_sign_and_periodicity():
     dr = DihedralRestraint([0, 1, 2, 3], np.radians([150.0, 170.0, 190.0, 210.0]), k2=k2, k3=k3)
 
     def E(deg):
+        """Return the restraint energy at a dihedral of deg degrees."""
         return float(dr.energy(quad(np.radians(deg)), H))
 
     assert E(175.0) == 0.0 and E(-175.0) == 0.0 and E(-170.0) == 0.0  # the window crosses +-180
@@ -180,7 +188,8 @@ def test_dihedral_sign_and_periodicity():
 
 
 def test_reference_scaling():
-    pos, H = _system(2)
+    """Position references follow the box as "none", "fractional" or "com" prescribes."""
+    pos, H = random_atoms_box(2)
     ref = pos[:5] + 0.02
     w = np.array([1.0, 12.0, 16.0, 1.0, 14.0])
     F = np.eye(3) + np.array([[0.02, 0.0, 0.0], [0.01, -0.015, 0.0], [0.005, 0.003, 0.01]])  # deformation
@@ -206,10 +215,14 @@ def test_reference_scaling():
 
 
 def _cluster_restraints(pos, masses):
-    """Restraints of every kind between the cluster's waters (oxygens 3k), pulling: ~50 kJ/mol
-    move between the restraints and the molecules within a short run."""
+    """Return pulling restraints of every kind between the water cluster's oxygens.
+
+    Restraints of every kind between the cluster's waters (oxygens 3k), pulling: ~50 kJ/mol
+    move between the restraints and the molecules within a short run.
+    """
 
     def oxygen(k):
+        """Return the atom index of the oxygen of water k."""
         return 3 * k
 
     return Restraints(
@@ -223,29 +236,22 @@ def _cluster_restraints(pos, masses):
     )
 
 
-def _water_sim(engine, pos, H, w, settings, **kw):
-    from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
-    from pgm_jax.md.simulation import Simulation
-
-    wat = water()
-    sys = System([wat] * (len(pos) // 3))
-    if engine == "rigid":
-        return Simulation(sys, pos, H, settings, log=None, **kw)
-    return FlexibleSimulation(sys, [RigidTemplate(wat, w)] * sys.nmol, pos, H, settings, log=None, **kw)
-
-
 @pytest.mark.parametrize("engine", ["rigid", "atoms"])
+@pytest.mark.slow
 def test_nve_with_restraints_and_force_mapping(engine):
-    """Both engines (rigid bodies; atoms with SHAKE / RATTLE): NVE conserves the energy while
+    """NVE with restraints conserves energy; restraint forces and virial map correctly.
+
+    Both engines (rigid bodies; atoms with SHAKE / RATTLE): NVE conserves the energy while
     ~40 kJ/mol move between the restraints and the molecules (the error is the integrator's,
     4x smaller at half the step); removing the restraints on the same state changes the forces by
     exactly the restraint forces (for rigid bodies mapped to centre forces and torques as the force
-    field's) and epot by erestraint."""
-    pos, H, w = _cluster()
+    field's) and epot by erestraint.
+    """
+    pos, H, w = water_cluster_box()
     masses = np.asarray(System([water()]).masses)
     rs = _cluster_restraints(pos, np.tile(masses, len(pos) // 3))
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
-    sim = _water_sim(engine, pos, H, w, s, dt=0.001, thermostat=None, restraints=rs)
+    sim = rigid_water_sim(engine, pos, H, w, s, dt=0.001, thermostat=None, restraints=rs)
     o = sim.observables()
     assert abs(o["erestraint"] - float(rs.energy(sim.positions(), H))) < 1e-10 and o["erestraint"] > 40.0
     assert set(sim.restraint_energies()) == {"position", "distance", "angle", "dihedral", "com_distance"}
@@ -278,22 +284,26 @@ def test_nve_with_restraints_and_force_mapping(engine):
 
 
 @pytest.mark.parametrize("engine", ["rigid", "atoms"])
+@pytest.mark.slow
 def test_barostat_trials_include_restraints(engine):
-    """Monte Carlo volume moves every step (tiny time step, zero initial velocities: only the
+    """Monte Carlo volume trials include the restraint energy (fixed vs com reference).
+
+    Monte Carlo volume moves every step (tiny time step, zero initial velocities: only the
     barostat moves the atoms) with a stiff restraint on a water far from the origin.  With a fixed
     reference ("none") the trials pay the restraint energy, so it stays at a few kT and fewer
     moves are accepted; with a "com" reference (mass-weighted centroid = the centre of mass that
     the barostat scales) the reference moves with the molecule, the restraint energy stays zero
     and the volume moves freely.  (A trial energy without the restraints would let the fixed
-    reference be dragged: ~0.02 nm, hundreds of kJ/mol.)"""
-    pos, H, w = _water_box()
+    reference be dragged: ~0.02 nm, hundreds of kJ/mol.)
+    """
+    pos, H, w = water_lattice()
     m = np.tile(np.asarray(System([water()]).masses), len(pos) // 3)
     far = np.arange(3 * 63, 3 * 64)  # centre near (1.1, 1.1, 1.1) nm
     s = MDSettings().replace(precision="double", dipole_tol=1e-8, cutoff=0.55, skin=0.05)
     out = {}
     for scaling in ("none", "com"):
         r = PositionRestraint(far, pos[far], k=1e6, scaling=scaling, box=H, weights=m[far])
-        sim = _water_sim(
+        sim = rigid_water_sim(
             engine,
             pos,
             H,
@@ -319,11 +329,14 @@ def test_barostat_trials_include_restraints(engine):
 
 
 def test_flexible_engine_restrained_atom_held():
-    """Atom engine (rigid water by constraints, 2 fs, Bussi): an oxygen restrained 0.2 nm away
-    from its start moves to its reference and stays there."""
+    """A restrained oxygen moves to its reference and stays there (atom engine).
+
+    Atom engine (rigid water by constraints, 2 fs, Bussi): an oxygen restrained 0.2 nm away
+    from its start moves to its reference and stays there.
+    """
     from pgm_jax.md.flexible import FlexibleSimulation, RigidTemplate
 
-    pos, H, w = _water_box()
+    pos, H, w = water_lattice()
     wat = water()
     nmol = len(pos) // 3
     sys = System([wat] * nmol)
@@ -345,6 +358,7 @@ def test_flexible_engine_restrained_atom_held():
     L = H[0, 0]
 
     def dist():
+        """Return the minimum-image distance of oxygen 0 from its reference [nm]."""
         return float(np.linalg.norm((lambda v: v - np.round(v / L) * L)(sim.positions()[0] - ref[0])))
 
     d = [dist()]
@@ -358,6 +372,7 @@ def test_flexible_engine_restrained_atom_held():
 
 
 def test_protein_selections_and_position_restraints():
+    """Protein selections (heavy, backbone, ca) and backbone position restraints with a com reference."""
     from pgm_jax.protein import load_amber
 
     asys = load_amber(PRM, CRD)

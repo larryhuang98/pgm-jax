@@ -1,15 +1,24 @@
-"""Checkpoints of every MD driver: legacy pickle checkpoints of pgm_jax commit e72c57c
-(tests/data/legacy_checkpoints, written by make_legacy_checkpoints.py there with that code) load
-and continue as the old code continued them, and the current npz format continues a run exactly.
+"""Checkpoints of every MD driver: legacy pickle checkpoints and the current npz format.
 
-The systems below are those of make_legacy_checkpoints.py, built with the current API; real_npt.chk
-is a checkpoint of a real run of the old code (test_real_old_checkpoint)."""
+Legacy checkpoints of pgm_jax commit e72c57c (tests/data/legacy_checkpoints, written by
+make_legacy_checkpoints.py there with that code) must load and continue as the old code continued
+them: the reference is expected.npz, the state the old code reached 10 steps after loading.  Saved
+again in the current npz format and loaded, a checkpoint must continue bitwise.
+
+The systems below are those of make_legacy_checkpoints.py, built with the current API (the toy
+water and water lattice come from pgm_jax.models.toy through _systems); real_npt.chk is a
+checkpoint of a real run of the old code (test_real_old_checkpoint).
+
+Tolerances: continuation of a legacy checkpoint rtol 1e-9 / atol 1e-10 (summation order may
+differ on another machine; bitwise on the one that wrote it); npz round trips bitwise.
+"""
 
 import os
 
 import jax
 import numpy as np
 import pytest
+from _systems import water, water_lattice
 
 from pgm_jax.bias import BiasSet, MetaD, cv
 from pgm_jax.bias.walkers import Walkers
@@ -24,7 +33,7 @@ from pgm_jax.md.pimd import PILE, PIMDSimulation
 from pgm_jax.md.remd import ReplicaExchange
 from pgm_jax.md.simulation import Simulation
 from pgm_jax.md.thermostats import Bussi, Langevin
-from pgm_jax.system import Molecule, System
+from pgm_jax.system import System
 
 LEGACY = os.path.join(os.path.dirname(__file__), "data", "legacy_checkpoints")
 S = MDSettings().replace(precision="double", dipole_tol=1e-10, max_iter=300, cutoff=0.55, skin=0.05)
@@ -34,63 +43,34 @@ FIELDS = [(0.0, 0.0, 0.5), (0.0, 0.0, -0.5)]
 
 @pytest.fixture(scope="module")
 def expected():
-    """The states the code of e72c57c reached 10 steps after loading each checkpoint."""
+    """Return the states the code of e72c57c reached 10 steps after loading each checkpoint (fixture)."""
     with np.load(os.path.join(LEGACY, "expected.npz")) as z:
         return dict(z)
 
 
 def close(a, b):
-    """Same continuation up to summation order (bitwise on the machine that wrote it)."""
+    """Assert the same continuation up to summation order (rtol 1e-9, atol 1e-10).
+
+    Same continuation up to summation order (bitwise on the machine that wrote it).
+    """
     np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=1e-9, atol=1e-10)
 
 
 def same(a, b):
-    """Bitwise equal pytrees / arrays."""
+    """Assert bitwise equal pytrees / arrays."""
     for x, y in zip(jax.tree_util.tree_leaves(a), jax.tree_util.tree_leaves(b), strict=True):
         assert np.array_equal(np.asarray(x), np.asarray(y))
 
 
 # ----------------------------------------------------------------------------- systems
-def water():
-    """The toy pGM water of pgm_jax.models.toy."""
-    return Molecule(
-        "WAT",
-        ["O", "H", "H"],
-        ["OW", "HW", "HW"],
-        np.array([-0.8, 0.4, 0.4]),
-        np.array([0.06, 0.05, 0.05]),
-        np.array([1.0e-3, 0.3e-3, 0.3e-3]),
-        cov=[(0, 1, -0.02), (0, 2, -0.02), (1, 0, 0.008), (2, 0, 0.008)],
-        lj_rmin_half=[0.178, 0.0, 0.0],
-        lj_sqrt_eps=[0.80, 0.0, 0.0],
-        bonds=[(0, 1), (0, 2)],
-    )
-
-
-def water_lattice(n_side=4, spacing=0.31, seed=0):
-    """Randomly oriented rigid waters on a cubic lattice: positions, box, molecule geometry [nm]."""
-    rng = np.random.default_rng(seed)
-    t = np.radians(104.52 / 2)
-    w = np.array(
-        [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
-    )
-    pos = []
-    for i in range(n_side):
-        for j in range(n_side):
-            for k in range(n_side):
-                Q = np.linalg.qr(rng.normal(size=(3, 3)))[0]
-                pos.append(w @ Q.T + (np.array([i, j, k]) + 0.5) * spacing)
-    return np.concatenate(pos), np.eye(3) * n_side * spacing, w
-
-
 def rigid():
-    """64 rigid waters, NVT (Bussi)."""
+    """Build 64 rigid waters, NVT (Bussi 0.1 ps), the system of rigid.chk."""
     pos, H, _ = water_lattice()
     return Simulation(System([water()] * 64), pos, H, S, dt=0.001, thermostat=Bussi(0.1), seed=3, log=None)
 
 
 def rigid_metad():
-    """8 rigid waters with a two-CV metadynamics bias, Langevin NVT."""
+    """Build 8 rigid waters with a two-CV metadynamics bias, Langevin NVT (rigid_metad.chk)."""
     pos, _, _ = water_lattice(2)
     s = MDSettings().replace(precision="double", dipole_tol=1e-10, cutoff=1.2, skin=0.1, lj_lrc=False)
     m = MetaD(
@@ -116,7 +96,13 @@ def rigid_metad():
 
 
 def flexible(**kw):
-    """64 waters in the flexible engine (SETTLE-like rigid templates), GLE NPT by default."""
+    """Build 64 waters in the flexible engine (SETTLE-like rigid templates), GLE NPT by default.
+
+    Parameters
+    ----------
+    **kw
+        Overrides of the engine keywords (thermostat, barostat, seed, temperature).
+    """
     pos, H, w = water_lattice()
     opts = dict(thermostat="gle", barostat=MonteCarloBarostat(every=5), seed=1) | kw
     return FlexibleSimulation(
@@ -125,7 +111,7 @@ def flexible(**kw):
 
 
 def alchemy_sim():
-    """64 waters, the first one alchemical (PME), Bussi NVT."""
+    """Build 64 waters, the first one alchemical (PME), Bussi NVT (fe.fe.chk)."""
     pos, H, _ = water_lattice()
     sysA, P = alchemical_system(System([water()] * 64), 0)
     s = MDSettings().replace(
@@ -142,13 +128,13 @@ def alchemy_sim():
 
 
 def field_sim():
-    """64 rigid waters in an external field (amplitude set per replica), Bussi NVT."""
+    """Build 64 rigid waters in an external field (amplitude set per replica), Bussi NVT (ff.ffchk)."""
     pos, H, _ = water_lattice()
     return Simulation(System([water()] * 64), pos, H, S, dt=0.001, thermostat="bussi", log=None, efield=(0.0, 0.0, 0.0))
 
 
 def pimd_sim():
-    """8 flexible waters (harmonic-quartic intramolecular terms) for 4-bead PIMD."""
+    """Build 8 flexible waters (harmonic-quartic intramolecular terms) for 4-bead PIMD."""
     m = water()
     t = np.radians(104.5)
     x = np.array([[0, 0, 0], [0.0957, 0, 0], [0.0957 * np.cos(t), 0.0957 * np.sin(t), 0]])
@@ -183,7 +169,10 @@ def pimd_sim():
 
 
 def pimd(seed):
-    """4-bead NPT PIMD of pimd_sim."""
+    """Build the 4-bead NPT PIMD of pimd_sim with the given seed (pimd.pimd.chk).
+
+    4-bead NPT PIMD of pimd_sim.
+    """
     return PIMDSimulation(
         pimd_sim(), beads=4, seed=seed, barostat=MonteCarloBarostat(1000.0, every=5), thermostat=PILE("g")
     )
@@ -192,8 +181,11 @@ def pimd(seed):
 # ----------------------------------------------------------------------------- tests
 @pytest.mark.parametrize("name", ["rigid", "rigid_metad", "flexible"])
 def test_engine_checkpoints(name, expected, tmp_path):
-    """Simulation / FlexibleSimulation: a legacy .chk continues as with the old code; saved again
-    (npz format) and loaded, the continuation is bitwise the same."""
+    """Simulation / FlexibleSimulation checkpoints: legacy continuation and bitwise npz round trip.
+
+    Simulation / FlexibleSimulation: a legacy .chk continues as with the old code; saved again
+    (npz format) and loaded, the continuation is bitwise the same.
+    """
     sim = {"rigid": rigid, "rigid_metad": rigid_metad, "flexible": flexible}[name]()
     path = os.path.join(LEGACY, name + ".chk")
     assert is_legacy_checkpoint(path)
@@ -230,8 +222,9 @@ def test_replica_exchange_checkpoint(expected, tmp_path):
     same([rex.replicas.state(k).set(nbr=None) for k in range(3)], first)
 
 
+@pytest.mark.slow
 def test_free_energy_checkpoint(expected, tmp_path):
-    """Lambda windows with samples and exchanges: legacy .fe.chk continuation; npz round trip."""
+    """Lambda windows with samples and exchanges: legacy .fe.chk continuation; npz round trip bitwise."""
     run = FreeEnergyRun(LambdaWindows(alchemy_sim(), LAMBDAS, seed=7), sample_every=5, exchange_every=10)
     run.load_checkpoint(os.path.join(LEGACY, "fe.fe.chk"))
     run.save_checkpoint(str(tmp_path / "new.fe.chk"))
@@ -257,6 +250,7 @@ def test_field_replicas_checkpoint(expected, tmp_path):
     same(rep.S.set(nbr=None), first)
 
 
+@pytest.mark.slow
 def test_pimd_checkpoint(expected, tmp_path):
     """NPT PIMD: legacy .pimd.chk continuation; npz round trip bitwise."""
     pi = pimd(8)
@@ -271,6 +265,7 @@ def test_pimd_checkpoint(expected, tmp_path):
     same(pi.state.set(eng=pi.state.eng.set(nbr=None)), first)
 
 
+@pytest.mark.slow
 def test_walkers_checkpoint(expected, tmp_path):
     """Shared-bias walkers: legacy .walkers.chk continuation; npz round trip bitwise."""
     wk = Walkers(rigid_metad(), 3, shared=True, seed=9)
@@ -286,10 +281,13 @@ def test_walkers_checkpoint(expected, tmp_path):
 
 
 def test_real_old_checkpoint(tmp_path):
-    """A checkpoint of a real run of the old code (512 rigid pGM waters, NPT; runs/npt_check/npt.chk
+    """A checkpoint of a real run of the old code loads, upgrades and continues bitwise.
+
+    A checkpoint of a real run of the old code (512 rigid pGM waters, NPT; runs/npt_check/npt.chk
     of the main repository, 2026-09-24, older than e72c57c: MDState without the thermostat fields)
     loads into a 512-water rigid simulation (the state is upgraded), and after conversion to the npz
-    format the continuation is bitwise the same."""
+    format the continuation is bitwise the same.
+    """
     path = os.path.join(LEGACY, "real_npt.chk")
     old = read_legacy_checkpoint(path)["state"]
     H = np.asarray(old.box)

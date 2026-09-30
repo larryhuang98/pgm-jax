@@ -1,6 +1,14 @@
-"""Ensemble-gradient fitting (pgm_jax/fit): per-frame derivatives against finite differences with
-the induced dipoles re-solved, the fluctuation formulas, gas-phase properties, the LM step and the
-parameter covariance, and one iteration of LiquidFit end to end."""
+"""Ensemble-gradient fitting of liquid properties (pgm_jax/fit).
+
+What is checked, and against what: parameter spaces (log scales, shifts, keys); per-frame values
+against the MD force field and CellDipole; per-frame derivatives (dU, dM, d alpha_cell, dD)
+against central differences with the induced dipoles re-solved; mixed precision close to double;
+batched frames = single frames; the estimators' Jacobians against the explicit fluctuation
+formulas on synthetic frames (density, heat of vaporisation, eps, alpha_p, kappa_T); linear
+reweighting and n_eff; gas-phase properties against the MD engine and finite differences; the LM
+step, trust region and covariance calibration on a linear model; one LiquidFit iteration end to
+end and NVT replicas; the RDF histogram against numpy.
+"""
 
 import json
 
@@ -8,8 +16,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import water
-from test_md import settings, small_box
+from _systems import md_settings, small_box, water, water_geometry
 
 from pgm_jax import ElecChannel, System
 from pgm_jax.fit import (
@@ -31,14 +38,14 @@ QTY = ["q", "cov", "alpha", "radius", "lj_r", "lj_eps"]
 
 
 def _analyzer(tol=1e-12, **kw):
-    """A FrameAnalyzer of a small water box (with an O-O RDF) and its inputs.
+    """Return a FrameAnalyzer of a small water box (with an O-O RDF) and its inputs.
 
     Parameters
     ----------
     tol : float
         Dipole tolerance of the analyzer.
     **kw
-        Further settings() options.
+        Further md_settings() options.
 
     Returns
     -------
@@ -47,12 +54,13 @@ def _analyzer(tol=1e-12, **kw):
     """
     sys, pos, H = small_box(3)
     space = ParameterSpace.scales(sys.table, QTY)
-    st = settings(pme_grid=(32, 32, 32), pme_order=6, **kw)
+    st = md_settings(pme_grid=(32, 32, 32), pme_order=6, **kw)
     an = FrameAnalyzer(sys, H, st, space, rdf=RDFSpec.by_type(sys, "OW", rmax=0.8, nbins=40), dipole_tol=tol, chunk=2)
     return sys, pos, H, space, an
 
 
 def test_parameter_space_scales_and_keys():
+    """ParameterSpace.scales multiplies by exp(theta); keyed Params act on their keys only."""
     sys, pos, H = small_box(0)
     sp = ParameterSpace.scales(sys.table, QTY)
     p0 = sys.table.initial()
@@ -76,7 +84,7 @@ def test_frame_values_match_the_md_force_field():
     sys, pos, H, space, an = _analyzer()
     th = np.zeros(space.n)
     out = an.frame(th, pos, H)
-    ff = PGMForceField(sys, H, settings(pme_grid=(32, 32, 32), pme_order=6))
+    ff = PGMForceField(sys, H, md_settings(pme_grid=(32, 32, 32), pme_order=6))
     idx = ff.rows_for(pos, H)
     res = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
     assert abs(out["U"] - float(res.energy["total"])) < 1e-8 * abs(float(res.energy["total"]))
@@ -90,8 +98,11 @@ def test_frame_values_match_the_md_force_field():
 
 
 def test_frame_derivatives_against_finite_differences():
-    """dU, dM, d alpha_cell, dD (explicit, at fixed nuclei) vs central differences of the
-    re-solved values, float64, all six scale factors."""
+    """Per-frame derivatives match central differences with re-solved dipoles (2e-6 relative).
+
+    dU, dM, d alpha_cell, dD (explicit, at fixed nuclei) vs central differences of the
+    re-solved values, float64, all six scale factors.
+    """
     sys, pos, H, space, an = _analyzer()
     th = np.array([0.02, -0.03, 0.04, 0.01, 0.005, -0.02])
     out = an.frame(th, pos, H)
@@ -108,6 +119,7 @@ def test_frame_derivatives_against_finite_differences():
 
 
 def test_mixed_precision_derivatives_close_to_double():
+    """Mixed-precision frame derivatives agree with double precision (2e-4, dU 1e-4 relative)."""
     sys, pos, H, space, an = _analyzer()
     _, _, _, _, am = _analyzer(tol=1e-6, precision="mixed")
     th = np.zeros(space.n)
@@ -118,6 +130,7 @@ def test_mixed_precision_derivatives_close_to_double():
 
 
 def test_batched_frames_equal_single_frames():
+    """FrameAnalyzer.analyze over frames equals frame() one at a time (1e-9 relative)."""
     sys, pos, H, space, an = _analyzer()
     rng = np.random.default_rng(0)
     frames = [(pos + 0.002 * rng.normal(size=pos.shape), H, None) for _ in range(3)]
@@ -131,6 +144,26 @@ def test_batched_frames_equal_single_frames():
 
 
 def _synthetic_samples(F=400, n=3, seed=0, T=300.0):
+    """Return synthetic per-frame values with derivatives and their LiquidSamples.
+
+    Parameters
+    ----------
+    F : int
+        Number of frames.
+    n : int
+        Number of parameters.
+    seed : int
+        Seed of the Gaussian data.
+    T : float
+        Temperature [K].
+
+    Returns
+    -------
+    frames : dict
+        U, dU, V, M, dM, alpha, dalpha, D, dD per frame (arbitrary but consistent units).
+    samples : LiquidSamples
+        512 molecules of total mass 9000 amu, 8 blocks.
+    """
     rng = np.random.default_rng(seed)
     x = rng.normal(size=(F, n))
     fr = {
@@ -154,6 +187,7 @@ def test_jacobians_are_the_fluctuation_formulas():
     th0 = np.zeros(3)
 
     def gas(th):
+        """Return linear gas-phase values of theta."""
         return {"gas_energy": 5.0 + 2.0 * th[0], "gas_dipole": 1.8 + th[1], "gas_polarizability": 1.4 + th[2]}
 
     obj = Objective(
@@ -171,6 +205,7 @@ def test_jacobians_are_the_fluctuation_formulas():
     dU = fr["dU"]
 
     def cov(a):
+        """Return the covariance of a with dU over the frames."""
         return np.mean(
             (a - a.mean(0))[:, None] * (dU - dU.mean(0))
             if a.ndim == 1
@@ -204,10 +239,12 @@ def test_jacobians_are_the_fluctuation_formulas():
 
 
 def _space_table():
+    """Return the parameter table of one toy water."""
     return System([water()]).table
 
 
 def test_linear_reweighting_prediction_and_n_eff():
+    """Linear reweighting predicts <U> at shifted parameters and Kish's n_eff (1 / sum w^2)."""
     fr, s = _synthetic_samples()
     d = np.array([0.001, 0.0, 0.0])
     avg = s.averages(jnp.asarray(d))
@@ -219,14 +256,14 @@ def test_linear_reweighting_prediction_and_n_eff():
 
 
 def test_gas_phase_properties_and_the_md_monomer_energy():
-    """GasPhase energy = the MD engine's energy of one molecule in a large box (images of a
+    """GasPhase values equal ElecChannel and the MD monomer energy; gradients match differences.
+
+    GasPhase energy = the MD engine's energy of one molecule in a large box (images of a
     neutral molecule add ~1e-4 kJ/mol); gradients of energy, dipole and polarizability vs finite
-    differences; values against the gas-phase ElecChannel."""
+    differences; values against the gas-phase ElecChannel.
+    """
     m = water()
-    t = np.radians(104.52 / 2)
-    x = np.array(
-        [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
-    )
+    x = water_geometry()
     sys = System([m])
     space = ParameterSpace.scales(sys.table, ["q", "cov", "alpha", "radius"])
     gp = GasPhase(m, x, sys.table, space)
@@ -235,7 +272,7 @@ def test_gas_phase_properties_and_the_md_monomer_energy():
     e, aux = ElecChannel().energy(jnp.asarray(x - x.mean(0)), sys, space(th))
     assert np.isclose(v["gas_energy"], float(sum(e.values())))
     Hb = np.eye(3) * 6.0
-    ff = PGMForceField(sys, Hb, settings(cutoff=2.5, skin=0.0, ewald_beta=1.6, pme_grid=(48, 48, 48)))
+    ff = PGMForceField(sys, Hb, md_settings(cutoff=2.5, skin=0.0, ewald_beta=1.6, pme_grid=(48, 48, 48)))
     y = x - x.mean(0) + 3.0
     res = jax.jit(ff.compute)(y, Hb, ff.rows_for(y, Hb), ff.init_induction(), space(th))
     assert abs(float(res.energy["total"]) - v["gas_energy"]) < 2e-3
@@ -251,6 +288,7 @@ def test_gas_phase_properties_and_the_md_monomer_energy():
 
 
 def _linear_estimate(obj, theta, y, J, cov, target, tol):
+    """Return an Estimate of a linear model (values y, Jacobian J, covariance, targets, tolerances)."""
     m = len(y)
     return Estimate(
         np.asarray(theta, float),
@@ -267,9 +305,12 @@ def _linear_estimate(obj, theta, y, J, cov, target, tol):
 
 
 def test_lm_step_trust_region_and_covariance_calibration():
-    """Linear model y = y0 + J theta + noise: the unconstrained step lands on the weighted least-
+    """The LM step, trust region and parameter covariance of a linear model are right.
+
+    Linear model y = y0 + J theta + noise: the unconstrained step lands on the weighted least-
     squares solution; the trust region bounds |d / sigma_prior|; C_theta matches the spread of fits
-    over noise realisations (and equals (J^T S^-1 J)^-1 without tolerances and with a wide prior)."""
+    over noise realisations (and equals (J^T S^-1 J)^-1 without tolerances and with a wide prior).
+    """
     table = _space_table()
     space = ParameterSpace.scales(table, ["q", "alpha"], prior_sigma=1e3)
     obj = Objective([], space)
@@ -299,9 +340,13 @@ def test_lm_step_trust_region_and_covariance_calibration():
     assert np.allclose(obj.covariance(est0)["C_theta"], np.linalg.inv(J.T @ W @ J), rtol=1e-4)
 
 
+@pytest.mark.slow
 def test_one_iteration_of_liquid_fit(tmp_path):
-    """End to end on the small box (CPU, a few frames): JSON record with observables, Jacobian,
-    step, predictions and uncertainties; resume picks up the next parameters."""
+    """One LiquidFit iteration end to end writes its JSON record and resumes.
+
+    End to end on the small box (CPU, a few frames): JSON record with observables, Jacobian,
+    step, predictions and uncertainties; resume picks up the next parameters.
+    """
     from pgm_jax.fit.liquid import LiquidFit
 
     sys, pos, H = small_box(1)
@@ -321,7 +366,7 @@ def test_one_iteration_of_liquid_fit(tmp_path):
         gas=gas,
         rdf_r=rdf.r,
     )
-    st = settings(
+    st = md_settings(
         cutoff=0.6,
         skin=0.1,
         pme_grid=(16, 16, 16),
@@ -363,14 +408,17 @@ def test_one_iteration_of_liquid_fit(tmp_path):
 
 
 def test_nvt_replicas_are_ordered_by_replica(tmp_path):
-    """NVT with batched replicas: frames of each replica contiguous (blocks never mix replicas),
-    replicas independent (different trajectories), estimates finite."""
+    """NVT with batched replicas: frames grouped by replica, replicas independent.
+
+    NVT with batched replicas: frames of each replica contiguous (blocks never mix replicas),
+    replicas independent (different trajectories), estimates finite.
+    """
     from pgm_jax.fit.liquid import LiquidFit
 
     sys, pos, H = small_box(2)
     space = ParameterSpace.scales(sys.table, ["q"])
     obj = Objective([Target("energy", None, fit=False), Target("eps", None, fit=False)], space)
-    st = settings(
+    st = md_settings(
         cutoff=0.6,
         skin=0.1,
         pme_grid=(16, 16, 16),
@@ -412,6 +460,7 @@ def test_nvt_replicas_are_ordered_by_replica(tmp_path):
 
 
 def test_rdf_histogram_matches_numpy():
+    """The O-O radial distribution function equals a numpy minimum-image histogram (1e-9)."""
     sys, pos, H, space, an = _analyzer()
     out = an.frame(np.zeros(space.n), pos, H, grad=False)
     s = an.rdf
@@ -440,9 +489,11 @@ def test_thermal_expansion_and_compressibility_gradients():
     Hh = U + p * V
 
     def m(a):
+        """Return the mean over frames."""
         return a.mean(0)
 
     def cov(a):
+        """Return the covariance of a with dU over the frames."""
         return m((a - m(a))[:, None] * (dU - m(dU)))
 
     a_p = (m(V * Hh) - m(V) * m(Hh)) / (KB * s.temperature**2 * m(V))

@@ -1,36 +1,29 @@
-"""Flexible-molecule MD: templates, the single-molecule limit (MD forces = gas-phase model),
-NVE energy conservation and an NPT run that compresses a dilute box (neighbour-list rebuilds)."""
+"""Flexible-molecule MD (md/flexible.py): templates, the single-molecule limit, NVE and NPT.
+
+What is checked, and against what: a template's scaled 1-4 LJ pairs and its save / load round
+trip; MD forces of one molecule in a large box against the gradient of the gas-phase model the
+bonded terms are fitted with (1e-3 of the RMS force: PME and image error); NVE energy conservation
+(std 1e-3 and drift 2e-3 of the kinetic scale 0.5 dof kB T at 0.5 fs) with molecules staying whole;
+an NPT run that compresses a dilute box through neighbour-list rebuilds.
+"""
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import methanol
+from _systems import methanol_liquid, methanol_template
 
-from pgm_jax.bonded import terms as T
-from pgm_jax.bonded.model import BondedModel, BondedSettings, MolSpec
 from pgm_jax.md.barostats import MonteCarloBarostat
-from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate, liquid_box
+from pgm_jax.md.flexible import FlexibleSimulation, FlexibleTemplate
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.thermostats import Langevin
 from pgm_jax.system import System
 from pgm_jax.units import KB
 
-BONDS = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 5)]
-
-
-def template(**kw):
-    """Methanol with class II bonded terms at their initial values (reference values from the
-    geometry) and scaled 1-4 LJ, so that every intramolecular channel is exercised."""
-    m, x = methanol()
-    spec = MolSpec("methanol", list(m.elements), BONDS, [1] * len(BONDS), 0, x, m)
-    st = BondedSettings(families=T.PAPER, lj14_scale=0.5, **kw)
-    model = BondedModel([spec], st)
-    return FlexibleTemplate.from_fit(model, model.init_params()), x
-
 
 def test_template_roundtrip_and_pgm_only(tmp_path):
-    tpl, x = template()
+    """A template has the three scaled H-C-O-H LJ pairs, saves and loads exactly, and refuses bad options."""
+    tpl, x = methanol_template()
     i, j, w = tpl.lj_pairs()
     assert len(i) == 3 and np.allclose(w, 0.5)  # the three H-C-O-H pairs
     tpl.save(str(tmp_path / "m.flex"))
@@ -40,13 +33,16 @@ def test_template_roundtrip_and_pgm_only(tmp_path):
     assert float(tpl.bonded_energy(y)) > 0.0
     for bad in (dict(elec_exclude=3), dict(escale=(1,))):  # (charge flux runs: test_flux.py)
         with pytest.raises(ValueError):
-            template(**bad)
+            methanol_template(**bad)
 
 
 def test_single_molecule_matches_gas_phase_model():
-    """One molecule in a large box: MD forces (PME pGM + bonded + intramolecular LJ) equal the
-    gradient of the gas-phase model the bonded terms are fitted with."""
-    tpl, x = template()
+    """MD forces of one flexible molecule equal the gas-phase model's gradient.
+
+    One molecule in a large box: MD forces (PME pGM + bonded + intramolecular LJ) equal the
+    gradient of the gas-phase model the bonded terms are fitted with.
+    """
+    tpl, x = methanol_template()
     y = x + 0.004 * np.random.default_rng(0).normal(size=x.shape)
     s = MDSettings().replace(precision="double", dipole_tol=1e-9, cutoff=1.8, skin=0.05, lj_lrc=False)
     sim = FlexibleSimulation(System([tpl.pgm]), [tpl], y + 2.0, np.eye(3) * 4.0, s, thermostat=None, log=None)
@@ -57,14 +53,14 @@ def test_single_molecule_matches_gas_phase_model():
     assert np.abs(F + g).max() < 1e-3 * rms, (np.abs(F + g).max(), rms)
 
 
-def _box(n=32, density=0.55):
-    tpl, _ = template()
-    pos, H = liquid_box(tpl, n, density, seed=0, min_dist=0.18)
-    return tpl, System([tpl.pgm] * n), pos, H
-
-
+@pytest.mark.slow
 def test_nve_energy_conservation():
-    tpl, sys, pos, H = _box()
+    """NVE of 32 flexible methanols conserves the energy after a Langevin start; bonds stay intact.
+
+    1 ps of Langevin equilibration, then 1000 NVE steps at 0.5 fs: std and drift of E_tot below 1e-3
+    and 2e-3 of 0.5 dof kB T; the C-O and O-H bond lengths stay within 0.08-0.16 nm.
+    """
+    tpl, sys, pos, H = methanol_liquid()
     s = MDSettings().replace(precision="double", dipole_tol=1e-8, cutoff=0.6, skin=0.05, lj_lrc=False)
     sim = FlexibleSimulation(
         sys, [tpl] * sys.nmol, pos, H, s, dt=0.0005, thermostat=Langevin(10.0), temperature=298.0, log=None
@@ -93,10 +89,14 @@ def test_nve_energy_conservation():
     assert b.max() < 0.16 and b.min() > 0.08
 
 
+@pytest.mark.slow
 def test_npt_compresses_dilute_box():
-    """NPT at 2 kbar from a dilute box: the box shrinks by far more than the neighbour lists were
-    built for, so the driver must rebuild them on the way (and the molecules must stay whole)."""
-    tpl, sys, pos, H = _box(density=0.45)
+    """NPT at 2 kbar compresses a dilute box, rebuilding the neighbour lists on the way.
+
+    NPT at 2 kbar from a dilute box: the box shrinks by far more than the neighbour lists were
+    built for, so the driver must rebuild them on the way (and the molecules must stay whole).
+    """
+    tpl, sys, pos, H = methanol_liquid(density=0.45)
     s = MDSettings().replace(precision="mixed", dipole_tol=1e-5, cutoff=0.5, skin=0.05)
     sim = FlexibleSimulation(
         sys,

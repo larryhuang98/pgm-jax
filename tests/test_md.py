@@ -1,15 +1,22 @@
-"""MD engine: PME vs exact Ewald, forces and virial vs finite differences, neighbour lists,
-rigid bodies, thermostat, energy conservation, I/O and exact restarts."""
+"""MD engine core: PME, forces, virial, neighbour lists, rigid bodies, thermostat, I/O, restarts.
 
-import os
+What is checked, and against what: PME energy and induced dipoles against the exact Ewald sum
+(PeriodicPGM, 2e-6 relative); row-gradient forces against autodiff at fixed dipoles (1e-9) and
+central differences (1e-5 relative, h = 1e-6 nm); the differentiable path (implicit
+differentiation of the dipole solve) against central differences with the dipoles re-solved; the
+molecular strain derivative against isotropic scaling; the neighbour list against brute force in
+a truncated octahedron; rigid-body round trips; Langevin equipartition (translation and rotation
+within 5 %); NetCDF / restart files; NVE energy conservation of pGM3P-25 water and exact restarts
+(needs the pGM3P-25 box).
+"""
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_grad import methanol, water
+from _systems import PGM3P25_RST, PGM3P25_TOP, md_settings, requires_pgm3p25, small_box
 
-from pgm_jax import PeriodicPGM, System
+from pgm_jax import PeriodicPGM
 from pgm_jax.md.box import min_image, reduce_box
 from pgm_jax.md.forcefield import MDSettings, PGMForceField
 from pgm_jax.md.integrate import Integrator
@@ -18,62 +25,12 @@ from pgm_jax.md.neighbors import AtomNeighbors
 from pgm_jax.md.rigid import RigidMolecules, matrix_to_quaternion
 from pgm_jax.md.simulation import Simulation
 from pgm_jax.md.thermostats import Langevin
-from pgm_jax.paths import resource
 from pgm_jax.units import KB
-
-TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
-RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
-W = water()
-need_water_box = pytest.mark.skipif(
-    not (os.path.exists(TOP) and os.path.exists(RST)), reason="pGM3P-25 box not available"
-)
-
-
-def small_box(seed=0, nw=30, nm=4):
-    """Waters and methanols on a jittered lattice in a skewed (reduced) triclinic box, nm."""
-    rng = np.random.default_rng(seed)
-    H = reduce_box(np.array([[1.75, 0.0, 0.0], [0.45, 1.70, 0.0], [-0.40, 0.50, 1.65]]))
-    t = np.radians(104.52 / 2)
-    w = np.array(
-        [[0, 0, 0], [0.09572 * np.sin(t), 0.09572 * np.cos(t), 0], [-0.09572 * np.sin(t), 0.09572 * np.cos(t), 0]]
-    )
-    m, xm = methanol()
-    xm = xm - xm.mean(0)
-    mols, pos = [], []
-    grid = np.array([[i, j, k] for i in range(4) for j in range(4) for k in range(3)], float)
-    grid = (grid + 0.5) / np.array([4, 4, 3])
-    for n, f in enumerate(grid[rng.permutation(len(grid))][: nw + nm]):
-        R = np.linalg.qr(rng.normal(size=(3, 3)))[0]
-        c = f @ H + rng.normal(scale=0.01, size=3)
-        if n < nm:
-            mols.append(m)
-            pos.append(xm @ R.T + c)
-        else:
-            mols.append(W)
-            pos.append((w - w.mean(0)) @ R.T + c)
-    return System(mols), np.concatenate(pos), H
-
-
-def settings(**kw):
-    base = dict(
-        cutoff=0.6,
-        skin=0.05,
-        ewald_beta=6.0,
-        pme_grid=(48, 48, 48),
-        pme_order=8,
-        lj_lrc=False,
-        dipole_tol=1e-12,
-        max_iter=500,
-        peek=0.0,
-        extrap_order=0,
-        precision="double",
-    )
-    base.update(kw)
-    return MDSettings().replace(**base)
 
 
 def ff_and_list(sys, pos, H, **kw):
-    s = settings(**kw)
+    """Return a PGMForceField (md_settings(**kw)) and its atom neighbour rows at pos."""
+    s = md_settings(**kw)
     ff = PGMForceField(sys, H, s)
     nb = AtomNeighbors(sys.n, H, s.cutoffs.cutoff, s.neighbors.skin)
     return ff, nb.allocate(pos, None, H).idx
@@ -92,6 +49,7 @@ def test_pme_matches_exact_ewald():
 
 
 def test_row_gradient_forces_equal_autodiff_and_finite_differences():
+    """Forces equal autodiff at fixed dipoles (1e-9) and central differences (1e-5 relative)."""
     sys, pos, H = small_box(1)
     ff, idx = ff_and_list(sys, pos, H)
     res = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
@@ -108,16 +66,20 @@ def test_row_gradient_forces_equal_autodiff_and_finite_differences():
 
 
 def test_differentiable_forces_and_dipoles():
-    """settings.differentiable: gradients of forces and induced dipoles (implicit differentiation of
-    the dipole solve) against central differences with the dipoles re-solved at every point."""
+    """The differentiable path: gradients of forces and dipoles match central differences.
+
+    settings.differentiable: gradients of forces and induced dipoles (implicit differentiation of
+    the dipole solve) against central differences with the dipoles re-solved at every point.
+    """
     sys, pos, H = small_box(6)
-    s = settings(differentiable=True, adjoint_tol=1e-12)
+    s = md_settings(differentiable=True, adjoint_tol=1e-12)
     ff = PGMForceField(sys, H, s)
     idx = ff.rows_for(pos, H)
     rng = np.random.default_rng(7)
     wF, wmu = rng.normal(size=pos.shape), rng.normal(size=pos.shape)
 
     def loss(theta, x):
+        """Return a weighted sum of forces and induced dipoles (the test functional)."""
         res = ff.compute(x, H, idx, ff.init_induction(), theta)
         return jnp.sum(wF * res.forces) + 1e3 * jnp.sum(wmu * res.induction.mu)
 
@@ -126,7 +88,7 @@ def test_differentiable_forces_and_dipoles():
     L = jax.jit(loss)
     g_th, g_x = jax.jit(jax.grad(loss, argnums=(0, 1)))(theta0, x0)
     # forward values do not depend on the option
-    plain = PGMForceField(sys, H, settings())
+    plain = PGMForceField(sys, H, md_settings())
     r0, r1 = (
         jax.jit(plain.compute)(x0, H, idx, plain.init_induction()),
         jax.jit(ff.compute)(x0, H, idx, ff.init_induction()),
@@ -155,6 +117,7 @@ def test_differentiable_forces_and_dipoles():
 
 
 def test_molecular_strain_derivative():
+    """The molecular strain derivative matches isotropic scaling of box and centres (with the LJ tail)."""
     sys, pos, H = small_box(2)
     ff, idx = ff_and_list(sys, pos, H, lj_lrc=True)
     res = jax.jit(ff.compute)(pos, H, idx, ff.init_induction())
@@ -172,6 +135,11 @@ def test_molecular_strain_derivative():
 
 
 def test_neighbor_list_is_complete_in_skewed_box():
+    """The neighbour list holds every pair within the cutoff in a truncated octahedron.
+
+    The minimum image is checked against the 27 neighbouring images, and every pair closer than
+    1.0 nm (cutoff 0.9 + skin 0.1) is in the list.
+    """
     rng = np.random.default_rng(3)
     H = reduce_box(np.array([[2.72, 0, 0], [-0.9067, 2.5645, 0], [-0.9067, -1.2823, 2.2210]]))  # truncated octahedron
     pos = rng.uniform(size=(600, 3)) @ H
@@ -189,6 +157,7 @@ def test_neighbor_list_is_complete_in_skewed_box():
 
 
 def test_rigid_bodies_roundtrip():
+    """Rigid bodies: exact fit of the positions, quaternion rotation, velocities <-> momenta round trip."""
     sys, pos, H = small_box(4)
     rig = RigidMolecules(sys, pos, H)
     assert rig.fit_rmsd < 1e-10
@@ -212,6 +181,7 @@ def test_rigid_bodies_roundtrip():
 
 
 def test_langevin_equipartition():
+    """The Langevin O step gives kT / 2 per translational and rotational degree of freedom (5 %)."""
     sys, pos, H = small_box(6)
     ff, _ = ff_and_list(sys, pos, H)
     rig = RigidMolecules(sys, pos, H)
@@ -239,6 +209,7 @@ def test_langevin_equipartition():
 
 
 def test_netcdf_trajectory_and_restart(tmp_path):
+    """NetCDF trajectories (write, append) and Amber restarts round-trip coordinates, box and velocities."""
     from scipy.io import netcdf_file
 
     n = 7
@@ -261,10 +232,16 @@ def test_netcdf_trajectory_and_restart(tmp_path):
     assert np.allclose(x2, xs[1]) and np.allclose(v2, v)
 
 
-@need_water_box
+@requires_pgm3p25
+@pytest.mark.slow
 def test_nve_energy_conservation_and_exact_restart(tmp_path):
+    """NVE of pGM3P-25 water conserves energy; a checkpoint continues the run (needs the data).
+
+    Mixed precision, 1 fs, 1000 steps: std and drift of E_tot below 2e-4 / 5e-4 of 0.5 dof kB T; the
+    continuation from a checkpoint follows the run up to summation order (1e-4 nm after 20 steps).
+    """
     s = MDSettings().replace(cutoff=0.8, skin=0.1, pme_grid=(48, 48, 48), dipole_tol=1e-6, precision="mixed")
-    sim = Simulation.from_amber(TOP, RST, settings=s, thermostat=None, dt=0.001, log=None)
+    sim = Simulation.from_amber(PGM3P25_TOP, PGM3P25_RST, settings=s, thermostat=None, dt=0.001, log=None)
     E = []
     for _ in range(10):
         sim.advance(100)
@@ -276,7 +253,7 @@ def test_nve_energy_conservation_and_exact_restart(tmp_path):
     sim.save_checkpoint(str(tmp_path / "c.chk"))
     sim.advance(20)
     x_cont, e_cont = sim.positions(), sim.observables()["etot"]
-    sim2 = Simulation.from_amber(TOP, RST, settings=s, thermostat=None, dt=0.001, log=None)
+    sim2 = Simulation.from_amber(PGM3P25_TOP, PGM3P25_RST, settings=s, thermostat=None, dt=0.001, log=None)
     sim2.load_checkpoint(str(tmp_path / "c.chk"))
     assert int(sim2.state.step) == 1000 and abs(sim2.time_ps - 1.0) < 1e-12
     sim2.advance(20)

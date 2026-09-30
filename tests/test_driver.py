@@ -1,5 +1,10 @@
-"""Host-side driver machinery (pgm_jax.md.driver): blocks, overflow retries, log tables and the
-checkpoint format."""
+"""Host-side driver machinery (pgm_jax.md.driver): blocks, overflow retries, log tables, checkpoints.
+
+Pure-Python checks with toy callbacks and a toy state pytree: block lengths that end on every
+output step, the retry of an overflowing block and the splitting with rebuilds, the log-table
+format, the npz checkpoint format (bitwise round trip, kind / version / structure checks) and
+legacy pickle checkpoints.
+"""
 
 import json
 import pickle
@@ -15,7 +20,17 @@ from pgm_jax.md._jaxmd import dataclasses
 
 @dataclasses.dataclass
 class Toy:
-    """A small state pytree (a dataclass like MDState) with an optional part."""
+    """A small state pytree (a dataclass like MDState) with an optional part.
+
+    Parameters
+    ----------
+    x : jax.Array (4, 3)
+        Array leaf.
+    n : jax.Array ()
+        Integer leaf (int32).
+    extra : jax.Array, optional
+        Optional leaf (None: absent).
+    """
 
     x: jnp.ndarray
     n: jnp.ndarray
@@ -34,6 +49,7 @@ def test_retry_block_and_splitting():
     calls = []
 
     def run(s):
+        """Record the call and return s + 1 (a block that advances the state)."""
         calls.append(s)
         return s + 1
 
@@ -44,6 +60,7 @@ def test_retry_block_and_splitting():
     done, rebuilds = [], []
 
     def block(n):
+        """Run a block of n steps; raise the overflow error for more than 4."""
         if n > 4:
             raise RuntimeError("neighbour list keeps overflowing")
         done.append(n)
@@ -73,8 +90,11 @@ def test_log_table(tmp_path, capsys):
 
 
 def test_checkpoint_round_trip(tmp_path):
-    """Scalars, arrays, random-generator state and state pytrees survive bitwise; kinds, versions
-    and structures are checked."""
+    """The npz checkpoint format round-trips every content type bitwise and checks its header.
+
+    Scalars, arrays, random-generator state and state pytrees survive bitwise; kinds, versions
+    and structures are checked.
+    """
     rng = np.random.default_rng(3)
     st = Toy(jnp.asarray(rng.normal(size=(4, 3))), jnp.asarray(7, jnp.int32), extra=jnp.ones(2, jnp.float32))
     content = {
