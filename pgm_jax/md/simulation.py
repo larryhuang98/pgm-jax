@@ -24,6 +24,7 @@ Units: nm, ps, K, bar, kJ/mol; Amber files in Angstrom.
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, Any, TextIO
 
 import jax
@@ -36,6 +37,7 @@ from .box import check_box, reduce_box
 from .engine import MDEngine
 from .forcefield import MDSettings, PGMForceField
 from .integrate import Integrator
+from .geometry import conform_rigid_geometry
 from .io import read_coordinates_nm
 from .rigid import RigidMolecules
 from .thermostats import Thermostat
@@ -194,7 +196,13 @@ class Simulation(MDEngine):
 
     @classmethod
     def from_amber(
-        cls, prmtop: str, coords: str, use_velocities: bool = True, charges: str = "pgm", **kw
+        cls,
+        prmtop: str,
+        coords: str,
+        use_velocities: bool = True,
+        charges: str = "pgm",
+        conform_geometry: bool = True,
+        **kw: Any,
     ) -> Simulation:
         """Return a simulation of the system of an Amber prmtop at the coordinates of a restart / inpcrd.
 
@@ -210,6 +218,11 @@ class Simulation(MDEngine):
         charges : str
             "pgm" (a pGM prmtop) or "amber" (the point charges of a classical prmtop, e.g.
             TIP4P-Ew; with MDSettings().replace(elec="q")).
+        conform_geometry : bool
+            Rebuild three-atom, three-bond molecules (water) at the prmtop's bond lengths when the
+            coordinates disagree (pmemd's SHAKE does this at the first step; the rigid-body engine
+            would keep the coordinates' geometry and simulate another model).  A warning names how
+            many molecules changed.
         **kw
             Keywords of the constructor (settings, dt, temperature, thermostat, ...).
 
@@ -226,6 +239,13 @@ class Simulation(MDEngine):
         pos, vel, H = read_coordinates_nm(coords)
         if H is None:
             raise ValueError(f"{coords}: the coordinates have no periodic box")
+        if conform_geometry:
+            pos, changed = conform_rigid_geometry(prmtop, pos)
+            if changed:
+                warnings.warn(
+                    f"{coords}: {changed} rigid molecules rebuilt at the prmtop's bond lengths (conform_geometry)",
+                    stacklevel=2,
+                )
         return cls(system, pos, H, velocities=vel if use_velocities else None, **kw)
 
     # ----------------------------------------------------------------- MDEngine hooks
