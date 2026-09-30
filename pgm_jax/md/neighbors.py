@@ -34,6 +34,8 @@ Units: nm.
 
 from __future__ import annotations
 
+import warnings
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -43,6 +45,10 @@ from ._jaxmd import partition
 from .box import check_box, max_cutoff, min_image, wrap_fractional
 
 _MARGIN = 1e-3  # nm: float32 rounding of list distances
+
+# jax-md's cell list scatters int32 ids with int64 indices under jax_enable_x64; the result is exact
+# (the ids are far below 2**31).  Silence this one message of the third-party code.
+warnings.filterwarnings("ignore", message="scatter inputs have incompatible types", category=FutureWarning)
 
 
 def _jaxmd_list(H: ArrayLike, r_cutoff: float, skin: float, capacity_multiplier: float) -> partition.NeighborListFns:
