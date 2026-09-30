@@ -285,6 +285,8 @@ class _MTSMixin:
         ValueError
             Invalid settings (`_configure`).
         """
+        if getattr(args[0], "ips", False):
+            raise ValueError("multiple time stepping is not implemented for long_range='ips'")
         if not isinstance(mts, MTS):
             raise TypeError("mts must be an MTS instance")
         self.mts = mts

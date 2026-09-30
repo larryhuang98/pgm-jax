@@ -137,6 +137,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     g.add_argument("--order", type=int, default=8, help="PME B-spline order")
     g.add_argument("--vdwmeth", type=int, default=1, choices=[0, 1], help="1: LJ long-range correction")
+    g.add_argument("--long-range", default="pme", choices=["pme", "ips"], help="long-range method (ips: isotropic periodic sum)")
+    g.add_argument("--ips-order", type=int, default=4, help="terms of the electrostatic IPS polynomial (2..12; 4 is sander's)")
+    g.add_argument("--ips-boundary", action="store_true", help="IPS with DE vdW: add pmemd's constant boundary energy")
     g = ap.add_argument_group("induced dipoles")
     g.add_argument("--dipole-tol", type=float, default=1e-5, help="dipole_scf_tol (pmemd-pgm criterion)")
     g.add_argument("--max-iter", type=int, default=50, help="maximum CG iterations")
@@ -221,6 +224,9 @@ def settings_from_args(a: argparse.Namespace) -> MDSettings:
         pme_spacing=a.pme_spacing / 10,
         pme_order=a.order,
         lj_lrc=bool(a.vdwmeth),
+        long_range=a.long_range,
+        ips_order=a.ips_order,
+        ips_boundary=a.ips_boundary,
         dipole_tol=a.dipole_tol,
         max_iter=a.max_iter,
         local_cut=a.local_cut / 10,

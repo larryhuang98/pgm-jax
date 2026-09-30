@@ -80,6 +80,9 @@ any order. Validated against Amber (sander, pmemd-pgm) and PyRESP.
   DEGAUSS (`pgm_jax/de.py`: finite at zero separation, the LJ well depth and minimum, exponents
   `de_alpha = 18.17`, `de_beta = 3.65`, continuum tail correction) or GVDW, the Gaussian-density
   van der Waals of pmemd-pgm (`vdw = "lj" | "de" | "gvdw"`, Gaussian or Slater repulsion).
+- **Long range:** smooth PME (default) or the isotropic periodic sum (`long_range = "ips"`, `ips_order`
+  terms; charges, permanent and induced dipoles, LJ and DE; `docs/ips.md`), validated against
+  sander/pmemd IPS and by NVE conservation.
 - **Bonded term sets** for flexible molecules: Amber/GAFF forms (GAFF import), the explored
   class II and new families, and fast neural bonded terms (a graph network writes the
   parameters of analytic terms once; MD cost = classical terms).

@@ -61,11 +61,11 @@ def get(settings, path):
 def test_defaults_are_the_old_ones():
     """Every flat setting of the old class has a place in the groups, with the old default.
 
-    The flat names added later are the engines' neighbor_list keyword and the DE exponents of
+    The flat names added later are the engines' neighbor_list keyword the DE exponents of
     the double-exponential van der Waals form (18.17 and 3.65, Paper I of DEGAUSS).
     """
     s = MDSettings()
-    added = {"neighbor_list": "auto", "de_alpha": 18.17, "de_beta": 3.65}
+    added = {"neighbor_list": "auto", "de_alpha": 18.17, "de_beta": 3.65, "long_range": "pme", "ips_order": 4, "ips_boundary": False}
     assert set(FLAT_SETTINGS) == set(OLD_DEFAULTS) | set(added)
     for k, v in (OLD_DEFAULTS | added).items():
         assert get(s, FLAT_SETTINGS[k]) == v, k

@@ -119,6 +119,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..de import DE_ALPHA, DE_BETA, de_groups, de_long_range, de_pair_grad, de_tail_impulse
+from ..ips import de_ips_pair, de_ips_self, elec_coefficients, lj_ips_pair, lj_ips_self, poly_kernels
 from ..lj import lj_long_range
 from ..options import check_vdw, elec_flags
 from ..system import System
@@ -158,6 +159,18 @@ class Terms:
         (vdwmeth = 1).
     de_alpha, de_beta : float
         Repulsive and attractive exponents of the DE form (alpha > beta > 0; vdw = "de").
+    long_range : {"pme", "ips"}
+        Long-range treatment: "pme" (smooth PME and the continuum van der Waals tail) or "ips" (isotropic
+        periodic sum, pairs inside the cutoffs only; ips.py, docs/ips.md).  IPS covers the electrostatics
+        (charges, dipoles, induced dipoles) and the LJ and DE terms, not GVDW; `lj_lrc` and the Ewald
+        and grid settings are ignored.
+    ips_order : int
+        Number of terms N of the electrostatic IPS polynomial (2 .. 12): the pair function and its first
+        N - 1 derivatives vanish at the cutoff; 4 is sander's.
+    ips_boundary : bool
+        With IPS and vdw = "de": add pmemd's constant boundary energy, 1/2 sum_ij Phi_ij(rc) f, with the pair
+        function at the cutoff and f = (4 pi / 3) rc^3 / V the fraction of pairs inside rc (pmemd counts them
+        exactly); off by default (sander leaves it out, the force is unaffected).
     """
 
     elec: str = "qpi"
@@ -166,6 +179,9 @@ class Terms:
     lj_lrc: bool = True
     de_alpha: float = DE_ALPHA
     de_beta: float = DE_BETA
+    long_range: str = "pme"
+    ips_order: int = 4
+    ips_boundary: bool = False
 
 
 @_dc.dataclass(frozen=True)
@@ -319,6 +335,9 @@ FLAT_SETTINGS = {
     "lj_lrc": ("terms", "lj_lrc"),
     "de_alpha": ("terms", "de_alpha"),
     "de_beta": ("terms", "de_beta"),
+    "long_range": ("terms", "long_range"),
+    "ips_order": ("terms", "ips_order"),
+    "ips_boundary": ("terms", "ips_boundary"),
     "cutoff": ("cutoffs", "cutoff"),
     "elec_cutoff": ("cutoffs", "elec_cutoff"),
     "skin": ("neighbors", "skin"),
@@ -490,6 +509,8 @@ class MDSettings:
     def describe_cutoffs(self) -> str:
         """Return the cutoffs for log headers."""
         c = self.cutoffs
+        if self.terms.long_range == "ips":
+            return f"cutoff {c.cutoff} nm, IPS order {self.terms.ips_order}"
         if c.elec_cutoff is None or self.elec_rc == float(c.cutoff):
             return f"cutoff {c.cutoff} nm"
         return f"cutoff {c.cutoff} nm (electrostatics {self.elec_rc} nm, Ewald {self.pme.ewald_beta:.4g} /nm)"
@@ -759,6 +780,33 @@ def _div_alpha(x: jax.Array | float, alpha: jax.Array, mask: bool) -> jax.Array:
     return jnp.where(pol, x / jnp.where(pol, alpha, 1.0), 0.0)
 
 
+class _NoPME:
+    """Stand-in of the reciprocal-space object for isotropic periodic sums (no grid, zero reciprocal terms)."""
+
+    K = "IPS"
+    ewald_beta = 0.0
+
+    @staticmethod
+    def setup(pos: jax.Array, H: jax.Array) -> dict:
+        """Return an empty charge spreading."""
+        return {}
+
+    @staticmethod
+    def influence(H: jax.Array) -> jax.Array:
+        """Return a placeholder influence function."""
+        return jnp.zeros(())
+
+    @staticmethod
+    def energy(S: dict, G: jax.Array, q: jax.Array, d: jax.Array) -> jax.Array:
+        """Return the (zero) reciprocal energy."""
+        return jnp.zeros((), jnp.float64)
+
+    @staticmethod
+    def grad_dipoles(S: dict, G: jax.Array, q: jax.Array, d: jax.Array) -> jax.Array:
+        """Return the (zero) reciprocal gradient with respect to the dipoles."""
+        return jnp.zeros_like(d)
+
+
 class PGMForceField:
     """The pGM + van der Waals force field of an MD system (module docstring for the physics).
 
@@ -861,6 +909,11 @@ class PGMForceField:
         self._de_groups_cache = (
             de_groups(np.asarray(P0["lj_rmin_half"]), np.asarray(P0["lj_sqrt_eps"])) if P0 is not None else None
         )
+        self._de_rep_params = (
+            (np.asarray(P0["lj_rmin_half"])[self._de_groups_cache[0]], np.asarray(P0["lj_sqrt_eps"])[self._de_groups_cache[0]])
+            if P0 is not None
+            else None
+        )
         if settings.induction.predictor not in ("mu4", "mu3", "ls", "none"):
             raise ValueError(f"unknown predictor {settings.induction.predictor!r}")
         check_vdw(settings.terms.vdw, settings.terms.gvdw_rep)
@@ -886,8 +939,19 @@ class PGMForceField:
         self.n = sys.n
         self.b0 = float(settings.pme.ewald_beta)
         self.c_self = 4.0 * self.b0**3 / (3.0 * _SQRT_PI)
-        grid = settings.pme.grid or grid_size(H, settings.pme.spacing)
-        self.pme = PME(grid, settings.pme.order, self.b0, self.cd)
+        lr = settings.terms.long_range
+        if lr not in ("pme", "ips"):
+            raise ValueError(f"unknown long_range {lr!r} (pme | ips)")
+        self.ips = lr == "ips"
+        if self.ips:
+            if settings.terms.vdw == "gvdw":
+                raise ValueError("long_range='ips' covers the electrostatics, lj and de, not gvdw")
+            if not 2 <= int(settings.terms.ips_order) <= 12:
+                raise ValueError(f"ips_order must be in 2..12, got {settings.terms.ips_order}")
+            self.pme = _NoPME()
+        else:
+            grid = settings.pme.grid or grid_size(H, settings.pme.spacing)
+            self.pme = PME(grid, settings.pme.order, self.b0, self.cd)
         mol = np.asarray(sys.mol)
         self.mol = jnp.asarray(mol)
         self.cov_i, self.cov_j = jnp.asarray(sys.cov_i), jnp.asarray(sys.cov_j)
@@ -1263,6 +1327,12 @@ class PGMForceField:
         r = jnp.sqrt(jnp.where(within, x[0] * x[0] + x[1] * x[1] + x[2] * x[2], 1.0))
         kern = erf_kernels if series else erf_kernels_closed
         A = kern(a.astype(dt), r, nmax)
+        if self.ips:  # G_n of the IPS pair function erf(a r)/r + polynomial, zero beyond the cutoff
+            rc = self.rc_e
+            c = elec_coefficients(a.astype(jnp.float64) * rc, int(self.s.terms.ips_order)).astype(dt)
+            Pn = poly_kernels(c, r, rc, nmax)
+            w = (within & (r < rc)).astype(dt)
+            return (r,) + tuple((u + v) * w for u, v in zip(A, Pn))
         B = kern(jnp.asarray(self.b0, dt), r, nmax)
         w = within.astype(dt)
         return (r,) + tuple((u - v) * w for u, v in zip(A, B))
@@ -1296,6 +1366,8 @@ class PGMForceField:
         g = {"k": k, "x": x, "overflow": overflow}
         for n in range(nmax):
             g[f"G{n}"] = G[n]
+        if self.ips:  # dipole self-image coefficient of every atom (the Ewald c_self of the PME kernels)
+            g["cself"] = self._ips_cself(P["radius"])
         if forces:
             g.update(r=r, wv=wv, vp=self._vdw_params(P, k), within=within)
             if vrows is not None:
@@ -1344,11 +1416,21 @@ class PGMForceField:
         """Return dU_rec/dd (N, 3) in the compute dtype (PME.grad_dipoles)."""
         return self.pme.grad_dipoles(S, Gk, q, d.astype(self.cd)).astype(self.cd)
 
+    def _ips_coeffs_self(self, radius: jax.Array) -> jax.Array:
+        """Return the IPS polynomial coefficients (N, order) of the self pair of every atom (a_ii = 1 / (2 R_i))."""
+        rc = self.rc_e
+        return elec_coefficients(rc / (2.0 * radius.astype(jnp.float64)), int(self.s.terms.ips_order))
+
+    def _ips_cself(self, radius: jax.Array) -> jax.Array:
+        """Return the dipole self-image coefficient 2 c_1 / rc^3 (N,) [1/nm^3] (the IPS analogue of c_self)."""
+        return 2.0 * self._ips_coeffs_self(radius)[:, 1] / self.rc_e**3
+
     def _field(self, g: dict, S: dict, Gk: jax.Array, q: jax.Array, d: jax.Array) -> jax.Array:
         """Return the total field -dU/dd (N, 3) (direct + PME + self) of charges q and dipoles d [e/nm^2]."""
         cd = self.cd
         dc = d.astype(cd)
-        return -(self._row_field(g, q, dc) + self._rec_grad(S, Gk, q, dc) - jnp.asarray(self.c_self, cd) * dc)
+        cs = g["cself"].astype(cd)[:, None] if "cself" in g else jnp.asarray(self.c_self, cd)
+        return -(self._row_field(g, q, dc) + self._rec_grad(S, Gk, q, dc) - cs * dc)
 
     # ------------------------------------------------------------------ induction
     def init_induction(self) -> InductionState:
@@ -1937,6 +2019,18 @@ class PGMForceField:
         gradient and (charge flux) the charge gradient.
         """
         q = P["q"]
+        if self.ips:  # image self terms of the IPS polynomial: 1/2 q^2 c_0 / rc, -c_1 |d|^2 / rc^3
+            c = self._ips_coeffs_self(P["radius"])
+            rc = self.rc_e
+            cs = 2.0 * c[:, 1] / rc**3
+            u_self = 0.5 * jnp.sum(q * q * c[:, 0]) / rc - 0.5 * jnp.sum(cs * jnp.sum(d * d, axis=-1))
+            if delta is not None:
+                u_self = u_self + 0.5 * jnp.sum(cs * jnp.sum(delta * delta, axis=-1))
+                cc = 1.0 - 1.0 / float(self.s.induction.iel.omega)
+                if cc != 0.0:
+                    u_self = u_self - cc * jnp.sum(_div_alpha(delta * delta, 2.0 * P["alpha"][:, None], self.alpha_mask))
+            u_pol = jnp.sum(_div_alpha(mu * mu, 2.0 * P["alpha"][:, None], self.alpha_mask)) if self.ind else 0.0
+            return KE * (u_self + u_pol)
         S, G = self.pme.setup(pos, H), self.pme.influence(H)
         u_rec = self.pme.energy(S, G, q, d)
         u_self = -(self.b0 / _SQRT_PI) * jnp.sum(q * q) - 0.5 * self.c_self * jnp.sum(d * d)
@@ -2028,7 +2122,13 @@ class PGMForceField:
         e = eps (s^12 - 2 s^6), s = rmin / r; DE: de.de_pair.  r [nm]; energies [kJ/mol],
         (1/r) dU/dr [kJ/mol/nm^2].
         """
-        if self.s.terms.vdw == "lj":
+        if self.ips and self.s.terms.vdw == "lj":
+            rminp, epsp = vp
+            e, d = lj_ips_pair(r, rminp, epsp, self.rc_v)
+        elif self.ips and self.s.terms.vdw == "de":
+            rminp, epsp = vp
+            e, d = de_ips_pair(r, rminp, epsp, self.s.terms.de_alpha, self.s.terms.de_beta, self.rc_v)
+        elif self.s.terms.vdw == "lj":
             rminp, epsp = vp
             s6 = (rminp / r) ** 6
             e = epsp * (s6 * s6 - 2.0 * s6)
@@ -2046,14 +2146,39 @@ class PGMForceField:
         return (e, d) if grad else e
 
     def _vdw_tail(self, P: dict, H: jax.Array) -> jax.Array | float:
-        """Return the long-range correction of the van der Waals term [kJ/mol] (0 without lj_lrc)."""
-        if not self.s.terms.lj_lrc or self.s.terms.vdw == "none":
+        """Return the long-range correction of the van der Waals term [kJ/mol] (0 without lj_lrc).
+
+        With IPS: the self-image energy of the atoms, sum_i of the pair function's polynomial part at r = 0.
+        """
+        if self.ips and self.s.terms.vdw in ("lj", "de"):
+            rm, se = 2.0 * P["lj_rmin_half"], P["lj_sqrt_eps"]
+            if self.s.terms.vdw == "lj":
+                return jnp.sum(lj_ips_self(rm, se * se, self.rc_v))
+            t = self.s.terms
+            e = jnp.sum(de_ips_self(rm, se * se, t.de_alpha, t.de_beta, self.rc_v))
+            if t.ips_boundary:
+                e = e + self._de_ips_boundary(volume(H))
+            return e
+        if self.ips or not self.s.terms.lj_lrc or self.s.terms.vdw == "none":
             return 0.0
         if self.s.terms.vdw == "de":
             t = self.s.terms
             return de_long_range(P, volume(H), self.s.cutoffs.cutoff, self._de_groups(), t.de_alpha, t.de_beta)
         f = lj_long_range if self.s.terms.vdw == "lj" else gvdw_long_range
         return f(P, volume(H), self.s.cutoffs.cutoff)
+
+    def _de_ips_boundary(self, vol: jax.Array) -> jax.Array:
+        """Return 1/2 sum_ij Phi_ij(rc) f over the DE parameter groups [kJ/mol] (pmemd's EIPSSNB, f estimated)."""
+        rep, pop = self._de_groups()
+        rh, se = self._de_rep_params
+        rm = rh[:, None] + rh[None, :]
+        eps = se[:, None] * se[None, :]
+        t = self.s.terms
+        phi = de_ips_pair(jnp.asarray(rm * 0 + self.rc_v), jnp.asarray(rm), jnp.asarray(eps), t.de_alpha, t.de_beta, self.rc_v)[0]
+        phi = jnp.where(jnp.asarray(rm > 0.01), phi, 0.0)
+        n = jnp.asarray(pop, dtype=phi.dtype)
+        f = (4.0 * jnp.pi / 3.0) * self.rc_v**3 / vol
+        return 0.5 * f * (n @ phi @ n)
 
     def _de_groups(self) -> tuple:
         """Return the distinct (R*, sqrt(eps)) parameter sets with their populations (de_groups; built in __init__)."""
@@ -2065,6 +2190,8 @@ class PGMForceField:
         X = E_lrc for the power-law tails of LJ and GVDW (`_vdw_tail`); for DE, X = 2 pi rc^3 / (3 V) sum_ij u_ij(rc)
         (de.de_tail_impulse).  Zero without lj_lrc.
         """
+        if self.ips:  # pair terms and constants only: no cutoff impulse
+            return 0.0
         if self.s.terms.vdw == "de" and self.s.terms.lj_lrc:
             t = self.s.terms
             return de_tail_impulse(P, volume(H), self.s.cutoffs.cutoff, self._de_groups(), t.de_alpha, t.de_beta)
