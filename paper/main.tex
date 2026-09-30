@@ -580,9 +580,9 @@ the final parameters, and the tests of the MD engine.
 
 % =====================================================================================
 \section{Limitations and outlook}
-The MD engine implements Lennard-Jones only; other van der Waals forms (for example repulsion
-from overlapping Gaussian densities) need their own energy channel, real-space kernels and tail
-corrections. Flexible molecules have no bond constraints yet, so the time step is 0.5~fs, and
+The MD engine implements Lennard-Jones and the double-exponential (DE) van der Waals form; other forms (for
+example repulsion from overlapping Gaussian densities) need their own energy channel, real-space kernels and tail
+corrections, and the alchemical (soft-core) version of DE is not implemented. Flexible molecules have no bond constraints yet, so the time step is 0.5~fs, and
 bonded terms can be exported to MD only if they were fitted with the engine's nonbonded model
 (pGM with all pairs, no charge flux). The ensemble gradient of $\langle U_\mathrm{gas}\rangle$ is not
 yet implemented for molecules with intramolecular Lennard-Jones pairs. For boxes of about
