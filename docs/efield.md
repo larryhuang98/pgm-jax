@@ -2,9 +2,9 @@
 
 `pgm_jax/md/efield.py` (field, units, formulas), `pgm_jax/md/finite_field.py` (batched field
 replicas, analysis); `Simulation(..., efield=...)`, `FlexibleSimulation(..., efield=...)`,
-`ElecChannel(efield=...)` (gas phase); `scripts/run_md.py --efield / --efield-freq /
---displacement`; `scripts/finite_field.py` (finite-field eps runs and analysis);
-`scripts/validate_efield.py` (validation). Tests: `tests/test_efield.py`.
+`ElecChannel(efield=...)` (gas phase); `scripts/md/run_md.py --efield-V-nm / --efield-freq-per-cm /
+--displacement-V-nm`; `scripts/dielectric/finite_field.py` (finite-field eps runs and analysis);
+`scripts/validation/validate_efield.py` (validation). Tests: `tests/test_efield.py`.
 
 **In short.** A uniform external field acts on the whole pGM charge density: Gaussian charges,
 covalent (permanent) dipoles and induced dipoles, which respond to it through the induction
@@ -32,9 +32,9 @@ ff.compute(pos, H, idx, ind, efield=(E, None))  # force field: (E V/nm, dipole o
 ```
 
 ```bash
-python scripts/run_md.py -p water.prmtop -c water.rst7 --ensemble nvt --efield 0 0 0.1 ...
-python scripts/finite_field.py run --model p25 --density 1.010 --fields 0.05 0.1 0.2 --zero 2 --ns 1 -o ff/p25
-python scripts/finite_field.py analyse ff/p25.ffd --skip-ps 50      # eps per replica, per +-E pair, fluctuations
+python scripts/md/run_md.py -p water.prmtop -c water.rst7 --barostat none --efield-V-nm 0 0 0.1 ...
+python scripts/dielectric/finite_field.py run --model p25 --density-g-cm3 1.010 --fields-V-nm 0.05 0.1 0.2 --zero 2 --time-ns 1 -o ff/p25
+python scripts/dielectric/finite_field.py analyse ff/p25.ffd --skip-ps 50      # eps per replica, per +-E pair, fluctuations
 ```
 
 `FieldReplicas(sim, fields)` (finite_field.py) runs copies of a simulation in different fields as
@@ -126,7 +126,7 @@ one gains with V at the same E), up to where the response saturates.
 
 ## Validation
 
-### Single molecules, forces, energy conservation (`tests/test_efield.py`, `scripts/validate_efield.py`)
+### Single molecules, forces, energy conservation (`tests/test_efield.py`, `scripts/validation/validate_efield.py`)
 
 | Check | Result |
 |---|---|
@@ -142,7 +142,7 @@ one gains with V at the same E), up to where the response saturates.
 | dU/dE = -M and dM/dE = alpha_cell through the differentiable solve (custom_vjp); dU/dD = V eps0 E(M) | 1e-8, 1e-7 relative |
 | Strain derivative: static field adds nothing for neutral molecules; constant D matches finite differences of the molecular scaling | 1e-8; 1e-5 relative |
 | Zero field (`efield=(0, 0, 0)`) vs no field | energies and forces 1e-12, trajectories 1e-12 |
-| No field vs master (`scripts/efield_identical.py`: rigid and flexible engines, 300 steps, mixed, CPU) | bitwise identical |
+| No field vs master (`scripts/validation/efield_identical.py`: rigid and flexible engines, 300 steps, mixed, CPU) | bitwise identical |
 | MTS(inner=1) with a time-dependent field vs the ordinary step (both engines) | positions 1e-11, econs 1e-8, booked work 1e-9 |
 | Charge flux (flexible methanols with fitted-size flux), constant E and D: forces vs autodiff and vs differences with re-solved dipoles | 1e-9; 1e-6 relative |
 | Charged molecules (Na+, Cl- in water, 2 V/nm, NVE): the field drives the ions across the cell | re-wrapping booked as Q L in MDState.fshift; econs continuous |
@@ -166,7 +166,7 @@ to 0.02 % of the absorbed energy.
 
 ### Finite-field dielectric constant (512 waters, NVT, 298 K)
 
-Protocol (`scripts/finite_field.py run`): the 512-water boxes of the project (`~/project/epsp`),
+Protocol (`scripts/dielectric/finite_field.py run`): the 512-water boxes of the project (`~/project/epsp`),
 scaled to the model's NPT density in pgm_jax (pGM3P-25 1.010, base pGM 0.983, TIP3P 0.986 g/cm^3), 10
 replicas in one vmapped program on one RTX PRO 6000: +-E along z for |E| = 0.02, 0.05, 0.1, 0.2
 V/nm and two zero-field copies; rigid bodies, 2 fs, Bussi 1 ps, 0.9 nm cutoff with the LJ tail, PME

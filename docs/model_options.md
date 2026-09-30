@@ -144,8 +144,8 @@ it safe in float32.
 - **Water.** `vdw.PGM3P_GVDW` holds the manuscript's pGM3P water parameters.
 - **Long range.** The tail correction is −2π(Σ c_i)²/(3 V r_c³), with its virial.
 
-**Validation** against pmemd-pgm with 512 pGM3P waters (`scripts/validate_gvdw.py`,
-`validation/validate_gvdw.json`):
+**Validation** against pmemd-pgm with 512 pGM3P waters (`scripts/validation/validate_gvdw.py`,
+`data/validation/validate_gvdw.json`):
 
 | | pmemd VDWAALS (kcal/mol) | pGM-JAX | force RMSD (kcal/mol/Å) |
 |---|---|---|---|
@@ -153,7 +153,7 @@ it safe in float32.
 | Gauss | 868.3699 | 868.36986 | |
 
 **Liquid water with our MD engine** at the manuscript's settings (NPT, 298 K, 1 bar, 200 ps × 2
-seeds, `scripts/md_gvdw_water.py`):
+seeds, `scripts/validation/md_gvdw_water.py`):
 
 | vdW | density (g/cm³) | manuscript | speed (ns/day) |
 |---|---|---|---|
@@ -195,7 +195,7 @@ by autodiff.
 
 The class II set of the bonded study (`T.PAPER`) by default. Any of the registry's families can
 be added: Urey-Bradley, 1-3/1-4 pair terms, conjugation, hyperconjugation, hybrid-orbital
-angles, twist, and others. See `docs/howto_bonded.md` and `reports/bonded/README.md`.
+angles, twist, and others. See `docs/howto_bonded.md` and `data/reports/bonded/README.md`.
 
 ### `"nn"`: neural bonded terms (NNB), fast by construction
 

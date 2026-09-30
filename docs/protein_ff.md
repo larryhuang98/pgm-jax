@@ -44,7 +44,7 @@ Design rules that keep it reusable:
 ## From a PDB to MD
 
 ```bash
-python scripts/protein/build_amber.py 1ubq.pdb runs/protein/ubq --buffer 10   # tleap: ff19SB topology, TIP3P box
+python scripts/protein/build_amber.py 1ubq.pdb runs/protein/ubq --buffer-A 10  # tleap: ff19SB topology, TIP3P box
 ```
 
 ```python
@@ -93,7 +93,7 @@ open("md.in", "w").write(pmemd_mdin(st, asys.box, nstlim=500000, dt=0.002, irest
 ```
 
 ```bash
-python scripts/protein/write_pgm_prmtop.py ubq.prmtop ubq.inpcrd ubq_pgm.prmtop --library lib.json --hmr 3.024 --mdin ubq
+python scripts/protein/write_pgm_prmtop.py ubq.prmtop ubq.inpcrd ubq_pgm.prmtop --library lib.json --hmr-amu 3.024 --mdin ubq
 pmemd.pgm.cuda_SPFP -O -i ubq.min.in -p ubq_pgm.prmtop -c ubq.inpcrd -o min.out -r min.rst7   # then ubq.heat.in, ubq.md.in
 ```
 
@@ -122,7 +122,7 @@ What is written (details in `protein/pmemd.py`):
 Single points: pmemd-pgm on the written file against the engine at the same coordinates
 (float64, dipole tolerance 1e-9; cut 9 A, Ewald coefficient 0.4 A^-1, PME spacing <= 0.8 A, order
 6; placeholder electrostatics, `amber_template`; `scripts/protein/check_pgm_prmtop.py`,
-`validation/check_pgm_prmtop.json`). Energies are in kcal/mol, forces in kcal/mol/A. The first
+`data/validation/check_pgm_prmtop.json`). Energies are in kcal/mol, forces in kcal/mol/A. The first
 EELEC and force numbers are with each code's own PME. The second ones are with pmemd's
 influence-function factor in the engine (see below).
 
@@ -210,9 +210,9 @@ Temperature replica exchange (`pgm_jax.md.remd`, README "Replica exchange") with
 batched into one program by `jax.vmap`, so a small peptide fills the GPU:
 
 ```bash
-python scripts/protein/build_amber.py --sequence "ACE ALA ALA ALA NME" runs/remd/ala3 --buffer 8
-python scripts/protein/remd_peptide.py remd    runs/remd/ala3.prmtop runs/remd/ala3.inpcrd --out runs/remd/ala3 --replicas 8 --tmin 300 --tmax 400 --ns 4
-python scripts/protein/remd_peptide.py plain   runs/remd/ala3.prmtop runs/remd/ala3.inpcrd --out runs/remd/ala3 --ns 4
+python scripts/protein/build_amber.py --sequence "ACE ALA ALA ALA NME" runs/remd/ala3 --buffer-A 8
+python scripts/protein/remd_peptide.py remd    runs/remd/ala3.prmtop runs/remd/ala3.inpcrd --out runs/remd/ala3 --replicas 8 --tmin-K 300 --tmax-K 400 --time-ns 4
+python scripts/protein/remd_peptide.py plain   runs/remd/ala3.prmtop runs/remd/ala3.inpcrd --out runs/remd/ala3 --time-ns 4
 python scripts/protein/remd_peptide.py analyze runs/remd/ala3.prmtop runs/remd/ala3.inpcrd --out runs/remd/ala3
 python scripts/protein/remd_peptide.py bench   runs/remd/ala3.prmtop runs/remd/ala3.inpcrd --out runs/remd/ala3 --bench 1 2 4 8 16
 ```
@@ -287,7 +287,7 @@ print(rw.n_eff(th))  # resample when this drops
 
 | Check | Result |
 |---|---|
-| Export to prmtop, then sander (ACE-ALA-ALA-NME, per-instance parameters) | BOND, ANGLE, DIHED, CMAP agree to < 3e-5 kcal/mol; 1-4 VDW / EEL unchanged (`validation/check_export.json`, `scripts/bonded/check_export.py`) |
+| Export to prmtop, then sander (ACE-ALA-ALA-NME, per-instance parameters) | BOND, ANGLE, DIHED, CMAP agree to < 3e-5 kcal/mol; 1-4 VDW / EEL unchanged (`data/validation/check_export.json`, `scripts/bonded/check_export.py`) |
 | ff19SB CMAP imported as a Fourier map (same peptide, 2 CMAP terms) | approximate: off by 1.5 kcal/mol (order 3) / 0.46 kcal/mol (order 6, `cmap6`) at that conformation |
 | Alanine dipeptide phi/psi surface, grid-only fit (MAE) | Amber forms 0.67 kcal/mol; + CMAP 0.55 |
 | 29-atom peptide in heavy-atom groups: MD forces vs gradient of the gas-phase model | max error < 0.2 % of the rms force (`tests/test_md_macro.py`) |
@@ -317,7 +317,7 @@ rectangular TIP3P box (10 A buffer unless noted). `scripts/protein/bench_protein
 | MBP, 20 A buffer | 93,180 | 51.8 | 3.3 | 14 | 9.6 GiB | 83 s + 57 s |
 | MBP, 32 A buffer | 180,213 | 105.5 | 1.6 | 15 | 11.3 GiB | 217 s + 100 s |
 
-Pure pGM water with the same engine (constraints, dt 2 fs, `scripts/bench_md.py --engine
+Pure pGM water with the same engine (constraints, dt 2 fs, `scripts/benchmarks/bench_md.py --engine
 constraints --grid 36`): 12k atoms 2.14 ms/step, 41k 11.9, 98k 35.0, with 6-7 CG iterations.
 
 - Memory is not the limit: 180k atoms use about 11 GiB. The limit is time per step.
@@ -347,7 +347,7 @@ constraints --grid 36`): 12k atoms 2.14 ms/step, 41k 11.9, 98k 35.0, with 6-7 CG
   matvec fits in cache again. Ubiquitin: 34 -> 55 ns/day. DHFR (26k atoms): 22.5 -> 28. Trp-cage:
   unchanged (already in cache).
 - **Separate electrostatics cutoff** (`MDSettings().replace(cutoff=0.9, **elec_cutoff_settings(0.7))`,
-  `bench_protein.py --elec-cut 0.7`): the production form of the previous item. The real-space
+  `bench_protein.py --elec-cutoff-nm 0.7`): the production form of the previous item. The real-space
   electrostatics is cut at 0.7 nm, and LJ keeps its fitted 0.9 nm cutoff and tail correction.
   Each row is split into an electrostatic part (ubiquitin: 200 pairs per atom instead of 392,
   77 MB, in cache again) and a van der Waals part (the pairs from 0.7 to 0.9 nm), which is read
@@ -442,7 +442,7 @@ constraints, rigid water, dipole tol 1e-5, mixed precision, placeholder electros
 starts from one structure (minimised, 100 ps at 2 fs, 820 ps at 4 fs), re-equilibrates 20 ps and
 samples 400 ps every 0.5 ps:
 `bench_protein.py ubq.prmtop ubq.inpcrd --coords equil.rst7 --minimize 0 --thermostat bussi
---equil-ps 20 --prod-ps 400 --dt ... [--hmr-water 4.0]`. dU = <U> - <U>(1 fs), errors from 10
+--equil-ps 20 --prod-ps 400 --dt-fs ... [--hmr-water-amu 4.0]`. dU = <U> - <U>(1 fs), errors from 10
 block averages of 40 ps; econs drift in kT/ns per degree of freedom; ns/day from 2000 unsampled
 steps. The largest constraint error was 2.5e-14 in every run.
 

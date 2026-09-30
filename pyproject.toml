@@ -5,6 +5,10 @@ description = "The polarizable Gaussian multipole (pGM) model in JAX, validated 
 requires-python = ">=3.10"
 dependencies = ["jax", "numpy", "scipy"]
 
+[project.scripts]
+# one entry point for the main scripts (docs/api_design.md, D10); `pgm-jax --help` lists them
+pgm-jax = "pgm_jax.cli.main:main"
+
 [project.optional-dependencies]
 graph = ["networkx"]          # param.map_atoms / bond_graph
 md = ["jax-md>=0.2.29"]       # pgm_jax.md (only its simulation core is imported)

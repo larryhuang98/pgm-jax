@@ -1,4 +1,6 @@
-"""Cost per MD step of pGM driven by external codes vs the native engine (same device, same model).
+"""Measure the cost per MD step of pGM driven by external codes vs the native engine (docs/interfaces.md).
+
+Same device, same model.
 
 pGM3P-25 water (the 512-water box of the README, replicated n x n x n), rigid molecules, mixed
 precision, 9 A cutoff, PME 48^3 per 512 waters, order 6, dipole tol 1e-5, NVE, dt 1 fs:
@@ -8,8 +10,19 @@ precision, 9 A cutoff, PME 48^3 per 512 waters, order 6, dipole tol 1e-5, NVE, d
   ase      ASE VelocityVerlet + PGMCalculator + FixRigidMolecules (SHAKE / RATTLE)
   openmm   OpenMM VerletIntegrator + SETTLE + PythonForce (platforms CPU and CUDA if available)
 
-    python scripts/interfaces/bench_interfaces.py --replicate 1 2 --steps 2000 --out validation/interfaces/bench.json
+Usage:
+
+    python scripts/interfaces/bench_interfaces.py --replicate 1 2 --steps 2000
+        --out data/validation/interfaces/bench.json
+    python scripts/interfaces/bench_interfaces.py --help
+
+Inputs: PGM_GVDW_DATA (pgm_jax.paths); ASE and OpenMM when installed (otherwise --skip them).
+Outputs: the JSON (--out, default data/validation/interfaces/bench.json); printed timings.
+Units: --dt-fs fs; ms per step.
+Runtime: GPU, minutes per case.  Sets jax_enable_x64.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -19,22 +32,22 @@ import time
 import jax
 import numpy as np
 
-from pgm_jax.cli.args import setup_logging
+from pgm_jax.cli.args import add_dt_arg, setup_logging
 from pgm_jax.interfaces import PGMEngine
 from pgm_jax.md.box import box_from_cell
 from pgm_jax.md.forcefield import MDSettings
 from pgm_jax.md.io import read_coordinates
 from pgm_jax.md.simulation import Simulation
 from pgm_jax.param import read_prmtop_molecules
-from pgm_jax.paths import resource
+from pgm_jax.paths import pgm3p25_files, repo_path
 from pgm_jax.system import System
 
 jax.config.update("jax_enable_x64", True)
-TOP = resource("gvdw_data", "topology/rayl_512_v2.prmtop")
-RST = resource("gvdw_data", "inputs/lj/inpcrd.restrt")
+TOP, RST = pgm3p25_files()
 
 
-def system(n):
+def system(n: int) -> tuple[System, np.ndarray, np.ndarray, np.ndarray, MDSettings]:
+    """Return the 512-water box replicated n x n x n: system, positions [nm], velocities [nm/ps], box [nm], settings."""
     mols = read_prmtop_molecules(TOP)
     xyz, vel, box = read_coordinates(RST)
     H = box_from_cell(*box) * 0.1
@@ -45,21 +58,25 @@ def system(n):
     return System(mols * len(shifts)), pos, v, H * n, s
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--replicate", type=int, nargs="+", default=[1])
-    ap.add_argument("--steps", type=int, default=2000)
-    ap.add_argument("--dt", type=float, default=0.001)
-    ap.add_argument("--skip", nargs="*", default=[])
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line, time every driver and write the JSON (see the module docstring)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--replicate", type=int, nargs="+", default=[1], help="replication factors n (n^3 x 512 waters)")
+    ap.add_argument("--steps", type=int, default=2000, help="timed steps")
+    add_dt_arg(ap, 1.0)
+    ap.add_argument("--skip", nargs="*", default=[], help="drivers to skip (native, engine, ase, openmm)")
     ap.add_argument("--profile", action="store_true", help="cProfile of 100 ASE steps")
-    ap.add_argument("--out", default="validation/interfaces/bench.json")
-    a = ap.parse_args()
+    ap.add_argument(
+        "-o", "--out", default=repo_path("data", "validation", "interfaces", "bench.json"), help="JSON output"
+    )
+    a = ap.parse_args(argv)
     setup_logging()
+    dt = a.dt_fs / 1000
     res = {"device": str(jax.devices()[0]), "steps": a.steps}
     for n in a.replicate:
         sysm, pos, vel, H, s = system(n)
         r = {"atoms": sysm.n}
-        sim = Simulation(sysm, pos, H, s, dt=a.dt, thermostat=None, velocities=vel, log=None)
+        sim = Simulation(sysm, pos, H, s, dt=dt, thermostat=None, velocities=vel, log=None)
         sim.advance(100)
         t0 = time.perf_counter()
         frames = []
@@ -69,7 +86,7 @@ def main():
                 frames.append(sim.positions())
         r["native_ms"] = 1e3 * (time.perf_counter() - t0) / (a.steps // 100 * 100)
         # the engine alone on consecutive MD frames: run a short native trajectory with frames every step
-        sim1 = Simulation(sysm, frames[-1], H, s, dt=a.dt, thermostat=None, velocities=sim.velocities(), log=None)
+        sim1 = Simulation(sysm, frames[-1], H, s, dt=dt, thermostat=None, velocities=sim.velocities(), log=None)
         fr = []
         for _k in range(300):
             sim1.advance(1)
@@ -101,7 +118,7 @@ def main():
             atoms.set_constraint(rigid_constraints(sysm))
             atoms.calc = PGMCalculator(e2)
             atoms.set_velocities(vel0 * 0.01 / units.fs)
-            dyn = VelocityVerlet(atoms, a.dt * 1000 * units.fs)
+            dyn = VelocityVerlet(atoms, dt * 1000 * units.fs)
             dyn.run(50)
             e2.stats.update(calls=0, time=0.0)
             t0 = time.perf_counter()
@@ -140,7 +157,7 @@ def main():
                 for p in [x for x in ("CPU", "CUDA") if x in names]:
                     e3 = PGMEngine(sysm, pos0, H, s)
                     om = PGMOpenMM(e3)
-                    integ = openmm.VerletIntegrator(a.dt * unit.picoseconds)
+                    integ = openmm.VerletIntegrator(dt * unit.picoseconds)
                     try:
                         ctx = openmm.Context(om.system(rigid=True), integ, openmm.Platform.getPlatformByName(p))
                     except Exception as err:  # noqa: BLE001  (CUDA next to JAX on an exclusive GPU)

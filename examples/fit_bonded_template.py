@@ -1,16 +1,27 @@
 """Fit bonded terms for one molecule of the bonded data set and export a FlexibleTemplate for MD.
 
+The fit uses pGM electrostatics with all pairs and LJ from 1-5 pairs on, i.e. exactly the model
+the MD engine runs, so the template is MD-ready.  With --flux the charges and covalent dipoles
+depend on the bond lengths (BondedSettings.flux; md/flux.py runs it in MD); --wmu weights the
+gas-phase dipoles in the loss, which the flux parameters mostly affect.
+
+Usage:
+
     python examples/fit_bonded_template.py methanol                      # class II set (T.PAPER)
     python examples/fit_bonded_template.py ethanol --families diag+ub --out runs/flex/ethanol_ub.flex
     python examples/fit_bonded_template.py methanol --flux 1 --wmu 1 --maxiter 4000   # + charge flux
+    python examples/fit_bonded_template.py --help
 
-The molecule needs data/bonded/molecules/<name>.json (topology), data/bonded/params/<name>.json
-(pGM charges, covalent dipoles, polarizabilities and LJ) and DFT-labelled frames
+Inputs: data/bonded/molecules/<name>.json (topology), data/bonded/params/<name>.json (pGM charges,
+covalent dipoles, polarizabilities and LJ) and DFT-labelled frames
 (data/bonded/dft/<name>__train500__*.npz, ...__test298__*.npz); docs/howto_bonded.md explains how
-to make them for a new molecule.  The fit uses pGM electrostatics with all pairs and LJ from 1-5
-pairs on, i.e. exactly the model the MD engine runs, so the template is MD-ready.  With --flux the
-charges and covalent dipoles depend on the bond lengths (BondedSettings.flux; md/flux.py runs it in
-MD); --wmu weights the gas-phase dipoles in the loss, which the flux parameters mostly affect."""
+to make them for a new molecule.
+Outputs: the template (default runs/flex/<name>.flex); the test metrics on stdout.
+Units: energy MAE [kcal/mol], force MAE [kcal/mol/A] (Fitter.metrics).
+Runtime: CPU, a minute to several minutes.  Sets jax_enable_x64.
+"""
+
+from __future__ import annotations
 
 import argparse
 import os
@@ -24,35 +35,48 @@ from pgm_jax.bonded.model import BondedModel, BondedSettings
 from pgm_jax.bonded.study.data import load
 from pgm_jax.bonded.study.families import FAMILY_SETS
 from pgm_jax.md.flexible import FlexibleTemplate
+from pgm_jax.paths import repo_path
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 jax.config.update("jax_enable_x64", True)
-ap = argparse.ArgumentParser()
-ap.add_argument("name")
-ap.add_argument("--families", default="paper", help="a key of FAMILY_SETS or families joined by '+'")
-ap.add_argument("--lj14", type=float, default=0.0, help="scale of 1-4 LJ (0: LJ from 1-5 pairs on only)")
-ap.add_argument("--maxiter", type=int, default=20000)
-ap.add_argument("--flux", type=int, default=0, help="1: charge + covalent-dipole flux; 2: + quadratic dipole flux")
-ap.add_argument("--wmu", type=float, default=0.0, help="weight of the molecular dipoles in the loss")
-ap.add_argument("--out", default="")
-a = ap.parse_args()
-fams = FAMILY_SETS.get(a.families, tuple(a.families.split("+")))
-unknown = [f for f in fams if f not in T.REGISTRY]
-if unknown:
-    raise SystemExit(f"unknown families {unknown}; available: {sorted(T.REGISTRY)}")
-specs, data = load([a.name])
-if not specs:
-    raise SystemExit(f"no DFT frames for {a.name}")
-model = BondedModel(specs, BondedSettings(families=fams, lj14_scale=a.lj14, flux=a.flux))
-fit = Fitter(model, {0: {"train": data[0]["train"], "test": data[0]["test"]}}, w_mu=a.wmu)
-t0 = time.time()
-P = fit.fit(model.init_params(), maxiter=a.maxiter, verbose=False)
-m = fit.metrics(P, "test")[0]
-print(
-    f"{a.name}: {len(fams)} families, fit {time.time() - t0:.0f} s; 298 K test frames: "
-    + ", ".join(f"{k} {v:.3f}" for k, v in m.items() if isinstance(v, float))
-)
-out = a.out or os.path.join(ROOT, f"runs/flex/{a.name}.flex")
-os.makedirs(os.path.dirname(out), exist_ok=True)
-FlexibleTemplate.from_fit(model, P).save(out)
-print("template:", out)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Return the argument parser (see the module docstring)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("name", help="molecule of the bonded data set")
+    ap.add_argument("--families", default="paper", help="a key of FAMILY_SETS or families joined by '+'")
+    ap.add_argument("--lj14", type=float, default=0.0, help="scale of 1-4 LJ (0: LJ from 1-5 pairs on only)")
+    ap.add_argument("--maxiter", type=int, default=20000, help="fit iterations")
+    ap.add_argument("--flux", type=int, default=0, help="1: charge + covalent-dipole flux; 2: + quadratic dipole flux")
+    ap.add_argument("--wmu", type=float, default=0.0, help="weight of the molecular dipoles in the loss")
+    ap.add_argument("-o", "--out", default="", help="template file (default runs/flex/<name>.flex)")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line, fit, print the test metrics and save the template."""
+    a = build_parser().parse_args(argv)
+    fams = FAMILY_SETS.get(a.families, tuple(a.families.split("+")))
+    unknown = [f for f in fams if f not in T.REGISTRY]
+    if unknown:
+        raise SystemExit(f"unknown families {unknown}; available: {sorted(T.REGISTRY)}")
+    specs, data = load([a.name])
+    if not specs:
+        raise SystemExit(f"no DFT frames for {a.name}")
+    model = BondedModel(specs, BondedSettings(families=fams, lj14_scale=a.lj14, flux=a.flux))
+    fit = Fitter(model, {0: {"train": data[0]["train"], "test": data[0]["test"]}}, w_mu=a.wmu)
+    t0 = time.time()
+    P = fit.fit(model.init_params(), maxiter=a.maxiter, verbose=False)
+    m = fit.metrics(P, "test")[0]
+    print(
+        f"{a.name}: {len(fams)} families, fit {time.time() - t0:.0f} s; 298 K test frames: "
+        + ", ".join(f"{k} {v:.3f}" for k, v in m.items() if isinstance(v, float))
+    )
+    out = a.out or repo_path("runs", "flex", f"{a.name}.flex")
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    FlexibleTemplate.from_fit(model, P).save(out)
+    print("template:", out)
+
+
+if __name__ == "__main__":
+    main()

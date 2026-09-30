@@ -1,30 +1,57 @@
-"""Figures and tables for reports/bonded/ from runs/bonded/results/*.json."""
+"""Write the figures and tables of the bonded-study report from runs/bonded/results/*.json.
 
+Prints the main table and the leave-one-out summary, writes the figures (scans, L1 path,
+leave-one-out transfer, bonded forms, dipeptide surface, formamide twist) and, with --fill,
+replaces the marked table blocks (<!-- NAME --> ... <!-- /NAME -->) of the report's README.md.
+Results that are missing are skipped.
+
+Usage:
+
+    python scripts/bonded/report.py [--fill]
+    python scripts/bonded/report.py --help
+
+Inputs: runs/bonded/results/*.json (scripts/bonded/experiments.py, md_check.py, x6_dipeptide.py,
+loo_groups.py, ...).
+Outputs: data/reports/bonded/*.png; with --fill the table blocks of data/reports/bonded/README.md.
+Units: energy MAE [kcal/mol], force MAE [kcal/mol/A], dipole RMSE [D], ESP RMSE [mhartree/e].
+Runtime: seconds.  Needs matplotlib.
+"""
+
+from __future__ import annotations
+
+import argparse
 import glob
 import json
 import os
-import sys
 
-import matplotlib
 import numpy as np
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+from pgm_jax.paths import repo_path
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-RES = os.path.join(ROOT, "runs/bonded/results")
-OUT = os.path.join(ROOT, "reports/bonded")
-os.makedirs(OUT, exist_ok=True)
+RES = repo_path("runs", "bonded", "results")
+OUT = repo_path("data", "reports", "bonded")
 EXCL = {"methanethiol"}
 C = {"pgm": "#2f6db3", "cls": "#d4843a", "amber": "#8c8c8c", "flux": "#3a9b6b"}
 
 
+def _plt():
+    """Return matplotlib.pyplot with the Agg backend (imported on first use)."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    return plt
+
+
 def load(n):
+    """Return the "molecules" records of runs/bonded/results/<n>.json, None if the file is missing."""
     p = os.path.join(RES, f"{n}.json")
     return json.load(open(p))["molecules"] if os.path.exists(p) else None
 
 
 def smax(v):
+    """Return the worst relaxed-scan error of one molecule [kcal/mol] (inf: relaxation failed; nan: no scans)."""
     xs = []
     for x in v["scans"].values():
         if "error" in x:
@@ -38,6 +65,11 @@ def smax(v):
 
 
 def means(n, mols=None):
+    """Return the means over the molecules of a result (EXCL left out; mols: only these), None if missing.
+
+    Keys: E and F (test energy / force MAE), S (worst scan error, finite ones), mu (dipole RMSE [D]),
+    P (parameters of the fitted group), n (molecules).
+    """
     d = load(n)
     if d is None:
         return None
@@ -54,6 +86,7 @@ def means(n, mols=None):
 
 
 def table_main():
+    """Return the markdown table of the bonded forms against the electrostatics (b2_* runs)."""
     rows = [
         ("class I (diag)", "b2_diag_pgm", "b2_diag_cls", "b2_diag_amber"),
         ("class II (paper)", "b2_paper_pgm", "b2_paper_cls", "b2_paper_amber"),
@@ -96,6 +129,7 @@ def table_main():
 
 
 def fig_scans():
+    """Write scans.png: DFT and force-field torsion profiles of nine molecules (b2_* runs)."""
     runs = [
         ("b2_diag_amber", "class I, Amber-like", C["amber"], "--"),
         ("b2_paper_cls", "class II, classical", C["cls"], "-"),
@@ -115,6 +149,7 @@ def fig_scans():
         "methylamine",
         "formamide",
     ]
+    plt = _plt()
     fig, axs = plt.subplots(3, 3, figsize=(10, 8.5))
     for ax, m in zip(axs.ravel(), mols):
         sc = D["b2_paper_pgm"][m]["scans"].get("scan0")
@@ -139,6 +174,7 @@ def fig_scans():
 
 
 def fig_l1():
+    """Write l1_path.png: test force MAE against the active linear terms along the L1 paths (l1_* runs)."""
     fs = [
         ("l1_paper_pgm", "class II, pGM", C["pgm"]),
         ("l1_paper_cls", "class II, classical", C["cls"]),
@@ -156,6 +192,7 @@ def fig_l1():
     if not D:
         return
     mols = list(next(iter(D.values())).keys())
+    plt = _plt()
     fig, axs = plt.subplots(2, 3, figsize=(10, 6))
     for ax, m in zip(axs.ravel(), mols):
         for n, lab, col in fs:
@@ -173,6 +210,7 @@ def fig_l1():
 
 
 def loo():
+    """Return the leave-one-out table (loo0_* runs) and its rows {form: {molecule: {elec: (E, F)}}}."""
     rows = {}
     for f in sorted(glob.glob(os.path.join(RES, "loo0_*.json"))):
         tag = os.path.basename(f)[5:-5]
@@ -199,9 +237,11 @@ def loo():
 
 
 def fig_loo(rows):
+    """Write transfer_loo.png: held-out energy MAE per molecule, pGM against classical, from the rows of loo()."""
     fams = [f for f in ("diag", "diag+ub", "paper") if f in rows]
     if not fams:
         return
+    plt = _plt()
     fig, axs = plt.subplots(1, len(fams), figsize=(4.2 * len(fams), 4.2), sharey=True)
     axs = np.atleast_1d(axs)
     for ax, fam in zip(axs, fams):
@@ -230,12 +270,14 @@ def fig_loo(rows):
 
 
 def fig_forms():
+    """Write forms.png: mean test energy and force MAE of the bonded forms for each electrostatics (b2_* runs)."""
     rows = [
         ("class I", "b2_diag"),
         ("class I + UB + 1-4 pair", "b2_diagub"),
         ("class II", "b2_paper"),
         ("class II + ext. + pairs", "b2_all"),
     ]
+    plt = _plt()
     fig, axs = plt.subplots(1, 2, figsize=(9, 3.6))
     for ax, key, lab in ((axs[0], "E", "test energy MAE (kcal/mol)"), (axs[1], "F", "test force MAE (kcal/mol/A)")):
         for k, (_name, base) in enumerate(rows):
@@ -264,6 +306,7 @@ X6_LABELS = {
 
 
 def fig_dipeptide(names=("x6_paper_pgm", "x6_all_pgm", "x6_paper_amber", "x6_paper_cls")):
+    """Write dipeptide.png: the DFT and force-field dipeptide phi/psi surfaces (x6 runs, clipped at 7 kcal/mol)."""
     ds = [
         (n, json.load(open(os.path.join(RES, f"{n}.json"))))
         for n in names
@@ -276,11 +319,13 @@ def fig_dipeptide(names=("x6_paper_pgm", "x6_all_pgm", "x6_paper_amber", "x6_pap
     g = np.arange(-180, 180, 15)
 
     def grid(v):
+        """Return the values v on the 24 x 24 phi/psi grid (nan where missing)."""
         Z = np.full((len(g), len(g)), np.nan)
         for (p, q), z in zip(ang, v):
             Z[np.searchsorted(g, p), np.searchsorted(g, q)] = z
         return Z
 
+    plt = _plt()
     fig, axs = plt.subplots(1, 1 + len(ds), figsize=(3.6 * (1 + len(ds)), 3.4))
     for ax, (title, v) in zip(axs, [("DFT // MACE-OFF geometries", ref)] + [(n, d["ff"]) for n, d in ds]):
         im = ax.contourf(g, g, np.clip(grid(v).T, 0, 7), levels=np.arange(0, 7.5, 0.5), cmap="viridis")
@@ -312,11 +357,13 @@ ELEC_NAMES = [
 
 
 def _loo_json():
+    """Return runs/bonded/results/loo_groups.json ({} if missing)."""
     p = os.path.join(RES, "loo_groups.json")
     return json.load(open(p)) if os.path.exists(p) else {}
 
 
 def table_loo_groups():
+    """Return the markdown table of the leave-one-out transfer per held-out group (loo_groups.json)."""
     d = _loo_json()
     lines = [
         "| Bonded form (element-typed) | Held-out group | pGM, all pairs | classical, excluded | pGM without 1-2/1-3 |",
@@ -326,6 +373,7 @@ def table_loo_groups():
         for g, v in d.get(fam, {}).items():
 
             def cell(el):
+                """Return "E / F" of one electrostatics of the group, "" if missing."""
                 return f"{v[el][0]:.2f} / {v[el][1]:.1f}" if el in v else ""
 
             lines.append(f"| {lab} | {g} | {cell('pgm')} | {cell('cls')} | {cell('x13')} |")
@@ -336,6 +384,7 @@ def table_loo_groups():
 
 
 def table_loo_elec():
+    """Return the markdown table of the leave-one-out energy MAE per electrostatics variant (loo_groups.json)."""
     d = _loo_json()
     groups = ["carbonyl/carboxyl", "amine/ammonium/phosphate", "other (alkane, alcohol, halides)", "all 12"]
     lines = [
@@ -355,6 +404,7 @@ def table_loo_elec():
 
 
 def table_md():
+    """Return the markdown table of the gas-phase MD checks (md_* runs of scripts/bonded/md_check.py)."""
     runs = [
         ("class II, pGM", "md_paper_pgm_298"),
         ("class II, pGM", "md_paper_pgm_500"),
@@ -377,6 +427,7 @@ def table_md():
         tot = sum(len(v["stable"]) for v in ms.values())
 
         def g(k):
+            """Return the median of one quantity over the molecules that have it."""
             return np.median([v[k] for v in ms.values() if k in v])
 
         lines.append(
@@ -390,6 +441,7 @@ def table_md():
 
 
 def table_dipeptide():
+    """Return the markdown table of the dipeptide surface errors of the bonded forms (x6_* runs)."""
     names = [
         ("class I", "diag"),
         ("class I + twist", "diagtw"),
@@ -424,6 +476,7 @@ def table_dipeptide():
 
 
 def table_rigid():
+    """Return the markdown table of the per-molecule fits with rigid electrostatics (a4_* runs), "" if none."""
     cols = [("diag", "pgm"), ("diag", "cls"), ("diag", "amber"), ("paper", "pgm"), ("paper", "cls"), ("paper", "amber")]
     D = {c: load(f"a4_{c[0]}_{c[1]}") for c in cols}
     if all(v is None for v in D.values()):
@@ -437,6 +490,7 @@ def table_rigid():
     for m in mols:
 
         def cell(c):
+            """Return "E / F" of one column for the molecule, "" if missing."""
             return f"{D[c][m]['test']['E_MAE']:.2f} / {D[c][m]['test']['F_MAE']:.1f}" if D[c] and m in D[c] else ""
 
         dip = (
@@ -451,6 +505,7 @@ def table_rigid():
 
 
 def fig_twist():
+    """Write twist_formamide.png: formamide NH2 rotation profiles with and without the twist term."""
     runs = [
         ("b2_paper_pgm", "class II", C["amber"], "--"),
         ("b2_papertw_pgm", "class II + twist", C["pgm"], "-"),
@@ -460,6 +515,7 @@ def fig_twist():
     if any(v is None for v in D.values()):
         return
     sc = D["b2_paper_pgm"]["formamide"]["scans"]["scan0"]
+    plt = _plt()
     fig, ax = plt.subplots(figsize=(5, 3.4))
     ax.plot(sc["angle"], sc["profile_ref"], "k.", label="DFT")
     for n, lab, col, ls in runs:
@@ -476,6 +532,7 @@ def fig_twist():
 
 
 def table_qfit():
+    """Return the markdown table of the fitted charges and bond-charge increments (joint_diag_* runs)."""
     runs = [
         ("ESP charges per molecule (fixed)", "joint_diag_pgm"),
         ("typed charges, E/F/dipole fit", "joint_diag_q1_pgm"),
@@ -499,6 +556,7 @@ def table_qfit():
         ms = [m for m in d if m not in EXCL]
 
         def g(k):
+            """Return the mean of one test metric over the molecules (nan where missing)."""
             return np.mean([d[m]["test"].get(k, np.nan) for m in ms])
 
         esp = g("esp_RMSE_mEh")
@@ -516,6 +574,7 @@ def table_qfit():
 
 
 def table_x6_ablation():
+    """Return the markdown table of the dipeptide surface errors for the electrostatics exclusion variants."""
     rows = [
         ("all (pGM)", "all", "x6_paper_pgm"),
         ("1-2/1-3 excluded", "all", "x6_paper_p13"),
@@ -538,6 +597,7 @@ def table_x6_ablation():
 
 
 def table_x6_nogrid():
+    """Return the markdown table of the dipeptide surface errors when trained on MD frames only (x6ng_* runs)."""
     rows = [("class I", "diag"), ("class II", "paper")]
     lines = ["| Bonded form | pGM, all pairs | classical, excluded | Amber-like |", "| --- | --- | --- | --- |"]
     for lab, tag in rows:
@@ -570,6 +630,7 @@ NEW_FORMS = [
 
 
 def table_new_forms():
+    """Return the markdown table comparing the bonded forms of NEW_FORMS (per molecule, transfer, dipeptide)."""
     d = _loo_json()
     lines = [
         "| Bonded form | Parameters per molecule | Energy MAE | Force MAE | Relaxed-scan max | Transfer (leave one "
@@ -578,6 +639,7 @@ def table_new_forms():
     ]
 
     def x6(n):
+        """Return the held-out half surface MAE of an x6 run formatted, "" if missing."""
         return (lambda p: f"{json.load(open(p))['test_half']['MAE']:.2f}" if os.path.exists(p) else "")(
             os.path.join(RES, f"{n}.json")
         )
@@ -606,6 +668,7 @@ def table_new_forms():
 
 
 def table_hyb_elec():
+    """Return the markdown table of the angle terms against the electrostatics (held-out energy MAE per group)."""
     d = _loo_json()
     groups = ["carbonyl/carboxyl", "amine/ammonium/phosphate", "other (alkane, alcohol, halides)", "all 12"]
     lines = [
@@ -653,7 +716,12 @@ def fill_readme():
     open(p, "w").write(s)
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line, print the tables and write the figures (see the module docstring)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--fill", action="store_true", help="also fill the table blocks of the report's README.md")
+    a = ap.parse_args(argv)
+    os.makedirs(OUT, exist_ok=True)
     print(table_main())
     fig_scans()
     fig_l1()
@@ -663,5 +731,9 @@ if __name__ == "__main__":
     fig_forms()
     fig_dipeptide()
     fig_twist()
-    if "--fill" in sys.argv:
+    if a.fill:
         fill_readme()
+
+
+if __name__ == "__main__":
+    main()

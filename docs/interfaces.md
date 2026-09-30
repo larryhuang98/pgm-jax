@@ -177,10 +177,10 @@ parameter upload per step: unusable with OpenMM's integrators and the barostat. 
 ## Validation
 
 `scripts/interfaces/validate_ase.py`, `validate_openmm.py`, `validate_ipi.py`; results in
-`validation/interfaces/*.json`. One RTX PRO 6000 Blackwell (JAX on the GPU; OpenMM's integrator on
+`data/validation/interfaces/*.json`. One RTX PRO 6000 Blackwell (JAX on the GPU; OpenMM's integrator on
 its CPU platform, see Limits). The 512-water pGM box of the README (rigid model: pGM3P-25 water,
 9 A cutoff, PME, dipole tol 1e-5, mixed precision, dt 1 fs, 298 K) for ASE and OpenMM; the flexible
-pGM water of the PIMD work (`validation/interfaces/pgm_water_flex.flex`, q-TIP4P/F monomer surface,
+pGM water of the PIMD work (`data/validation/interfaces/pgm_water_flex.flex`, q-TIP4P/F monomer surface,
 dt 0.25 fs) for i-PI, which has no rigid-body integrator. Native = `Simulation` /
 `FlexibleSimulation` / native PIMD (`pgm_jax/md/pimd.py`, PIMD branch) from the same state.
 
@@ -233,7 +233,7 @@ per force evaluation), the others are complete MD steps.
   difference is the latency of one synchronous round trip and a few small kernels (molecules made
   whole, list centres): +0.3 ms per step at 1,536 atoms and +1.0 ms at 12,288. On the CPU the
   difference is small: OpenMM + engine 46.7 ms per step vs native 40.3 (16 cores, 1,536 atoms;
-  NPT density 1.0197 +- 0.0027 vs 1.0179 +- 0.0033, `validation/interfaces/openmm_cpu.json`).
+  NPT density 1.0197 +- 0.0027 vs 1.0179 +- 0.0033, `data/validation/interfaces/openmm_cpu.json`).
 - **OpenMM** adds its integrator and SETTLE on the CPU platform plus the State -> numpy conversion
   (0.02-0.03 ms).
 - **ASE** adds Python per step: `FixRigidMolecules` (SHAKE / RATTLE, vectorised numpy),

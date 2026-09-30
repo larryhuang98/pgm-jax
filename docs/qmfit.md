@@ -5,7 +5,7 @@ polarizabilities, Lennard-Jones or GVDW) directly to quantum-chemical data of mo
 interaction energies, SAPT components, many-body (2- and 3-body) energies, rigid-body forces and
 monomer properties. `data/qm/water_qm.json` is a water reference set built for it (psi4, 757
 dimers, 77 trimers to pentamers, the WATER27 hexamers and octamers), and
-`scripts/qmfit/fit_water_qm.py` fits and validates pGM water against it.
+`scripts/qm/fit_water_qm.py` fits and validates pGM water against it.
 
 ## What maps to what
 
@@ -32,7 +32,7 @@ own monomers superposed (`qmfit.superpose_monomers`).
 
 | set | records | where the geometries come from |
 |---|---|---|
-| `smith` | 6 | Smith-type dimer stationary structures (Cs open = the minimum, Cs planar, Ci and C2h cyclic, C2v bifurcated, planar C2v bifurcated), optimized at MP2/aug-cc-pVDZ within their point group (`scripts/qmfit/smith_opt.py`; the C2 cyclic start converged onto C2h) |
+| `smith` | 6 | Smith-type dimer stationary structures (Cs open = the minimum, Cs planar, Ci and C2h cyclic, C2v bifurcated, planar C2v bifurcated), optimized at MP2/aug-cc-pVDZ within their point group (`scripts/qm/smith_opt.py`; the C2 cyclic start converged onto C2h) |
 | `radial` | 37 | O-O scans of four of them, 2.4-8 A |
 | `angular` | 20 | around the minimum: acceptor flap (-60..100 deg), donor bend (+-40 deg), acceptor twist (30..180 deg) |
 | `liquid2` | 235 | pairs from pGM liquid snapshots (p25_4096, p25_512, base_4096 restarts), stratified in R_OO from 2.4 to 6.5 A |
@@ -40,7 +40,7 @@ own monomers superposed (`qmfit.superpose_monomers`).
 | `water27` | 10 | the (H2O)n clusters of WATER27 (GMTKN55): dimer, cyclic trimer, tetramer, pentamer, the prism, cage, book and cyclic hexamers, D2d and S4 octamers |
 | `pairs` | 458 | every pair of every cluster with n >= 3 (2-body corrections, and more liquid-like dimers) |
 
-Levels (psi4 1.11, frozen core, density fitting; `scripts/qmfit/psi4_clusters.py`):
+Levels (psi4 1.11, frozen core, density fitting; `scripts/qm/psi4_clusters.py`):
 
 - dimers: SAPT0/jun-cc-pVDZ (elst, exch, ind incl. dHF, disp; sSAPT0 too), counterpoise-corrected
   MP2/aug-cc-pVTZ and aug-cc-pVQZ (HF/aQZ + X^-3 extrapolated correlation = MP2/CBS) and
@@ -127,9 +127,9 @@ E_min, X_min = rigid_minimize(cm, test.records[0]["xyz_A"], P)  # the model's ow
 - `QMFit.fit()` minimizes |r(theta)|^2 by trust-region reflective least squares (bounds) with the
   Jacobian from `jax.jacfwd`; `QMFit.loss` is differentiable for other optimizers.
 - `evaluate`, `error_table`, `format_table`: predictions and error statistics per set.
-- Scripts: `scripts/qmfit/smith_opt.py`, `build_water_clusters.py`, `psi4_clusters.py` (QM worker;
+- Scripts: `scripts/qm/smith_opt.py`, `build_water_clusters.py`, `psi4_clusters.py` (QM worker;
   any number of slurm workers share one queue through atomic claims and can be restarted),
-  `collect_water_qm.py` (dataset), `fit_water_qm.py` (`baseline`, `fit NAME [--free ...] [--w ...]
+  `collect_water_qm.py` (dataset), `fit_water_qm.py` (`baseline`, `fit NAME [--free ...] [--weights ...]
   [--vdw gvdw] [--init ...]`, `summary`).
 
 ## Validation: pGM water against the set
@@ -141,10 +141,10 @@ tetramers, 3 pentamers, 246 pairs of those and of the WATER27 clusters), the 6 S
 structures and the 10 WATER27 clusters. Starting point for every fit: pGM3P-25
 (`~/project/epsp/p25_512.prmtop`); baselines pGM3P-25 and the base parameters
 (`~/project/epsp/base/base_512.prmtop`, evaluated with their own rigid geometry on the same
-clusters). Errors in kcal/mol (forces kcal/mol/A). `validation/qmfit/{final,combo,probe}.sh`
+clusters). Errors in kcal/mol (forces kcal/mol/A). `data/validation/qmfit/{final,combo,probe}.sh`
 reproduce every row (run from the clone root; each fit writes `runs/qmfit/<name>.json` and
 `data/qm/fits/<name>.json`, `fit_water_qm.py summary` prints the table); the reports are kept in
-`validation/qmfit/`.
+`data/validation/qmfit/`.
 
 Columns: RMSE of the interaction energy on the training and test sets and MAE on the test set;
 test RMSE of the SAPT components (dimers) and of the 3-body energies (clusters); the model's
@@ -304,7 +304,7 @@ represent SAPT exchange + dispersion, so they are not recommended despite their 
   follow SAPT exchange + dispersion; per-atom GVDW (O and H) is available in pgm_jax
   (`GVDWChannel`, `PeriodicGVDW`) but not in pmemd-pgm, which takes one global GVDW parameter set.
 - Gas-phase fits only: the fitted parameters were not tested in the liquid (density, heat of
-  vaporization, dielectric constant). `scripts/fit_liquid.py` gives liquid-property gradients;
+  vaporization, dielectric constant). `scripts/fitting/fit_liquid.py` gives liquid-property gradients;
   a joint objective is the sum of the two (the QM residuals of `QMFit.residuals` and the liquid
   Gauss-Newton rows).
 - Hexamer isomer order is a small difference (0.2-2.2 kcal/mol) between large numbers; it is not a

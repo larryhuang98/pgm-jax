@@ -95,11 +95,11 @@ combine([(1.0, a), (-1.0, b)])      # relative / transfer free energies, log P (
 ```
 
 ```bash
-python scripts/solvation_free_energy.py run --model pgm -o runs/fg/w --grad             # + gradients
-python scripts/solvation_free_energy.py run ... --grad --solute-scale charge=1.1,eps=0.9  # scaled solute
-python scripts/solvation_free_energy.py run ... --start-from runs/fe/pgm.fe.chk --elec-only   # no NPT; 8 windows
-python scripts/solvation_free_energy.py analyze runs/fg/w_fe.npz --discard-ps 100       # prints the gradients
-python scripts/fe_gradient_check.py --group charge runs/fg/a_fe.npz runs/fg/b_fe.npz runs/fg/c_fe.npz
+python scripts/free_energy/solvation_free_energy.py run --model pgm -o runs/fg/w --grad             # + gradients
+python scripts/free_energy/solvation_free_energy.py run ... --grad --solute-scale charge=1.1,eps=0.9  # scaled solute
+python scripts/free_energy/solvation_free_energy.py run ... --start-from runs/fe/pgm.fe.chk --elec-only   # no NPT; 8 windows
+python scripts/free_energy/solvation_free_energy.py analyze runs/fg/w_fe.npz --discard-ps 100       # prints the gradients
+python scripts/free_energy/fe_gradient_check.py --group charge runs/fg/a_fe.npz runs/fg/b_fe.npz runs/fg/c_fe.npz
 ```
 
 `analyze` prints the hydration free energy, its derivatives along the scale directions of the
@@ -130,7 +130,7 @@ DeltaG_elec(s), which differs from the hydration free energy by the (s-independe
 stage. Settings of `docs/free_energy.md` (512 waters, PME 48^3, mixed precision, 2 fs, Bussi, samples
 and Hamiltonian exchange every 1 ps); the windows start from the configurations of the 2-ns
 production run at s = 1 (`--start-from`), 0.6 ns per window, the first 100 ps discarded (500
-samples per window); `scripts/fe_gradient_check.py`.
+samples per window); `scripts/free_energy/fe_gradient_check.py`.
 
 | s | G(s) (MBAR, kcal/mol) | dG/ds MBAR-weighted | dG/ds end states |
 |---|---|---|---|

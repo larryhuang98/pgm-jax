@@ -197,7 +197,7 @@ def test_flux_differentiable_path(box):
         dn = {**theta0, "flux": {**theta0["flux"], "jb": theta0["flux"]["jb"].at[j].add(-h)}}
         fd = (float(E(up)) - float(E(dn))) / (2 * h)
         assert abs(fd - float(gE[j])) < 1e-6 * max(1.0, abs(fd)), (j, fd, float(gE[j]))
-    # reweighting / liquid fits (scripts/fit_liquid.py): dU/dtheta at the converged dipoles, Hellmann-Feynman
+    # reweighting / liquid fits (scripts/fitting/fit_liquid.py): dU/dtheta at the converged dipoles, Hellmann-Feynman
     mu = ff.compute(pos, H, idx, ff.init_induction(), theta0).induction.mu
     gU = jax.grad(lambda th: ff.energy_fixed_mu(pos, H, mu, idx, ff._atoms(th))[0])(theta0)["flux"]["jb"]
     assert np.allclose(gU, gE, rtol=1e-8, atol=1e-8), (gU, gE)

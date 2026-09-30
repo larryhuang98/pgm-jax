@@ -68,7 +68,7 @@ def test_normal_modes_and_contraction():
 
 def test_potential_engine_contraction():
     """Contracted soft potential: forces are -dU/dq, P' = P is no contraction, P' = 1 gives every bead
-    the centroid force (the model of scripts/pimd_openmm.py, checked there against OpenMM)."""
+    the centroid force (the model of scripts/pimd/pimd_openmm.py, checked there against OpenMM)."""
     P, n = 8, 5
 
     def stiff(x, box):

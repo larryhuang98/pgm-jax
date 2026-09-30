@@ -6,21 +6,21 @@ dielectric constant, liquid molecular dipole, O-O g(r), gas-phase dipole and pol
 liquid observable comes with its exact ensemble gradient (fluctuation formulas with JAX derivatives
 of each frame, including the induced dipoles' response to the parameters), a statistical error from
 block jackknife, and the fitted parameters come with a covariance that is propagated to any predicted
-property. `scripts/fit_multi.py` runs the iterations; `scripts/liquid_fit_tools.py` analyses them.
+property. `scripts/fitting/fit_multi.py` runs the iterations; `scripts/fitting/liquid_fit_tools.py` analyses them.
 
 ## Usage
 
 ```bash
 # the base pGM water (Amber test pgm_512wat) toward experiment, six global scale factors
-python scripts/fit_multi.py -o runs/fit/demo --model base --params q,cov,alpha,radius,lj_r,lj_eps --prior 0.3 \
+python scripts/fitting/fit_multi.py -o runs/fit/demo --model base --params q,cov,alpha,radius,lj_r,lj_eps --prior 0.3 \
     --targets density=0.997:0.002,hvap=10.52:0.05,eps=78.4:1.5,gas_dipole=1.855:0.01,gas_polarizability=1.47:0.01,liquid_dipole \
-    --equil 50 --prod 2000 --every 0.5 --iters 8 --max-minutes 35        # resumable: rerun the same line
+    --equil-ps 50 --prod-ps 2000 --sample-ps 0.5 --iters 8 --max-minutes 35        # resumable: rerun the same line
 # measure only (bare target names): values, Jacobians, errors at --start; segments at fixed theta
-python scripts/fit_multi.py -o runs/fit/c0 --params q,alpha --targets density,hvap,eps,liquid_dipole --fixed --iters 4
-python scripts/liquid_fit_tools.py combine runs/fit/c0 --params q,alpha --targets density,hvap,eps,liquid_dipole
+python scripts/fitting/fit_multi.py -o runs/fit/c0 --params q,alpha --targets density,hvap,eps,liquid_dipole --fixed --iters 4
+python scripts/fitting/liquid_fit_tools.py combine runs/fit/c0 --params q,alpha --targets density,hvap,eps,liquid_dipole
 # small boxes on CPUs: batched NVT replicas (jax.vmap), e.g. 16 x 64 waters
-python scripts/fit_multi.py -o runs/fit/r --coords box64.rst7 --cutoff 0.45 --skin 0.08 --ewald-beta 6 --nfft 20 \
-    --ensemble nvt --replicas 16 --nblocks 32 --targets hvap=...,eps=...,gas_dipole=...
+python scripts/fitting/fit_multi.py -o runs/fit/r --coords box64.rst7 --cutoff-nm 0.45 --skin-nm 0.08 --ewald-beta-per-nm 6 --nfft 20 \
+    --barostat none --replicas 16 --nblocks 32 --targets hvap=...,eps=...,gas_dipole=...
 ```
 
 Targets are `name=value:sigma[:weight]` (a bare name is evaluated and propagated, not fitted);
@@ -263,7 +263,7 @@ gas-phase terms) take seconds.
 
 - Rigid molecules (the `Simulation` engine). `FrameAnalyzer` evaluates the PGMForceField energy
   (pGM + intermolecular van der Waals): flexible molecules would need their bonded and intramolecular
-  LJ terms in U and a gas-phase ensemble for Hvap (`scripts/fit_liquid.py` has the latter for LJ only);
+  LJ terms in U and a gas-phase ensemble for Hvap (`scripts/fitting/fit_liquid.py` has the latter for LJ only);
   charge flux and virtual sites are refused.
 - `GasPhase` is one rigid molecule (the monomer geometry of the liquid); `fit_multi.py` handles boxes
   of one molecule type (the library takes any system; gas-phase targets per molecule type).

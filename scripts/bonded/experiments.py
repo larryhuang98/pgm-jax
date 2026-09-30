@@ -1,10 +1,24 @@
-"""Bonded-term experiments (plan X1-X6).  Each run: build the model for a set of molecules and
-settings, fit on 500 K frames + relaxed torsion scans (the paper's training data), report the
-paper's metrics on 298 K frames and force-field-relaxed scans.  Results: runs/bonded/results/.
+"""Bonded-term experiments of the bonded study (plan X1-X6).
+
+run: build the model for a set of molecules and settings, fit on 500 K frames + relaxed torsion
+scans (the paper's training data), report the paper's metrics on 298 K frames and
+force-field-relaxed scans.  l1path: error against the number of active linear parameters along an
+L1 path (per-molecule fits, warm-started).  table: one summary line per result.
+
+Usage:
 
     python scripts/bonded/experiments.py run NAME --mols A1 --families paper [--elec 3] ...
+    python scripts/bonded/experiments.py l1path NAME --mols A1 --lams 0,1e-3,1e-2
     python scripts/bonded/experiments.py table NAME [NAME ...]
+    python scripts/bonded/experiments.py --help
+
+Inputs: the bonded-study data (pgm_jax.bonded.study.data: data/bonded/...).
+Outputs: runs/bonded/results/<name>.json (and <name>_<molecules>.params.pkl with --save-params).
+Units: energy MAE [kcal/mol], force MAE [kcal/mol/A], scan errors [kcal/mol].
+Runtime: CPU, minutes to hours depending on the molecule set.  Sets jax_enable_x64.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -20,13 +34,18 @@ from pgm_jax.bonded.model import BondedModel, BondedSettings
 from pgm_jax.bonded.study.bench import scan_metrics
 from pgm_jax.bonded.study.data import esp_data, load, mol_list
 from pgm_jax.bonded.study.families import families_of
+from pgm_jax.paths import repo_path
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 jax.config.update("jax_enable_x64", True)
-RES = os.path.join(ROOT, "runs/bonded/results")
+RES = repo_path("runs", "bonded", "results")
 
 
-def run(a):
+def run(a: argparse.Namespace) -> None:
+    """Fit the model of one experiment, evaluate it and write runs/bonded/results/<name>.json.
+
+    Molecule typing without --joint fits each molecule alone; otherwise one model is fitted to all
+    molecules (the --holdout molecules only evaluated).
+    """
     names = mol_list(a.mols)
     specs, data = load(names)
     st = BondedSettings(
@@ -83,10 +102,9 @@ def run(a):
             if a.qbci >= 0:
                 keys["bci"] = {"t": list(model.t_pos), "dc": list(model.dc_pos)}
             keys["ref"] = model.ref_keys
-            pickle.dump(
-                {"P": jax.tree_util.tree_map(np.asarray, P), "keys": keys},
-                open(os.path.join(RES, f"{a.name}_{'-'.join(specs[i].name for i in g)[:60]}.params.pkl"), "wb"),
-            )
+            os.makedirs(RES, exist_ok=True)
+            with open(os.path.join(RES, f"{a.name}_{'-'.join(specs[i].name for i in g)[:60]}.params.pkl"), "wb") as fh:
+                pickle.dump({"P": jax.tree_util.tree_map(np.asarray, P), "keys": keys}, fh)
         ev = Fitter(model, sub, w_E=a.wE, w_F=a.wF, w_mu=a.wmu, esp=esp)
         mt, mtr = ev.metrics(P, "test"), ev.metrics(P, "train")
         npar = model.n_params(P)
@@ -134,12 +152,13 @@ def run(a):
             )
     out["time_s"] = time.time() - t0
     os.makedirs(RES, exist_ok=True)
-    json.dump(out, open(os.path.join(RES, f"{a.name}.json"), "w"), indent=1)
+    with open(os.path.join(RES, f"{a.name}.json"), "w") as fh:
+        json.dump(out, fh, indent=1)
     summarize([a.name])
 
 
-def l1path(a):
-    """Error vs number of active linear parameters along an L1 path (per-molecule fits)."""
+def l1path(a: argparse.Namespace) -> None:
+    """Write the error against the number of active linear parameters along an L1 path (per-molecule fits)."""
     names = mol_list(a.mols)
     specs, data = load(names, with_scans=True)
     st = BondedSettings(
@@ -179,12 +198,16 @@ def l1path(a):
             )
         out["molecules"][spec.name] = rows
     os.makedirs(RES, exist_ok=True)
-    json.dump(out, open(os.path.join(RES, f"{a.name}.json"), "w"), indent=1)
+    with open(os.path.join(RES, f"{a.name}.json"), "w") as fh:
+        json.dump(out, fh, indent=1)
 
 
-def scan_max(v):
-    """Worst relaxed-scan error of one molecule (single-point profile if not relaxed); inf if a
-    relaxation left the basin."""
+def scan_max(v: dict) -> float:
+    """Return the worst relaxed-scan error of one molecule's record [kcal/mol].
+
+    The single-point profile error is used for a scan that was not relaxed; inf if a relaxation
+    left the basin, nan without scans.
+    """
     xs = []
     for x in v["scans"].values():
         if "error" in x:
@@ -193,9 +216,11 @@ def scan_max(v):
     return max(xs) if xs else np.nan
 
 
-def summarize(names, exclude=("methanethiol",)):
+def summarize(names: list[str], exclude: tuple[str, ...] = ("methanethiol",)) -> None:
+    """Print one line per result: mean test energy and force MAE and mean worst scan error (exclude left out)."""
     for n in names:
-        d = json.load(open(os.path.join(RES, f"{n}.json")))
+        with open(os.path.join(RES, f"{n}.json")) as fh:
+            d = json.load(fh)
         ms = {k: v for k, v in d["molecules"].items() if k not in exclude}
         e = [v["test"]["E_MAE"] for v in ms.values()]
         f = [v["test"]["F_MAE"] for v in ms.values()]
@@ -208,42 +233,54 @@ def summarize(names, exclude=("methanethiol",)):
         )
 
 
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("cmd")
-    ap.add_argument("name", nargs="+")
-    ap.add_argument("--mols", default="A1")
-    ap.add_argument("--families", default="paper")
-    ap.add_argument("--typing", default="molecule")
-    ap.add_argument("--depth", type=int, default=2)
-    ap.add_argument("--elec", type=int, default=0)
-    ap.add_argument("--lj_sep", type=int, default=4)
-    ap.add_argument("--lj14", type=float, default=0.0)
-    ap.add_argument("--elec14", type=float, default=1.0)
-    ap.add_argument("--flux", type=int, nargs="?", const=1, default=0)
+def build_parser() -> argparse.ArgumentParser:
+    """Return the argument parser (see the module docstring)."""
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("cmd", choices=("run", "l1path", "table"), help="run, l1path or table")
+    ap.add_argument("name", nargs="+", help="result name (several for table)")
+    ap.add_argument("--mols", default="A1", help="molecule sets or names (bonded.study.data.mol_list)")
+    ap.add_argument("--families", default="paper", help="term families (bonded.study.families)")
+    ap.add_argument("--typing", default="molecule", help="parameter typing (BondedSettings.typing)")
+    ap.add_argument("--depth", type=int, default=2, help="typing depth")
+    ap.add_argument("--elec", type=int, default=0, help="electrostatics excluded up to this bond separation")
+    ap.add_argument("--lj-sep", type=int, default=4, help="smallest bond separation with Lennard-Jones")
+    ap.add_argument("--lj14", type=float, default=0.0, help="1-4 Lennard-Jones scale")
+    ap.add_argument("--elec14", type=float, default=1.0, help="1-4 electrostatic scale")
+    ap.add_argument("--flux", type=int, nargs="?", const=1, default=0, help="charge flux (BondedSettings.flux)")
     ap.add_argument("--escale", default="", help="learned permanent-pair scales for these separations, e.g. 1,2,3")
-    ap.add_argument("--wE", type=float, default=1.0)
-    ap.add_argument("--wF", type=float, default=1.0)
-    ap.add_argument("--wmu", type=float, default=0.0)
-    ap.add_argument("--l2", type=float, default=1e-4)
-    ap.add_argument("--l1", type=float, default=0.0)
-    ap.add_argument("--maxiter", type=int, default=20000)
-    ap.add_argument("--frozen", default="")
-    ap.add_argument("--joint", action="store_true")
-    ap.add_argument("--holdout", default="")
-    ap.add_argument("--no_scans", action="store_true")
-    ap.add_argument("--no_relax", action="store_true")
-    ap.add_argument("--save_params", action="store_true")
+    ap.add_argument("--wE", type=float, default=1.0, help="energy weight")
+    ap.add_argument("--wF", type=float, default=1.0, help="force weight")
+    ap.add_argument("--wmu", type=float, default=0.0, help="dipole weight")
+    ap.add_argument("--l2", type=float, default=1e-4, help="L2 weight")
+    ap.add_argument("--l1", type=float, default=0.0, help="L1 weight of the linear parameters")
+    ap.add_argument("--maxiter", type=int, default=20000, help="fit iterations")
+    ap.add_argument("--frozen", default="", help="comma-separated families kept at their start values")
+    ap.add_argument("--joint", action="store_true", help="one model for all molecules with molecule typing")
+    ap.add_argument("--holdout", default="", help="comma-separated molecules left out of the fit")
+    ap.add_argument("--no-scans", action="store_true", help="skip the scan metrics")
+    ap.add_argument("--no-relax", action="store_true", help="single-point scan metrics only")
+    ap.add_argument("--save-params", action="store_true", help="also write the parameters (pickle)")
     ap.add_argument("--qfit", type=int, default=-1, help="fit typed pGM charges/covalent dipoles (typing depth)")
-    ap.add_argument("--l2_elec", type=float, default=None)
+    ap.add_argument(
+        "--l2-elec", type=float, default=None, help="L2 weight of the electrostatic parameters (Fitter l2_elec)"
+    )
     ap.add_argument(
         "--qbci", type=int, default=-1, help="fit typed bond-charge increments on the ESP charges (typing depth)"
     )
     ap.add_argument("--wesp", type=float, default=0.0, help="weight of the ESP restraint (relative RMSE / 0.1)^2")
-    ap.add_argument("--lams", default="0,1e-3,3e-3,1e-2,3e-2,0.1,0.3,1")
-    a = ap.parse_args()
+    ap.add_argument("--lams", default="0,1e-3,3e-3,1e-2,3e-2,0.1,0.3,1", help="l1path: L1 weights")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Parse the command line and run the experiment or print the table (see the module docstring)."""
+    a = build_parser().parse_args(argv)
     if a.cmd in ("run", "l1path"):
         a.name = a.name[0]
         (run if a.cmd == "run" else l1path)(a)
     else:
         summarize(a.name)
+
+
+if __name__ == "__main__":
+    main()

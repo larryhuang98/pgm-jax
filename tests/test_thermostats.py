@@ -123,14 +123,14 @@ def test_constrained_nvt_runs_conserve_effective_energy():
 
 def test_coupling_objects():
     """Thermostat / barostat objects of the engines, the command-line helper, PILE settings."""
-    from pgm_jax.cli.args import coupling_from_options
+    from pgm_jax.cli.args import make_coupling
     from pgm_jax.md.barostats import MonteCarloBarostat, ensemble_name
     from pgm_jax.md.pimd import PILE, as_pile
 
-    th, b = coupling_from_options("npt", "bussi", tau=0.5, pressure=2.0, barostat_every=10)
+    th, b = make_coupling("bussi", tau=0.5, barostat="mc", pressure=2.0, barostat_every=10)
     assert isinstance(th, Bussi) and th.tau == 0.5 and b == MonteCarloBarostat(2.0, 10)
-    assert coupling_from_options("nve") == (None, None)
-    th, b = coupling_from_options("nvt", "langevin", friction=5.0)
+    assert make_coupling("none") == (None, None)
+    th, b = make_coupling("langevin", friction=5.0)
     assert isinstance(th, Langevin) and th.friction == 5.0 and b is None
     assert ensemble_name(None, None) == "nve" and ensemble_name(Bussi(), None) == "nvt"
     assert ensemble_name(Bussi(), MonteCarloBarostat()) == "npt"

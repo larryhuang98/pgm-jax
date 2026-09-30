@@ -8,8 +8,8 @@ ensemble gradients from MD.
 ## 1. Liquid density and heat of vaporization
 
 ```bash
-python scripts/fit_liquid.py methanol --iters 6                         # to experiment
-python scripts/fit_liquid.py water --start 0.0296,-0.357 --targets 1.01,8.6 --iters 8   # recovery test
+python scripts/fitting/fit_liquid.py methanol --iters 6                         # to experiment
+python scripts/fitting/fit_liquid.py water --start 0.0296,-0.357 --targets 1.01,8.6 --iters 8   # recovery test
 ```
 
 Each iteration runs one NPT simulation, stores frames every 0.2 ps, and for each frame computes
@@ -36,7 +36,7 @@ What to change for your own system:
 - **System.** `build()` returns the System, coordinates, box and time step; rigid molecules come
   from an Amber pGM prmtop (`Simulation`), flexible ones from a `FlexibleTemplate` (see
   `howto_bonded.md`).
-- **Targets and weights.** `EXP` and `--sig_rho`, `--sig_dh` (the scale of each residual in the
+- **Targets and weights.** `EXP` and `--sigma-rho-g-cm3`, `--sigma-dhvap-kcal` (the scale of each residual in the
   Gauss-Newton objective). More observables are one more row of the Jacobian: any function of a
   frame (energy, volume, box) works with the same formula; for enthalpy-derived properties
   (heat capacity, thermal expansion, compressibility) take the fluctuation expressions and
