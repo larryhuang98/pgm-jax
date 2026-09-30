@@ -1,6 +1,10 @@
-"""Alchemical free energies with pGM: lambda-dependent Hamiltonians for one solute molecule,
-lambda windows batched on the GPU, Hamiltonian replica exchange, samples for TI / BAR / MBAR
-(estimators in free_energy.py), and the gas-phase leg of the solvation cycle.
+"""Alchemical free energies with pGM: lambda-dependent Hamiltonians of one solute molecule.
+
+Contents: `alchemical_system` and `standard_schedule` (setup), `Alchemy` (the Hamiltonian at
+lambda, bound to a force field), `GasPhaseLeg` and `lone_solute` (the gas-phase leg of the
+solvation cycle), `LambdaWindows` (the lambda windows, batched on the GPU; a remd.MDReplicas)
+and `FreeEnergyRun` (sampling for TI / BAR / MBAR with optional Hamiltonian replica exchange;
+the estimators are in pgm_jax/fit/free_energy.py).
 
 Thermodynamic cycle (hydration or solvation free energy of a solute A)
 
@@ -20,8 +24,7 @@ What lambda does to each term (Alchemy)
 
   lambda_elec (annihilation of the solute's electrostatics, as the ele-lambda of AMOEBA free
   energies in Tinker: permanent multipoles and polarizabilities of the mutated atoms scaled,
-  intramolecular terms included; Ren & Ponder, JCC 23, 1497 (2002) and JPC B 107, 5933 (2003);
-  Shi, Wu, Ponder & Ren, JCC 32, 967 (2011)):
+  intramolecular terms included [1]_, [2]_, [3]_):
       q_s     -> lambda_e q_s               (Gaussian charges)
       c_s     -> lambda_e c_s               (covalent-dipole strengths, i.e. permanent dipoles p_s)
       alpha_s -> alpha_s [eps + (1 - eps) lambda_e],  eps = alpha_floor (1e-8)
@@ -50,8 +53,8 @@ What lambda does to each term (Alchemy)
   times the solute's induction energy (~1e-7 kJ/mol).  The Gaussian radii are not scaled (they
   are damping widths, not interaction strengths).
 
-  lambda_vdw (decoupling of the solute-environment van der Waals, Beutler soft core; Beutler et
-  al., CPL 222, 529 (1994); alpha 0.5 and power 1 as in Shirts & Pande, JCP 122, 134508 (2005)):
+  lambda_vdw (decoupling of the solute-environment van der Waals, Beutler soft core [4]_; alpha
+  0.5 and power 1 as in [5]_):
       U_ij = lambda_v eps_ij [1 / w^2 - 2 / w],   w = (r / rmin_ij)^6 + (sc_alpha / 2)(1 - lambda_v)
   i.e. 4 eps lambda_v [1/y^2 - 1/y] with y = sc_alpha (1 - lambda_v) + (r / sigma)^6, sigma^6 =
   rmin^6 / 2, in Amber's rmin form: Lennard-Jones at lambda_v = 1, finite energy and force at r = 0
@@ -97,16 +100,31 @@ energy change as heat and restarts the dipole predictor from the new dipoles.
 
 Engines: Simulation (rigid molecules) and FlexibleSimulation (a flexible solute, e.g. with X-H
 constraints, among rigid waters).  Limits: one solute molecule; a net-charged solute would need
-finite-size corrections (Rocklin et al., JCP 139, 184103 (2013)) and is refused; the cell dipole
-recorder does not scale the solute's charges (refused with an alchemical region).
+finite-size corrections [6]_ and is refused; the cell dipole recorder does not scale the
+solute's charges (refused with an alchemical region).
 
-Units: nm, ps, kJ/mol, K, e."""
+Units: nm, ps, kJ/mol, K, e.
+
+References
+----------
+.. [1] P. Ren, J. W. Ponder, J. Comput. Chem. 23, 1497 (2002).
+.. [2] P. Ren, J. W. Ponder, J. Phys. Chem. B 107, 5933 (2003).
+.. [3] Y. Shi, C. Wu, J. W. Ponder, P. Ren, J. Comput. Chem. 32, 967 (2011).
+.. [4] T. C. Beutler, A. E. Mark, R. C. van Schaik, P. R. Gerber, W. F. van Gunsteren, Chem.
+   Phys. Lett. 222, 529 (1994).
+.. [5] M. R. Shirts, V. S. Pande, J. Chem. Phys. 122, 134508 (2005).
+.. [6] G. J. Rocklin, D. L. Mobley, K. A. Dill, P. H. Hunenberger, J. Chem. Phys. 139, 184103
+   (2013).
+
+See also docs/free_energy.md, docs/fe_gradients.md; md/fe_grad.py (parameter gradients).
+"""
 
 from __future__ import annotations
 
 import dataclasses as _dc
 import json
 import logging
+from typing import TYPE_CHECKING, Any, TextIO
 
 import jax
 import jax.numpy as jnp
@@ -122,17 +140,48 @@ from .forcefield import full_strain_derivative
 from .io import write_restart
 from .remd import ExchangeStatistics, MDReplicas, _nocount, _stack, _take, exchange_pairs, metropolis
 
+if TYPE_CHECKING:
+    from jax.typing import ArrayLike
+
+    from .fe_grad import ParameterGradients
+    from .forcefield import InductionState, PGMForceField, Result
+    from .integrate import MDState
+
 PREFIX = "alch:"  # tying-key prefix of an alchemical molecule's own parameters
 LEGACY_FORMAT = "pgm_jax free energy 1"  # the "format" entry of legacy pickle checkpoints
 logger = logging.getLogger(__name__)
 
 
 # ----------------------------------------------------------------------------- setup
-def alchemical_system(sys: System, solute: int, params=None):
-    """(System, params): `sys` with molecule `solute` replaced by a copy whose tied parameters are its
-    own (every tying key prefixed 'alch:'), so lambda can scale them without touching identical
-    molecules of the environment.  `params` (a pytree of sys.table, or None for its initial values)
-    is mapped to the new table by key (the solute copy takes the values of the keys it came from)."""
+def alchemical_system(sys: System, solute: int, params: dict | None = None) -> tuple[System, dict[str, jax.Array]]:
+    """Return `sys` with the solute's tied parameters made its own, and the parameters mapped to it.
+
+    Molecule `solute` is replaced by a copy whose tied parameters are its own (every tying key
+    prefixed "alch:"), so lambda can scale them without touching identical molecules of the
+    environment.
+
+    Parameters
+    ----------
+    sys : System
+        The system.
+    solute : int
+        Index of the solute molecule.
+    params : dict, optional
+        Parameter pytree of sys.table (None: its initial values sys.params0).
+
+    Returns
+    -------
+    system : System
+        The new system.
+    params : dict of str to jax.Array
+        `params` mapped to the new table by key (the solute copy takes the values of the keys it
+        came from).
+
+    Raises
+    ------
+    ValueError
+        If `solute` is out of range.
+    """
     k = int(solute)
     if not 0 <= k < sys.nmol:
         raise ValueError(f"solute molecule {solute} out of range (0..{sys.nmol - 1})")
@@ -155,11 +204,31 @@ def alchemical_system(sys: System, solute: int, params=None):
     return out, P
 
 
-def standard_schedule(n_elec: int = 8, vdw=None) -> np.ndarray:
-    """(K, 2) windows (lambda_elec, lambda_vdw): electrostatics 1 -> 0 in n_elec evenly spaced
-    windows at lambda_vdw = 1, then van der Waals 1 -> 0 at lambda_elec = 0 (default points denser
-    towards 0, where the soft-core integrand bends: 0.9, 0.8, ..., 0.1, 0.05, 0).  The window
-    (0, 1) ends the first stage and starts the second."""
+def standard_schedule(n_elec: int = 8, vdw: ArrayLike | None = None) -> np.ndarray:
+    """Return the two-stage lambda schedule: electrostatics 1 -> 0, then van der Waals 1 -> 0.
+
+    The electrostatics goes 1 -> 0 in `n_elec` evenly spaced windows at lambda_vdw = 1, then the
+    van der Waals 1 -> 0 at lambda_elec = 0.  The window (0, 1) ends the first stage and starts the
+    second.
+
+    Parameters
+    ----------
+    n_elec : int
+        Windows of the electrostatics stage (>= 2, both ends included).
+    vdw : ArrayLike, optional
+        lambda_vdw values of the second stage, decreasing, below 1 and ending at 0 (None: 0.9, 0.8,
+        ..., 0.1, 0.05, 0, denser towards 0, where the soft-core integrand bends).
+
+    Returns
+    -------
+    np.ndarray (K, 2)
+        Windows (lambda_elec, lambda_vdw), K = n_elec + len(vdw).
+
+    Raises
+    ------
+    ValueError
+        If n_elec < 2 or `vdw` is not as described.
+    """
     if int(n_elec) < 2:
         raise ValueError("n_elec >= 2 (both ends of the electrostatics stage)")
     lv = np.array([0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.0]) if vdw is None else np.asarray(vdw, float)
@@ -171,29 +240,82 @@ def standard_schedule(n_elec: int = 8, vdw=None) -> np.ndarray:
 
 # ----------------------------------------------------------------------------- Hamiltonian
 class Alchemy:
-    """lambda-dependent Hamiltonian of one solute molecule (module docstring for the physics).
+    """Lambda-dependent Hamiltonian of one solute molecule (module docstring for the physics).
 
         sys, P = alchemical_system(sys, solute=0)
         alch = Alchemy(sys, solute=0)
         sim = Simulation(sys, pos, H, settings, params=P, alchemy=alch, thermostat="bussi")
 
     `lam` is the coupling (lambda_elec, lambda_vdw) of states whose MDState.lam is None (the
-    default single simulation); LambdaWindows gives each window its own.  sc_alpha: soft-core
-    alpha; alpha_floor: eps of the polarizability scaling; intramolecular: "annihilate" (the
-    solute's intramolecular electrostatics goes with lambda_elec; gas-phase leg separately, e.g.
-    GasPhaseLeg) or "keep" (kept by the gas-phase correction; flexible pGM solutes).  The cutoff,
-    long-range correction, van der Waals form and electrostatics level are taken from the force
-    field the first time the Hamiltonian is bound to one (`check`, called by the integrator)."""
+    default single simulation); LambdaWindows gives each window its own.  The cutoff, long-range
+    correction, van der Waals form and electrostatics level are taken from the force field the
+    first time the Hamiltonian is bound to one (`check`, called by the integrator).  A mutable host
+    object (not a pytree); its methods are traceable functions of positions, box, parameters and
+    lambda.
+
+    Attributes
+    ----------
+    sys : System
+        The system (with the solute's own parameter keys).
+    solute : int
+        Index of the solute molecule.
+    sc_alpha : float
+        Soft-core alpha (dimensionless).
+    alpha_floor : float
+        eps of the polarizability scaling.
+    intramolecular : {"annihilate", "keep"}
+        Treatment of the solute's intramolecular electrostatics.
+    lam : jax.Array (2,) float64
+        Default (lambda_elec, lambda_vdw).
+    atoms : jax.Array (n_s,) int32
+        Global indices of the solute's atoms (atoms_np: the same as numpy).
+    is_solute : jax.Array (N,) bool
+        Solute mask.
+    params0 : dict
+        Initial parameter table sys.params0.
+    mask : dict of str to jax.Array
+        Per table quantity: which entries are the solute's own.
+    bound : tuple or None
+        (vdw form, van der Waals cutoff [nm], long-range correction on, elec level) of the bound
+        force field.
+    """
 
     def __init__(
         self,
         sys: System,
         solute: int,
-        lam=(1.0, 1.0),
+        lam: ArrayLike = (1.0, 1.0),
         sc_alpha: float = 0.5,
         alpha_floor: float = 1e-8,
         intramolecular: str = "annihilate",
-    ):
+    ) -> None:
+        """Set up the alchemical region of molecule `solute`.
+
+        Parameters
+        ----------
+        sys : System
+            The system, built with `alchemical_system` so that the solute's parameters are its own.
+        solute : int
+            Index of the solute molecule.
+        lam : ArrayLike (2,)
+            Default coupling (lambda_elec, lambda_vdw), each in [0, 1].
+        sc_alpha : float
+            Soft-core alpha (> 0; module docstring).
+        alpha_floor : float
+            eps of the polarizability scaling alpha_s [eps + (1 - eps) lambda_e], in (0, 1e-3).
+        intramolecular : {"annihilate", "keep"}
+            "annihilate": the solute's intramolecular electrostatics goes with lambda_elec (gas-phase
+            leg separately, e.g. GasPhaseLeg); "keep": kept by the gas-phase correction (flexible pGM
+            solutes).
+
+        Raises
+        ------
+        ValueError
+            Invalid options or lambda, a solute index out of range, or a solute that shares parameters
+            with other molecules.
+        NotImplementedError
+            A net-charged solute.
+        """
         k = int(solute)
         if intramolecular not in ("annihilate", "keep"):
             raise ValueError("intramolecular: 'annihilate' (with a gas-phase leg) or 'keep' (gas-phase correction)")
@@ -252,16 +374,34 @@ class Alchemy:
 
     # ------------------------------------------------------------------ binding / checks
     @staticmethod
-    def _check_lam(lam) -> jnp.ndarray:
+    def _check_lam(lam: ArrayLike) -> jnp.ndarray:
+        """Return lam as a float64 (2,) array after checking that it is (lambda_elec, lambda_vdw) in [0, 1]."""
         a = np.asarray(lam, float)
         if a.shape != (2,) or np.any(a < 0.0) or np.any(a > 1.0):
             raise ValueError(f"lambda = (lambda_elec, lambda_vdw) in [0, 1], got {lam}")
         return jnp.asarray(a, jnp.float64)
 
-    def check(self, ff):
-        """Bind to a force field (van der Waals form and cutoff, long-range correction, electrostatics
-        level; the solute's intramolecular van der Waals pairs from its topology); refuse what the
-        Hamiltonian does not implement."""
+    def check(self, ff: PGMForceField) -> None:
+        """Bind the Hamiltonian to a force field and refuse what it does not implement.
+
+        Takes the van der Waals form and cutoff, the long-range correction and the electrostatics level
+        from the force field, the solute's intramolecular van der Waals pairs from its topology
+        (special pairs with a nonzero weight; the ordinary rows lose them with the solute's parameters,
+        so they are evaluated here, unscaled) and, for intramolecular="keep", builds the dense gas-phase
+        energy of the lone solute.
+
+        Parameters
+        ----------
+        ff : PGMForceField
+            The force field of the integrator.
+
+        Raises
+        ------
+        ValueError
+            Another system, or settings different from those it is already bound to.
+        NotImplementedError
+            A van der Waals form other than "lj" / "none", or charge flux.
+        """
         s = ff.s
         if ff.sys.fingerprint() != self.sys.fingerprint():
             raise ValueError("the alchemical region was built for another System")
@@ -302,11 +442,13 @@ class Alchemy:
 
     @property
     def vdw(self) -> str:
+        """Van der Waals form of the bound force field ("lj" or "none"); RuntimeError if not bound."""
         if self.bound is None:
             raise RuntimeError("Alchemy is not bound to a force field yet (Alchemy.check(ff))")
         return self.bound[0]
 
     def describe(self) -> str:
+        """Return one line for the log header (solute, lambda, soft-core alpha, floor, intramolecular mode)."""
         m = self.sys.molecules[self.solute]
         return (
             f"solute molecule {self.solute} ({m.name}, {m.n} atoms), lambda (elec, vdw) = "
@@ -314,14 +456,30 @@ class Alchemy:
             f"polarizability floor {self.alpha_floor:g}, intramolecular electrostatics: {self.intramolecular}"
         )
 
-    def _lam(self, lam):
+    def _lam(self, lam: ArrayLike | None) -> jax.Array:
+        """Return lam as a float64 array, or the default `self.lam` for None."""
         return self.lam if lam is None else jnp.asarray(lam, jnp.float64)
 
     # ------------------------------------------------------------------ parameters at lambda
-    def params(self, params, lam):
-        """Parameter table (pytree of sys.table) of the ordinary force field at lambda: the solute's
-        charges and covalent dipoles times lambda_e, polarizabilities times eps + (1 - eps) lambda_e,
-        van der Waals parameters zero (its van der Waals with the environment is softcore_energy)."""
+    def params(self, params: dict | None, lam: ArrayLike | None) -> dict[str, jax.Array]:
+        """Return the parameter table of the ordinary force field at lambda.
+
+        The solute's charges and covalent-dipole strengths times lambda_e, its polarizabilities times
+        eps + (1 - eps) lambda_e, its van der Waals parameters zero (its van der Waals is
+        `vdw_energy`); every other entry unchanged.  Differentiable in `params` and `lam`.
+
+        Parameters
+        ----------
+        params : dict, optional
+            Parameter pytree of sys.table (None: params0).
+        lam : ArrayLike (2,), optional
+            (lambda_elec, lambda_vdw) (None: the default); only lambda_elec is used.
+
+        Returns
+        -------
+        dict of str to jax.Array
+            The scaled table.
+        """
         P = dict(self.params0 if params is None else params)
         le = self._lam(lam)[0]
         a = self.alpha_floor + (1.0 - self.alpha_floor) * le
@@ -332,18 +490,44 @@ class Alchemy:
             P[qn] = jnp.where(self.mask[qn], 0.0, P[qn])
         return P
 
-    def _tail(self, P, H):
-        """The solute's share of the r^-6 long-range correction (kJ/mol): the full tail minus the tail
-        with the solute's LJ switched off (P per atom, unscaled)."""
+    def _tail(self, P: dict[str, jax.Array], H: jax.Array) -> jax.Array:
+        """Return the solute's share of the r^-6 long-range correction [kJ/mol].
+
+        The full tail minus the tail with the solute's LJ switched off, for per-atom parameters P
+        (unscaled by lambda) and box H [nm].
+        """
         rc = self.bound[1]
         off = dict(P, lj_sqrt_eps=jnp.where(self.is_solute, 0.0, P["lj_sqrt_eps"]))
         V = volume(H)
         return lj_long_range(P, V, rc) - lj_long_range(off, V, rc)
 
-    def softcore_energy(self, pos, H, cand, params, lam_v):
-        """Soft-core van der Waals of the solute with its environment (kJ/mol, float64): pairs of each
-        solute atom's candidate row (neighbour list, padding N) with environment atoms inside the
-        van der Waals cutoff, plus lambda_v times the solute's long-range correction."""
+    def softcore_energy(
+        self, pos: jax.Array, H: jax.Array, cand: jax.Array, params: dict | None, lam_v: float | jax.Array
+    ) -> jax.Array:
+        """Return the soft-core van der Waals energy of the solute with its environment.
+
+        Pairs of each solute atom's candidate row with environment atoms inside the van der Waals
+        cutoff (U_ij = lambda_v eps_ij [1/w^2 - 2/w], module docstring), plus lambda_v times the
+        solute's long-range correction.  Differentiable (forces by autodiff).
+
+        Parameters
+        ----------
+        pos : jax.Array (N, 3)
+            Positions [nm].
+        H : jax.Array (3, 3)
+            Box, lattice vectors as rows [nm].
+        cand : jax.Array (N, C) int
+            Candidate rows from the neighbour list (padding N).
+        params : dict, optional
+            Parameter pytree (None: params0).
+        lam_v : float or jax.Array ()
+            lambda_vdw.
+
+        Returns
+        -------
+        jax.Array () float64
+            Energy [kJ/mol] (0 for vdw="none").
+        """
         if self.vdw == "none":
             return jnp.zeros((), jnp.float64)
         N = self.sys.n
@@ -358,17 +542,34 @@ class Alchemy:
         rmin = P["lj_rmin_half"][i][:, None] + P["lj_rmin_half"][kk]
         eps = P["lj_sqrt_eps"][i][:, None] * P["lj_sqrt_eps"][kk]
         on = valid & (r2 < self.bound[1] ** 2) & (eps != 0.0) & (rmin > 0.0)
-        s = jnp.where(on, r2, 1.0) / jnp.where(on, rmin * rmin, 1.0)
-        w = s * s * s + 0.5 * self.sc_alpha * (1.0 - lam_v)
+        s = jnp.where(on, r2, 1.0) / jnp.where(on, rmin * rmin, 1.0)  # (r / rmin)^2; masked pairs 1
+        w = s * s * s + 0.5 * self.sc_alpha * (1.0 - lam_v)  # w = (r / rmin)^6 + (sc_alpha / 2)(1 - lambda_v)
         e = jnp.sum(jnp.where(on, lam_v * eps * (1.0 / (w * w) - 2.0 / w), 0.0))
         if self.bound[2]:
             e = e + lam_v * self._tail(P, H)
         return e
 
-    def intra_energy(self, pos, H, params):
-        """Intramolecular van der Waals of the solute (kJ/mol; flexible molecules: pairs at least
-        lj_min_sep bonds apart and scaled 1-4 pairs, with the weights of md/topology.py), unscaled by
-        lambda: the decoupling keeps it (zero for rigid molecules)."""
+    def intra_energy(self, pos: jax.Array, H: jax.Array, params: dict | None) -> jax.Array:
+        """Return the solute's intramolecular van der Waals energy, unscaled by lambda.
+
+        Flexible molecules: pairs at least lj_min_sep bonds apart and scaled 1-4 pairs, with the weights
+        of md/topology.py, inside the van der Waals cutoff; the decoupling keeps it.  Zero for rigid
+        molecules.
+
+        Parameters
+        ----------
+        pos : jax.Array (N, 3)
+            Positions [nm].
+        H : jax.Array (3, 3)
+            Box, lattice vectors as rows [nm].
+        params : dict, optional
+            Parameter pytree (None: params0).
+
+        Returns
+        -------
+        jax.Array () float64
+            Energy [kJ/mol].
+        """
         if self._intra is None:
             return jnp.zeros((), jnp.float64)
         i, j, w = self._intra
@@ -380,12 +581,32 @@ class Alchemy:
         s6 = ((rmin[i] + rmin[j]) ** 2 / r2) ** 3
         return jnp.sum(jnp.where(r2 < self.bound[1] ** 2, w * se[i] * se[j] * (s6 * s6 - 2.0 * s6), 0.0))
 
-    def correction_energy(self, pos, params, lam_e):
-        """intramolecular="keep": E_gas(x_s; lambda_e = 1) - E_gas(x_s; lambda_e), the solute's
-        electrostatics in vacuum (dense pGM, float64) at full coupling minus at lambda_e, so that the
-        solute keeps its whole gas-phase intramolecular electrostatics at every lambda and only its
-        coupling to the environment (and to its periodic images) is switched off (kJ/mol; 0 when
-        annihilating)."""
+    def correction_energy(self, pos: jax.Array, params: dict | None, lam_e: float | jax.Array) -> jax.Array:
+        """Return the gas-phase correction E_gas(x_s; lambda_e = 1) - E_gas(x_s; lambda_e) ("keep" only).
+
+        The solute's electrostatics in vacuum (dense pGM, float64) at full coupling minus at lambda_e,
+        so that the solute keeps its whole gas-phase intramolecular electrostatics at every lambda and
+        only its coupling to the environment (and to its periodic images) is switched off.
+
+        Parameters
+        ----------
+        pos : jax.Array (N, 3)
+            Positions [nm] (the solute's atoms are used).
+        params : dict, optional
+            Parameter pytree (None: params0).
+        lam_e : float or jax.Array ()
+            lambda_elec.
+
+        Returns
+        -------
+        jax.Array ()
+            Energy [kJ/mol]; 0 with intramolecular="annihilate".
+
+        Raises
+        ------
+        RuntimeError
+            If not bound to a force field.
+        """
         if self.intramolecular != "keep":
             return jnp.zeros((), jnp.float64)
         if self._gas is None:
@@ -394,21 +615,64 @@ class Alchemy:
         one = self._gas(x, self.params(params, jnp.ones(2)))["total"]
         return one - self._gas(x, self.params(params, jnp.stack([jnp.asarray(lam_e, jnp.float64), 1.0])))["total"]
 
-    def extra_energy(self, pos, H, cand, params, lam):
-        """Everything the scaled ordinary force field leaves out: vdw_energy at lambda_vdw and the
-        gas-phase correction at lambda_elec."""
+    def extra_energy(
+        self, pos: jax.Array, H: jax.Array, cand: jax.Array, params: dict | None, lam: jax.Array
+    ) -> jax.Array:
+        """Return everything the scaled ordinary force field leaves out [kJ/mol].
+
+        `vdw_energy` at lambda_vdw plus `correction_energy` at lambda_elec; arguments as there, lam the
+        (2,) coupling.
+        """
         return self.vdw_energy(pos, H, cand, params, lam[1]) + self.correction_energy(pos, params, lam[0])
 
-    def vdw_energy(self, pos, H, cand, params, lam_v):
-        """All van der Waals of the solute (the ordinary rows see none of it): soft-core
-        solute-environment pairs and their long-range correction at lambda_vdw, plus its
-        intramolecular pairs."""
+    def vdw_energy(
+        self, pos: jax.Array, H: jax.Array, cand: jax.Array, params: dict | None, lam_v: float | jax.Array
+    ) -> jax.Array:
+        """Return all van der Waals energy of the solute (the ordinary rows see none of it) [kJ/mol].
+
+        The soft-core solute-environment pairs and their long-range correction at lambda_vdw
+        (`softcore_energy`) plus its intramolecular pairs (`intra_energy`).
+        """
         return self.softcore_energy(pos, H, cand, params, lam_v) + self.intra_energy(pos, H, params)
 
     # ------------------------------------------------------------------ engine interface
-    def compute(self, ff, pos, H, cand, ind, params, lam):
-        """forcefield.Result of the Hamiltonian at lam (None: self.lam): the ordinary force field at
-        the scaled parameters plus the soft-core term (energy added to 'vdw' and 'total')."""
+    def compute(
+        self,
+        ff: PGMForceField,
+        pos: jax.Array,
+        H: jax.Array,
+        cand: jax.Array,
+        ind: InductionState,
+        params: dict | None,
+        lam: ArrayLike | None,
+    ) -> Result:
+        """Return the energies, forces and dipoles of the Hamiltonian at lam.
+
+        The ordinary force field at the scaled parameters (PGMForceField.compute) plus `extra_energy`,
+        whose energy is added to "vdw" and "total" and whose forces come from autodiff.
+
+        Parameters
+        ----------
+        ff : PGMForceField
+            The bound force field.
+        pos : jax.Array (N, 3)
+            Positions [nm].
+        H : jax.Array (3, 3)
+            Box, lattice vectors as rows [nm].
+        cand : jax.Array (N, C) int
+            Candidate rows (padding N).
+        ind : InductionState
+            Induction state (predictor history) of the previous step.
+        params : dict, optional
+            Parameter pytree (None: params0).
+        lam : ArrayLike (2,), optional
+            (lambda_elec, lambda_vdw) (None: the default).
+
+        Returns
+        -------
+        forcefield.Result
+            As PGMForceField.compute, energies [kJ/mol], forces [kJ/mol/nm].
+        """
         lam = self._lam(lam)
         res = ff.compute(pos, H, cand, ind, self.params(params, lam))
         if self.vdw == "none" and self.intramolecular != "keep":
@@ -417,26 +681,89 @@ class Alchemy:
         energy = dict(res.energy, vdw=res.energy["vdw"] + e, total=res.energy["total"] + e)
         return res._replace(energy=energy, forces=res.forces - g)
 
-    def energy(self, ff, pos, H, cand, ind, params, lam):
-        """(energy, InductionState, CG iterations, overflow) as PGMForceField.energy, at lam."""
+    def energy(
+        self,
+        ff: PGMForceField,
+        pos: jax.Array,
+        H: jax.Array,
+        cand: jax.Array,
+        ind: InductionState,
+        params: dict | None,
+        lam: ArrayLike | None,
+    ) -> tuple[jax.Array, InductionState, jax.Array, jax.Array]:
+        """Return the energy at lam with the dipoles solved, as PGMForceField.energy.
+
+        Arguments as `compute`.
+
+        Returns
+        -------
+        energy : jax.Array ()
+            Total energy [kJ/mol] (`extra_energy` included).
+        induction : InductionState
+            State with the converged dipoles.
+        iterations : jax.Array () int
+            CG iterations.
+        overflow : jax.Array () bool
+            Row capacity exceeded.
+        """
         lam = self._lam(lam)
         e, ind, it, ovf = ff.energy(pos, H, cand, ind, self.params(params, lam))
         return e + self.extra_energy(pos, H, cand, params, lam), ind, it, ovf
 
-    def energy_fixed_mu(self, ff, pos, H, cand, mu, params, lam):
-        """Total energy (kJ/mol) at lam with the induced dipoles held at mu; differentiable in lam."""
+    def energy_fixed_mu(
+        self,
+        ff: PGMForceField,
+        pos: jax.Array,
+        H: jax.Array,
+        cand: jax.Array,
+        mu: jax.Array,
+        params: dict | None,
+        lam: ArrayLike | None,
+    ) -> jax.Array:
+        """Return the total energy at lam with the induced dipoles held at mu [kJ/mol].
+
+        Differentiable in positions, box, parameters and lam; arguments as `compute`, with
+        mu (N, 3) the induced dipoles [e nm] instead of the induction state.
+        """
         lam = self._lam(lam)
         e, _ = ff.energy_fixed_mu(pos, H, mu, cand, ff._atoms(self.params(params, lam)))
         return e + self.extra_energy(pos, H, cand, params, lam)
 
-    def dudl(self, ff, pos, H, cand, mu, params, lam):
-        """(dU/dlambda_elec, dU/dlambda_vdw) in kJ/mol at the converged dipoles mu (Hellmann-Feynman:
-        the energy is stationary in mu)."""
+    def dudl(
+        self,
+        ff: PGMForceField,
+        pos: jax.Array,
+        H: jax.Array,
+        cand: jax.Array,
+        mu: jax.Array,
+        params: dict | None,
+        lam: ArrayLike | None,
+    ) -> jax.Array:
+        """Return (dU/dlambda_elec, dU/dlambda_vdw) (2,) [kJ/mol] at the converged dipoles mu.
+
+        jax.grad of `energy_fixed_mu` with respect to lam (Hellmann-Feynman: the energy is stationary
+        in mu, so no derivative of the solve is needed); arguments as `energy_fixed_mu`.
+        """
         return jax.grad(lambda l: self.energy_fixed_mu(ff, pos, H, cand, mu, params, l))(self._lam(lam))
 
-    def strain_derivative(self, ff, pos, H, cand, mu, params, lam, molecular: bool = True):
-        """dE/d eps (3, 3) at fixed mu (as PGMForceField.strain_derivative) of the Hamiltonian at lam,
-        with the tail impulse term of the soft-core long-range correction."""
+    def strain_derivative(
+        self,
+        ff: PGMForceField,
+        pos: jax.Array,
+        H: jax.Array,
+        cand: jax.Array,
+        mu: jax.Array,
+        params: dict | None,
+        lam: ArrayLike | None,
+        molecular: bool = True,
+    ) -> jax.Array:
+        """Return dE/d eps (3, 3) [kJ/mol] at fixed mu of the Hamiltonian at lam.
+
+        As PGMForceField.strain_derivative at the scaled parameters, plus the strain derivative of
+        `extra_energy` (forcefield.full_strain_derivative; molecular scaling of the centres of mass
+        when `molecular`) and the tail impulse term -lambda_v E_tail I of the soft-core long-range
+        correction.  Arguments as `energy_fixed_mu`.
+        """
         lam = self._lam(lam)
         W = ff.strain_derivative(pos, H, cand, mu, self.params(params, lam), molecular)
         if self.vdw == "none" and self.intramolecular != "keep":
@@ -454,19 +781,41 @@ class Alchemy:
 
 # ----------------------------------------------------------------------------- gas-phase leg
 class GasPhaseLeg:
-    """The solute alone in vacuum with the alchemical parameters at lambda_elec: the gas-phase leg
-    of the cycle with intramolecular="annihilate" (with "keep" the leg is part of the
-    Hamiltonian).  E_gas(lambda_e) is the pGM energy of the isolated molecule (every pair, induced
-    dipoles by a dense solve: channels.ElecChannel, the kernels and Coulomb constant of the MD
-    engine) at the solute's rigid geometry `xyz` (nm).  For a rigid solute the gas-phase energy
-    does not depend on the configuration (only on orientation and position, which it is invariant
-    to), so the free energy of annihilating its electrostatics is exact from one configuration:
+    """The solute alone in vacuum with the alchemical parameters at lambda_elec.
+
+    The gas-phase leg of the cycle with intramolecular="annihilate" (with "keep" the leg is part of
+    the Hamiltonian).  E_gas(lambda_e) is the pGM energy of the isolated molecule (every pair,
+    induced dipoles by a dense solve: channels.ElecChannel, the kernels and Coulomb constant of the
+    MD engine) at the solute's rigid geometry `xyz`.  For a rigid solute the gas-phase energy does
+    not depend on the configuration (only on orientation and position, to which it is invariant),
+    so the free energy of annihilating its electrostatics is exact from one configuration:
+
         Delta G_gas(1 -> 0) = E_gas(0) - E_gas(1)      (-kT ln <exp(-beta dU)> of a constant dU).
+
     dudl(lambda_e) = dE_gas/dlambda_e is what TI subtracts from the solution-phase integrand
     (free_energy.estimate): the large intramolecular part of pGM's electrostatics then drops out
-    before the quadrature."""
+    before the quadrature.
 
-    def __init__(self, alchemy: Alchemy, xyz, elec: str = "qpi"):
+    Attributes
+    ----------
+    alchemy : Alchemy
+        The alchemical region.
+    xyz : jax.Array (n_s, 3)
+        Solute geometry [nm].
+    """
+
+    def __init__(self, alchemy: Alchemy, xyz: ArrayLike, elec: str = "qpi") -> None:
+        """Build the jitted gas-phase energy and its lambda derivative.
+
+        Parameters
+        ----------
+        alchemy : Alchemy
+            The alchemical region (its solute and parameter scaling).
+        xyz : ArrayLike (n_s, 3)
+            Solute geometry [nm].
+        elec : {"q", "qp", "qi", "qpi"}
+            Electrostatics level (channels.ElecChannel.level): charges, permanent dipoles, induction.
+        """
         from ..channels import ElecChannel
         from ..model import Model
 
@@ -479,28 +828,50 @@ class GasPhaseLeg:
             jax.grad(lambda le, params: f(self.xyz, alchemy.params(params, jnp.stack([le, 1.0])))["total"])
         )
 
-    def energy(self, lam_e: float, params=None) -> float:
-        """E_gas(lambda_e), kJ/mol."""
+    def energy(self, lam_e: float, params: dict | None = None) -> float:
+        """Return E_gas(lambda_e) [kJ/mol] (params: parameter pytree, None: initial values)."""
         return float(self._e(jnp.asarray(float(lam_e)), params))
 
-    def dudl(self, lam_e: float, params=None) -> float:
-        """dE_gas/dlambda_e, kJ/mol."""
+    def dudl(self, lam_e: float, params: dict | None = None) -> float:
+        """Return dE_gas/dlambda_e [kJ/mol] (params: parameter pytree, None: initial values)."""
         return float(self._g(jnp.asarray(float(lam_e)), params))
 
-    def delta_g(self, params=None) -> float:
-        """Delta G_gas(lambda_e 1 -> 0) = E_gas(0) - E_gas(1), kJ/mol (rigid solute: exact)."""
+    def delta_g(self, params: dict | None = None) -> float:
+        """Return Delta G_gas(lambda_e 1 -> 0) = E_gas(0) - E_gas(1) [kJ/mol] (rigid solute: exact)."""
         return self.energy(0.0, params) - self.energy(1.0, params)
 
 
-def lone_solute(sys: System, solute: int, pos, box_nm: float = 4.0):
-    """(System, positions (nm), H) of the solute molecule alone, centred in a cubic box of box_nm:
-    the gas-phase leg of a flexible solute, sampled with the same engine at the lambda_elec windows
-    (FlexibleSimulation + LambdaWindows + FreeEnergyRun, as the solution leg).  The sub-system shares
-    sys's parameter table, so the same params and Alchemy(sub, 0) apply.  The periodic images of a
-    neutral molecule contribute ~1e-3 kJ/mol at 4 nm (tests); run it with MDSettings().replace(lj_lrc=False)
-    (there is no continuum of other atoms), a PME grid for this box and an atom neighbour list
-    (MDSettings neighbors.mode "atom": a molecule list has no other molecule to list).  `pos`: positions of sys
-    with the solute whole."""
+def lone_solute(sys: System, solute: int, pos: ArrayLike, box_nm: float = 4.0) -> tuple[System, np.ndarray, np.ndarray]:
+    """Return the solute molecule alone, centred in a cubic box: the gas-phase leg of a flexible solute.
+
+    The leg is sampled with the same engine at the lambda_elec windows (FlexibleSimulation +
+    LambdaWindows + FreeEnergyRun, as the solution leg).  The sub-system shares sys's parameter
+    table, so the same params and Alchemy(sub, 0) apply.  The periodic images of a neutral
+    molecule contribute ~1e-3 kJ/mol at 4 nm (tests); run it with
+    MDSettings().replace(lj_lrc=False) (there is no continuum of other atoms), a PME grid for this
+    box and an atom neighbour list (MDSettings neighbors.mode "atom": a molecule list has no other
+    molecule to list).
+
+    Parameters
+    ----------
+    sys : System
+        The system.
+    solute : int
+        Index of the solute molecule.
+    pos : ArrayLike (N, 3)
+        Positions of sys [nm], the solute whole.
+    box_nm : float
+        Edge of the cubic box [nm].
+
+    Returns
+    -------
+    system : System
+        The one-molecule sub-system.
+    positions : np.ndarray (n_s, 3)
+        Solute positions [nm], centred (by the mean of the atoms) in the box.
+    box : np.ndarray (3, 3)
+        box_nm times the identity [nm].
+    """
     sub, idx = sys.sub((int(solute),))
     x = np.asarray(pos, float)[idx]
     x = x - x.mean(axis=0) + 0.5 * float(box_nm)
@@ -508,7 +879,7 @@ def lone_solute(sys: System, solute: int, pos, box_nm: float = 4.0):
 
 
 # ----------------------------------------------------------------------------- lambda windows
-def _select(mask, a, b):
+def _select(mask: ArrayLike, a: MDState, b: MDState) -> MDState:
     """Stacked states: slot k from a where mask[k], else from b (the unbatched step counter from a)."""
     m = jnp.asarray(mask)
     A, B = _nocount(a), _nocount(b)
@@ -517,17 +888,49 @@ def _select(mask, a, b):
 
 
 class LambdaWindows(MDReplicas):
-    """The lambda windows of one Simulation or FlexibleSimulation with an alchemical region, at one
-    temperature: the engine of FreeEnergyRun.  `lambdas` (K, 2) are the (lambda_elec, lambda_vdw)
-    of the windows (`standard_schedule`).  Every window starts from the current configuration of
-    `sim` with momenta drawn from its own random stream (`seed`) and forces at its own lambda.
+    """The lambda windows of one simulation with an alchemical region, at one temperature.
+
+    The engine of FreeEnergyRun, built on remd.MDReplicas (resizing, shared static sizes and
+    checkpoints).  Every window starts from the current configuration of `sim` with momenta drawn
+    from its own random stream (`seed`) and forces at its own lambda.
 
     batched=True (NVT): the windows are one stacked state advanced by jax.vmap of the step (lambda
     traced in MDState.lam), one program for all windows; batched=False advances them one after the
-    other through the driver of `sim` (NPT, or systems that fill the GPU alone).  Resizing, the
-    shared static sizes and checkpoints are those of remd.MDReplicas."""
+    other through the driver of `sim` (NPT, or systems that fill the GPU alone).
 
-    def __init__(self, sim, lambdas, batched: bool = True, seed: int = 0):
+    Attributes
+    ----------
+    alchemy : Alchemy
+        The integrator's alchemical region.
+    lambdas : np.ndarray (K, 2)
+        (lambda_elec, lambda_vdw) of the windows.
+    lam_e : np.ndarray
+        Distinct lambda_elec values (one dipole re-solve each per sample).
+    group : np.ndarray (K,) int
+        Index of each window's lambda_elec in `lam_e`.
+
+    Other attributes as MDReplicas (`temperatures` all equal).
+    """
+
+    def __init__(self, sim: Any, lambdas: ArrayLike, batched: bool = True, seed: int = 0) -> None:
+        """Build the window states from the current configuration of `sim`.
+
+        Parameters
+        ----------
+        sim : Simulation or FlexibleSimulation
+            Created with alchemy=Alchemy(...) and a thermostat.
+        lambdas : ArrayLike (K, 2)
+            Distinct windows (lambda_elec, lambda_vdw) in [0, 1], K >= 2 (e.g. `standard_schedule`).
+        batched : bool
+            One vmapped program for all windows (NVT only) or one after the other.
+        seed : int
+            Seed of the windows' momenta and thermostat streams.
+
+        Raises
+        ------
+        ValueError
+            No alchemical region, no thermostat, batched NPT, or invalid / repeated lambdas.
+        """
         integ = sim.integ
         if getattr(integ, "alchemy", None) is None:
             raise ValueError("the simulation has no alchemical region: Simulation(..., alchemy=Alchemy(...))")
@@ -569,7 +972,8 @@ class LambdaWindows(MDReplicas):
         else:
             self.states = states
 
-    def _build(self):
+    def _build(self) -> None:
+        """Build MDReplicas' vmapped entry points and the vmapped `_switch_one`."""
         super()._build()
         from .remd import _axes
 
@@ -577,9 +981,37 @@ class LambdaWindows(MDReplicas):
         self._switch = jax.jit(jax.vmap(self._switch_one, in_axes=(ax,), out_axes=ax))
 
     # ------------------------------------------------------------------ samples
-    def _sample_one(self, st, lam_e, group, lam_v, lam_e_all):
-        """For one configuration: U_k(x) (K,), dU/dlambda at its own lambda (2,), the largest CG
-        iteration count, overflow."""
+    def _sample_one(
+        self, st: MDState, lam_e: jax.Array, group: jax.Array, lam_v: jax.Array, lam_e_all: jax.Array
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        """Return the energies of one configuration in every window's Hamiltonian.
+
+        Parameters
+        ----------
+        st : MDState
+            State of one window.
+        lam_e : jax.Array (L,)
+            Distinct lambda_elec values (`lam_e`): one dipole re-solve each (lax.map).
+        group : jax.Array (K,) int
+            Index of each window's lambda_elec in `lam_e`.
+        lam_v : jax.Array (K,)
+            lambda_vdw of every window.
+        lam_e_all : jax.Array (K,)
+            lambda_elec of every window.
+
+        Returns
+        -------
+        U : jax.Array (K,)
+            U_k(x) [kJ/mol] for every window k (force field at lambda_elec(k), `extra_energy`, and the
+            lambda-independent restraint and bonded energies, so that U_n(x_n) is the step's potential
+            energy).
+        dudl : jax.Array (2,)
+            dU/dlambda [kJ/mol] at the window's own lambda and converged dipoles.
+        iterations : jax.Array () int
+            Largest CG iteration count of the re-solves.
+        overflow : jax.Array () bool
+            Row capacity exceeded.
+        """
         integ, ff, alch = self.integ, self.sim.ff, self.alchemy
         params = integ.params
         if hasattr(integ, "flex"):  # flexible engine: atoms, neighbour-list group centres
@@ -590,7 +1022,7 @@ class LambdaWindows(MDReplicas):
             centers = st.dyn.position.center
         cand, ovf0 = integ.nb.candidates(st.nbr, centers, st.box, pos)
 
-        def e_ff(le):
+        def e_ff(le: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:  # force-field energy at lambda_elec le
             e, _, it, ovf = ff.energy(pos, st.box, cand, st.induction, alch.params(params, jnp.stack([le, 1.0])))
             return e, it, ovf
 
@@ -606,7 +1038,8 @@ class LambdaWindows(MDReplicas):
         )
         return E[group] + esc + const, g, jnp.max(it), jnp.any(ovf) | ovf0
 
-    def _sampler(self):
+    def _sampler(self) -> Any:
+        """Return the jitted (and, batched, vmapped) `_sample_one`, cached by static sizes and layout."""
         # the stacked state's structure too: a loaded checkpoint or a resize can change the neighbour
         # list's static layout at the same row capacities
         key = (self._sizes(), jax.tree_util.tree_structure(self.S) if self.batched else None)
@@ -620,10 +1053,24 @@ class LambdaWindows(MDReplicas):
             self._samplers = {key: jax.jit(f)}
         return self._samplers[key]
 
-    def sample(self):
-        """u (K, K): u[k, n] = beta U_k(x_n), the configuration of window n in the Hamiltonian of window
-        k (the potential energy of the step at k = n; P V left out under NPT); dudl (K, 2): dU/dlambda
-        (kJ/mol) of each window at its own lambda; the largest CG iteration count of the re-solves."""
+    def sample(self) -> tuple[np.ndarray, np.ndarray, int]:
+        """Return the reduced energies and dU/dlambda of every window's configuration.
+
+        Returns
+        -------
+        u : np.ndarray (K, K)
+            u[k, n] = beta U_k(x_n), the configuration of window n in the Hamiltonian of window k (the
+            potential energy of the step at k = n; P V left out under NPT), dimensionless.
+        dudl : np.ndarray (K, 2)
+            dU/dlambda [kJ/mol] of each window at its own lambda.
+        iterations : int
+            Largest CG iteration count of the re-solves.
+
+        Raises
+        ------
+        RuntimeError
+            If the row capacity is exceeded (the configuration's rows should fit).
+        """
         f = self._sampler()
         args = (
             jnp.asarray(self.lam_e),
@@ -642,10 +1089,13 @@ class LambdaWindows(MDReplicas):
         return beta * np.asarray(U, float).T, np.asarray(g, float), int(np.max(np.asarray(it)))
 
     # ------------------------------------------------------------------ Hamiltonian exchange
-    def _switch_one(self, st):
-        """After a swap: forces, energies and dipoles in the slot's Hamiltonian; the energy change is
-        booked as heat; the dipole predictor restarts from the new dipoles (its history was recorded
-        in another Hamiltonian)."""
+    def _switch_one(self, st: MDState) -> MDState:
+        """Return a swapped-in state re-evaluated in the slot's Hamiltonian.
+
+        Forces, energies and dipoles at the slot's lambda; the energy change is booked as heat; the
+        dipole predictor restarts from the new dipoles (its history was recorded in another
+        Hamiltonian).
+        """
         e0 = st.epot
         new = self.integ._state_forces(st, True)
         ind = new.induction
@@ -654,8 +1104,8 @@ class LambdaWindows(MDReplicas):
             heat=new.heat + (new.epot - e0),
         )
 
-    def permute(self, src):
-        """Slot k receives the configuration of slot src[k], re-evaluated at slot k's lambda."""
+    def permute(self, src: ArrayLike) -> None:
+        """Move the configuration of slot src[k] to slot k, re-evaluated at slot k's lambda."""
         src = np.asarray(src, int)
         changed = src != np.arange(self.n)
         if not changed.any():
@@ -672,8 +1122,8 @@ class LambdaWindows(MDReplicas):
             ]
 
     # ------------------------------------------------------------------ outputs / checkpoints
-    def write_restarts(self, prefix: str):
-        """Amber NetCDF restart of every window: prefix_Lkk.rst7."""
+    def write_restarts(self, prefix: str) -> None:
+        """Write an Amber NetCDF restart of every window: prefix_Lkk.rst7."""
         for k in range(self.n):
             sim = self._on(k)
             write_restart(
@@ -686,11 +1136,13 @@ class LambdaWindows(MDReplicas):
             )
 
     def state_dict(self) -> dict:
+        """Return MDReplicas.state_dict with the lambdas."""
         d = super().state_dict()
         d["lambdas"] = self.lambdas.copy()
         return d
 
-    def load_state_dict(self, d: dict):
+    def load_state_dict(self, d: dict) -> None:
+        """Load window states from a checkpoint (MDReplicas.load_state_dict); ValueError if lambdas differ."""
         if (
             "lambdas" not in d
             or np.shape(d["lambdas"]) != self.lambdas.shape
@@ -717,7 +1169,21 @@ class FreeEnergyRun:
     prefix_fe.npz (samples: u (S, K, K), dudl (S, K, 2), step, time_ps, replica (S, K), epot (S, K),
     lambdas, kT, meta), prefix_fe.log (one line per report: temperatures, CG iterations, acceptance,
     speed), prefix_fe.json (acceptance matrix, round trips, speed), prefix.fe.chk (checkpoint:
-    windows, samples, statistics, random state; `load_checkpoint`) and prefix_Lkk.rst7."""
+    windows, samples, statistics, random state; `load_checkpoint`) and prefix_Lkk.rst7.
+
+    Attributes
+    ----------
+    windows : LambdaWindows
+        The windows.
+    n : int
+        Number of windows K.
+    samples : dict of str to list
+        Per sample: "u", "dudl", "step", "time_ps", "replica", "epot", "cg" (and "dudp").
+    stats : ExchangeStatistics
+        Exchange statistics.
+    step : int
+        Steps done.
+    """
 
     def __init__(
         self,
@@ -725,10 +1191,10 @@ class FreeEnergyRun:
         sample_every: int = 500,
         exchange_every: int = 0,
         seed: int = 0,
-        log=None,
+        log: TextIO | None = None,
         meta: dict | None = None,
-        param_grad=None,
-    ):
+        param_grad: ParameterGradients | None = None,
+    ) -> None:
         """Set up sampling (and exchanges) over the lambda windows.
 
         Parameters
@@ -784,7 +1250,8 @@ class FreeEnergyRun:
         logger.info("(lambda_elec, lambda_vdw): " + " ".join(f"({a:g},{b:g})" for a, b in windows.lambdas))
 
     # ------------------------------------------------------------------ one sample / exchange
-    def _sample(self):
+    def _sample(self) -> np.ndarray:
+        """Take one sample of every window (and the parameter gradients) and return its u (K, K)."""
         w = self.windows
         u, g, it = w.sample()
         self.samples["u"].append(u)
@@ -798,7 +1265,8 @@ class FreeEnergyRun:
             self.samples["dudp"].append(self.param_grad.sample())
         return u
 
-    def _exchange(self, u):
+    def _exchange(self, u: np.ndarray) -> tuple[list[tuple[int, int]], np.ndarray]:
+        """Attempt one Hamiltonian exchange round on the sampled u; return (pairs, accepted)."""
         pairs = exchange_pairs(self.n, self.stats.n_exchanges)
         acc, src = metropolis(u, pairs, self.rng.random(len(pairs)))
         self.windows.permute(src)
@@ -878,6 +1346,18 @@ class FreeEnergyRun:
         return summary
 
     def summary(self, ns_per_day: float | None = None) -> dict:
+        """Return the windows, temperature, counts, acceptance, round trips and (optionally) speed.
+
+        Parameters
+        ----------
+        ns_per_day : float, optional
+            Speed per window [ns/day] to include (with the aggregate speed).
+
+        Returns
+        -------
+        dict
+            JSON-serializable summary (the content of prefix_fe.json).
+        """
         st = self.stats
         out = {
             "lambdas": self.windows.lambdas.tolist(),
@@ -899,8 +1379,12 @@ class FreeEnergyRun:
         return out
 
     # ------------------------------------------------------------------ outputs / checkpoints
-    def arrays(self) -> dict:
-        """The samples as arrays (the content of prefix_fe.npz)."""
+    def arrays(self) -> dict[str, Any]:
+        """Return the samples as arrays (the content of prefix_fe.npz; class docstring).
+
+        With parameter gradients also "dudp" (S, T, K, M): dU_{targets[t]}/dP at the
+        configuration of window k (md/fe_grad.py).
+        """
         S, w = self.samples, self.windows
         K = self.n
         return {
@@ -924,8 +1408,7 @@ class FreeEnergyRun:
         )
 
     def _write_checkpoint_files(self, prefix: str) -> None:
-        """The files of run's checkpoints: samples prefix_fe.npz, prefix.fe.chk and the window
-        restarts prefix_Lkk.rst7."""
+        """Write the files of run's checkpoints: prefix_fe.npz, prefix.fe.chk and prefix_Lkk.rst7."""
         self.save_samples(f"{prefix}_fe.npz")
         self.save_checkpoint(prefix + ".fe.chk")
         self.windows.write_restarts(prefix)
@@ -959,8 +1442,7 @@ class FreeEnergyRun:
         write_checkpoint(path, "free-energy", content)
 
     def _read(self, path: str) -> dict:
-        """The content of a checkpoint written by `save_checkpoint` (or a legacy pickle ``.fe.chk``), with the
-        samples as lists of per-sample entries."""
+        """Return the content of a checkpoint (current or legacy .fe.chk), samples as lists per sample."""
         d = read_checkpoint(
             path, "free-energy", self.windows.state_template(), OPTIONAL_STATE, legacy_format=LEGACY_FORMAT
         )
@@ -968,8 +1450,10 @@ class FreeEnergyRun:
         return d
 
     def load_checkpoint(self, path: str) -> None:
-        """Continue from a checkpoint written by `save_checkpoint`, or from a legacy pickle ``.fe.chk`` of
-        pgm_jax up to commit e72c57c (same system, settings and windows).
+        """Continue from a checkpoint written by `save_checkpoint` (or a legacy pickle .fe.chk).
+
+        Legacy pickle checkpoints are those of pgm_jax up to commit e72c57c; the system, settings
+        and windows must be the same.
 
         Parameters
         ----------
@@ -1000,10 +1484,10 @@ class FreeEnergyRun:
             self.meta.update(self.param_grad.meta())
 
     def load_windows(self, path: str) -> None:
-        """Start from the window configurations of a checkpoint written by `save_checkpoint` (e.g. equilibrated
-        at other parameters) with no samples, step 0 and time 0.
+        """Start from the window configurations of a checkpoint with no samples, step 0 and time 0.
 
-        Its samples, statistics and random state are not taken over.  Windows are matched by
+        The checkpoint (written by `save_checkpoint`) may e.g. be equilibrated at other
+        parameters.  Its samples, statistics and random state are not taken over.  Windows are matched by
         lambda when the checkpoint has other windows.
 
         Parameters

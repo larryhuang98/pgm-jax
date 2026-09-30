@@ -1,8 +1,8 @@
-"""Host-side machinery shared by the MD drivers (Simulation, FlexibleSimulation, PIMDSimulation,
-the replica drivers of REMD, bias walkers, finite-field replicas and lambda windows).
+"""Host-side machinery shared by the MD drivers: blocks of steps, log tables and checkpoints.
 
-Nothing here is traced by JAX: the compiled steps of the integrators are untouched.  The drivers
-use these pieces for
+The drivers are Simulation, FlexibleSimulation, PIMDSimulation, the replica drivers of REMD, bias
+walkers, finite-field replicas and lambda windows.  Nothing here is traced by JAX: the compiled
+steps of the integrators are untouched.  The drivers use these pieces for
 
   * blocks of steps: `block_length` (the largest block that hits every output interval) and
     `advance_with_rebuilds` / `retry_block` (repeat a block after an overflow of the neighbour
@@ -15,6 +15,8 @@ use these pieces for
     rebuilt on a template of the same structure (`tree_from_arrays`).  Checkpoints of pgm_jax up
     to commit e72c57c were pickles; `read_checkpoint` reads them too (`read_legacy_checkpoint`),
     and loading one into a driver and saving again converts it to the new format.
+
+Units: steps, ps, s; energies in kJ/mol.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ import os
 import pickle
 import time
 from collections.abc import Callable, Iterable
+from typing import Any, TextIO
 
 import jax
 import jax.numpy as jnp
@@ -33,12 +36,12 @@ import numpy as np
 CHECKPOINT_FORMAT = "pgm_jax checkpoint"
 CHECKPOINT_VERSION = 1
 HEADER_KEY = "__header__"
-_ZIP_MAGIC = b"PK\x03\x04"
+_ZIP_MAGIC = b"PK\x03\x04"  # zip local-file signature: the first bytes of every .npz archive
 
 
 # ----------------------------------------------------------------------------- blocks of steps
 def block_length(nsteps: int, *intervals: int) -> int:
-    """Number of steps per compiled block.
+    """Return the number of steps per compiled block.
 
     Parameters
     ----------
@@ -57,7 +60,7 @@ def block_length(nsteps: int, *intervals: int) -> int:
 
 
 def ns_per_day(steps: int, dt_ps: float, seconds: float) -> float:
-    """Simulation speed.
+    """Return the simulation speed.
 
     Parameters
     ----------
@@ -79,7 +82,7 @@ def ns_per_day(steps: int, dt_ps: float, seconds: float) -> float:
 class Stopwatch:
     """Wall-clock time and step count since the start of a run, for ns/day in the logs."""
 
-    def __init__(self, step0: int, dt_ps: float):
+    def __init__(self, step0: int, dt_ps: float) -> None:
         """Start timing.
 
         Parameters
@@ -92,7 +95,7 @@ class Stopwatch:
         self.t0, self.step0, self.dt = time.time(), int(step0), float(dt_ps)
 
     def ns_per_day(self, step: int) -> float:
-        """Speed from the start to now.
+        """Return the speed from the start to now.
 
         Parameters
         ----------
@@ -107,23 +110,23 @@ class Stopwatch:
         return ns_per_day(int(step) - self.step0, self.dt, time.time() - self.t0)
 
     def seconds(self) -> float:
-        """Wall-clock seconds since the start."""
+        """Return the wall-clock seconds since the start."""
         return time.time() - self.t0
 
 
-def retry_block(run: Callable, start, failed: Callable, resize: Callable, attempts: int = 6):
+def retry_block(run: Callable, start: Any, failed: Callable, resize: Callable, attempts: int = 6) -> Any:
     """Run a block of steps, re-sizing the static capacities and repeating it after an overflow.
 
     Parameters
     ----------
-    run : callable
+    run : Callable
         ``run(start) -> new`` advances the state by one block.
-    start
+    start : MDState or stacked state
         State at the start of the block.
-    failed : callable
+    failed : Callable
         ``failed(new) -> (list_failed, rows_failed)``: whether the neighbour list or the pair rows
         overflowed in the block (the results of such a block are invalid).
-    resize : callable
+    resize : Callable
         ``resize(start, list_failed, rows_failed) -> start'`` enlarges the capacities (and
         recompiles) and returns the start state with forces evaluated at the new sizes.
     attempts : int
@@ -131,7 +134,8 @@ def retry_block(run: Callable, start, failed: Callable, resize: Callable, attemp
 
     Returns
     -------
-    The state after the block.
+    MDState or stacked state
+        The state after the block.
 
     Raises
     ------
@@ -158,14 +162,19 @@ def advance_with_rebuilds(n: int, advance_block: Callable, rebuild: Callable, vo
     ----------
     n : int
         Steps.
-    advance_block : callable
+    advance_block : Callable
         ``advance_block(n)`` runs n steps as one block (raises RuntimeError "... overflowing").
-    rebuild : callable
+    rebuild : Callable
         ``rebuild()`` rebuilds the lists for the current box.
-    volume_ratio : callable
+    volume_ratio : Callable
         ``volume_ratio()`` = current volume / volume the lists were built for.
+
+    Raises
+    ------
+    RuntimeError
+        From `advance_block`, when a block of one step still overflows or for other errors.
     """
-    if abs(volume_ratio() - 1.0) > 0.10:
+    if abs(volume_ratio() - 1.0) > 0.10:  # the cell list was laid out for another box
         rebuild()
     try:
         advance_block(n)
@@ -179,7 +188,7 @@ def advance_with_rebuilds(n: int, advance_block: Callable, rebuild: Callable, vo
 
 # ----------------------------------------------------------------------------- tables
 def format_row(values: Iterable) -> str:
-    """One row of a log table.
+    """Return one row of a log table.
 
     Parameters
     ----------
@@ -206,7 +215,7 @@ def format_row(values: Iterable) -> str:
 
 
 def format_header(columns: Iterable[str]) -> str:
-    """The header line of a log table.
+    """Return the header line of a log table.
 
     Parameters
     ----------
@@ -229,7 +238,9 @@ class LogTable:
     rows only.  Rows can be echoed to a text stream (e.g. sys.stdout) as well.
     """
 
-    def __init__(self, path: str | None, append: bool = False, title: Iterable[str] = (), echo=None):
+    def __init__(
+        self, path: str | None, append: bool = False, title: Iterable[str] = (), echo: TextIO | None = None
+    ) -> None:
         """Open the table.
 
         Parameters
@@ -250,7 +261,7 @@ class LogTable:
         self.columns: list[str] | None = None
 
     def write(self, row: dict) -> str:
-        """Append one row.
+        """Append one row (the first row also writes the title and header to a new file).
 
         Parameters
         ----------
@@ -289,18 +300,18 @@ class LogTable:
         """Context-manager entry: the table itself."""
         return self
 
-    def __exit__(self, *exc) -> None:
+    def __exit__(self, *exc: object) -> None:
         """Context-manager exit: close the file."""
         self.close()
 
 
 # ----------------------------------------------------------------------------- checkpoints
-def tree_arrays(tree, name: str) -> dict[str, np.ndarray]:
-    """The leaves of a pytree as host arrays, keyed ``name`` + the leaf's key path.
+def tree_arrays(tree: Any, name: str) -> dict[str, np.ndarray]:
+    """Return the leaves of a pytree as host arrays, keyed ``name`` + the leaf's key path.
 
     Parameters
     ----------
-    tree
+    tree : pytree
         A pytree of arrays (an MDState, a dict of arrays, a list of states, ...); None subtrees
         have no leaves.
     name : str
@@ -315,12 +326,12 @@ def tree_arrays(tree, name: str) -> dict[str, np.ndarray]:
     return {name + jax.tree_util.keystr(p): np.asarray(v) for p, v in leaves}
 
 
-def tree_from_arrays(template, arrays: dict, name: str, optional: Iterable[str] = ()):
+def tree_from_arrays(template: Any, arrays: dict, name: str, optional: Iterable[str] = ()) -> Any:
     """Rebuild a pytree from `tree_arrays` output on a template of the same structure.
 
     Parameters
     ----------
-    template
+    template : pytree
         A pytree with the structure of the stored one (e.g. the driver's current state); its
         leaves are replaced.
     arrays : dict
@@ -334,7 +345,8 @@ def tree_from_arrays(template, arrays: dict, name: str, optional: Iterable[str] 
 
     Returns
     -------
-    The template's structure with the stored leaves as device arrays.
+    pytree
+        The template's structure with the stored leaves as device arrays.
 
     Raises
     ------
@@ -373,12 +385,12 @@ def tree_from_arrays(template, arrays: dict, name: str, optional: Iterable[str] 
 _ARRAY, _TREE = "__array__", "__tree__"
 
 
-def encode_content(content, name: str = "") -> tuple[object, dict[str, np.ndarray]]:
+def encode_content(content: Any, name: str = "") -> tuple[object, dict[str, np.ndarray]]:
     """Split a checkpoint's content into a JSON description and named arrays.
 
     Parameters
     ----------
-    content
+    content : object
         Nested dicts / lists / tuples whose leaves are JSON scalars (None, bool, int, float, str),
         numpy or JAX arrays and scalars, or pytrees of arrays (``MDState`` and friends).
     name : str
@@ -386,7 +398,7 @@ def encode_content(content, name: str = "") -> tuple[object, dict[str, np.ndarra
 
     Returns
     -------
-    description
+    description : object
         The same nesting with scalars in place, ``{"__array__": key}`` for an array and
         ``{"__tree__": key}`` for a pytree whose leaves are stored under ``key`` + key path
         (`tree_arrays`); tuples become lists.
@@ -395,8 +407,8 @@ def encode_content(content, name: str = "") -> tuple[object, dict[str, np.ndarra
     """
     arrays: dict[str, np.ndarray] = {}
 
-    def walk(x, key: str):
-        """Description of x at array key `key` (arrays collected on the way)."""
+    def walk(x: Any, key: str) -> Any:
+        """Return the description of x at array key `key` (arrays collected on the way)."""
         if isinstance(x, dict):
             return {str(k): walk(v, f"{key}.{k}" if key else str(k)) for k, v in x.items()}
         if isinstance(x, (list, tuple)):
@@ -414,12 +426,12 @@ def encode_content(content, name: str = "") -> tuple[object, dict[str, np.ndarra
     return walk(content, name), arrays
 
 
-def decode_content(description, arrays: dict, template=None, optional: Iterable[str] = ()):
+def decode_content(description: Any, arrays: dict, template: Any = None, optional: Iterable[str] = ()) -> Any:
     """Rebuild a checkpoint's content from `encode_content` output.
 
     Parameters
     ----------
-    description
+    description : object
         The JSON description.
     arrays : dict
         The stored arrays.
@@ -431,7 +443,8 @@ def decode_content(description, arrays: dict, template=None, optional: Iterable[
 
     Returns
     -------
-    The content: arrays as numpy arrays, pytrees with device-array leaves, lists for tuples.
+    object
+        The content: arrays as numpy arrays, pytrees with device-array leaves, lists for tuples.
 
     Raises
     ------
@@ -439,8 +452,8 @@ def decode_content(description, arrays: dict, template=None, optional: Iterable[
         A stored pytree but no template, or a pytree that does not match the template.
     """
 
-    def walk(x):
-        """Content of the description x."""
+    def walk(x: Any) -> Any:
+        """Return the content of the description x."""
         if isinstance(x, dict):
             if set(x) == {_ARRAY}:
                 return arrays[x[_ARRAY]]
@@ -486,7 +499,7 @@ def write_checkpoint(path: str, kind: str, content: dict) -> None:
 
 
 def is_legacy_checkpoint(path: str) -> bool:
-    """True for a pickle checkpoint of pgm_jax up to commit e72c57c (not an npz archive).
+    """Return True for a pickle checkpoint of pgm_jax up to commit e72c57c (not an npz archive).
 
     Parameters
     ----------
@@ -505,7 +518,7 @@ def is_legacy_checkpoint(path: str) -> bool:
 def read_checkpoint(
     path: str,
     kind: str,
-    template=None,
+    template: Any = None,
     optional: Iterable[str] = (),
     legacy_format: str | None = None,
 ) -> dict:
@@ -558,8 +571,8 @@ def read_checkpoint(
     return decode_content(header["content"], arrays, template, optional)
 
 
-def read_legacy_checkpoint(path: str):
-    """The content of a pickle checkpoint of pgm_jax up to commit e72c57c.
+def read_legacy_checkpoint(path: str) -> Any:
+    """Return the content of a pickle checkpoint of pgm_jax up to commit e72c57c.
 
     Such files hold the pickled state objects (``MDState`` and friends, numpy leaves), so they can
     only be read while those classes keep their import paths; load them into a driver and save
@@ -573,38 +586,41 @@ def read_legacy_checkpoint(path: str):
 
     Returns
     -------
-    The unpickled object (a dict).
+    object
+        The unpickled object (a dict).
     """
     with open(path, "rb") as fh:
         return pickle.load(fh)
 
 
-def host_tree(tree):
-    """A copy of a pytree on the host.
+def host_tree(tree: Any) -> Any:
+    """Return a copy of a pytree on the host.
 
     Parameters
     ----------
-    tree
+    tree : pytree
         A pytree of arrays.
 
     Returns
     -------
-    The same structure with every leaf as a numpy array.
+    pytree
+        The same structure with every leaf as a numpy array.
     """
     return jax.tree_util.tree_map(np.asarray, tree)
 
 
-def device_tree(tree):
-    """A copy of a pytree on the device (legacy checkpoints hold numpy leaves).
+def device_tree(tree: Any) -> Any:
+    """Return a copy of a pytree on the device (legacy checkpoints hold numpy leaves).
 
     Parameters
     ----------
-    tree
+    tree : pytree
         A pytree of arrays.
 
     Returns
     -------
-    The same structure with every leaf as a JAX array (dtypes kept).
+    pytree
+        The same structure with every leaf as a JAX array (dtypes kept).
     """
     return jax.tree_util.tree_map(jnp.asarray, tree)
 

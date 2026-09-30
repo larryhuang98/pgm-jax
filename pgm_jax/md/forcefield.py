@@ -1,6 +1,11 @@
 """pGM + Lennard-Jones force field for molecular dynamics: periodic box, smooth PME, pair list.
 
-Energy (kJ/mol) with induced dipoles mu (Wei et al. JCP 153, 114116 (2020) Sec. II D for PME):
+Contents: the settings (`MDSettings` with its groups `Terms`, `Cutoffs`, `NeighborList`,
+`PMESettings`, `Induction`, `ExtendedLagrangian`; `ewald_beta_for`, `elec_cutoff_settings`), the
+state and result types (`InductionState`, `Result`), the force field `PGMForceField` (pair rows,
+PME, induced-dipole solvers, energies, forces, strain derivative) and `full_strain_derivative`.
+
+Energy (kJ/mol) with induced dipoles mu ([1]_ Sec. II D for PME):
 
   E = KE [ U_dir + U_rec + U_self + U_bg + sum |mu|^2 / (2 alpha) ] + E_LJ,     d = p(R) + mu
   U_dir  = sum_{pairs < rc} q_i q_j G0 + (q_i d_j.x - q_j d_i.x) G1 - G2 (d_i.x)(d_j.x) + G1 d_i.d_j
@@ -58,9 +63,9 @@ bond lengths.  Every energy evaluation takes them at its own positions (charges_
 charge gradient, pulled back through the bond-local flux map by one vector-Jacobian product
 (_energy_forces_flux).  Without flux none of this code runs.
 
-Extended-Lagrangian dipoles (`iel`, docs/iel.md; Albaugh, Niklasson & Head-Gordon, JPCL 8, 1714
-(2017)): auxiliary dipoles x ride along with the atoms, x_{n+1} = 2 x_n - x_{n-1} + kappa (mu_n - x_n)
-+ a sum_k c_k x_{n-k} (Niklasson's dissipative Verlet), and replace the predictor + CG:
+Extended-Lagrangian dipoles (`iel`, docs/iel.md; [2]_): auxiliary dipoles x ride along with the
+atoms, x_{n+1} = 2 x_n - x_{n-1} + kappa (mu_n - x_n) + a sum_k c_k x_{n-k} (Niklasson's
+dissipative Verlet [3]_), and replace the predictor + CG:
   * "0scf" (iEL/0-SCF): one field sweep, r = field(q, p + x) - x/alpha, mu = x + delta with
     delta = alpha r, and the shadow energy U~(R, x) = U(R, x) - sum alpha |r|^2 / 2
     = U(R, x + delta) - U_es(0, delta), which is stationary in delta, so its exact forces are the
@@ -86,13 +91,28 @@ the energy V eps0 |F(M)|^2 / 2; the induction operator gains the all-to-all term
 Precision: 'mixed' evaluates pair kernels, PME and CG vectors in float32 and accumulates energies,
 dot products, positions and forces in float64; 'double' uses float64 throughout.  float32 matrix
 products are requested at full precision (NVIDIA GPUs otherwise use TF32, ~1e-3 relative error).
+
+Symbols: KE the Coulomb constant (units.py) [kJ/mol nm/e^2], b0 = ewald_beta [1/nm], b_ij the
+Gaussian screening of the pair (1 / sqrt(2 (R_i^2 + R_j^2)), R the pGM radii) [1/nm], B_n the
+radial kernels of md/kernels.py, p the permanent (covalent) dipoles, alpha the polarizabilities
+[nm^3], Q the net charge, V the volume.  Internal field units e/nm^2 (energy KE M . F).
+
+Units: nm, e, e nm, nm^3, kJ/mol (forces kJ/mol/nm).
+
+References
+----------
+.. [1] H. Wei, R. Qi, J. Wang, P. Cieplak, Y. Duan, R. Luo, J. Chem. Phys. 153, 114116 (2020).
+.. [2] A. Albaugh, A. M. N. Niklasson, T. Head-Gordon, J. Phys. Chem. Lett. 8, 1714 (2017).
+.. [3] A. M. N. Niklasson, P. Steneteg, A. Odell, N. Bock, M. Challacombe, C. J. Tymczak,
+   E. Holmstrom, G. Zheng, V. Weber, J. Chem. Phys. 130, 214109 (2009).
 """
 
 from __future__ import annotations
 
 import dataclasses as _dc
 import math
-from typing import NamedTuple
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -109,22 +129,27 @@ from .kernels import erf_kernels, erf_kernels_closed
 from .pme import PME, grid_size
 from .topology import MDTopology
 
+if TYPE_CHECKING:
+    from jax.typing import ArrayLike, DTypeLike
+
+    from .flux import ChargeFlux
+
 _SQRT_PI = math.sqrt(math.pi)
 
 
 @_dc.dataclass(frozen=True)
 class Terms:
-    """The interactions of the force field.
+    """The interactions of the force field (immutable).
 
-    Attributes
+    Parameters
     ----------
-    elec : str
+    elec : {"q", "qp", "qi", "qpi"}
         Electrostatics: "q" charges, "qp" charges + permanent dipoles, "qi" charges + induction,
         "qpi" pGM (charges, permanent and induced dipoles; options.py).  Quadrupoles are not in
         the MD engine.
-    vdw : str
+    vdw : {"lj", "gvdw", "none"}
         Van der Waals term: "lj" (Lennard-Jones), "gvdw" (vdw.py; pmemd-pgm igvdw=1) or "none".
-    gvdw_rep : str
+    gvdw_rep : {"gauss", "slater"}
         GVDW repulsion: "gauss" (gvdw_rep_form=0) or "slater" (=1).
     lj_lrc : bool
         Long-range correction of the r^-6 tail of LJ or of the GVDW dispersion (vdwmeth = 1).
@@ -138,9 +163,9 @@ class Terms:
 
 @_dc.dataclass(frozen=True)
 class Cutoffs:
-    """Cutoffs of the pair terms and of the neighbour list.
+    """Cutoffs of the pair terms and of the neighbour list (immutable).
 
-    Attributes
+    Parameters
     ----------
     cutoff : float
         Van der Waals cutoff [nm], and the electrostatics cutoff unless elec_cutoff is set
@@ -156,14 +181,14 @@ class Cutoffs:
 
 @_dc.dataclass(frozen=True)
 class NeighborList:
-    """The Verlet neighbour list of the engines.
+    """The Verlet neighbour list of the engines (immutable).
 
-    Attributes
+    Parameters
     ----------
     skin : float
         Skin added to the pair cutoff [nm] (pmemd: skinnb); the list is rebuilt when an atom (or a
         group centre) has moved by half of it.
-    mode : str
+    mode : {"auto", "molecule", "atom"}
         "auto" (a list of molecule / group centres when the box is large enough for the groups'
         radius, else of atoms), "molecule" or "atom".
     """
@@ -174,9 +199,9 @@ class NeighborList:
 
 @_dc.dataclass(frozen=True)
 class PMESettings:
-    """Smooth particle-mesh Ewald.
+    """Smooth particle-mesh Ewald (immutable).
 
-    Attributes
+    Parameters
     ----------
     ewald_beta : float
         Ewald coefficient [1/nm] (pmemd: ew_coeff; 4.0 /nm = 0.4 /A).
@@ -196,14 +221,14 @@ class PMESettings:
 
 @_dc.dataclass(frozen=True)
 class ExtendedLagrangian:
-    """Extended-Lagrangian induced dipoles (docs/iel.md).
+    """Extended-Lagrangian induced dipoles (docs/iel.md; immutable).
 
     Auxiliary dipoles x are propagated by Niklasson's time-reversible Verlet with dissipation,
-    x' = 2x - x_ - kappa (mu - x) + a sum_k c_k x_k.
+    x_{n+1} = 2 x_n - x_{n-1} + kappa (mu_n - x_n) + a sum_k c_k x_{n-k}.
 
-    Attributes
+    Parameters
     ----------
-    scheme : str
+    scheme : {"none", "0scf", "scf"}
         "none": SCF from the predictor (Induction); "0scf": iEL/0-SCF, no CG, mu = x + alpha r(x)
         with the exact forces of the shadow energy; "scf": iEL/SCF, CG started from x.
     iterations : int
@@ -214,7 +239,7 @@ class ExtendedLagrangian:
         kappa = (omega dt)^2; None: Niklasson's value for K (1.0 for K = 0).
     alpha : float or None
         Dissipation strength a; None: Niklasson's value for K.
-    precond : str
+    precond : {"block", "jacobi"}
         "0scf": delta = omega alpha r ("jacobi") or omega M^-1 r with M = 1/alpha + the
         intramolecular row blocks of molecules of <= 8 atoms ("block").
     omega : float
@@ -236,16 +261,16 @@ class ExtendedLagrangian:
 
 @_dc.dataclass(frozen=True)
 class Induction:
-    """The induced-dipole solver (preconditioned CG, pmemd-pgm's scheme) and its predictor.
+    """The induced-dipole solver (preconditioned CG, pmemd-pgm's scheme) and its predictor (immutable).
 
-    Attributes
+    Parameters
     ----------
     tol : float
         Convergence: max |alpha r| / mean |alpha b| (pmemd: dipole_scf_tol); 1e-4 is about 20 %
         faster with an NVE drift of 0.02 kT/ns/dof.
     max_iter : int
         Largest number of CG iterations (pmemd: scf_cg_niter).
-    predictor : str
+    predictor : {"mu4", "mu3", "ls", "none"}
         Initial guess from earlier steps: "mu4", "mu3", "ls" (least squares) or "none".
     fused : bool
         Fused initial residual of the mu3 / mu4 predictors.
@@ -314,8 +339,8 @@ FLAT_SETTINGS = {
 }
 
 
-def _set_path(obj, path: tuple, value):
-    """A copy of the frozen dataclass `obj` with the field at `path` (names of nested fields) set."""
+def _set_path(obj: Any, path: tuple, value: Any) -> Any:
+    """Return a copy of the frozen dataclass `obj` with the field at `path` (nested field names) set."""
     if len(path) == 1:
         return _dc.replace(obj, **{path[0]: value})
     return _dc.replace(obj, **{path[0]: _set_path(getattr(obj, path[0]), path[1:], value)})
@@ -338,9 +363,10 @@ class MDSettings:
         MDSettings(induction=Induction(tol=1e-6), precision="double")
         MDSettings().replace(dipole_tol=1e-6, cutoff=0.8, iel="0scf")   # flat (pmemd-like) names
 
-    Frozen and hashable (compiled functions are cached on it); change it with `replace`.
+    Frozen and hashable (compiled functions are cached on it); change it with `replace`.  Every
+    setting is static for the compiled steps (a change recompiles).
 
-    Attributes
+    Parameters
     ----------
     terms : Terms
         Electrostatics and van der Waals terms.
@@ -352,7 +378,7 @@ class MDSettings:
         Ewald coefficient and PME grid.
     induction : Induction
         Induced-dipole solver, predictor and extended-Lagrangian dipoles.
-    precision : str
+    precision : {"mixed", "double"}
         "mixed" (float32 kernels, float64 accumulation where it matters) or "double".
     differentiable : bool
         Forces and induced dipoles differentiable (reverse mode) in parameters, positions and
@@ -370,8 +396,8 @@ class MDSettings:
     differentiable: bool = False
     adjoint_tol: float = 1e-6
 
-    def replace(self, **changes) -> MDSettings:
-        """A copy with some settings changed.
+    def replace(self, **changes: Any) -> MDSettings:
+        """Return a copy with some settings changed.
 
         Parameters
         ----------
@@ -410,7 +436,7 @@ class MDSettings:
         return elec_flags(self.terms.elec)[1]
 
     @property
-    def dtype(self):
+    def dtype(self) -> DTypeLike:
         """Floating-point type of the kernels (float32 in mixed precision)."""
         return jnp.float32 if self.precision == "mixed" else jnp.float64
 
@@ -422,12 +448,15 @@ class MDSettings:
 
     @property
     def pair_cutoff(self) -> float:
-        """Cutoff of the pair rows and of the neighbour list (nm): the larger of the electrostatics
-        and van der Waals cutoffs (the latter only with a van der Waals term)."""
+        """Cutoff of the pair rows and of the neighbour list [nm].
+
+        The larger of the electrostatics and van der Waals cutoffs (the latter only with a van der
+        Waals term).
+        """
         return self.elec_rc if self.terms.vdw == "none" else max(float(self.cutoffs.cutoff), self.elec_rc)
 
     def describe_induction(self) -> str:
-        """Induced-dipole scheme for log headers."""
+        """Return the induced-dipole scheme for log headers."""
         ind = self.induction
         x = ind.iel
         if x.scheme == "none":
@@ -450,7 +479,7 @@ class MDSettings:
         )
 
     def describe_cutoffs(self) -> str:
-        """Cutoffs for log headers."""
+        """Return the cutoffs for log headers."""
         c = self.cutoffs
         if c.elec_cutoff is None or self.elec_rc == float(c.cutoff):
             return f"cutoff {c.cutoff} nm"
@@ -462,20 +491,39 @@ DSUM_TOL = 3.95e-8
 
 
 def ewald_beta_for(elec_cutoff: float, dsum_tol: float = DSUM_TOL) -> float:
-    """Ewald coefficient (nm^-1) for the real-space cutoff elec_cutoff (nm) and a direct-sum
-    tolerance in Amber's convention (sander / pmemd `dsum_tol`): erfc(beta rc) / rc = dsum_tol with
-    rc in Angstrom, solved by bisection as Amber does.  Amber's default dsum_tol = 1e-5 gives the
-    ew_coeff of its outputs (0.34864 A^-1 at 8 A, 0.30768 at 9 A).  The pGM-JAX default pair
-    0.9 nm / 4.0 nm^-1 (erfc(3.6) = 3.6e-7; pmemd-pgm's ew_coeff 0.4 A^-1 at 9 A) is
-    dsum_tol = 3.95e-8 (DSUM_TOL); at that tolerance 0.8 nm needs 4.52 nm^-1, 0.7 nm 5.19 and 0.6 nm
-    6.09.  The rule bounds the charge-charge term; the dipole terms of pGM decay with higher powers
-    of beta, so the measured real-space force error grows as the cutoff shrinks (ubiquitin: 4e-6 at
-    0.9 nm, 8e-6 at 0.7, 3e-5 at 0.6; pGM water 2e-5 at 0.7, 1e-4 at 0.6)."""
+    """Return the Ewald coefficient [1/nm] for a real-space cutoff and an Amber direct-sum tolerance.
+
+    erfc(beta rc) / rc = dsum_tol with rc in Angstrom (sander / pmemd `dsum_tol`), solved by
+    bisection as Amber does.  Amber's default dsum_tol = 1e-5 gives the ew_coeff of its outputs
+    (0.34864 A^-1 at 8 A, 0.30768 at 9 A).  The pGM-JAX default pair 0.9 nm / 4.0 nm^-1
+    (erfc(3.6) = 3.6e-7; pmemd-pgm's ew_coeff 0.4 A^-1 at 9 A) is dsum_tol = 3.95e-8 (DSUM_TOL); at
+    that tolerance 0.8 nm needs 4.52 nm^-1, 0.7 nm 5.19 and 0.6 nm 6.09.  The rule bounds the
+    charge-charge term; the dipole terms of pGM decay with higher powers of beta, so the measured
+    real-space force error grows as the cutoff shrinks (ubiquitin: 4e-6 at 0.9 nm, 8e-6 at 0.7, 3e-5
+    at 0.6; pGM water 2e-5 at 0.7, 1e-4 at 0.6).
+
+    Parameters
+    ----------
+    elec_cutoff : float
+        Real-space cutoff [nm].
+    dsum_tol : float
+        Direct-sum tolerance (Amber's convention, per Angstrom).
+
+    Returns
+    -------
+    float
+        beta [1/nm].
+
+    Raises
+    ------
+    ValueError
+        A non-positive cutoff, or dsum_tol outside (0, 1/rc_A).
+    """
     rc = float(elec_cutoff)
     if not rc > 0.0:
         raise ValueError(f"elec_cutoff must be positive, got {elec_cutoff}")
 
-    def f(b):
+    def f(b: float) -> float:  # erfc(b rc) / rc_A - dsum_tol (rc_A = 10 rc)
         return math.erfc(b * rc) / (10.0 * rc) - dsum_tol
 
     if not (0.0 < dsum_tol and f(0.0) > 0.0):
@@ -490,37 +538,88 @@ def ewald_beta_for(elec_cutoff: float, dsum_tol: float = DSUM_TOL) -> float:
 
 
 def elec_cutoff_settings(elec_cutoff: float, dsum_tol: float = DSUM_TOL, exponent: float = 1.6) -> dict:
-    """MDSettings arguments for a real-space electrostatics cutoff: ewald_beta from ewald_beta_for and
-    the PME grid spacing h = 0.08 nm (4.0 / beta)^exponent, scaled from the default pair
-    (4.0 nm^-1, 0.08 nm).
+    """Return MDSettings arguments for a real-space electrostatics cutoff.
+
+    ewald_beta from `ewald_beta_for` and the PME grid spacing h = 0.08 nm (4.0 / beta)^exponent,
+    scaled from the default pair (4.0 nm^-1, 0.08 nm).
 
         MDSettings().replace(cutoff=0.9, **elec_cutoff_settings(0.7))   # LJ at 0.9 nm, electrostatics at 0.7
 
     At a fixed spline order the PME force error of pGM (charges and dipoles) grows roughly as
     beta^9.5 h^6 (measured, order 6, ubiquitin in water): keeping beta x h fixed (exponent 1: 0.7 nm,
-    5.19 nm^-1, 0.0616 nm) is the cheaper grid but multiplies the force error by 2.5 at 0.7 nm; exponent
-    1.6 (the default: 0.7 nm, 5.19 nm^-1, 0.0527 nm) keeps the error of the default settings (3e-5
-    relative for ubiquitin, 7e-5 for pGM water at 0.8 and 0.7 nm) for 25 % more PME work per CG
-    iteration (8 % per step for ubiquitin).  Measurements: docs/protein_ff.md (What limits the speed)."""
+    5.19 nm^-1, 0.0616 nm) is the cheaper grid but multiplies the force error by 2.5 at 0.7 nm;
+    exponent 1.6 (the default: 0.7 nm, 5.19 nm^-1, 0.0527 nm) keeps the error of the default
+    settings (3e-5 relative for ubiquitin, 7e-5 for pGM water at 0.8 and 0.7 nm) for 25 % more PME
+    work per CG iteration (8 % per step for ubiquitin).  Measurements: docs/protein_ff.md (What limits
+    the speed).
+
+    Parameters
+    ----------
+    elec_cutoff : float
+        Real-space electrostatics cutoff [nm].
+    dsum_tol : float
+        Direct-sum tolerance (`ewald_beta_for`).
+    exponent : float
+        Exponent of the grid-spacing rule.
+
+    Returns
+    -------
+    dict
+        {"elec_cutoff" [nm], "ewald_beta" [1/nm], "pme_spacing" [nm]} (flat MDSettings names).
+    """
     b = ewald_beta_for(elec_cutoff, dsum_tol)
     return {"elec_cutoff": float(elec_cutoff), "ewald_beta": b, "pme_spacing": 0.08 * (4.0 / b) ** exponent}
 
 
+# polynomial extrapolation coefficients of the predictors, applied to the history newest first
 _PRED = {"mu3": (3.0, -3.0, 1.0), "mu4": (4.0, -6.0, 4.0, -1.0)}
 
 
-def full_strain_derivative(energy, pos, H, mol=None, com=None, vectors=()):
-    """dE/d eps (3, 3) of energy(x, H, *vectors), evaluated by code that assumes a lower-triangular box
-    (the row displacements subtract lattice vectors component by component), under
-    x -> x + (com eps^T)[mol] (molecular scaling; com None: x -> x (1 + eps)^T), H -> H (1 + eps)^T
-    and the vectors held fixed (induced dipoles, an external field: arrays of rows (..., 3)).
+def full_strain_derivative(
+    energy: Callable[..., jax.Array],
+    pos: jax.Array,
+    H: jax.Array,
+    mol: jax.Array | None = None,
+    com: jax.Array | None = None,
+    vectors: tuple = (),
+) -> jax.Array:
+    """Return dE/d eps (3, 3) of energy(x, H, *vectors) under a homogeneous strain.
+
+    The energy is evaluated by code that assumes a lower-triangular box (the row displacements
+    subtract lattice vectors component by component).  The strain maps x -> x + (com eps^T)[mol]
+    (molecular scaling; com None: x -> x (1 + eps)^T), H -> H (1 + eps)^T, with the vectors held
+    fixed (induced dipoles, an external field: arrays of rows (..., 3)).
+
+    Parameters
+    ----------
+    energy : Callable
+        energy(x, H, *vectors) [kJ/mol], differentiable.
+    pos : jax.Array (N, 3)
+        Positions [nm].
+    H : jax.Array (3, 3)
+        Lower-triangular box [nm].
+    mol : jax.Array (N,) int, optional
+        Molecule of every atom (with com).
+    com : jax.Array (M, 3), optional
+        Molecular centres of mass [nm] (None: atomic scaling).
+    vectors : tuple of jax.Array
+        Row-vector arrays held fixed.
+
+    Returns
+    -------
+    jax.Array (3, 3)
+        dE/d eps [kJ/mol].
+
+    Notes
+    -----
     Strains eps_ab with a < b and the diagonal keep H lower triangular and are differentiated
     directly; the lower components follow from rotation invariance of energy(x R^T, H R^T,
     v R^T, ...): the atomic strain derivative W_at = W + G, G_ab = sum_i dE/dx_ia (x_i - c_i)_b (zero
     for atomic scaling), satisfies W_at - W_at^T = T^T - T with T_ab = sum_v sum_k dE/dv_ka v_kb (zero
-    for converged induced dipoles and no field)."""
+    for converged induced dipoles and no field).
+    """
 
-    def e(eps, dx, *vs):
+    def e(eps: jax.Array, dx: jax.Array, *vs: jax.Array) -> jax.Array:  # energy at strain eps, shift dx
         x = pos + dx + ((com @ eps.T)[mol] if com is not None else pos @ eps.T)
         return energy(x, H @ (jnp.eye(3) + eps).T, *vs)
 
@@ -549,7 +648,30 @@ _XL = {
 
 @dataclasses.dataclass
 class InductionState:
-    """Converged dipoles, predictor history (newest first) and the convergence normaliser."""
+    """Induced-dipole solver state: converged dipoles, predictor history, convergence normaliser.
+
+    A JAX-MD dataclass (pytree), part of MDState; float64 unless noted.  S = extrap_steps, K1 =
+    PGMForceField.xl_len.
+
+    Parameters
+    ----------
+    mu : jax.Array (N, 3)
+        Converged induced dipoles of the last solve [e nm].
+    hist : jax.Array (4, N, 3)
+        Converged dipoles of the last steps, newest first [e nm] (anchored MTS: mu - mu_fast).
+    count : jax.Array () int32
+        Steps recorded (kept unbatched in stacked replica states).
+    norm : jax.Array ()
+        mean |alpha b| of the last unfused step (convergence normaliser) [e nm].
+    rec : jax.Array (4, S, N, 3)
+        "ls" records: alpha b, mu, mu - pred1, mu - pred2.
+    pred : jax.Array (2, N, 3)
+        "ls" order-1 and order-2 predictions.
+    lscount : jax.Array (4,) int32
+        "ls" record counts.
+    xl : jax.Array (K1, N, 3), optional
+        Extended-Lagrangian auxiliary dipoles x_{n+1}, x_n, ... (induction.iel; None otherwise).
+    """
 
     mu: jnp.ndarray  # (N, 3) e nm
     hist: jnp.ndarray  # (4, N, 3) converged dipoles of the last steps
@@ -562,6 +684,28 @@ class InductionState:
 
 
 class Result(NamedTuple):
+    """Result of PGMForceField.compute (a NamedTuple, i.e. a pytree).
+
+    Parameters
+    ----------
+    energy : dict
+        "elec", "vdw", "total" (and "field" with an external field) [kJ/mol].
+    forces : jax.Array (N, 3) float64
+        Forces [kJ/mol/nm].
+    induction : InductionState
+        Updated solver state.
+    iterations : jax.Array () int32
+        CG iterations.
+    residual : jax.Array ()
+        Final max|alpha r| / mean|alpha b| (before the peek step).
+    overflow : jax.Array () bool
+        Row capacity exceeded (results invalid; the driver re-sizes and repeats).
+    geometry : dict, optional
+        compute(keep_geometry=True): the electrostatic rows (md/mts.py).
+    dipole : jax.Array (3,), optional
+        With an external field: M = sum q r + sum d + offset [e nm].
+    """
+
     energy: dict  # kJ/mol: elec, vdw, total
     forces: jnp.ndarray  # (N, 3) kJ/mol/nm, float64
     induction: InductionState
@@ -572,28 +716,34 @@ class Result(NamedTuple):
     dipole: jnp.ndarray | None = None  # with an external field: M = sum q r + sum d + offset (e nm)
 
 
-def _zero_cotangent(x):
+def _zero_cotangent(x: Any) -> Any:
+    """Return a zero cotangent for x (float0 for integer leaves, as custom_vjp requires)."""
     x = jnp.asarray(x)
     if jnp.issubdtype(x.dtype, jnp.inexact):
         return jnp.zeros_like(x)
     return np.zeros(x.shape, dtype=jax.dtypes.float0)
 
 
-def _dot(a, b):
+def _dot(a: jax.Array, b: jax.Array) -> jax.Array:
+    """Return sum(a b), accumulated in float64."""
     return jnp.sum((a * b).astype(jnp.float64))
 
 
-def _push(stack, x):
+def _push(stack: jax.Array, x: jax.Array) -> jax.Array:
+    """Return the history stack with x prepended and the oldest entry dropped (newest first)."""
     return jnp.concatenate([x[None].astype(stack.dtype), stack[:-1]], 0)
 
 
-def _div_alpha(x, alpha, mask: bool):
-    """x / alpha; with `mask`, 0 where alpha = 0.  Atoms (or virtual sites) with zero polarizability
-    are not polarizable: their induced dipole stays 0 (the Jacobi-preconditioned CG, z = alpha r,
-    never moves it, and every initial guess is 0 there) and their mu^2 / (2 alpha) is 0, with no 0/0
-    in values or gradients (the derivative with respect to such an alpha is taken as 0).  The mask
-    is static (PGMForceField.alpha_mask: some alpha of the system's parameter table is 0), so that
-    systems without such atoms run the plain division, bit for bit."""
+def _div_alpha(x: jax.Array | float, alpha: jax.Array, mask: bool) -> jax.Array:
+    """Return x / alpha; with `mask`, 0 where alpha = 0.
+
+    Atoms (or virtual sites) with zero polarizability are not polarizable: their induced dipole
+    stays 0 (the Jacobi-preconditioned CG, z = alpha r, never moves it, and every initial guess is 0
+    there) and their mu^2 / (2 alpha) is 0, with no 0/0 in values or gradients (the derivative with
+    respect to such an alpha is taken as 0).  The mask is static (PGMForceField.alpha_mask: some
+    alpha of the system's parameter table is 0), so that systems without such atoms run the plain
+    division, bit for bit.
+    """
     if not mask:
         return x / alpha
     pol = alpha != 0
@@ -601,17 +751,102 @@ def _div_alpha(x, alpha, mask: bool):
 
 
 class PGMForceField:
+    """The pGM + van der Waals force field of an MD system (module docstring for the physics).
+
+    Built on the host for one system, box shape and settings; its methods are JAX functions of
+    positions, box, parameters and solver state, called inside the engines' compiled steps.  The row
+    capacities (`mc`, `mc_e`) are static sizes set on the host (`size_rows`, `grow_rows`,
+    `fit_rows`): a change requires re-jitting the callers.  Not a pytree.
+
+        ff = PGMForceField(system, H, MDSettings())
+        idx = ff.rows_for(pos, H)                        # candidate rows of a single frame
+        res = ff.compute(pos, H, idx, ff.init_induction())
+        res.energy["total"], res.forces                  # [kJ/mol], [kJ/mol/nm]
+
+    Parameter pytree `params` (all methods): a dict of the system's parameter table (System.expand;
+    None: the system's initial values), optionally with "flux" (md/flux.py).
+
+    Attributes
+    ----------
+    sys : System
+        The system.
+    s : MDSettings
+        Settings.
+    pd, ind : bool
+        Permanent dipoles, induced dipoles (from the electrostatics level).
+    cd : jnp.dtype
+        Compute dtype of the kernels (float32 in mixed precision).
+    n : int
+        Number of atoms N.
+    b0 : float
+        Ewald coefficient [1/nm].
+    c_self : float
+        4 b0^3 / (3 sqrt(pi)), the dipole self-energy coefficient [1/nm^3].
+    pme : PME
+        Reciprocal space (md/pme.py).
+    mol, cov_i, cov_j : jax.Array int
+        Molecule of every atom; covalent-dipole atom pairs.
+    masses : jax.Array (N,)
+        Masses [amu] (set to the repartitioned masses by FlexibleSimulation).
+    alpha_mask : bool
+        Some polarizability of the table is 0 (static; masks the divisions by alpha).
+    mc, mc_e : int or None
+        Row capacity (pairs kept per row) and, for split rows, its electrostatic part.
+    ms : int
+        Capacity of the short-range rows of the local preconditioner.
+    rc_e, rc_v, rc_pair : float
+        Electrostatics, van der Waals and row cutoffs [nm].
+    split : bool
+        Rows split at the electrostatics cutoff (elec_cutoff < cutoff with van der Waals).
+    topology : MDTopology
+        Pair topology (special partners, groups).
+    special, special_w, gid, sg : jax.Array
+        Special partners (N, S), their weights, group of every atom, special groups (N, Gs).
+    first : jax.Array (M,) int
+        First atom of every molecule.
+    flux : ChargeFlux or None
+        Charge flux.
+    """
+
     def __init__(
         self,
         sys: System,
-        H,
+        H: ArrayLike,
         settings: MDSettings = MDSettings(),
         short_capacity: int = 48,
         row_capacity: int | None = None,
         topology: MDTopology | None = None,
         elec_capacity: int | None = None,
-        flux=None,
-    ):
+        flux: ChargeFlux | None = None,
+    ) -> None:
+        """Set up the force field of `sys` for boxes like H.
+
+        Parameters
+        ----------
+        sys : System
+            The system (quadrupoles are ignored with a warning).
+        H : ArrayLike (3, 3)
+            Box [nm] (sets the PME grid when settings.pme.grid is None).
+        settings : MDSettings
+            Settings.
+        short_capacity : int
+            Entries per row of the local preconditioner's short-range rows.
+        row_capacity : int, optional
+            Pairs kept per row (None: no compaction; the engines size it with `size_rows`).
+        topology : MDTopology, optional
+            Pair topology (None: MDTopology.rigid, the rigid-body engine).
+        elec_capacity : int, optional
+            Electrostatic part of the row capacity (split rows only).
+        flux : ChargeFlux, optional
+            Charge flux (md/flux.py).
+
+        Raises
+        ------
+        ValueError
+            An unknown predictor, van der Waals form or iel scheme, invalid iel settings (or iel with
+            differentiable=True), non-positive cutoffs, elec_capacity without split rows, or a flux of
+            another system.
+        """
         self.sys, self.s = sys, settings
         if settings.induction.predictor not in ("mu4", "mu3", "ls", "none"):
             raise ValueError(f"unknown predictor {settings.induction.predictor!r}")
@@ -688,7 +923,14 @@ class PGMForceField:
             )
 
     # ------------------------------------------------------------------ building blocks
-    def _atoms(self, params):
+    def _atoms(self, params: dict | None) -> dict[str, jax.Array]:
+        """Return the per-atom parameters (System.expand, float64), with "flux" when there is charge flux.
+
+        Raises
+        ------
+        ValueError
+            Flux parameters for a force field without charge flux.
+        """
         P = self.sys.expand(params)
         P = {k: jnp.asarray(v, jnp.float64) for k, v in P.items()}
         if self.flux is not None:  # flux parameters ride along; charges_at applies them
@@ -697,9 +939,12 @@ class PGMForceField:
             raise ValueError("the parameters have charge-flux values but the force field has no charge flux")
         return P
 
-    def charges_at(self, pos, H, P):
-        """P (from _atoms) with the charges q and covalent-dipole strengths cov of the geometry pos
-        (charge flux, md/flux.py); P itself without flux or when already applied."""
+    def charges_at(self, pos: jax.Array, H: jax.Array, P: dict[str, jax.Array]) -> dict[str, jax.Array]:
+        """Return P with the charges and covalent-dipole strengths of the geometry pos (charge flux).
+
+        P comes from `_atoms`; without flux (or when already applied: no "flux" key) P itself.  pos
+        (N, 3) [nm], H (3, 3) [nm].
+        """
         if "flux" not in P:
             return P
         q, cov = self.flux.charges(pos, H, P["q"], P["cov"], P["flux"])
@@ -707,7 +952,12 @@ class PGMForceField:
         out.update(q=q, cov=cov)
         return out
 
-    def perm_dipoles(self, pos, H, cov_c):
+    def perm_dipoles(self, pos: jax.Array, H: jax.Array, cov_c: jax.Array) -> jax.Array:
+        """Return the permanent dipoles p_i = sum_m c_m unit(r_j - r_i) (N, 3) [e nm].
+
+        Summed over the covalent dipoles m = (i, j) (minimum image); zero without permanent
+        dipoles.  cov_c (n_cov,) the strengths [e nm].
+        """
         if len(self.sys.cov_i) == 0 or not self.pd:
             return jnp.zeros((self.n, 3))
         v = min_image(pos[self.cov_j] - pos[self.cov_i], H)
@@ -715,9 +965,12 @@ class PGMForceField:
         return jnp.zeros((self.n, 3)).at[self.cov_i].add(cov_c[:, None] * u)
 
     @staticmethod
-    def _displacements(p, k, H):
-        """Minimum-image p_i - p_k as three (N, C) arrays (structure of arrays: the row kernels are
-        memory bound and read components with unit stride); p (N, 3) in the compute dtype."""
+    def _displacements(p: jax.Array, k: jax.Array, H: jax.Array) -> list[jax.Array]:
+        """Return the minimum-image displacements p_i - p_k as three (N, C) arrays (x, y, z).
+
+        Structure of arrays: the row kernels are memory bound and read components with unit stride.
+        p (N, 3) positions in the compute dtype [nm]; k (N, C) partners; H (3, 3) reduced box [nm].
+        """
         pk = p[k]
         x = [p[:, c][:, None] - pk[..., c] for c in range(3)]
         for c in (2, 1, 0):  # sequential reduction, reduced box
@@ -726,22 +979,29 @@ class PGMForceField:
         return x
 
     @property
-    def intra(self):
+    def intra(self) -> jax.Array:
         """The special-partner table (the name of the rigid engine's intramolecular table)."""
         return self.special
 
-    def _intra_exact(self, pos, H, k, x, cd):
-        """Replace the special entries (first columns; same molecule) by differences of offsets
-        from each molecule's first atom: exact in float32 whatever the absolute coordinates."""
+    def _intra_exact(self, pos: jax.Array, H: jax.Array, k: jax.Array, x: Sequence[jax.Array], cd: DTypeLike) -> tuple:
+        """Return x with the special entries replaced by differences of within-molecule offsets.
+
+        The special entries (first columns; same molecule) take differences of offsets from each
+        molecule's first atom: exact in float32 whatever the absolute coordinates.
+        """
         ni = self.special.shape[1]
         off = (pos - pos[self.first][self.mol]).astype(cd)
         xi = self._displacements(off, self.special, H)
         hit = (k[:, :ni] == self.special) & (self.special < self.n)
         return tuple(xc.at[:, :ni].set(jnp.where(hit, xic, xc[:, :ni])) for xc, xic in zip(x, xi))
 
-    def _special_exact(self, pos, H, k, x, sp):
-        """Replace the displacements of the special pairs, the entries of the first sp.shape[1]
-        columns where sp, by differences of offsets within the molecule (as _intra_exact)."""
+    def _special_exact(
+        self, pos: jax.Array, H: jax.Array, k: jax.Array, x: Sequence[jax.Array], sp: jax.Array
+    ) -> tuple:
+        """Return x with the special pairs' displacements replaced by within-molecule offset differences.
+
+        The entries of the first sp.shape[1] columns where sp (as _intra_exact).
+        """
         w = sp.shape[1]
         if w == 0:
             return x
@@ -749,14 +1009,29 @@ class PGMForceField:
         xi = self._displacements(off, k[:, :w], H)
         return tuple(xc.at[:, :w].set(jnp.where(sp, xic, xc[:, :w])) for xc, xic in zip(x, xi))
 
-    def _compact_parts(self, k, wv, masks, widths):
-        """Compact every row into consecutive parts: the entries where masks[j] go, in column order, to
-        part j (widths[j] columns).  One scatter of the partner indices places all parts (the slots
-        of two parts come from one scan, one count per 16 bits); the scatter of anything else over
-        the candidate rows is avoided: list entries have van der Waals weight 1, and the special
-        entries, which lead each part, take their weights from the small special block.  Returns,
-        per part, (k, within, weights, special-entry mask of the first min(S, width) columns), and
-        the overflow flag."""
+    def _compact_parts(
+        self, k: jax.Array, wv: jax.Array, masks: Sequence[jax.Array], widths: Sequence[int]
+    ) -> tuple[list, jax.Array]:
+        """Compact every row into consecutive parts; return the parts and the overflow flag.
+
+        The entries where masks[j] go, in column order, to part j (widths[j] columns).  One scatter of
+        the partner indices places all parts (the slots of two parts come from one scan, one count per 16
+        bits); the scatter of anything else over the candidate rows is avoided: list entries have van der
+        Waals weight 1, and the special entries, which lead each part, take their weights from the small
+        special block.
+
+        Returns
+        -------
+        parts : list of tuple
+            Per part (k, within, weights, special-entry mask of the first min(S, width) columns).
+        overflow : jax.Array () bool
+            Some row has more entries than its part's width.
+
+        Raises
+        ------
+        ValueError
+            Two parts with candidate rows of 2^15 or more entries (the packed counters).
+        """
         N, ni, C = self.n, self.special.shape[1], k.shape[1]
         if len(masks) == 1:
             slots = [jnp.cumsum(masks[0].astype(jnp.int32), axis=1) - 1]
@@ -785,13 +1060,37 @@ class PGMForceField:
             overflow = overflow | (jnp.max(count) > w)
         return parts, overflow
 
-    def _rows(self, pos, H, idx):
-        """Rows = [special partners | candidates from the neighbour list], masked to the pair cutoff
-        and, with a row capacity set, compacted to the pairs inside it.  List candidates in the atom's
-        special groups are dropped (those pairs come from the table).  Returns k, x = (x, y, z)
-        components (compute dtype), the within mask, van der Waals weights (0 off `within` and
-        beyond the van der Waals cutoff), the overflow flag, and the van der Waals rows (k, x,
-        within, weights) of split rows (_split_rows; None otherwise, when k, x, ... hold every pair)."""
+    def _rows(self, pos: jax.Array, H: jax.Array, idx: jax.Array) -> tuple:
+        """Return the pair rows: [special partners | candidates from the neighbour list], masked and compacted.
+
+        Masked to the pair cutoff and, with a row capacity set, compacted to the pairs inside it.  List
+        candidates in the atom's special groups are dropped (those pairs come from the table).
+
+        Parameters
+        ----------
+        pos : jax.Array (N, 3)
+            Positions [nm] (float64).
+        H : jax.Array (3, 3)
+            Box [nm].
+        idx : jax.Array (N, C) int
+            Candidate rows from the neighbour list (padding N).
+
+        Returns
+        -------
+        k : jax.Array (N, W) int
+            Partners.
+        x : tuple of 3 jax.Array (N, W)
+            Displacement components x_i - x_k [nm] (compute dtype).
+        within : jax.Array (N, W) bool
+            Valid pairs.
+        wv : jax.Array (N, W)
+            Van der Waals weights (0 off `within` and beyond the van der Waals cutoff).
+        overflow : jax.Array () bool
+            Row capacity exceeded.
+        vrows : tuple or None
+            Split rows: the van der Waals rows (k, x, within, weights) (_split_rows); None otherwise,
+            when k, x, ... hold every pair.
+        """
         N, cd = self.n, self.cd
         ni = self.special.shape[1]
         cand = jnp.concatenate([self.special, idx.astype(self.special.dtype)], axis=1)
@@ -818,14 +1117,31 @@ class PGMForceField:
         x = self._intra_exact(pos, Hc, k, x, cd)
         return k, x, within, jnp.where(within, wv, 0.0), overflow, None
 
-    def _split_rows(self, pos, p, H, k, x, r2, keep, wv):
-        """Rows split at the electrostatics cutoff (elec_cutoff < cutoff): electrostatic rows (pairs
-        inside elec_cutoff, with their van der Waals weights) and van der Waals rows (pairs between
-        elec_cutoff and cutoff with a nonzero van der Waals weight), compacted to their own
-        capacities (mc_e and mc - mc_e) into separate arrays, so that the CG streams only the
-        electrostatic ones (_compact_parts).  Compaction keeps the column order, so each part starts
+    def _split_rows(
+        self,
+        pos: jax.Array,
+        p: jax.Array,
+        H: jax.Array,
+        k: jax.Array,
+        x: Sequence[jax.Array],
+        r2: jax.Array,
+        keep: jax.Array,
+        wv: jax.Array,
+    ) -> tuple:
+        """Return the rows split at the electrostatics cutoff (elec_cutoff < cutoff), as `_rows`.
+
+        Electrostatic rows (pairs inside elec_cutoff, with their van der Waals weights) and van der
+        Waals rows (pairs between elec_cutoff and cutoff with a nonzero van der Waals weight), compacted
+        to their own capacities (mc_e and mc - mc_e) into separate arrays, so that the CG streams only
+        the electrostatic ones (_compact_parts).  Compaction keeps the column order, so each part starts
         with its special partners, whose exact displacements are then found by count.  Without a
-        capacity (single points) both parts span the candidate rows, masked."""
+        capacity (single points) both parts span the candidate rows, masked.
+
+        Raises
+        ------
+        ValueError
+            Capacities with mc_e outside [0, mc].
+        """
         N = self.n
         ni = self.special.shape[1]
         ein = keep & (r2 < self.rc_e**2)
@@ -844,9 +1160,11 @@ class PGMForceField:
         xv = self._special_exact(pos, H, kv, self._displacements(p, kv, H), spv)
         return ke, xe, ein, wve, overflow, (kv, xv, vin, wvv)
 
-    def pair_counts(self, pos, H, idx):
-        """Largest numbers of pairs in any row: (electrostatic rows, van der Waals rows); the rows hold
-        every pair inside the pair cutoff and the second count is 0 unless the rows are split."""
+    def pair_counts(self, pos: jax.Array, H: jax.Array, idx: jax.Array) -> jax.Array:
+        """Return the largest numbers of pairs in any row: (electrostatic rows, van der Waals rows) (2,) int.
+
+        Evaluated without compaction; the second count is 0 unless the rows are split.
+        """
         saved, self.mc = self.mc, None
         try:
             _, _, within, _, _, vrows = self._rows(pos, H, idx)
@@ -856,8 +1174,8 @@ class PGMForceField:
         cv = jnp.zeros_like(ce) if vrows is None else jnp.max(jnp.sum(vrows[2], axis=1))
         return jnp.stack([ce, cv])
 
-    def row_counts(self, pos, H, idx):
-        """Largest number of pairs (special + list pairs inside the cutoffs) in any row."""
+    def row_counts(self, pos: jax.Array, H: jax.Array, idx: jax.Array) -> jax.Array:
+        """Return the largest number of pairs (special + list pairs inside the cutoffs) in any row."""
         saved, self.mc = self.mc, None
         try:
             _, _, within, _, _, vrows = self._rows(pos, H, idx)
@@ -871,23 +1189,28 @@ class PGMForceField:
         """(mc, mc_e): pairs kept per row and, for split rows, how many of them are electrostatic."""
         return self.mc, self.mc_e
 
-    def size_rows(self, pos, H, idx, factor: float = 1.2):
-        """Set the row capacities (static shapes: re-jit afterwards) from the largest pair counts at
-        pos, with half the neighbour list's head-room (pair counts inside a sphere fluctuate by a few
-        per cent), in multiples of 8, at most the candidate width; split rows size each part."""
+    def size_rows(self, pos: ArrayLike, H: ArrayLike, idx: jax.Array, factor: float = 1.2) -> tuple:
+        """Set the row capacities from the largest pair counts at pos (host; static shapes: re-jit after).
+
+        Half the neighbour list's head-room (pair counts inside a sphere fluctuate by a few per cent),
+        in multiples of 8, at most the candidate width; split rows size each part.  Returns `capacity`.
+        """
         ce, cv = (int(c) for c in jax.jit(self.pair_counts)(jnp.asarray(pos), jnp.asarray(H), idx))
         width = int(idx.shape[1]) + int(self.special.shape[1])
 
-        def cap(c):
+        def cap(c: int) -> int:  # count with head-room, a multiple of 8, at most the width
             return min(int(np.ceil((c * (1.0 + 0.5 * (factor - 1.0)) + 8) / 8.0) * 8), width)
 
         self.mc_e = cap(ce) if self.split else None
         self.mc = self.mc_e + cap(cv) if self.split else cap(ce)
         return self.capacity
 
-    def grow_rows(self, old):
-        """After a row overflow at capacities `old` (`capacity`): every part of the rows at least 8
-        wider than it was (the driver re-sizes where the block started, where the rows fit)."""
+    def grow_rows(self, old: tuple) -> None:
+        """Widen every part of the rows by at least 8 after an overflow at capacities `old` (`capacity`).
+
+        The driver re-sizes where the block started, where the rows fit; this keeps the capacities
+        above what overflowed.
+        """
         mc, mc_e = old
         if self.mc is None or mc is None:
             return
@@ -897,9 +1220,11 @@ class PGMForceField:
         else:
             self.mc = max(self.mc, mc + 8)
 
-    def fit_rows(self, caps):
-        """Capacities that fit every one of `caps` (`capacity` tuples, e.g. one per replica): the
-        largest of each part of the rows (static shapes: re-jit afterwards)."""
+    def fit_rows(self, caps: Sequence[tuple | None]) -> None:
+        """Set capacities that fit every one of `caps` (`capacity` tuples, e.g. one per replica).
+
+        The largest of each part of the rows (static shapes: re-jit afterwards).
+        """
         caps = [c for c in caps if c is not None and c[0] is not None]
         if not caps:
             return
@@ -909,10 +1234,18 @@ class PGMForceField:
         else:
             self.mc = max(c[0] for c in caps)
 
-    def _pair_a(self, R, k):
+    def _pair_a(self, R: jax.Array, k: jax.Array) -> jax.Array:
+        """Return the Gaussian screening a_ik = 1 / sqrt(2 (R_i^2 + R_k^2)) [1/nm] of the row pairs."""
         return 1.0 / jnp.sqrt(2.0 * (R[:, None] ** 2 + R[k] ** 2))
 
-    def _kernels(self, x, within, a, nmax: int = 3, series: bool = True):
+    def _kernels(
+        self, x: Sequence[jax.Array], within: jax.Array, a: jax.Array, nmax: int = 3, series: bool = True
+    ) -> tuple:
+        """Return r and the kernels G_n = B_n[erf(a r)/r] - B_n[erf(b0 r)/r] (masked by `within`).
+
+        (r, G0, ..., G_{nmax-1}) of the rows, in the dtype of x; series: md/kernels.py erf_kernels
+        (accurate for small a r) or the closed form.
+        """
         dt = x[0].dtype
         r = jnp.sqrt(jnp.where(within, x[0] * x[0] + x[1] * x[1] + x[2] * x[2], 1.0))
         kern = erf_kernels if series else erf_kernels_closed
@@ -921,10 +1254,28 @@ class PGMForceField:
         w = within.astype(dt)
         return (r,) + tuple((u - v) * w for u, v in zip(A, B))
 
-    def geometry(self, pos, H, idx, P, forces: bool = False):
-        """Displacements and kernels G0..G2 of the electrostatic rows (with `forces`: G3, distances,
-        van der Waals weights and pair parameters, and for split rows the van der Waals rows under
-        "vdw_rows")."""
+    def geometry(self, pos: jax.Array, H: jax.Array, idx: jax.Array, P: dict, forces: bool = False) -> dict:
+        """Return the row geometry: displacements and kernels G0..G2 of the electrostatic rows.
+
+        Parameters
+        ----------
+        pos : jax.Array (N, 3)
+            Positions [nm].
+        H : jax.Array (3, 3)
+            Box [nm].
+        idx : jax.Array (N, C) int
+            Candidate rows.
+        P : dict
+            Per-atom parameters (`_atoms` / `charges_at`).
+        forces : bool
+            Also G3, distances "r", van der Waals weights "wv", pair parameters "vp" and "within", and
+            for split rows the van der Waals rows under "vdw_rows".
+
+        Returns
+        -------
+        dict
+            "k", "x", "overflow", "G0".. and (local preconditioner) "short".
+        """
         cd = self.cd
         nmax = 4 if forces else 3
         k, x, within, wv, overflow, vrows = self._rows(pos, H, idx)
@@ -943,21 +1294,21 @@ class PGMForceField:
             g["short"] = self._short_rows(k, x, g["G1"], g["G2"], short)
         return g
 
-    def _short_rows(self, k, x, G1, G2, short):
-        """Compact the short-range entries of each row into (N, ms) for the preconditioner."""
+    def _short_rows(self, k: jax.Array, x: Sequence[jax.Array], G1: jax.Array, G2: jax.Array, short: jax.Array) -> dict:
+        """Return the short-range entries of each row compacted into (N, ms) for the preconditioner."""
         N, ms = self.n, self.ms
         slot = jnp.cumsum(short, axis=1) - 1
         tgt = jnp.where(short & (slot < ms), slot, ms)
         rows = jnp.broadcast_to(jnp.arange(N)[:, None], k.shape)
 
-        def pack(v, fill):
+        def pack(v: jax.Array, fill: float) -> jax.Array:  # scatter the kept entries to their slots
             return jnp.full((N, ms + 1), fill, v.dtype).at[rows, tgt].set(v)[:, :ms]
 
         return {"k": pack(k, 0), "x": tuple(pack(c, 0.0) for c in x), "G1": pack(G1, 0.0), "G2": pack(G2, 0.0)}
 
     @staticmethod
-    def _row_field(g, q, d):
-        """sum_k de_ik/dd_i: minus the direct-space field at each atom (charges q may be None)."""
+    def _row_field(g: dict, q: jax.Array | None, d: jax.Array) -> jax.Array:
+        """Return sum_k de_ik/dd_i (N, 3): minus the direct-space field at each atom (q may be None)."""
         k, x, G1, G2 = g["k"], g["x"], g["G1"], g["G2"]
         dk = d[k]
         dk = (dk[..., 0], dk[..., 1], dk[..., 2])
@@ -966,25 +1317,29 @@ class PGMForceField:
         return jnp.stack([jnp.sum(c * x[j] + G1 * dk[j], axis=1) for j in range(3)], -1)
 
     @staticmethod
-    def _row_potential(g, q, d):
-        """sum_k de_ik/dq_i = sum_k q_k G0 + (d_k . x_ik) G1: the direct-space potential at each atom
-        (charge flux)."""
+    def _row_potential(g: dict, q: jax.Array, d: jax.Array) -> jax.Array:
+        """Return sum_k de_ik/dq_i = sum_k q_k G0 + (d_k . x_ik) G1 (N,), the direct-space potential.
+
+        Used by charge flux.
+        """
         k, x, G0, G1 = g["k"], g["x"], g["G0"], g["G1"]
         dk = d[k]
         dkx = dk[..., 0] * x[0] + dk[..., 1] * x[1] + dk[..., 2] * x[2]
         return jnp.sum(q[k] * G0 + dkx * G1, axis=1)
 
-    def _rec_grad(self, S, Gk, q, d):
+    def _rec_grad(self, S: dict, Gk: jax.Array, q: jax.Array, d: jax.Array) -> jax.Array:
+        """Return dU_rec/dd (N, 3) in the compute dtype (PME.grad_dipoles)."""
         return self.pme.grad_dipoles(S, Gk, q, d.astype(self.cd)).astype(self.cd)
 
-    def _field(self, g, S, Gk, q, d):
-        """Total field -dU/dd (direct + PME + self) of charges q and dipoles d, compute dtype."""
+    def _field(self, g: dict, S: dict, Gk: jax.Array, q: jax.Array, d: jax.Array) -> jax.Array:
+        """Return the total field -dU/dd (N, 3) (direct + PME + self) of charges q and dipoles d [e/nm^2]."""
         cd = self.cd
         dc = d.astype(cd)
         return -(self._row_field(g, q, dc) + self._rec_grad(S, Gk, q, dc) - jnp.asarray(self.c_self, cd) * dc)
 
     # ------------------------------------------------------------------ induction
     def init_induction(self) -> InductionState:
+        """Return a fresh solver state (zero dipoles and history, normaliser 1)."""
         dt = jnp.float64
         z = jnp.zeros((self.n, 3), dt)
         xl = jnp.zeros((self.xl_len, self.n, 3), dt) if self.iel else None
@@ -1007,12 +1362,14 @@ class PGMForceField:
 
     @property
     def shadow(self) -> bool:
-        """iEL/0-SCF: the energy and forces are those of the shadow potential U~(R, x) (not the
-        converged U*(R)); the barostat then evaluates U* at both volumes."""
+        """Whether the energy and forces are those of the iEL/0-SCF shadow potential U~(R, x).
+
+        Not the converged U*(R); the barostat then evaluates U* at both volumes.
+        """
         return self.iel and self.s.induction.iel.scheme == "0scf"
 
     @property
-    def xl_coefficients(self):
+    def xl_coefficients(self) -> tuple[float, float, tuple[float, ...]]:
         """(kappa, a, c_0..c_K) of the auxiliary-dipole recurrence."""
         kap, a, c = _XL[self.s.induction.iel.order]
         kap = kap if self.s.induction.iel.kappa is None else float(self.s.induction.iel.kappa)
@@ -1026,15 +1383,21 @@ class PGMForceField:
 
     @property
     def xl_warmup(self) -> int:
-        """Steps solved to dipole_tol at the start (and after an accepted volume move) that fill the
-        auxiliary history with converged dipoles."""
+        """Steps solved to dipole_tol at the start (and after an accepted volume move).
+
+        They fill the auxiliary history with converged dipoles.
+        """
         return max(self.s.induction.iel.order, 2) + 1
 
     BLOCK_MAX = 8  # atoms per molecule in the block preconditioner (larger ones: Jacobi)
 
-    def _block_layout(self, mol, first, nmol):
-        """Static layout of the block preconditioner: molecules of 2..BLOCK_MAX atoms each get a block;
-        per atom its block (nblk for none) and local index, per block slot its atom (n for padding)."""
+    def _block_layout(self, mol: np.ndarray, first: np.ndarray, nmol: int) -> dict | None:
+        """Return the static layout of the block preconditioner (host), or None without small molecules.
+
+        Molecules of 2..BLOCK_MAX atoms each get a block; per atom its block ("blk", nblk for none) and
+        local index ("loc"), per block slot its atom ("slot", n for padding), with "pad", "nblk", "nb"
+        (largest block size) and "inb" (atom in a block).
+        """
         n = self.n
         sizes = np.bincount(mol, minlength=nmol)
         small = (sizes >= 2) & (sizes <= self.BLOCK_MAX)
@@ -1060,8 +1423,8 @@ class PGMForceField:
             "inb": jnp.asarray(inb),
         }
 
-    def _block_mask(self, k):
-        """(N, C) 1 for row entries (special columns) that pair two atoms of the same block, else 0."""
+    def _block_mask(self, k: jax.Array) -> jax.Array:
+        """Return the (N, C) mask of the row entries (special columns) pairing two atoms of one block."""
         L = self._blocks
         ni = self.special.shape[1]
         kk = k[:, :ni]
@@ -1069,9 +1432,12 @@ class PGMForceField:
         m = (b[kk] == b[:, None]) & (b[:, None] < L["nblk"]) & (kk != jnp.arange(self.n)[:, None])
         return jnp.concatenate([m, jnp.zeros((self.n, k.shape[1] - ni), bool)], axis=1)
 
-    def _block_solve(self, g, alpha, r):
-        """delta = M^-1 r, M = diag(1/alpha) + the same-molecule row tensors G1 I - G2 x x^T of the
-        special columns, one dense (3 nb)^2 block per small molecule (float64); alpha r elsewhere."""
+    def _block_solve(self, g: dict, alpha: jax.Array, r: jax.Array) -> jax.Array:
+        """Return delta = M^-1 r (N, 3), float64: the block-preconditioned iEL/0-SCF step.
+
+        M = diag(1/alpha) + the same-molecule row tensors G1 I - G2 x x^T of the special columns, one
+        dense (3 nb)^2 block per small molecule (float64, jnp.linalg.solve); alpha r elsewhere.
+        """
         L = self._blocks
         ni = self.special.shape[1]
         nblk, nb = L["nblk"], L["nb"]
@@ -1094,16 +1460,56 @@ class PGMForceField:
         d = jnp.linalg.solve(M, rp[..., None])[..., 0].reshape(nblk + 1, nb, 3)[b, l]
         return jnp.where(L["inb"][:, None], d, alpha[:, None] * r.astype(jnp.float64))
 
-    def _solve_iel(self, g, S, Gk, alpha, q, p, ind: InductionState, ext=None):
-        """Extended-Lagrangian dipoles (settings.induction.iel).  x = ind.xl[0] are the auxiliary dipoles of this
-        step (propagated at the last one).  "0scf": mu = x + alpha r(x) with r(x) = field(q, p + x) -
-        x / alpha, one field sweep; "scf": iel_iter CG iterations from x (to dipole_tol if 0).  The
-        first xl_warmup steps solve to dipole_tol and put the solution in place of x.  Then
-        x_{n+1} = 2 x_n - x_{n-1} + kappa (mu - x_n) + a sum_k c_k x_{n-k}.  Returns mu, the shadow
-        displacement delta = mu - x ("0scf"; 0 in the warm-up), iterations, residual (at x for
-        "0scf": max|alpha r(x)| / mean|alpha b|) and the new InductionState.  ext: a uniform external
-        field as in _solve_core (the field on the right-hand side, r(x) with the field at x; constant
-        displacement also puts its kappa term into the operator)."""
+    def _solve_iel(
+        self,
+        g: dict,
+        S: dict,
+        Gk: jax.Array,
+        alpha: jax.Array,
+        q: jax.Array,
+        p: jax.Array,
+        ind: InductionState,
+        ext: tuple | None = None,
+    ) -> tuple:
+        """Solve the extended-Lagrangian dipoles of one step and propagate the auxiliary dipoles.
+
+        x = ind.xl[0] are the auxiliary dipoles of this step (propagated at the last one).  "0scf":
+        mu = x + omega delta with delta = alpha r(x) (or M^-1 r(x)), r(x) = field(q, p + x) - x / alpha,
+        one field sweep; "scf": iel_iter CG iterations from x (to dipole_tol if 0).  The first
+        xl_warmup steps solve to dipole_tol and put the solution in place of x.  Then
+        x_{n+1} = 2 x_n - x_{n-1} + kappa (mu - x_n) + a sum_k c_k x_{n-k}.
+
+        Parameters
+        ----------
+        g : dict
+            Row geometry (electrostatic rows).
+        S, Gk : dict, jax.Array
+            PME setup and influence function.
+        alpha : jax.Array (N,)
+            Polarizabilities [nm^3].
+        q : jax.Array (N,)
+            Charges [e].
+        p : jax.Array (N, 3)
+            Permanent dipoles [e nm].
+        ind : InductionState
+            Solver state with the auxiliary dipoles.
+        ext : tuple, optional
+            A uniform external field as in _solve_core (the field on the right-hand side, r(x) with the
+            field at x; constant displacement also puts its kappa term into the operator).
+
+        Returns
+        -------
+        mu : jax.Array (N, 3)
+            Dipoles [e nm].
+        delta : jax.Array (N, 3)
+            The shadow displacement mu - x ("0scf"; 0 in the warm-up) [e nm].
+        iterations : jax.Array () int32
+            CG iterations (0 for "0scf" after the warm-up).
+        residual : jax.Array ()
+            Relative residual (at x for "0scf": max|delta| / mean|alpha b|).
+        ind : InductionState
+            New state.
+        """
         cd = self.cd
         a64 = alpha[:, None]
         qc = q.astype(cd)
@@ -1114,7 +1520,8 @@ class PGMForceField:
         first = ind.count == 0
         warm = ind.count < self.xl_warmup
 
-        def converged(_):
+        def converged(_: None) -> tuple:
+            """Warm-up: solve to dipole_tol by CG (from ind.mu, alpha b, or x)."""
             b = add_ext(self._field(g, S, Gk, qc, p), jnp.zeros((1, 3), cd))
             ab = a64 * b.astype(jnp.float64)
             # the first step starts from ind.mu when set (a volume move's converged dipoles), else alpha b
@@ -1123,7 +1530,8 @@ class PGMForceField:
             mu, it, err = self._cg(g, A, alpha, x0, b - A(x0.astype(cd)), norm)
             return mu, jnp.zeros_like(mu), it, err, norm
 
-        def extended(_):
+        def extended(_: None) -> tuple:
+            """Take the extended step: the 0-SCF update from x, or iel_iter CG iterations from x."""
             r0 = add_ext(self._field(g, S, Gk, qc, p + x), x) - _div_alpha(x, a64, self.alpha_mask).astype(cd)
             norm = ind.norm
             if self.s.induction.iel.scheme == "0scf":
@@ -1146,8 +1554,13 @@ class PGMForceField:
         ind = ind.set(mu=mu, xl=_push(Xh, x_new), hist=_push(ind.hist, mu), count=ind.count + 1, norm=norm)
         return mu, dx, it, err, ind
 
-    def _extrapolate_ls(self, st: InductionState, new):
-        """pmemd-pgm CPU multi-order least-squares extrapolation (dipole_scf_init = 3)."""
+    def _extrapolate_ls(self, st: InductionState, new: jax.Array) -> tuple[jax.Array, InductionState]:
+        """Return pmemd-pgm CPU's multi-order least-squares extrapolated guess and the updated state.
+
+        dipole_scf_init = 3: coefficients c from the last S records of alpha b (ridge-regularised
+        normal equations) applied to the records of mu and of the order-1, order-2 corrections, up to
+        extrap_order once enough records exist.  new: alpha b of this step (N, 3).
+        """
         S, order = self.S, self.s.induction.extrap_order
         rec1 = st.rec[0].astype(jnp.float64)
         M = jnp.einsum("snd,tnd->st", rec1, rec1)
@@ -1155,7 +1568,7 @@ class PGMForceField:
         ridge = 1e-12 * jnp.trace(M) + 1e-300
         c = jnp.linalg.solve(M + ridge * jnp.eye(S), bv)
 
-        def lin(R):
+        def lin(R: jax.Array) -> jax.Array:  # sum_s c_s R_s
             return jnp.einsum("s,snd->nd", c, R.astype(jnp.float64))
 
         p1 = lin(st.rec[1])
@@ -1170,7 +1583,8 @@ class PGMForceField:
         st = st.set(rec=st.rec.at[0].set(_push(st.rec[0], new)), pred=pred, lscount=cnt.at[0].add(1))
         return guess, st
 
-    def _record_ls(self, st: InductionState, mu):
+    def _record_ls(self, st: InductionState, mu: jax.Array) -> InductionState:
+        """Record the converged mu and its deviations from the order-1 / order-2 predictions ("ls")."""
         S = self.S
         rec = st.rec.at[1].set(_push(st.rec[1], mu))
         c1 = st.lscount[1] + 1
@@ -1182,8 +1596,14 @@ class PGMForceField:
         c3 = st.lscount[3] + up3.astype(jnp.int32)
         return st.set(rec=rec, lscount=jnp.stack([st.lscount[0], c1, c2, c3]))
 
-    def _operator(self, g, S, Gk, alpha, ext=None):
-        """v -> alpha^-1 v - T v (+ kappa sum v for constant displacement, ext[2] = kappa)."""
+    def _operator(
+        self, g: dict, S: dict, Gk: jax.Array, alpha: jax.Array, ext: tuple | None = None
+    ) -> Callable[[jax.Array], jax.Array]:
+        """Return the induction operator A: v -> alpha^-1 v - T v (compute dtype).
+
+        With a constant displacement (ext[2] = kappa = 4 pi / V) also + kappa sum v.  T v is minus
+        the field of the dipoles v (rows, PME, self).
+        """
         cd = self.cd
         inv_a = _div_alpha(1.0, alpha, self.alpha_mask).astype(cd)[:, None]
         zq = jnp.zeros(self.n, cd)
@@ -1196,8 +1616,51 @@ class PGMForceField:
             + (kappa * jnp.sum(v.astype(jnp.float64), axis=0)).astype(cd)[None, :]
         )
 
-    def _cg(self, g, A, alpha, x, r, norm, tol=None, peek=None, max_iter=None):
-        """Preconditioned CG from (x0, r0 = b - A x0); returns mu (float64), iterations, residual."""
+    def _cg(
+        self,
+        g: dict,
+        A: Callable[[jax.Array], jax.Array],
+        alpha: jax.Array,
+        x: jax.Array,
+        r: jax.Array,
+        norm: jax.Array,
+        tol: float | None = None,
+        peek: float | None = None,
+        max_iter: int | None = None,
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+        """Solve A mu = b by preconditioned CG from (x0, r0 = b - A x0).
+
+        Jacobi preconditioner z = alpha r, or with local_niter > 0 a few inner CG iterations on the
+        short-range tensor (flexible PCG, Polak-Ribiere beta).  Converged when max|alpha r| / norm <= tol
+        (pmemd-pgm's criterion) or after max_iter iterations (a lax.while_loop); then the peek step
+        mu += peek alpha r.
+
+        Parameters
+        ----------
+        g : dict
+            Row geometry (the local preconditioner's short rows).
+        A : Callable
+            The operator (`_operator`).
+        alpha : jax.Array (N,)
+            Polarizabilities [nm^3].
+        x : jax.Array (N, 3)
+            Initial guess [e nm].
+        r : jax.Array (N, 3)
+            Initial residual b - A x [e/nm^2].
+        norm : jax.Array ()
+            Normaliser mean|alpha b| [e nm].
+        tol, peek, max_iter : optional
+            Overrides of settings.induction (None: the settings).
+
+        Returns
+        -------
+        mu : jax.Array (N, 3) float64
+            Solution [e nm].
+        iterations : jax.Array () int32
+            CG iterations.
+        residual : jax.Array ()
+            Final max|alpha r| / norm (before the peek step).
+        """
         cd, s = self.cd, self.s
         tol = s.induction.tol if tol is None else tol
         peek = s.induction.peek if peek is None else peek
@@ -1205,20 +1668,22 @@ class PGMForceField:
         inv_a = _div_alpha(1.0, alpha, self.alpha_mask).astype(cd)[:, None]
         a_c = alpha.astype(cd)[:, None]
 
-        def precond(r):
+        def precond(r: jax.Array) -> jax.Array:
+            """Return z = alpha r, refined by local_niter inner CG iterations on the short-range tensor."""
             z = r * a_c
             if s.induction.local_niter <= 0:
                 return z
             gs = g["short"]
 
-            def A_loc(v):
+            def A_loc(v: jax.Array) -> jax.Array:  # short-range operator alpha^-1 v - T_short v
                 return v * inv_a + self._row_field(gs, None, v)
 
             rr = r - A_loc(z)
             zz = rr * a_c
             rz = _dot(rr, zz)
 
-            def inner(_, c):
+            def inner(_: int, c: tuple) -> tuple:
+                """Run one inner CG iteration; carry (z, residual, direction, r.z)."""
                 z, rr, p, rz = c
                 Ap = A_loc(p)
                 al = (rz / jnp.maximum(_dot(p, Ap), 1e-300)).astype(cd)
@@ -1232,16 +1697,17 @@ class PGMForceField:
             z, *_ = jax.lax.fori_loop(0, s.induction.local_niter, inner, (z, rr, zz, rz))
             return z
 
-        def err_of(r):
+        def err_of(r: jax.Array) -> jax.Array:  # max|alpha r| / norm
             return jnp.max(jnp.abs(r * a_c).astype(jnp.float64)) / norm
 
         x, r = x.astype(cd), r.astype(cd)
         z = precond(r)
 
-        def cond(c):
+        def cond(c: tuple) -> jax.Array:  # carry (x, r, z, p, r.z, it, err): not converged, iterations left
             return (c[6] > tol) & (c[5] < max_iter)
 
-        def body(c):
+        def body(c: tuple) -> tuple:
+            """Run one preconditioned CG iteration."""
             x, r, z, p, rz, it, _ = c
             Ap = A(p)
             al = (rz / jnp.maximum(_dot(p, Ap), 1e-300)).astype(cd)
@@ -1259,39 +1725,77 @@ class PGMForceField:
             x = x + jnp.asarray(peek, cd) * r * a_c
         return x.astype(jnp.float64), it, err
 
-    def _ext_at(self, ext, x):
-        """The external field (3,) (compute dtype) acting when the induced dipoles are x: F0 for a
-        constant field, F0 - kappa (m0 + sum x) for constant displacement; ext = (F0, m0, kappa)."""
+    def _ext_at(self, ext: tuple, x: jax.Array) -> jax.Array:
+        """Return the external field (3,) (compute dtype) acting when the induced dipoles are x.
+
+        F0 for a constant field, F0 - kappa (m0 + sum x) for constant displacement;
+        ext = (F0 [e/nm^2], m0 [e nm], kappa [1/nm^3] or None).
+        """
         F0, m0, kappa = ext
         if kappa is None:
             return F0.astype(self.cd)
         return (F0 - kappa * (m0 + jnp.sum(x.astype(jnp.float64), axis=0))).astype(self.cd)
 
-    def _residual(self, g, S, Gk, alpha, q, p, mu, ext=None):
-        """b - A mu = field(q, p + mu) (+ external field) - mu / alpha (compute dtype): zero at the
-        induced dipoles."""
+    def _residual(
+        self,
+        g: dict,
+        S: dict,
+        Gk: jax.Array,
+        alpha: jax.Array,
+        q: jax.Array,
+        p: jax.Array,
+        mu: jax.Array,
+        ext: tuple | None = None,
+    ) -> jax.Array:
+        """Return the residual b - A mu = field(q, p + mu) (+ external field) - mu / alpha (compute dtype).
+
+        Zero at the induced dipoles.
+        """
         cd = self.cd
         r = self._field(g, S, Gk, q.astype(cd), p + mu) - _div_alpha(mu, alpha[:, None], self.alpha_mask).astype(cd)
         return r if ext is None else r + self._ext_at(ext, mu)[None, :]
 
-    def _solve(self, g, S, Gk, P, p, ind: InductionState, fused_ok: bool = True, ext=None):
-        """Induced dipoles; returns mu, iterations, residual, updated InductionState.  With
-        settings.differentiable, mu carries exact derivatives (implicit function theorem):
-        A mu = b(theta)  =>  mu_bar . dmu = lam . d(b - A mu)|_mu  with  A lam = mu_bar  (A is
-        symmetric, so the adjoint is one more CG with the same operator)."""
+    def _solve(
+        self,
+        g: dict,
+        S: dict,
+        Gk: jax.Array,
+        P: dict,
+        p: jax.Array,
+        ind: InductionState,
+        fused_ok: bool = True,
+        ext: tuple | None = None,
+    ) -> tuple:
+        """Return the induced dipoles, iterations, residual and updated InductionState.
+
+        With settings.differentiable, mu carries exact derivatives (implicit function theorem).
+
+        Notes
+        -----
+        A jax.custom_vjp around `_solve_core`: the forward pass saves (g, S, Gk, alpha, q, p, ext, mu);
+        from A mu = b(theta), mu_bar . dmu = lam . d(b - A mu)|_mu with A lam = mu_bar.  A is symmetric,
+        so the adjoint is one more CG with the same operator, to adjoint_tol (no peek); lam is pulled
+        back through `_residual` at fixed mu by jax.vjp.  The predictor history gets no gradient
+        (stop_gradient): it is data for the next step.
+        """
         if not self.s.differentiable:
             return self._solve_core(g, S, Gk, P["alpha"], P["q"], p, ind, fused_ok, ext)
         cd = self.cd
 
         @jax.custom_vjp
-        def run(g, S, Gk, alpha, q, p, ext, ind):
+        def run(
+            g: dict, S: dict, Gk: jax.Array, alpha: jax.Array, q: jax.Array, p: jax.Array, ext: Any, ind: InductionState
+        ) -> tuple:  # the solve with the custom backward pass
             return self._solve_core(g, S, Gk, alpha, q, p, ind, fused_ok, ext)
 
-        def fwd(g, S, Gk, alpha, q, p, ext, ind):
+        def fwd(
+            g: dict, S: dict, Gk: jax.Array, alpha: jax.Array, q: jax.Array, p: jax.Array, ext: Any, ind: InductionState
+        ) -> tuple:  # forward: the solve, residuals for bwd
             out = self._solve_core(g, S, Gk, alpha, q, p, ind, fused_ok, ext)
             return out, (g, S, Gk, alpha, q, p, ext, out[0], ind)
 
-        def bwd(res, cot):
+        def bwd(res: tuple, cot: tuple) -> tuple:
+            """Solve the adjoint A lam = mu_bar and pull lam back through the residual at mu."""
             g, S, Gk, alpha, q, p, ext, mu, ind = res
             mu_bar = cot[0]
             A = self._operator(g, S, Gk, alpha, ext)
@@ -1315,11 +1819,52 @@ class PGMForceField:
         # derivatives flow through mu only; the predictor history is data for the next step
         return mu, it, err, jax.lax.stop_gradient(ind_new).set(mu=mu)
 
-    def _solve_core(self, g, S, Gk, alpha, q, p, ind: InductionState, fused_ok: bool = True, ext=None):
-        """Initial guess + residual (fused when possible), CG; returns mu, iterations, residual,
-        updated InductionState.  ext: a uniform external field, (F0, m0, kappa) in internal units
-        (_ext_at): F0 added to the permanent field; for constant displacement also -kappa (m0 + sum mu),
-        with the kappa term in the operator."""
+    def _solve_core(
+        self,
+        g: dict,
+        S: dict,
+        Gk: jax.Array,
+        alpha: jax.Array,
+        q: jax.Array,
+        p: jax.Array,
+        ind: InductionState,
+        fused_ok: bool = True,
+        ext: tuple | None = None,
+    ) -> tuple:
+        """Solve the induced dipoles: initial guess and residual (fused when possible), then CG.
+
+        Parameters
+        ----------
+        g : dict
+            Row geometry (electrostatic rows).
+        S, Gk : dict, jax.Array
+            PME setup and influence function.
+        alpha : jax.Array (N,)
+            Polarizabilities [nm^3].
+        q : jax.Array (N,)
+            Charges [e].
+        p : jax.Array (N, 3)
+            Permanent dipoles [e nm].
+        ind : InductionState
+            Solver state (history).
+        fused_ok : bool
+            Allow the fused initial residual (static).
+        ext : tuple, optional
+            A uniform external field (F0, m0, kappa) in internal units (_ext_at): F0 added to the
+            permanent field; for constant displacement also -kappa (m0 + sum mu), with the kappa term in
+            the operator.
+
+        Returns
+        -------
+        mu : jax.Array (N, 3) float64
+            Induced dipoles [e nm].
+        iterations : jax.Array () int32
+            CG iterations.
+        residual : jax.Array ()
+            Final relative residual.
+        ind : InductionState
+            State with mu pushed onto the history.
+        """
         cd = self.cd
         a64 = alpha[:, None]
         qc = q.astype(cd)
@@ -1328,7 +1873,8 @@ class PGMForceField:
         zero = jnp.zeros((1, 3), cd)
         add_ext = (lambda b, x: b) if ext is None else (lambda b, x: b + self._ext_at(ext, x)[None, :])
 
-        def plain(x0_hist, have):
+        def plain(x0_hist: jax.Array, have: jax.Array) -> tuple:
+            """Unfused start: the permanent field b, x0 (history guess if `have`, else alpha b), r0, norm."""
             b = add_ext(self._field(g, S, Gk, qc, p), zero)
             ab = a64 * b.astype(jnp.float64)
             x0 = jnp.where(have, x0_hist, ab)
@@ -1343,7 +1889,7 @@ class PGMForceField:
             if self.s.induction.fused and fused_ok:
                 use_fused = have & (ind.count % self.s.induction.norm_refresh != 0)
 
-                def fused(_):
+                def fused(_: None) -> tuple:  # r0 from one field sweep at d = p + x0 (pmemd-pgm PGM_FUSED)
                     r0 = add_ext(self._field(g, S, Gk, qc, p + x0h), x0h) - _div_alpha(
                         x0h, a64, self.alpha_mask
                     ).astype(cd)
@@ -1367,9 +1913,16 @@ class PGMForceField:
         return mu, it, err, ind
 
     # ------------------------------------------------------------------ energy terms
-    def _nonpair(self, pos, H, d, mu, P, delta=None):
-        """PME + self + background + polarisation energies (kJ/mol), as a function of (pos, d).  With
-        delta (iEL/0-SCF), minus the PME and self energies of the dipoles delta alone."""
+    def _nonpair(
+        self, pos: jax.Array, H: jax.Array, d: jax.Array, mu: jax.Array, P: dict, delta: jax.Array | None = None
+    ) -> jax.Array:
+        """Return the PME + self + background + polarisation energies [kJ/mol] as a function of (pos, d).
+
+        KE [U_rec(q, d) + U_self + U_bg + sum |mu|^2 / (2 alpha)].  With delta (iEL/0-SCF), minus the
+        PME and self energies of the dipoles delta alone (and, for omega != 1, the constant
+        -(1 - 1/omega) |delta|^2 / (2 alpha)).  Differentiated by autodiff for the forces, the dipole
+        gradient and (charge flux) the charge gradient.
+        """
         q = P["q"]
         S, G = self.pme.setup(pos, H), self.pme.influence(H)
         u_rec = self.pme.energy(S, G, q, d)
@@ -1385,9 +1938,18 @@ class PGMForceField:
         return KE * (u_rec + u_self + u_bg + u_pol)
 
     @staticmethod
-    def _ext(efield, H):
-        """(F0 internal field (3,), dipole offset (3,) e nm, kappa = 4 pi / V or None) from efield =
-        (E in V/nm, offset) [constant field] or (D/eps0 in V/nm, offset, "D") [constant displacement]."""
+    def _ext(efield: tuple | None, H: jax.Array) -> tuple | None:
+        """Return the external-field tuple (F0, offset, kappa) of an efield argument, or None.
+
+        F0 the field in internal units (3,) [e/nm^2], the dipole offset (3,) [e nm], kappa = 4 pi / V
+        [1/nm^3] for constant displacement or None; efield = (E in V/nm, offset) [constant field] or
+        (D/eps0 in V/nm, offset, "D") [constant displacement].
+
+        Raises
+        ------
+        ValueError
+            An unknown field kind.
+        """
         if efield is None:
             return None
         from .efield import internal
@@ -1403,9 +1965,12 @@ class PGMForceField:
         )
 
     @staticmethod
-    def _ext_terms(ext, M):
-        """External field at the total dipole M (internal units) and its energy (kJ/mol): constant field
-        F0, -KE F0 . M; constant displacement F = F0 - kappa M, KE |F|^2 / (2 kappa) (= V eps0 |E|^2 / 2)."""
+    def _ext_terms(ext: tuple, M: jax.Array) -> tuple[jax.Array, jax.Array]:
+        """Return the external field at the total dipole M (internal units) and its energy [kJ/mol].
+
+        Constant field F0: -KE F0 . M; constant displacement F = F0 - kappa M: KE |F|^2 / (2 kappa)
+        (= V eps0 |E|^2 / 2).
+        """
         F0, _, kappa = ext
         if kappa is None:
             return F0, -KE * jnp.dot(F0, M)
@@ -1413,14 +1978,20 @@ class PGMForceField:
         return F, KE * jnp.dot(F, F) / (2.0 * kappa)
 
     @staticmethod
-    def field_dipole(pos, q, d, off=None):
-        """M = sum q r + sum d (+ offset), e nm: the dipole a uniform field acts on (whole molecules)."""
+    def field_dipole(pos: jax.Array, q: jax.Array, d: jax.Array, off: jax.Array | None = None) -> jax.Array:
+        """Return M = sum q r + sum d (+ offset) (3,) [e nm], the dipole a uniform field acts on.
+
+        Molecules must be whole.
+        """
         M = jnp.sum(q[:, None] * pos + jnp.asarray(d, jnp.float64), axis=0)  # one reduction (GPU: one kernel)
         return M if off is None else M + off
 
     # ------------------------------------------------------------------ van der Waals rows
-    def _vdw_params(self, P, k):
-        """Row pair parameters of the van der Waals form (tuple of (N, C) arrays)."""
+    def _vdw_params(self, P: dict, k: jax.Array) -> tuple:
+        """Return the row pair parameters of the van der Waals form (tuple of (N, C) arrays).
+
+        LJ: (rmin_ij [nm], eps_ij [kJ/mol]); GVDW: (A_ij, C6_ij, b_ij, a_ij); none: ().
+        """
         cd = self.cd
         if self.s.terms.vdw == "lj":
             rh, se = P["lj_rmin_half"].astype(cd), P["lj_sqrt_eps"].astype(cd)
@@ -1435,9 +2006,14 @@ class PGMForceField:
             )
         return ()
 
-    def _vdw_rows(self, r, vp, wv, grad: bool = False):
-        """Row pair energies (and (1/r) dU/dr) of the van der Waals form times the pair weights wv
-        (0 for excluded pairs and outside the cutoff)."""
+    def _vdw_rows(
+        self, r: jax.Array, vp: tuple, wv: jax.Array, grad: bool = False
+    ) -> jax.Array | tuple[jax.Array, jax.Array]:
+        """Return the row pair energies (and (1/r) dU/dr) of the van der Waals form times the weights.
+
+        The weights wv are 0 for excluded pairs and outside the cutoff.  LJ:
+        e = eps (s^12 - 2 s^6), s = rmin / r.  r [nm]; energies [kJ/mol], (1/r) dU/dr [kJ/mol/nm^2].
+        """
         if self.s.terms.vdw == "lj":
             rminp, epsp = vp
             s6 = (rminp / r) ** 6
@@ -1452,15 +2028,29 @@ class PGMForceField:
         e, d = jnp.where(on, e * wv, 0.0), jnp.where(on, d * wv, 0.0)
         return (e, d) if grad else e
 
-    def _vdw_tail(self, P, H):
+    def _vdw_tail(self, P: dict, H: jax.Array) -> jax.Array | float:
+        """Return the long-range correction of the van der Waals term [kJ/mol] (0 without lj_lrc)."""
         if not self.s.terms.lj_lrc or self.s.terms.vdw == "none":
             return 0.0
         f = lj_long_range if self.s.terms.vdw == "lj" else gvdw_long_range
         return f(P, volume(H), self.s.cutoffs.cutoff)
 
-    def _pair_sum(self, x, di, dk, qi, qk, a, within, wv, vp):
-        """sum over row entries of KE e_elec + e_vdW (each pair twice), float64 (autodiff path).
-        x, di, dk: component triples of (N, C) arrays."""
+    def _pair_sum(
+        self,
+        x: Sequence[jax.Array],
+        di: Sequence[jax.Array],
+        dk: Sequence[jax.Array],
+        qi: jax.Array,
+        qk: jax.Array,
+        a: jax.Array,
+        within: jax.Array,
+        wv: jax.Array,
+        vp: tuple,
+    ) -> tuple:
+        """Return the row sum of KE e_elec + e_vdW (each pair twice), float64, and its two parts.
+
+        The autodiff path (energy_fixed_mu); x, di, dk: component triples of (N, C) arrays.
+        """
         r, G0, G1, G2 = self._kernels(x, within, a)
         dix = di[0] * x[0] + di[1] * x[1] + di[2] * x[2]
         dkx = dk[0] * x[0] + dk[1] * x[1] + dk[2] * x[2]
@@ -1471,14 +2061,17 @@ class PGMForceField:
         sl = jnp.sum(jnp.sum(elj, axis=1).astype(jnp.float64))
         return KE * se + sl, (KE * se, sl)
 
-    def _vdw_sum(self, x, within, wv, vp):
-        """sum over row entries of e_vdW (each pair twice), float64 (autodiff path, van der Waals rows)."""
+    def _vdw_sum(self, x: Sequence[jax.Array], within: jax.Array, wv: jax.Array, vp: tuple) -> jax.Array:
+        """Return the row sum of e_vdW (each pair twice), float64 (autodiff path, van der Waals rows)."""
         r = jnp.sqrt(jnp.where(within, x[0] * x[0] + x[1] * x[1] + x[2] * x[2], 1.0))
         return jnp.sum(jnp.sum(self._vdw_rows(r, vp, wv), axis=1).astype(jnp.float64))
 
-    def _row_inputs(self, pos, H, idx, P, d):
-        """Rows for the differentiable (autodiff) energy; the last item holds the van der Waals rows
-        (x, within, weights, pair parameters) of split rows, else None."""
+    def _row_inputs(self, pos: jax.Array, H: jax.Array, idx: jax.Array, P: dict, d: jax.Array) -> tuple:
+        """Return the rows for the differentiable (autodiff) energy: x, di, constants, van der Waals rows.
+
+        The last item holds the van der Waals rows (x, within, weights, pair parameters) of split rows,
+        else None.
+        """
         cd = self.cd
         k, x, within, wv, _, vrows = self._rows(pos, H, idx)
         R, q = P["radius"], P["q"]
@@ -1491,10 +2084,36 @@ class PGMForceField:
             vrows = (vrows[1], vrows[2], vrows[3], self._vdw_params(P, vrows[0]))
         return x, di, consts, vrows
 
-    def energy_fixed_mu(self, pos, H, mu, idx, P, efield=None):
-        """Total energy (kJ/mol, float64) and components with the induced dipoles held at mu;
-        differentiable in positions and box (used for virials and Monte Carlo trials).  With charge
-        flux, q and c are taken at pos.  efield: (E in V/nm, dipole offset) adds -E . M ("field")."""
+    def energy_fixed_mu(
+        self, pos: jax.Array, H: jax.Array, mu: jax.Array, idx: jax.Array, P: dict, efield: tuple | None = None
+    ) -> tuple[jax.Array, dict]:
+        """Return the total energy and its components with the induced dipoles held at mu.
+
+        Differentiable in positions, box and parameters (used for virials, Monte Carlo trials and
+        parameter gradients).  With charge flux, q and c are taken at pos.
+
+        Parameters
+        ----------
+        pos : jax.Array (N, 3)
+            Positions [nm].
+        H : jax.Array (3, 3)
+            Box [nm].
+        mu : jax.Array (N, 3)
+            Induced dipoles [e nm].
+        idx : jax.Array (N, C) int
+            Candidate rows.
+        P : dict
+            Per-atom parameters (`_atoms`).
+        efield : tuple, optional
+            (E in V/nm, dipole offset) or with "D": adds the field energy ("field").
+
+        Returns
+        -------
+        energy : jax.Array () float64
+            Total energy [kJ/mol].
+        parts : dict
+            "elec", "vdw" (and "field") [kJ/mol].
+        """
         P = self.charges_at(pos, H, P)
         p = self.perm_dipoles(pos, H, P["cov"])
         d = p + mu
@@ -1510,12 +2129,26 @@ class PGMForceField:
         _, e_f = self._ext_terms(ext, self.field_dipole(pos, P["q"], d, ext[1]))
         return e_elec + e_lj + e_f, {"elec": e_elec, "vdw": e_lj, "field": e_f}
 
-    def _row_terms(self, g, q, d, delta=None):
-        """Pair energies (each pair counted in both rows) and the row sums of de_ik/dx_ik, from
-        the kernels G0..G3 (grad_x G_n = -G_{n+1} x); charges q and total dipoles d, compute dtype.
-        Electrostatics over the electrostatic rows, van der Waals over those and the van der Waals
-        rows of split rows.  With delta (iEL/0-SCF shadow energy), minus the pair energies of the
-        dipoles delta alone and their gradient, in the same pass over the rows."""
+    def _row_terms(self, g: dict, q: jax.Array, d: jax.Array, delta: jax.Array | None = None) -> tuple:
+        """Return the pair energies and the row sums of de_ik/dx_ik from the kernels G0..G3.
+
+        Each pair is counted in both rows (grad_x G_n = -G_{n+1} x); charges q and total dipoles d in
+        the compute dtype.  Electrostatics over the electrostatic rows, van der Waals over those and the
+        van der Waals rows of split rows.  With delta (iEL/0-SCF shadow energy), minus the pair energies
+        of the dipoles delta alone and their gradient, in the same pass over the rows (inside a block
+        of the block preconditioner scaled by 1 - 1/omega).
+
+        Returns
+        -------
+        e_elec : jax.Array ()
+            Row sum of the electrostatic pair energies (units of KE; float64).
+        e_vdw : jax.Array ()
+            Row sum of the van der Waals energies [kJ/mol].
+        g_elec : jax.Array (N, 3)
+            sum_k de_ik/dx_ik of the electrostatics (units of KE).
+        g_vdw : jax.Array (N, 3)
+            sum_k de_ik/dx_ik of the van der Waals term [kJ/mol/nm].
+        """
         k, x = g["k"], g["x"]
         G0, G1, G2, G3 = g["G0"], g["G1"], g["G2"], g["G3"]
         qi, qk = q[:, None], q[k]
@@ -1553,7 +2186,7 @@ class PGMForceField:
         )
         glx = jnp.stack([jnp.sum(glj * x[j], axis=1) for j in range(3)], -1).astype(jnp.float64)
 
-        def rowsum(v):
+        def rowsum(v: jax.Array) -> jax.Array:
             return jnp.sum(jnp.sum(v, axis=1).astype(jnp.float64))  # rows in compute dtype, total in float64
 
         sl = rowsum(elj)
@@ -1564,12 +2197,53 @@ class PGMForceField:
             sl = sl + rowsum(elt)
         return rowsum(e), sl, gx.astype(jnp.float64), glx
 
-    def _energy_forces(self, pos, H, mu, g, P, flux_pull=None, ext=None, M=None, delta=None):
-        """Energy and forces at fixed mu: analytic row forces for the pair terms (no scatter-adds),
-        autodiff for PME, one vector-Jacobian product through the covalent-dipole frames.  With
-        charge flux (flux_pull: the pull-back of the flux map at pos; P holds q(R), c(R)):
-        _energy_forces_flux.  ext (_ext) or None: the field F at M = sum q r + sum d + offset adds its
-        energy (_ext_terms), KE q F to the forces and -KE F to dE/dd (torques)."""
+    def _energy_forces(
+        self,
+        pos: jax.Array,
+        H: jax.Array,
+        mu: jax.Array,
+        g: dict,
+        P: dict,
+        flux_pull: Callable | None = None,
+        ext: tuple | None = None,
+        M: jax.Array | None = None,
+        delta: jax.Array | None = None,
+    ) -> tuple[dict, jax.Array]:
+        """Return the energy parts and forces at fixed mu.
+
+        Analytic row forces for the pair terms (no scatter-adds), autodiff for PME, one vector-Jacobian
+        product through the covalent-dipole frames.  With charge flux (flux_pull: the pull-back of the
+        flux map at pos; P holds q(R), c(R)): _energy_forces_flux.
+
+        Parameters
+        ----------
+        pos : jax.Array (N, 3)
+            Positions [nm].
+        H : jax.Array (3, 3)
+            Box [nm].
+        mu : jax.Array (N, 3)
+            Induced dipoles [e nm].
+        g : dict
+            Row geometry (geometry(forces=True)).
+        P : dict
+            Per-atom parameters.
+        flux_pull : Callable, optional
+            VJP of the flux map R -> (q, c).
+        ext : tuple, optional
+            `_ext` output: the field F at M = sum q r + sum d + offset adds its energy (_ext_terms),
+            KE q F to the forces and -KE F to dE/dd (torques).
+        M : jax.Array (3,), optional
+            Cell dipole [e nm] (None: computed here).
+        delta : jax.Array (N, 3), optional
+            iEL/0-SCF shadow displacement.
+
+        Returns
+        -------
+        energy : dict
+            "elec", "vdw", "total" (and "field") [kJ/mol].
+        forces : jax.Array (N, 3) float64
+            Forces [kJ/mol/nm].
+        """
         if flux_pull is not None:
             return self._energy_forces_flux(pos, H, mu, g, P, flux_pull, ext, M, delta)
         cd = self.cd
@@ -1593,12 +2267,25 @@ class PGMForceField:
         forces = forces + KE * P["q"][:, None] * Fx[None, :]
         return {"elec": e_elec, "vdw": e_lj, "field": e_f, "total": e_elec + e_lj + e_f}, forces
 
-    def _energy_forces_flux(self, pos, H, mu, g, P, flux_pull, ext=None, M=None, delta=None):
-        """_energy_forces with charge flux; P holds q(R) and c(R).  F = -dE/dR|_{q,c,mu}
-        - phi . dq/dR - (dE/dc) . dc/dR: the potential phi = dE/dq (rows, and PME, self and
-        background terms from the autodiff of _nonpair with q among the arguments) and dE/dc (the
-        covalent-frame pull-back taken with respect to c as well) go through flux_pull, the
-        jax.vjp of the bond-local map R -> (q, c)."""
+    def _energy_forces_flux(
+        self,
+        pos: jax.Array,
+        H: jax.Array,
+        mu: jax.Array,
+        g: dict,
+        P: dict,
+        flux_pull: Callable,
+        ext: tuple | None = None,
+        M: jax.Array | None = None,
+        delta: jax.Array | None = None,
+    ) -> tuple[dict, jax.Array]:
+        """Return the energy parts and forces as `_energy_forces`, with charge flux (P holds q(R), c(R)).
+
+        F = -dE/dR|_{q,c,mu} - phi . dq/dR - (dE/dc) . dc/dR: the potential phi = dE/dq (rows, and PME,
+        self and background terms from the autodiff of _nonpair with q among the arguments) and dE/dc
+        (the covalent-frame pull-back taken with respect to c as well) go through flux_pull, the
+        jax.vjp of the bond-local map R -> (q, c).
+        """
         cd = self.cd
         p, vjp_p = jax.vjp(lambda y, c: self.perm_dipoles(y, H, c), pos, P["cov"])
         d = p + mu
@@ -1626,25 +2313,60 @@ class PGMForceField:
         return {"elec": e_elec, "vdw": e_lj, "field": e_f, "total": e_elec + e_lj + e_f}, forces
 
     # ------------------------------------------------------------------ public
-    def rows_for(self, pos, H):
-        """Candidate rows (every atom within the cutoff) for a fixed frame, built on the host: for
-        single points and parameter fitting outside MD (which keeps its own neighbour list)."""
+    def rows_for(self, pos: ArrayLike, H: ArrayLike) -> jax.Array:
+        """Return candidate rows (every atom within the pair cutoff) for a fixed frame, built on the host.
+
+        For single points and parameter fitting outside MD (which keeps its own neighbour list): an
+        AtomNeighbors list without skin.  pos (N, 3) [nm], H (3, 3) [nm]; result (N, C) int (padding N).
+        """
         from .neighbors import AtomNeighbors
 
         H = jnp.asarray(H, jnp.float64)
         return AtomNeighbors(self.n, H, self.rc_pair, 0.0).allocate(jnp.asarray(pos, jnp.float64), None, H).idx
 
     def compute(
-        self, pos, H, idx, ind: InductionState, params=None, keep_geometry: bool = False, efield=None
+        self,
+        pos: ArrayLike,
+        H: ArrayLike,
+        idx: jax.Array,
+        ind: InductionState,
+        params: dict | None = None,
+        keep_geometry: bool = False,
+        efield: tuple | None = None,
     ) -> Result:
-        """Solve the induced dipoles (predicted guess), then energy and forces.  idx: candidate
-        rows (N, C) from a neighbour list (padding N).  With settings.differentiable, energy,
-        forces and Result.induction.mu can be differentiated (jax.grad / vjp) in params, pos, H.
-        keep_geometry: also return the row geometry (Result.geometry: partner indices k, displacements
-        x, distances r, `within` mask, van der Waals weights wv of the electrostatic rows), from which
-        multiple time stepping builds its short-range pair list (md/mts.py).
-        efield: (E (3,) V/nm, dipole offset (3,) e nm or None) or None: a uniform external field
-        (md/efield.py); energy["field"] = -E . M and Result.dipole = M."""
+        """Solve the induced dipoles (predicted guess), then return energy and forces.
+
+        Parameters
+        ----------
+        pos : ArrayLike (N, 3)
+            Positions [nm] (molecules need not be whole).
+        H : ArrayLike (3, 3)
+            Box, reduced lower triangular [nm].
+        idx : jax.Array (N, C) int
+            Candidate rows from a neighbour list (padding N).
+        ind : InductionState
+            Solver state of the previous step (predictor history).
+        params : dict, optional
+            Parameter pytree (None: the system's initial values).
+        keep_geometry : bool
+            Also return the row geometry (Result.geometry: partner indices k, displacements x,
+            distances r, `within` mask, van der Waals weights wv of the electrostatic rows), from which
+            multiple time stepping builds its short-range pair list (md/mts.py).
+        efield : tuple, optional
+            (E (3,) V/nm, dipole offset (3,) e nm or None[, "D"]): a uniform external field
+            (md/efield.py); energy["field"] and Result.dipole = M.
+
+        Returns
+        -------
+        Result
+            Energies [kJ/mol], forces [kJ/mol/nm], new solver state, CG statistics, overflow.
+
+        Notes
+        -----
+        With settings.differentiable, energy, forces and Result.induction.mu can be differentiated
+        (jax.grad / vjp) in params, pos and H (`_solve`).  With iEL/0-SCF and iel.shadow the energy and
+        forces are those of the shadow potential.  Meant to be called inside the caller's jit.
+        """
         pos, H = jnp.asarray(pos, jnp.float64), jnp.asarray(H, jnp.float64)
         ext = self._ext(efield, H)
         P = self._atoms(params)
@@ -1675,10 +2397,45 @@ class PGMForceField:
         )
         return Result(energy, forces, ind, it, err, g["overflow"], g if keep_geometry else None, M)
 
-    def energy(self, pos, H, idx, ind: InductionState, params=None, efield=None):
-        """Energy only (Monte Carlo barostat trials): dipoles solved from the last converged ones
-        (no history update); returns (total, InductionState with mu, iterations, overflow).
-        efield as in compute."""
+    def energy(
+        self,
+        pos: ArrayLike,
+        H: ArrayLike,
+        idx: jax.Array,
+        ind: InductionState,
+        params: dict | None = None,
+        efield: tuple | None = None,
+    ) -> tuple:
+        """Return the energy only (Monte Carlo barostat trials), the dipoles solved from the last ones.
+
+        No predictor history update (iEL: the auxiliary dipoles restart at the new geometry).
+
+        Parameters
+        ----------
+        pos : ArrayLike (N, 3)
+            Positions [nm].
+        H : ArrayLike (3, 3)
+            Box [nm].
+        idx : jax.Array (N, C) int
+            Candidate rows.
+        ind : InductionState
+            Solver state (its mu is the initial guess).
+        params : dict, optional
+            Parameter pytree.
+        efield : tuple, optional
+            As in `compute`.
+
+        Returns
+        -------
+        energy : jax.Array ()
+            Total energy [kJ/mol].
+        ind : InductionState
+            State with the converged mu.
+        iterations : jax.Array () int32
+            CG iterations.
+        overflow : jax.Array () bool
+            Row capacity exceeded.
+        """
         pos, H = jnp.asarray(pos, jnp.float64), jnp.asarray(H, jnp.float64)
         P = self.charges_at(pos, H, self._atoms(params))
         g = self.geometry(pos, H, idx, P)
@@ -1706,15 +2463,46 @@ class PGMForceField:
             return e, ind.set(mu=mu, count=jnp.zeros_like(ind.count)), it, g["overflow"]
         return e, ind.set(mu=mu), it, g["overflow"]
 
-    def strain_derivative(self, pos, H, idx, mu, params=None, molecular: bool = True, efield=None):
-        """dE/d eps (3, 3) at fixed mu, plus the LJ tail impulse term (-E_lrc I) if lj_lrc.
-        efield: the external-field term is included (zero for neutral molecules under molecular
-        scaling; md/efield.py).
-        molecular: molecules translated with their centres of mass (virtual sites move with them);
-        otherwise every position is scaled affinely, which virtual sites do not follow (refused).
-        The full tensor: the components that would take the box out of lower-triangular form come
-        from rotation invariance (full_strain_derivative, with mu, the field and its dipole offset
-        as the vectors held fixed)."""
+    def strain_derivative(
+        self,
+        pos: ArrayLike,
+        H: ArrayLike,
+        idx: jax.Array,
+        mu: ArrayLike,
+        params: dict | None = None,
+        molecular: bool = True,
+        efield: tuple | None = None,
+    ) -> jax.Array:
+        """Return dE/d eps (3, 3) [kJ/mol] at fixed mu, plus the tail impulse term (-E_lrc I) with lj_lrc.
+
+        The full tensor: the components that would take the box out of lower-triangular form come from
+        rotation invariance (full_strain_derivative, with mu, the field and its dipole offset as the
+        vectors held fixed).
+
+        Parameters
+        ----------
+        pos : ArrayLike (N, 3)
+            Positions [nm] (molecules whole).
+        H : ArrayLike (3, 3)
+            Box [nm].
+        idx : jax.Array (N, C) int
+            Candidate rows.
+        mu : ArrayLike (N, 3)
+            Induced dipoles [e nm].
+        params : dict, optional
+            Parameter pytree.
+        molecular : bool
+            Molecules translated with their centres of mass (virtual sites move with them); otherwise
+            every position is scaled affinely, which virtual sites do not follow (refused).
+        efield : tuple, optional
+            The external-field term is included (zero for neutral molecules under molecular scaling;
+            md/efield.py).
+
+        Raises
+        ------
+        NotImplementedError
+            molecular=False with virtual sites.
+        """
         if not molecular and self.has_vsites:
             raise NotImplementedError(
                 "atomic (affine) strain derivative with virtual sites: the sites would have to be "

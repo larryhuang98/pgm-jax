@@ -1,5 +1,10 @@
 """Virtual sites: massless interaction sites placed from parent atoms of the same molecule.
 
+Contents: `VirtualSite` (one site of a Molecule: kind, parents, parameters; constructors),
+`VirtualSites` (the sites of a System: vectorised placement, force spreading, setup checks), the
+construction kernels `_linear`, `_local`, `_amber`, and `amber_extra_points` (Amber's extra-point
+frames from a prmtop's bond graph).
+
 A virtual site is an atom of its `Molecule` (it carries a charge and, like any atom, may carry a
 pGM Gaussian radius, a polarizability and van der Waals parameters) whose mass is zero and whose
 position is a function of other atoms of the molecule, its parents.  `Molecule.vsites` lists the
@@ -22,8 +27,8 @@ so molecules may straddle the box, and is translation invariant:
                 x = sum_k wx_k r_k and y = sum_k wy_k r_k (sum wx = sum wy = 0); e_x = x / |x|,
                 e_z = (x cross y) / |x cross y|, e_y = e_z cross e_x;
                 r = o + p_x e_x + p_y e_y + p_z e_z  (p in nm).
-  "amber"       Amber extra-point frame (sander / pmemd extra_pts, after Stone & Alderton, Mol.
-                Phys. 56, 1047 (1985)): the host B and two points A = sum_k wa_k r_k,
+  "amber"       Amber extra-point frame (sander / pmemd extra_pts, after [1]_): the host B and
+                two points A = sum_k wa_k r_k,
                 C = sum_k wc_k r_k (atoms, or bond midpoints for carbonyl oxygens);
                 u = unit(A - B), v = unit(C - B), e_z = -unit(u + v), e_x = unit(v - u),
                 e_y = e_z cross e_x;  r = r_B + p_x e_x + p_y e_y + p_z e_z.  TIP4P-Ew's EP is
@@ -58,11 +63,20 @@ Covalent dipoles (p_i += c unit(r_j - r_i)) may have a site as i or j: their gra
 site's position and is spread with the other site forces.  The two points must not coincide
 (checked at setup, `VirtualSites.check`).
 
-Units nm; the parameters of each kind are dimensionless except w_x (nm^-1) and p (nm)."""
+Units: nm; the parameters of each kind are dimensionless except w_x (nm^-1) and p (nm).
+
+References
+----------
+.. [1] A. J. Stone, M. Alderton, Mol. Phys. 56, 1047 (1985).
+
+See also docs/virtual_sites.md.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import jax
 import jax.numpy as jnp
@@ -70,14 +84,19 @@ import numpy as np
 
 from .box import min_image
 
+if TYPE_CHECKING:
+    from jax.typing import ArrayLike
+
+    from ..system import System
+
 KINDS = ("average2", "average3", "outofplane", "local", "amber")
 POINT_RADIUS = 1e-4  # nm: Gaussian radius of a point charge (exponent 1/sqrt(2 (R_i^2 + R_j^2)) >= 5000 nm^-1)
-_SUM_TOL = 1e-9
+_SUM_TOL = 1e-9  # tolerance of the weight sums (1 or 0) checked at construction
 _DEGENERATE = 1e-6  # nm: smallest frame vector / covalent-dipole distance accepted at setup
 
 
-def _tuple(x):
-    """Nested lists / arrays -> nested tuples of floats (hashable, JSON-friendly)."""
+def _tuple(x: Any) -> Any:
+    """Return nested lists / arrays as nested tuples of floats (hashable, JSON-friendly)."""
     if isinstance(x, (list, tuple, np.ndarray)):
         return tuple(_tuple(v) for v in x)
     return float(x)
@@ -85,21 +104,42 @@ def _tuple(x):
 
 @dataclass(frozen=True)
 class VirtualSite:
-    """One virtual site of a molecule: `site` is the site's atom (local index), `atoms` its parents
-    with the host first, `params` the kind's parameters (module docstring):
-        average2    (w_a, w_b)
-        average3    (w_a, w_b, w_c)
-        outofplane  (w_ab, w_ac, w_x)
-        local       ((wo_k), (wx_k), (wy_k), (p_x, p_y, p_z))    one weight per parent
-        amber       ((wa_k), (wc_k), (p_x, p_y, p_z))            one weight per parent; the host is B
-    Use the constructors (average2, average3, out_of_plane, local, amber, tip4p)."""
+    """One virtual site of a molecule (immutable; indices local to the molecule).
+
+    Use the constructors (average2, average3, out_of_plane, local, amber, tip4p).
+
+    Parameters
+    ----------
+    site : int
+        The site's atom.
+    kind : {"average2", "average3", "outofplane", "local", "amber"}
+        Construction (module docstring).
+    atoms : tuple of int
+        Parents, the host first.
+    params : tuple
+        The kind's parameters (w_x [1/nm], p [nm], weights dimensionless)::
+
+            average2    (w_a, w_b)
+            average3    (w_a, w_b, w_c)
+            outofplane  (w_ab, w_ac, w_x)
+            local       ((wo_k), (wx_k), (wy_k), (p_x, p_y, p_z))    one weight per parent
+            amber       ((wa_k), (wc_k), (p_x, p_y, p_z))            one weight per parent; host = B
+    """
 
     site: int
     kind: str
     atoms: tuple
     params: tuple
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Normalize the fields (ints, tuples of floats) and check them.
+
+        Raises
+        ------
+        ValueError
+            An unknown kind, the site among its parents, repeated parents, wrong numbers of
+            parents or parameters, or weights that do not sum to 1 (0 for the "local" directions).
+        """
         object.__setattr__(self, "site", int(self.site))
         object.__setattr__(self, "atoms", tuple(int(a) for a in self.atoms))
         object.__setattr__(self, "params", _tuple(self.params))
@@ -136,29 +176,47 @@ class VirtualSite:
 
     @property
     def host(self) -> int:
+        """The host atom (first parent)."""
         return self.atoms[0]
 
     # ------------------------------------------------------------------ constructors
     @classmethod
-    def average2(cls, site, a, b, w_a, w_b):
+    def average2(cls, site: int, a: int, b: int, w_a: float, w_b: float) -> VirtualSite:
+        """Return a two-particle average r = w_a r_a + w_b r_b (w_a + w_b = 1; host a)."""
         return cls(site, "average2", (a, b), (w_a, w_b))
 
     @classmethod
-    def average3(cls, site, a, b, c, w_a, w_b, w_c):
+    def average3(cls, site: int, a: int, b: int, c: int, w_a: float, w_b: float, w_c: float) -> VirtualSite:
+        """Return a three-particle average r = w_a r_a + w_b r_b + w_c r_c (weights sum to 1; host a)."""
         return cls(site, "average3", (a, b, c), (w_a, w_b, w_c))
 
     @classmethod
-    def out_of_plane(cls, site, a, b, c, w_ab, w_ac, w_x):
+    def out_of_plane(cls, site: int, a: int, b: int, c: int, w_ab: float, w_ac: float, w_x: float) -> VirtualSite:
+        """Return an out-of-plane site r = r_a + w_ab d_b + w_ac d_c + w_x (d_b x d_c) (w_x [1/nm])."""
         return cls(site, "outofplane", (a, b, c), (w_ab, w_ac, w_x))
 
     @classmethod
-    def local(cls, site, atoms, origin_weights, x_weights, y_weights, p):
+    def local(
+        cls,
+        site: int,
+        atoms: Sequence[int],
+        origin_weights: Sequence[float],
+        x_weights: Sequence[float],
+        y_weights: Sequence[float],
+        p: Sequence[float],
+    ) -> VirtualSite:
+        """Return an OpenMM LocalCoordinatesSite (module docstring; p [nm], one weight per parent)."""
         return cls(site, "local", tuple(atoms), (tuple(origin_weights), tuple(x_weights), tuple(y_weights), tuple(p)))
 
     @classmethod
-    def amber(cls, site, center, first, third, p, middle=None):
-        """Amber frame on `center`: A = first, C = third (frame type 1), or, with `middle` (the
-        carbonyl carbon, frame type 2), A = (first + middle) / 2, C = (third + middle) / 2."""
+    def amber(
+        cls, site: int, center: int, first: int, third: int, p: Sequence[float], middle: int | None = None
+    ) -> VirtualSite:
+        """Return an Amber extra-point frame on `center` (the host B), position p [nm] in the frame.
+
+        Frame type 1: A = first, C = third; with `middle` (the carbonyl carbon, frame type 2):
+        A = (first + middle) / 2, C = (third + middle) / 2.
+        """
         if middle is None:
             return cls(site, "amber", (center, first, third), ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), tuple(p)))
         return cls(
@@ -166,53 +224,97 @@ class VirtualSite:
         )
 
     @classmethod
-    def tip4p(cls, site, o, h1, h2, d_om, r_oh=0.09572, theta_deg=104.52):
-        """TIP4P-type M site on the bisector at d_om (nm) from the oxygen of a rigid water (r_oh nm,
-        theta_deg): three-particle average (1 - 2a, a, a), a = d_om / (2 r_oh cos(theta / 2)).
-        TIP4P-Ew: d_om = 0.0125 nm (a = 0.10667672)."""
+    def tip4p(
+        cls, site: int, o: int, h1: int, h2: int, d_om: float, r_oh: float = 0.09572, theta_deg: float = 104.52
+    ) -> VirtualSite:
+        """Return a TIP4P-type M site on the bisector at d_om from the oxygen of a rigid water.
+
+        A three-particle average (1 - 2a, a, a), a = d_om / (2 r_oh cos(theta / 2)), exact for the
+        water geometry (r_oh [nm], theta_deg [deg]).  TIP4P-Ew: d_om = 0.0125 nm (a = 0.10667672).
+
+        Parameters
+        ----------
+        site, o, h1, h2 : int
+            Local indices of the site, the oxygen (host) and the hydrogens.
+        d_om : float
+            O-M distance [nm].
+        r_oh : float
+            O-H bond length [nm].
+        theta_deg : float
+            H-O-H angle [deg].
+
+        Returns
+        -------
+        VirtualSite
+        """
         a = float(d_om) / (2.0 * float(r_oh) * np.cos(np.radians(float(theta_deg)) / 2.0))
         return cls.average3(site, o, h1, h2, 1.0 - 2.0 * a, a, a)
 
     # ------------------------------------------------------------------ serialisation
     def to_list(self) -> list:
+        """Return [site, kind, atoms, params] as nested lists (JSON)."""
         return [self.site, self.kind, list(self.atoms), _lists(self.params)]
 
     @classmethod
-    def from_list(cls, x) -> VirtualSite:
+    def from_list(cls, x: Sequence) -> VirtualSite:
+        """Return the site of a `to_list` entry."""
         return cls(int(x[0]), str(x[1]), tuple(x[2]), x[3])
 
     def shifted(self, offset: int) -> VirtualSite:
-        """The same site with atom indices shifted by `offset` (local -> global, and back)."""
+        """Return the same site with atom indices shifted by `offset` (local -> global, and back)."""
         return VirtualSite(self.site + offset, self.kind, tuple(a + offset for a in self.atoms), self.params)
 
 
-def _lists(x):
+def _lists(x: Any) -> Any:
+    """Return nested tuples as nested lists (the inverse of _tuple, for JSON)."""
     return [_lists(v) for v in x] if isinstance(x, tuple) else x
 
 
 # ----------------------------------------------------------------------------- construction kernels
-def _unit(v):
+def _unit(v: jax.Array) -> jax.Array:
+    """Return v / |v| over the last axis."""
     return v / jnp.linalg.norm(v, axis=-1, keepdims=True)
 
 
-def _rel(X, H):
-    """(n, P, 3) displacements of the gathered parents X (host in column 0) from the host,
-    minimum image if H."""
+def _rel(X: jax.Array, H: jax.Array | None) -> jax.Array:
+    """Return the displacements (n, P, 3) [nm] of the gathered parents X from the host (column 0).
+
+    Minimum image if H is given (None: an isolated molecule).
+    """
     d = X - X[:, :1]
     return d if H is None else min_image(d, H)
 
 
 # Every kernel takes the gathered parents X = pos[parents] (n, P, 3), host first, so that `spread`
 # can differentiate it with respect to X alone and move all forces with one scatter-add.
-def _linear(X, H, w):
-    """average2 / average3 / outofplane: r_a + w_b d_b + w_c d_c + w_x (d_b x d_c)."""
+def _linear(X: jax.Array, H: jax.Array | None, w: jax.Array) -> jax.Array:
+    """Return average2 / average3 / outofplane sites r_a + w_b d_b + w_c d_c + w_x (d_b x d_c).
+
+    Parameters
+    ----------
+    X : jax.Array (n, 3, 3)
+        Gathered parents (host first; average2 repeats b) [nm].
+    H : jax.Array (3, 3) or None
+        Box [nm] for the minimum image.
+    w : jax.Array (n, 3)
+        (w_b, w_c, w_x) per site (average2: (w_b, 0, 0); average3: (w_b, w_c, 0)).
+
+    Returns
+    -------
+    jax.Array (n, 3)
+        Site positions [nm].
+    """
     d = _rel(X, H)
     db, dc = d[:, 1], d[:, 2]
     return X[:, 0] + w[:, 0:1] * db + w[:, 1:2] * dc + w[:, 2:3] * jnp.cross(db, dc)
 
 
-def _local(X, H, wo, wx, wy, p):
-    """OpenMM LocalCoordinatesSite in host-relative form (valid because sum wo = 1, sum wx = sum wy = 0)."""
+def _local(X: jax.Array, H: jax.Array | None, wo: jax.Array, wx: jax.Array, wy: jax.Array, p: jax.Array) -> jax.Array:
+    """Return OpenMM LocalCoordinatesSite positions (n, 3) [nm] in host-relative form.
+
+    Valid because sum wo = 1 and sum wx = sum wy = 0.  X (n, P, 3) gathered parents (host first,
+    padded with the host), wo, wx, wy (n, P) weights (0 for padding), p (n, 3) [nm].
+    """
     d = _rel(X, H)
     o = X[:, 0] + jnp.einsum("nk,nkc->nc", wo, d)
     x = jnp.einsum("nk,nkc->nc", wx, d)
@@ -223,8 +325,12 @@ def _local(X, H, wo, wx, wy, p):
     return o + p[:, 0:1] * ex + p[:, 1:2] * ey + p[:, 2:3] * ez
 
 
-def _amber(X, H, wa, wc, p):
-    """Amber extra-point frame (sander extra_pts.F90 do_local_global), host = B."""
+def _amber(X: jax.Array, H: jax.Array | None, wa: jax.Array, wc: jax.Array, p: jax.Array) -> jax.Array:
+    """Return Amber extra-point positions (n, 3) [nm] (sander extra_pts.F90 do_local_global), host = B.
+
+    X (n, P, 3) gathered parents (host first, padded with the host), wa, wc (n, P) weights of the
+    points A and C, p (n, 3) [nm] in the frame of the module docstring.
+    """
     d = _rel(X, H)
     u = _unit(jnp.einsum("nk,nkc->nc", wa, d))
     v = _unit(jnp.einsum("nk,nkc->nc", wc, d))
@@ -234,10 +340,31 @@ def _amber(X, H, wa, wc, p):
     return X[:, 0] + p[:, 0:1] * ex + p[:, 1:2] * ey + p[:, 2:3] * ez
 
 
-def _frame_norms(pos, H, kind, par, *w):
-    """Smallest length (nm) among the vectors a frame normalises, each expressed as a length: for
-    "local" |x| and the part of y perpendicular to x; for "amber" |A - B|, |C - B| and 0.1 nm times
-    |u + v| / 2 and |v - u| / 2 (setup check against degenerate frames)."""
+def _frame_norms(pos: jax.Array, H: jax.Array | None, kind: str, par: jax.Array, *w: jax.Array) -> float:
+    """Return the smallest length [nm] among the vectors a frame normalises (host side).
+
+    Each vector is expressed as a length: for "local" |x| and the part of y perpendicular to x;
+    for "amber" |A - B|, |C - B| and 0.1 nm times |u + v| / 2 and |v - u| / 2.  A setup check
+    against degenerate frames (NaN counts as 0).
+
+    Parameters
+    ----------
+    pos : jax.Array (N, 3)
+        Positions [nm].
+    H : jax.Array (3, 3) or None
+        Box [nm].
+    kind : {"local", "amber"}
+        Frame kind.
+    par : jax.Array (n, P) int
+        Parents of the sites.
+    *w : jax.Array (n, P)
+        The kernel's weight arrays (local: wo, wx, wy; amber: wa, wc).
+
+    Returns
+    -------
+    float
+        Smallest length [nm].
+    """
     d = _rel(pos[par], H)
     if kind == "local":
         x = jnp.einsum("nk,nkc->nc", w[1], d)
@@ -257,11 +384,44 @@ def _frame_norms(pos, H, kind, par, *w):
 
 # ----------------------------------------------------------------------------- the sites of a system
 class VirtualSites:
-    """The virtual sites of a System (`VirtualSites.of(sys)`, None without sites): placement of the
-    site positions from the parents and spreading of site forces to the parents, both vectorised
-    per kind and jit-compatible (static index arrays).  Indices are global (system order)."""
+    """The virtual sites of a System: placement from the parents and spreading of site forces.
 
-    def __init__(self, sys):
+    `VirtualSites.of(sys)` returns None without sites.  Placement and spreading are vectorised per
+    kind (one kernel for the linear kinds, one each for "local" and "amber") and jit-compatible
+    (static numpy index arrays).  Indices are global (system order).  Not a pytree.
+
+    Attributes
+    ----------
+    n : int
+        Atoms of the system.
+    site, host : np.ndarray (n_sites,) int32
+        Site atoms and their hosts.
+    kinds : tuple of str
+        Kinds present.
+    is_site, real : np.ndarray (N,) bool
+        Site mask and its complement.
+    n_sites : int
+        Number of sites.
+    sites : list of VirtualSite
+        The sites (global indices).
+    """
+
+    def __init__(self, sys: System) -> None:
+        """Collect and check the sites of a system and build the kernels.
+
+        Parameters
+        ----------
+        sys : System
+            The system (Molecule.vsites of every molecule).
+
+        Raises
+        ------
+        TypeError
+            A Molecule.vsites entry that is not a VirtualSite.
+        ValueError
+            No sites, sites or parents outside their molecule, a site defined twice, a site with
+            mass, a parent that is a site or massless, or a massless atom that is not a site.
+        """
         entries = []
         for k, m in enumerate(sys.molecules):
             off = int(sys.offsets[k])
@@ -304,7 +464,7 @@ class VirtualSites:
         self.real = ~is_site
         self.n_sites = int(len(site))
         self.sites = [vs for _, vs in entries]
-        # kernels: (function, site indices, static arrays)
+        # kernels: (function, site indices, static arrays (parents first, then the kernel's weights))
         self._kernels = []
         lin = [vs for vs in self.sites if vs.kind in ("average2", "average3", "outofplane")]
         if lin:
@@ -333,40 +493,64 @@ class VirtualSites:
             ws = [np.array([vs.params[j] + (0.0,) * (P - len(vs.atoms)) for vs in group], float) for j in range(nw)]
             p = np.array([vs.params[nw] for vs in group], float)
             self._kernels.append((fn, np.array([vs.site for vs in group], np.int32), (par, *ws, p)))
-        self._order = np.concatenate([idx for _, idx, _ in self._kernels])
+        self._order = np.concatenate([idx for _, idx, _ in self._kernels])  # site of each row of `positions`
 
     @classmethod
-    def of(cls, sys) -> VirtualSites | None:
-        """The system's virtual sites, or None when no molecule has any."""
+    def of(cls, sys: System) -> VirtualSites | None:
+        """Return the system's virtual sites, or None when no molecule has any."""
         if not any(getattr(m, "vsites", None) for m in sys.molecules):
             return None
         return cls(sys)
 
     def __repr__(self) -> str:
+        """Return e.g. "VirtualSites(512 sites: average3)"."""
         return f"VirtualSites({self.n_sites} sites: {', '.join(self.kinds)})"
 
     # ------------------------------------------------------------------ placement and forces
-    def positions(self, pos, H=None):
-        """(n_sites, 3) site positions in the order of self._order."""
+    def positions(self, pos: ArrayLike, H: ArrayLike | None = None) -> jax.Array:
+        """Return the site positions (n_sites, 3) [nm] in the order of self._order.
+
+        pos (N, 3) [nm]; H (3, 3) [nm] for the minimum image, or None for an isolated molecule.
+        """
         pos = jnp.asarray(pos)
         Hj = None if H is None else jnp.asarray(H, pos.dtype)
         return jnp.concatenate(
             [fn(pos[arrs[0]], Hj, *(jnp.asarray(a) for a in arrs[1:])) for fn, _, arrs in self._kernels]
         )
 
-    def place(self, pos, H=None):
-        """Positions with every site rebuilt from its parents (H: box for the minimum image, or
-        None for an isolated molecule).  Differentiable; the site rows of `pos` are ignored."""
+    def place(self, pos: ArrayLike, H: ArrayLike | None = None) -> jax.Array:
+        """Return the positions (N, 3) [nm] with every site rebuilt from its parents.
+
+        H: box for the minimum image, or None for an isolated molecule.  Differentiable; the site
+        rows of `pos` are ignored.
+        """
         pos = jnp.asarray(pos)
         return pos.at[self._order].set(self.positions(pos, H))
 
-    def spread(self, pos, H, forces):
-        """Forces on the real atoms: every site's force moved to its parents by the transposed
-        Jacobian of the construction (the vector-Jacobian product of each kernel with respect to
-        its gathered parents); the site rows of the result are zero.  One scatter-add moves
-        everything (the site rows receive minus their force).  Every construction is equivariant
-        under rigid motions, so the total force and the total torque about any point are
-        conserved, and so is the work of any displacement of the parents.  Differentiable."""
+    def spread(self, pos: ArrayLike, H: ArrayLike | None, forces: ArrayLike) -> jax.Array:
+        """Return the forces on the real atoms, every site's force moved to its parents.
+
+        The transposed Jacobian of the construction (the vector-Jacobian product of each kernel
+        with respect to its gathered parents); the site rows of the result are zero.  One
+        scatter-add moves everything (the site rows receive minus their force).  Every
+        construction is equivariant under rigid motions, so the total force and the total torque
+        about any point are conserved, and so is the work of any displacement of the parents.
+        Differentiable.
+
+        Parameters
+        ----------
+        pos : ArrayLike (N, 3)
+            Positions [nm] (sites placed).
+        H : ArrayLike (3, 3) or None
+            Box [nm], None for an isolated molecule.
+        forces : ArrayLike (N, 3)
+            Forces on all atoms, sites included [kJ/mol/nm].
+
+        Returns
+        -------
+        jax.Array (N, 3)
+            Forces [kJ/mol/nm], zero on the sites.
+        """
         pos = jnp.asarray(pos)
         F = jnp.asarray(forces, pos.dtype)
         Hj = None if H is None else jnp.asarray(H, pos.dtype)
@@ -380,10 +564,20 @@ class VirtualSites:
         return F.at[np.concatenate(idx)].add(jnp.concatenate(vals))
 
     # ------------------------------------------------------------------ checks
-    def check(self, pos, H=None, cov_pairs=None) -> None:
-        """Setup checks at positions pos (nm): no degenerate frame (the vectors a "local" or "amber"
-        frame normalises are longer than 1e-6 nm), and no covalent dipole (cov_pairs: (i, j)
-        arrays, global) between two points closer than 1e-6 nm, which has no direction."""
+    def check(
+        self, pos: ArrayLike, H: ArrayLike | None = None, cov_pairs: tuple[ArrayLike, ArrayLike] | None = None
+    ) -> None:
+        """Check the sites at positions pos [nm] (host side, at setup).
+
+        No degenerate frame (the vectors a "local" or "amber" frame normalises are longer than
+        1e-6 nm), and no covalent dipole (cov_pairs: (i, j) arrays, global) involving a site
+        between two points closer than 1e-6 nm, which has no direction.
+
+        Raises
+        ------
+        ValueError
+            A degenerate frame or a covalent dipole without direction.
+        """
         pos = jnp.asarray(pos, jnp.float64)
         Hj = None if H is None else jnp.asarray(H, jnp.float64)
         placed = self.place(pos, Hj)
@@ -410,15 +604,22 @@ class VirtualSites:
 
 
 # ----------------------------------------------------------------------------- Amber extra points
-_TET = np.radians(54.735)
+_TET = np.radians(54.735)  # half the tetrahedral angle (109.47 / 2), Amber's lone-pair frame
 AMBER_EP_TYPE = "EP"
 
 
-def amber_extra_points(atom_types, bonds_h, bonds_heavy, bond_req) -> dict:
-    """Frames of Amber extra points from a topology's bond graph, by the rules of sander and pmemd
-    (extra_pts.F90 define_frames; frameon = 1): an extra point is an atom of type "EP" bonded to its
-    centre atom, at the equilibrium length of that bond; the frame depends on the centre's other
-    neighbours:
+def amber_extra_points(
+    atom_types: Sequence[str],
+    bonds_h: Sequence[Sequence[int]],
+    bonds_heavy: Sequence[Sequence[int]],
+    bond_req: Sequence[float],
+) -> dict[int, VirtualSite]:
+    """Return the frames of Amber extra points from a topology's bond graph.
+
+    By the rules of sander and pmemd (extra_pts.F90 define_frames; frameon = 1): an extra point is
+    an atom of type "EP" bonded to its centre atom, at the equilibrium length of that bond; the
+    frame depends on the centre's other neighbours:
+
       * TIP4P (the centre has two neighbours, both through BONDS_INC_HYDROGEN, and one EP): the EP
         on the H-O-H bisector toward the hydrogens, p = (0, 0, -req);
       * two EPs on such a centre (TIP5P), or on a centre with two heavy neighbours, or one heavy and
@@ -427,10 +628,30 @@ def amber_extra_points(atom_types, bonds_h, bonds_heavy, bond_req) -> dict:
       * a centre with one heavy neighbour and no hydrogen (carbonyl oxygen): the frame of the bond
         midpoints of the carbon's other two bonds, EPs at 60 degrees in the xz plane
         (p = (+-sin 60 req, 0, cos 60 req)) or one EP at (0, 0, req).
+
     Neighbour order is the order of the bond lists, as in Amber (it fixes which EP is which).
-    atom_types: per atom; bonds_h / bonds_heavy: (i, j, bond type) 0-based, as BONDS_INC_HYDROGEN /
-    BONDS_WITHOUT_HYDROGEN; bond_req: equilibrium lengths per bond type (Angstrom).
-    Returns {ep atom: VirtualSite with global indices, p in nm}; raises where Amber would stop."""
+
+    Parameters
+    ----------
+    atom_types : Sequence[str] (N,)
+        Amber atom types.
+    bonds_h, bonds_heavy : Sequence of (i, j, bond type)
+        BONDS_INC_HYDROGEN and BONDS_WITHOUT_HYDROGEN, 0-based atom indices.
+    bond_req : Sequence[float]
+        Equilibrium length per bond type [Angstrom].
+
+    Returns
+    -------
+    dict of int to VirtualSite
+        {extra-point atom: VirtualSite with global indices, p in nm}; empty without extra points.
+
+    Raises
+    ------
+    ValueError
+        Where Amber would stop: bonded extra points, an extra point in BONDS_INC_HYDROGEN, more
+        than two extra points or too many / unexpected neighbours of a centre, a carbonyl carbon
+        without three heavy neighbours, or an extra point bonded to no atom.
+    """
     types = [str(t).strip() for t in atom_types]
     n = len(types)
     is_ep = np.array([t == AMBER_EP_TYPE for t in types])

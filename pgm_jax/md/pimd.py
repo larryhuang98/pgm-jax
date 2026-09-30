@@ -1,5 +1,10 @@
 """Path-integral molecular dynamics: PIMD (PILE-L / PILE-G), thermostatted RPMD and RPMD.
 
+Contents: the ring polymer (`normal_modes`, `contraction_matrix`, `RingPolymer`), the
+thermostat (`PILE` settings, `as_pile`, `PILEStep`), the state `PIMDState` and the integrator
+`PIMDIntegrator`, the force engines `PotentialEngine` (any JAX potential) and `PGMBeads` (the
+pGM force field on every bead, state `PGMBeadState`), and the driver `PIMDSimulation`.
+
 The quantum canonical partition function of the nuclei is sampled with a ring polymer of P beads
 per atom (imaginary-time path integral, Trotter factorisation):
 
@@ -9,8 +14,7 @@ per atom (imaginary-time path integral, Trotter factorisation):
 sampled classically at P T (beta_P = beta / P), with the physical masses on every bead.  Quantum
 averages of position-dependent observables are bead averages; <V> = <U> / P.
 
-Integrator (Ceriotti, Parrinello, Markland & Manolopoulos, JCP 133, 124104 (2010), in the BAOAB
-order of Liu, Li & Liu, JCP 145, 024103 (2016)):
+Integrator ([1]_, in the BAOAB order of [2]_):
 
     B(dt/2)  p^k += dt/2 f^k                                (physical forces, one evaluation per step)
     A(dt/2)  free ring polymer, exactly, in normal modes    (harmonic mode frequencies omega_k)
@@ -20,9 +24,12 @@ order of Liu, Li & Liu, JCP 145, 024103 (2016)):
 NVE (RPMD) is B A(dt) B.  Normal modes are real and orthonormal, ordered by frequency,
 q~_l = sum_j C_jl q_j with C = [1/sqrt(P), sqrt(2/P) cos(2 pi j l/P), sqrt(2/P) sin(2 pi j l/P), ...,
 (-1)^j/sqrt(P) for even P], omega_l = 2 omega_P sin(pi l / P).  The free ring-polymer step is the
-exact harmonic rotation ("exact") or its Cayley transform (Korol, Bou-Rabee & Miller, JCP 151,
-124103 (2019); "cayley", the default): p' = [(1-a^2) p - m w^2 h q] / (1+a^2), q' = [h p/m + (1-a^2) q] / (1+a^2),
-a = w h / 2.  Both conserve the free ring-polymer energy of every mode (Cayley = implicit midpoint on
+exact harmonic rotation ("exact") or its Cayley transform ([3]_; "cayley", the default):
+
+    p' = [(1 - a^2) p - m w^2 h q] / (1 + a^2),   q' = [h p / m + (1 - a^2) q] / (1 + a^2),
+    a = w h / 2.
+
+Both conserve the free ring-polymer energy of every mode (Cayley = implicit midpoint on
 a quadratic Hamiltonian), so both sample the free ring polymer exactly; Cayley is strongly stable
 (no resonance of stiff modes with the physical forces as P grows).
 
@@ -32,10 +39,10 @@ Thermostats (the O step, at kB T_P = P kB T, heat booked so that econs = H_P - h
            1/tau_centroid (PILE-L, thermostat=PILE("l")) or Bussi's global stochastic rescaling
            with time constant tau_centroid (PILE-G, PILE("g"): gentle on the centroid dynamics
            and the dipole predictor).
-  "trpmd"  thermostatted RPMD (Rossi, Ceriotti & Manolopoulos, JCP 140, 234116 (2014)): the
+  "trpmd"  thermostatted RPMD [4]_: the
            internal modes as above with lam = 1/2 by default, no thermostat on the centroid, whose
            dynamics estimates Kubo-transformed correlation functions (e.g. diffusion).
-  "rpmd"   no thermostat (NVE ring polymer, Craig & Manolopoulos 2004).
+  "rpmd"   no thermostat (NVE ring polymer [5]_).
 
 Estimators (per atom, then summed or averaged by element):
   primitive        K_i = 3 P kB T / 2 - (1/P) sum_k m_i omega_P^2 |q_i^k - q_i^(k+1)|^2 / 2
@@ -49,7 +56,7 @@ beads), each bead with its own induced dipoles and predictor history (the step c
 predictor is shared, so its fused / unfused switch stays a branch).  One neighbour list, built from
 the centroid, serves every bead: the list radius is enlarged by `bead_margin`, the largest
 distance of a bead atom from its centroid (checked after every block).
-Ring-polymer contraction (Markland & Manolopoulos, JCP 129, 024105 (2008); `contract=P'`): the
+Ring-polymer contraction ([6]_; `contract=P'`): the
 potential is split as V = V_mono + (V - V_mono), where V_mono is the sum of the gas-phase monomer
 energies of the fitted flexible templates (bonded terms + intramolecular pGM + intramolecular van
 der Waals: exactly the model the bonded terms were fitted with, cheap and stiff), evaluated on all
@@ -64,14 +71,30 @@ molecular centre of mass (PIMDIntegrator).  Force beads are evaluated in lax.map
 vmapped beads by default (bead_chunk; twice as fast as one vmap over 32 beads of 512 waters).
 
 Rigid bodies and constraints are not supported: a rigid-rotor path integral is not a ring polymer
-of atoms.  Quantum water needs flexible molecules (FlexibleTemplate; flexible_water below builds a
-flexible pGM water with the q-TIP4P/F monomer surface; docs/pimd.md).  Units: nm, ps, amu, kJ/mol, K."""
+of atoms.  Quantum water needs flexible molecules (FlexibleTemplate;
+pgm_jax.models.water.flexible_water builds a flexible pGM water with the q-TIP4P/F monomer
+surface; docs/pimd.md).
+
+Units: nm, ps, amu, kJ/mol, K.
+
+References
+----------
+.. [1] M. Ceriotti, M. Parrinello, T. E. Markland, D. E. Manolopoulos, J. Chem. Phys. 133,
+   124104 (2010).
+.. [2] J. Liu, D. Li, X. Liu, J. Chem. Phys. 145, 024103 (2016).
+.. [3] R. Korol, N. Bou-Rabee, T. F. Miller III, J. Chem. Phys. 151, 124103 (2019).
+.. [4] M. Rossi, M. Ceriotti, D. E. Manolopoulos, J. Chem. Phys. 140, 234116 (2014).
+.. [5] I. R. Craig, D. E. Manolopoulos, J. Chem. Phys. 121, 3368 (2004).
+.. [6] T. E. Markland, D. E. Manolopoulos, J. Chem. Phys. 129, 024105 (2008).
+"""
 
 from __future__ import annotations
 
 import dataclasses as _dc
 import logging
 import math
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, TextIO
 
 import jax
 import jax.numpy as jnp
@@ -96,16 +119,35 @@ from .io import NetCDFTrajectory, write_restart
 from .neighbors import AtomNeighbors, MoleculeNeighbors
 from .thermostats import Bussi
 
+if TYPE_CHECKING:
+    from jax.typing import ArrayLike
+
+    from ._jaxmd import partition
+    from .flexible import FlexibleSimulation
+    from .forcefield import InductionState
+
 logger = logging.getLogger(__name__)
 
 LEGACY_FORMAT = "pgm_jax pimd 1"  # the "format" entry of legacy pickle checkpoints
 
 
 # ----------------------------------------------------------------------------- ring polymer
-def normal_modes(P: int):
-    """Real orthonormal normal-mode matrix C (P, P) (bead j, mode column l) ordered by frequency:
-    centroid, cos 1, sin 1, cos 2, sin 2, ..., and (-1)^j / sqrt(P) for even P; and the frequency
-    index of every column (omega = 2 omega_P sin(pi idx / P))."""
+def normal_modes(P: int) -> tuple[np.ndarray, np.ndarray]:
+    """Return the real orthonormal normal-mode matrix of a P-bead ring and the mode frequency indices.
+
+    Parameters
+    ----------
+    P : int
+        Number of beads.
+
+    Returns
+    -------
+    C : np.ndarray (P, P)
+        C[j, l]: bead j, mode column l, ordered by frequency: centroid 1/sqrt(P), cos 1, sin 1,
+        cos 2, sin 2, ... (sqrt(2/P) cos / sin(2 pi j l / P)), and (-1)^j / sqrt(P) for even P.
+    idx : np.ndarray (P,) int
+        Frequency index of every column (omega = 2 omega_P sin(pi idx / P)).
+    """
     P = int(P)
     j = np.arange(P)
     cols, idx = [np.full(P, 1.0 / math.sqrt(P))], [0]
@@ -121,9 +163,16 @@ def normal_modes(P: int):
 
 
 def contraction_matrix(P: int, Pc: int) -> np.ndarray:
-    """(Pc, P) ring-polymer contraction (Markland & Manolopoulos 2008): the P' = Pc lowest normal
-    modes of the P-bead polymer, rescaled by sqrt(Pc / P), on Pc beads.  T T^T = (Pc/P) I, the
-    centroid is kept, and Pc = P gives the identity."""
+    """Return the (Pc, P) ring-polymer contraction matrix T [6]_.
+
+    The P' = Pc lowest normal modes of the P-bead polymer, rescaled by sqrt(Pc / P), on Pc beads:
+    q' = T q.  The centroid is kept, and Pc = P gives the identity.
+
+    Raises
+    ------
+    ValueError
+        Unless 1 <= Pc <= P.
+    """
     if not 1 <= Pc <= P:
         raise ValueError("need 1 <= P' <= P")
     C, _ = normal_modes(P)
@@ -132,10 +181,32 @@ def contraction_matrix(P: int, Pc: int) -> np.ndarray:
 
 
 class RingPolymer:
-    """Normal modes and free ring-polymer propagation of P beads at temperature T (K)."""
+    """Normal modes and free ring-polymer propagation of P beads at temperature T.
 
-    def __init__(self, beads: int, temperature: float):
-        """Ring polymer of `beads` beads at `temperature` [K] (omega_P = P kB T / hbar)."""
+    Attributes
+    ----------
+    P : int
+        Number of beads.
+    T : float
+        Physical temperature [K].
+    kT, kT_P : float
+        kB T and P kB T [kJ/mol].
+    omega_P : float
+        P kB T / hbar [rad/ps].
+    C : np.ndarray (P, P)
+        Normal-mode matrix (`normal_modes`).
+    omega : np.ndarray (P,)
+        Free ring-polymer mode frequencies 2 omega_P sin(pi idx / P) [rad/ps] (centroid 0).
+    """
+
+    def __init__(self, beads: int, temperature: float) -> None:
+        """Set up a ring polymer of `beads` beads at `temperature` [K] (omega_P = P kB T / hbar).
+
+        Raises
+        ------
+        ValueError
+            Fewer than one bead.
+        """
         self.P = int(beads)
         if self.P < 1:
             raise ValueError("at least one bead")
@@ -148,21 +219,49 @@ class RingPolymer:
         self.omega = 2.0 * self.omega_P * np.sin(np.pi * idx / self.P)  # (P,) rad/ps
         self.omega[0] = 0.0
 
-    def to_nm(self, x):
-        """Bead array (P, ...) -> normal-mode coordinates (P, ...)."""
+    def to_nm(self, x: jax.Array) -> jax.Array:
+        """Return the normal-mode coordinates C^T x (P, ...) of a bead array x (P, ...)."""
         return jnp.tensordot(jnp.asarray(self.C.T), x, axes=1)
 
-    def from_nm(self, y):
+    def from_nm(self, y: jax.Array) -> jax.Array:
+        """Return the bead array C y (P, ...) of normal-mode coordinates y (P, ...)."""
         return jnp.tensordot(jnp.asarray(self.C), y, axes=1)
 
-    def spring(self, q, mass):
-        """sum_k sum_i m_i omega_P^2 |q_i^k - q_i^(k+1)|^2 / 2 per atom, (N,) kJ/mol."""
+    def spring(self, q: jax.Array, mass: jax.Array) -> jax.Array:
+        """Return the spring energy sum_k m_i omega_P^2 |q_i^k - q_i^(k+1)|^2 / 2 per atom (N,) [kJ/mol].
+
+        q (P, N, 3) [nm], mass (N, 1) [amu].
+        """
         d = q - jnp.roll(q, -1, axis=0)
         return 0.5 * self.omega_P**2 * mass[:, 0] * jnp.sum(d * d, axis=(0, 2))
 
-    def propagator(self, h: float, mass, kind: str = "cayley"):
-        """Free ring-polymer step of length h for every mode and atom: p' = a p + b q, q' = c p + d q
-        (arrays (P, N, 1)); mass (N, 1)."""
+    def propagator(
+        self, h: float, mass: ArrayLike, kind: str = "cayley"
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        """Return the coefficients of the free ring-polymer step of length h for every mode and atom.
+
+        p' = a p + b q, q' = c p + d q in normal modes (module docstring; the centroid drifts
+        freely).
+
+        Parameters
+        ----------
+        h : float
+            Step [ps].
+        mass : ArrayLike (N, 1)
+            Masses [amu].
+        kind : {"cayley", "exact"}
+            Cayley transform or exact harmonic rotation.
+
+        Returns
+        -------
+        a, b, c, d : jax.Array (P, N, 1)
+            Coefficients (b [amu/ps^2], c [ps/amu], a and d dimensionless).
+
+        Raises
+        ------
+        ValueError
+            An unknown kind.
+        """
         w = self.omega[:, None, None]
         m = np.asarray(mass, float)[None]
         if kind == "exact":
@@ -182,9 +281,11 @@ class RingPolymer:
             raise ValueError("propagator: 'cayley' | 'exact'")
         return tuple(jnp.asarray(np.broadcast_to(v, (self.P,) + m.shape[1:]).copy()) for v in (a, b, c, d))
 
-    def sample_free(self, key, centroid, mass):
-        """Beads (P, N, 3) around a centroid (N, 3) drawn from the free ring-polymer distribution
-        at T_P: internal mode l ~ N(0, kT_P / (m omega_l^2))."""
+    def sample_free(self, key: jax.Array, centroid: ArrayLike, mass: ArrayLike) -> jax.Array:
+        """Return beads (P, N, 3) [nm] drawn from the free ring polymer around a centroid (N, 3) [nm].
+
+        At T_P: internal mode l ~ N(0, kT_P / (m omega_l^2)); mass (N, 1) [amu].
+        """
         if self.P == 1:
             return jnp.asarray(centroid)[None]
         m = jnp.asarray(mass)[None]
@@ -196,7 +297,7 @@ class RingPolymer:
 
 @_dc.dataclass(frozen=True)
 class PILE:
-    """Settings of the path-integral Langevin thermostat (Ceriotti et al., JCP 133, 124104 (2010)).
+    """Settings of the path-integral Langevin thermostat [1]_ (immutable).
 
     Parameters
     ----------
@@ -230,8 +331,8 @@ class PILE:
         object.__setattr__(self, "tau_centroid", float(self.tau_centroid))
 
 
-def as_pile(spec) -> PILE:
-    """A PILE object from a PILE, or from the names "pile-l" / "pile-g" (default settings).
+def as_pile(spec: PILE | str) -> PILE:
+    """Return a PILE object from a PILE, or from the names "pile-l" / "pile-g" (default settings).
 
     Parameters
     ----------
@@ -259,10 +360,26 @@ class PILEStep:
 
     mode "pimd": internal modes gamma_l = 2 lam omega_l, centroid Langevin 1/tau_centroid (PILE("l"))
     or Bussi rescaling with time constant tau_centroid (PILE("g")); "trpmd": internal modes only
-    (lam = 1/2 by default); "rpmd": none."""
+    (lam = 1/2 by default); "rpmd": none.
 
-    def __init__(self, ring: RingPolymer, mode: str = "pimd", pile: PILE = PILE()):
-        """Friction of every normal mode for `mode` ("pimd" | "trpmd" | "rpmd") and `pile`."""
+    Attributes
+    ----------
+    gamma : np.ndarray (P,)
+        Friction of every normal mode [1/ps] (centroid 0 with Bussi or without a thermostat).
+    lam : float
+        Internal-mode damping factor.
+    centroid_bussi : bool
+        The centroid is thermostatted by Bussi rescaling.
+    """
+
+    def __init__(self, ring: RingPolymer, mode: str = "pimd", pile: PILE = PILE()) -> None:
+        """Set the friction of every normal mode for `mode` ("pimd" | "trpmd" | "rpmd") and `pile`.
+
+        Raises
+        ------
+        ValueError
+            An unknown mode.
+        """
         mode = mode.lower()
         if mode not in ("pimd", "trpmd", "rpmd"):
             raise ValueError(f"mode: 'pimd' | 'trpmd' | 'rpmd', not {mode!r}")
@@ -291,9 +408,22 @@ class PILEStep:
         cen = c[self.kind] if self.mode == "pimd" else "centroid free"
         return f"{'PILE' if self.mode == 'pimd' else 'TRPMD'} (internal modes gamma = {2 * self.lam:g} omega_l, {cen})"
 
-    def apply(self, pn, mass, key, h: float, dof: float):
-        """O step of length h on normal-mode momenta pn (P, N, 3); returns pn and the kinetic
-        energy change (heat taken up)."""
+    def apply(
+        self, pn: jax.Array, mass: jax.Array, key: jax.Array, h: float, dof: float
+    ) -> tuple[jax.Array, jax.Array]:
+        """Apply the O step of length h [ps] to the normal-mode momenta pn (P, N, 3) [amu nm/ps].
+
+        Exact Langevin (Ornstein-Uhlenbeck) step at kT_P for every mode, c = exp(-gamma h); with
+        PILE-G the centroid is rescaled by Bussi's step (dof: its degrees of freedom).  mass
+        (N, 1) [amu].
+
+        Returns
+        -------
+        pn : jax.Array (P, N, 3)
+            New momenta.
+        heat : jax.Array ()
+            Kinetic energy change (heat taken up) [kJ/mol].
+        """
         k1, k2 = jax.random.split(key)
         m = mass[None]
         e0 = 0.5 * jnp.sum(pn * pn / m)
@@ -310,6 +440,34 @@ class PILEStep:
 # ----------------------------------------------------------------------------- state and integrator
 @dataclasses.dataclass
 class PIMDState:
+    """State of a ring-polymer trajectory (a JAX-MD dataclass, i.e. a pytree).
+
+    Parameters
+    ----------
+    q : jax.Array (P, N, 3)
+        Bead positions [nm] (ring polymers whole).
+    p : jax.Array (P, N, 3)
+        Bead momenta [amu nm/ps].
+    f : jax.Array (P, N, 3)
+        Forces -dU/dq [kJ/mol/nm].
+    upot : jax.Array ()
+        U = sum_k V(q^k) (with contraction: the contracted U) [kJ/mol].
+    box : jax.Array (3, 3)
+        Box [nm].
+    eng : object
+        Engine state (PGMBeadState: induced dipoles, neighbour list, ...; PotentialEngine: 0).
+    rng : jax.Array
+        PRNG key.
+    heat : jax.Array ()
+        Heat taken up by the thermostat since the start [kJ/mol].
+    step : jax.Array () int32
+        Step counter.
+    mc : jax.Array (4,) int32, optional
+        Barostat (tries, accepts, window tries, window accepts).
+    mc_dv : jax.Array (), optional
+        Current maximum volume change [nm^3].
+    """
+
     q: jnp.ndarray  # (P, N, 3) bead positions, nm (ring polymers whole)
     p: jnp.ndarray  # (P, N, 3) bead momenta, amu nm / ps
     f: jnp.ndarray  # (P, N, 3) forces -dU/dq, kJ/mol/nm
@@ -324,19 +482,43 @@ class PIMDState:
 
 
 class PIMDIntegrator:
-    """BAOAB ring-polymer integrator for an engine with init(q, box) -> eng and
-    compute(q, box, eng) -> (forces (P, N, 3), U, eng).
+    """BAOAB ring-polymer integrator for an engine with init(q, box) -> eng and compute(q, box, eng).
 
-    With a barostat (MonteCarloBarostat): isotropic Monte Carlo moves every `barostat.every` steps (engines with
-    molecules: scale(q, s), energy(q, box, eng), nmol).  Every bead of a molecule is translated with
-    the molecular centre of mass of the centroid, which leaves the springs and the intramolecular
-    terms unchanged; acceptance on (U' - U) / P + p dV - N_mol kT ln(V'/V) (the ring polymer
-    isomorphism at beta_P = beta / P), step size adapted to 25-75 % acceptance."""
+    compute returns (forces (P, N, 3), U, eng).  `run(state, n)` and `forces(state)` are jitted
+    entry points (re-created by `set_thermostat`).
+
+    With a barostat (MonteCarloBarostat): isotropic Monte Carlo moves every `barostat.every` steps
+    (engines with molecules: scale(q, s), energy(q, box, eng), nmol).  Every bead of a molecule is
+    translated with the molecular centre of mass of the centroid, which leaves the springs and the
+    intramolecular terms unchanged; acceptance on (U' - U) / P + p dV - N_mol kT ln(V'/V) (the
+    ring polymer isomorphism at beta_P = beta / P), step size adapted to 25-75 % acceptance.
+
+    Attributes
+    ----------
+    engine : PotentialEngine or PGMBeads
+        Force engine.
+    mass : jax.Array (N, 1)
+        Masses [amu].
+    ring : RingPolymer
+        Normal modes and free propagation.
+    P : int
+        Beads.
+    dt : float
+        Time step [ps].
+    pressure : float
+        Barostat target [kJ/mol/nm^3].
+    thermo : PILEStep
+        The O step.
+    mode : {"pimd", "trpmd", "rpmd"}
+        Dynamics.
+    dof : float
+        3 N (degrees of freedom of the centroid, for Bussi).
+    """
 
     def __init__(
         self,
-        engine,
-        masses,
+        engine: Any,
+        masses: ArrayLike,
         beads: int,
         temperature: float,
         dt: float,
@@ -344,14 +526,14 @@ class PIMDIntegrator:
         thermostat: PILE | str = PILE(),
         propagator: str = "cayley",
         barostat: MonteCarloBarostat | None = None,
-    ):
-        """Ring-polymer integrator.
+    ) -> None:
+        """Set up the ring-polymer integrator.
 
         Parameters
         ----------
-        engine
-            Force engine (PotentialEngine, PGMBeads).
-        masses : array (N,)
+        engine : PotentialEngine or PGMBeads
+            Force engine.
+        masses : ArrayLike (N,)
             Atom masses [amu].
         beads : int
             Number of beads P.
@@ -408,17 +590,39 @@ class PIMDIntegrator:
         self.forces = jax.jit(self._forces)
 
     # ------------------------------------------------------------------ pieces
-    def _free(self, qn, pn):
+    def _free(self, qn: jax.Array, pn: jax.Array) -> tuple[jax.Array, jax.Array]:
+        """Return (q', p') in normal modes after the free ring-polymer step `_A`."""
         a, b, c, d = self._A
         return c * pn + d * qn, a * pn + b * qn
 
     def _forces(self, st: PIMDState) -> PIMDState:
+        """Return the state with the engine's forces and U at its beads (jitted as `forces`)."""
         f, U, eng = self.engine.compute(st.q, st.box, st.eng)
         return st.set(f=f, upot=U, eng=eng)
 
-    def init(self, q, box, key, momenta=None, spread: bool = True) -> PIMDState:
-        """q: centroid positions (N, 3) (beads drawn from the free ring polymer if `spread`, else
-        all on the centroid) or beads (P, N, 3); momenta (P, N, 3) or drawn at kT_P."""
+    def init(
+        self, q: ArrayLike, box: ArrayLike, key: jax.Array, momenta: ArrayLike | None = None, spread: bool = True
+    ) -> PIMDState:
+        """Return a new state with forces (host).
+
+        Parameters
+        ----------
+        q : ArrayLike (N, 3) or (P, N, 3)
+            Centroid positions (beads drawn from the free ring polymer if `spread`, else all on
+            the centroid) or beads [nm].
+        box : ArrayLike (3, 3)
+            Box [nm].
+        key : jax.Array
+            PRNG key.
+        momenta : ArrayLike (P, N, 3), optional
+            Momenta [amu nm/ps] (None: drawn at kT_P).
+        spread : bool
+            Spread centroid positions over the free ring polymer.
+
+        Returns
+        -------
+        PIMDState
+        """
         q = jnp.asarray(q, jnp.float64)
         box = jnp.asarray(box, jnp.float64)
         k1, k2, k3 = jax.random.split(key, 3)
@@ -445,6 +649,7 @@ class PIMDIntegrator:
         return self.forces(st)
 
     def _step(self, st: PIMDState) -> PIMDState:
+        """Advance one BAOAB step (RPMD: B A(dt) B); the barostat every `interval` steps."""
         dt = self.dt
         p = st.p + 0.5 * dt * st.f
         qn, pn = self.ring.to_nm(st.q), self.ring.to_nm(p)
@@ -465,6 +670,7 @@ class PIMDIntegrator:
         return st
 
     def _barostat(self, st: PIMDState) -> PIMDState:
+        """Try one Monte Carlo volume move (class docstring) and adapt the step size as Integrator._barostat."""
         eng = self.engine
         key, k1, k2 = jax.random.split(st.rng, 3)
         V = volume(st.box)
@@ -488,15 +694,24 @@ class PIMDIntegrator:
         mc = jnp.where(adapt, mc.at[2].set(0).at[3].set(0), mc)
         return st.set(mc=mc, mc_dv=dv)
 
-    def _run(self, st: PIMDState, n) -> PIMDState:
+    def _run(self, st: PIMDState, n: int | jax.Array) -> PIMDState:
+        """Advance n steps (lax.fori_loop; jitted as `run`), resetting the engine's block maxima."""
         if hasattr(self.engine, "reset_block"):
             st = st.set(eng=self.engine.reset_block(st.eng))
         return jax.lax.fori_loop(0, n, lambda _, s: self._step(s), st)
 
     # ------------------------------------------------------------------ estimators
     def estimators(self, st: PIMDState) -> dict:
-        """Per-atom primitive and centroid-virial kinetic energies (N,), bead kinetic energy,
-        spring energy, conserved quantity, centroid and mode temperatures (K)."""
+        """Return the estimators of a state (traceable).
+
+        Returns
+        -------
+        dict
+            "prim", "cv": per-atom primitive and centroid-virial kinetic energies (N,) [kJ/mol];
+            "ke_beads", "spring", "hamiltonian" (H_P), "econs" (H_P - heat) [kJ/mol];
+            "t_beads" (kinetic temperature of the beads divided by P), "t_modes" (P,) and
+            "t_centroid" [K]; "epot" = U / P [kJ/mol].
+        """
         ring, m = self.ring, self.mass
         q, p, f = st.q, st.p, st.f
         qc = jnp.mean(q, 0)
@@ -522,19 +737,30 @@ class PIMDIntegrator:
 
 # ----------------------------------------------------------------------------- engines
 class PotentialEngine:
-    """Any potential V(x (N, 3), box) -> kJ/mol on every bead (vmapped value_and_grad).  With `soft`
-    and `contract` = P', the potential is V + soft, and soft is evaluated on P' contracted beads
-    (U = sum_k V(q^k) + (P/P') sum_k' soft(q'^k'), as for the pGM engine)."""
+    """Any potential V(x (N, 3), box) [kJ/mol] on every bead (vmapped value_and_grad).
 
-    def __init__(self, energy_fn, soft=None, contract: int | None = None):
+    With `soft` and `contract` = P', the potential is V + soft, and soft is evaluated on P'
+    contracted beads (U = sum_k V(q^k) + (P/P') sum_k' soft(q'^k'), as for the pGM engine).  For
+    tests and model systems; no barostat (no molecules).
+    """
+
+    def __init__(
+        self,
+        energy_fn: Callable[[jax.Array, jax.Array], jax.Array],
+        soft: Callable[[jax.Array, jax.Array], jax.Array] | None = None,
+        contract: int | None = None,
+    ) -> None:
+        """Set up the vmapped value-and-gradient functions of V (and soft) [kJ/mol]."""
         self.energy_fn, self.soft, self.contract = energy_fn, soft, contract
         self._vg = jax.vmap(jax.value_and_grad(energy_fn), in_axes=(0, None))
         self._sg = None if soft is None else jax.vmap(jax.value_and_grad(soft), in_axes=(0, None))
 
-    def init(self, q, box):
+    def init(self, q: jax.Array, box: jax.Array) -> jax.Array:
+        """Return the (empty) engine state, a zero scalar."""
         return jnp.zeros(())
 
-    def compute(self, q, box, eng):
+    def compute(self, q: jax.Array, box: jax.Array, eng: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
+        """Return the forces (P, N, 3) [kJ/mol/nm], U [kJ/mol] and the engine state at beads q (P, N, 3)."""
         V, g = self._vg(q, box)
         U, f = jnp.sum(V), -g
         if self.soft is not None:
@@ -549,6 +775,28 @@ class PotentialEngine:
 
 @dataclasses.dataclass
 class PGMBeadState:
+    """Engine state of PGMBeads (a JAX-MD dataclass, i.e. a pytree).
+
+    Parameters
+    ----------
+    induction : InductionState
+        Batched over the force beads (leading axis), the predictor step counter shared.
+    nbr : partition.NeighborList
+        Neighbour list of the centroid (shared by every bead).
+    iters : jax.Array () int32
+        CG iterations of the last solve (largest over the beads).
+    max_iters : jax.Array () int32
+        Largest since the block started.
+    resid : jax.Array ()
+        Largest final CG residual since the block started.
+    overflow : jax.Array () bool
+        Row or list capacity exceeded.
+    cg_total : jax.Array ()
+        CG iterations (largest over the beads) summed over the steps.
+    elec, vdw : jax.Array ()
+        Force-bead averages of the force field's parts [kJ/mol].
+    """
+
     induction: object  # InductionState batched over the force beads (count shared)
     nbr: object  # neighbour list of the centroid (shared by every bead)
     iters: jnp.ndarray  # CG iterations of the last solve (largest over the beads)
@@ -560,7 +808,8 @@ class PGMBeadState:
     vdw: jnp.ndarray
 
 
-def _nocount(ind):
+def _nocount(ind: InductionState) -> InductionState:
+    """Return the induction state without its step counter (kept unbatched over the beads)."""
     return ind.set(count=None)
 
 
@@ -572,16 +821,59 @@ class PGMBeads:
     the largest allowed distance of a bead atom from its centroid).  contract = P' < P: ring-polymer
     contraction of the intermolecular part (module docstring).  bead_chunk: force beads per vmapped
     chunk, the chunks run one after the other in a lax.map ("auto": 8 when that divides more than 8
-    beads; None: all at once); results are identical."""
+    beads; None: all at once); results are identical.
+
+    Attributes
+    ----------
+    P : int
+        Beads.
+    Pc : int or None
+        Contracted beads (None: no contraction).
+    nf : int
+        Force beads (P or Pc).
+    chunk : int or None
+        Force beads per vmapped chunk.
+    bead_margin : float
+        Allowed distance of a bead atom from its centroid [nm].
+    nb : AtomNeighbors or MoleculeNeighbors
+        The centroid's neighbour-list object.
+    r_list : float
+        Group radius of the molecule list including the margin [nm].
+    T : jax.Array (Pc, P)
+        Contraction matrix (with contraction).
+    """
 
     def __init__(
         self,
-        sim,
+        sim: FlexibleSimulation,
         beads: int,
         contract: int | None = None,
         bead_margin: float = 0.08,
         bead_chunk: int | str | None = "auto",
-    ):
+    ) -> None:
+        """Set up the bead engine of a FlexibleSimulation.
+
+        Parameters
+        ----------
+        sim : FlexibleSimulation
+            The simulation (force field, settings, molecules).
+        beads : int
+            Beads P.
+        contract : int, optional
+            Contract the intermolecular part to this many beads (None or >= P: off).
+        bead_margin : float
+            Allowed distance of a bead atom from its centroid [nm].
+        bead_chunk : int, "auto" or None
+            Force beads per vmapped chunk.
+
+        Raises
+        ------
+        ValueError
+            Constraints; with contraction, a molecule that is not a FlexibleTemplate.
+        NotImplementedError
+            Virtual sites, mts, alchemy, restraints, extended-Lagrangian dipoles, biases or an
+            external field.
+        """
         integ = sim.integ
         if getattr(integ, "cons", None) is not None:
             raise ValueError(
@@ -616,14 +908,22 @@ class PGMBeads:
         self.make_neighbors(np.asarray(sim.state.box))
 
     # ------------------------------------------------------------------ monomer reference (contraction)
-    def _monomer_groups(self):
+    def _monomer_groups(self) -> list[tuple[Callable[[jax.Array], jax.Array], jax.Array]]:
+        """Return (gas-phase intramolecular nonbonded energy of one copy, atom rows) per template.
+
+        Raises
+        ------
+        ValueError
+            Some molecule is not a FlexibleTemplate.
+        """
         groups = []
         covered = 0
         for tpl, rows in self.flex.groups:
             model = tpl.model
             P = jax.tree_util.tree_map(jnp.asarray, tpl.P)
 
-            def fn(R, model=model, P=P, idx=tpl.index):
+            def fn(R: jax.Array, model: Any = model, P: dict = P, idx: int = tpl.index) -> jax.Array:
+                """Return the fitted model's intramolecular nonbonded energy [kJ/mol] of one copy."""
                 return model.nonbonded(idx, R, P)[0]
 
             groups.append((fn, rows))
@@ -635,23 +935,35 @@ class PGMBeads:
             )
         return groups
 
-    def monomer_nonbonded(self, x):
-        """Sum over molecules of the gas-phase intramolecular pGM + van der Waals energy of each
-        template's fitted model at positions x (N, 3), kJ/mol."""
+    def monomer_nonbonded(self, x: jax.Array) -> jax.Array:
+        """Return the gas-phase intramolecular pGM + van der Waals energy of all molecules [kJ/mol].
+
+        Each template's fitted model at positions x (N, 3) [nm] (contraction only).
+        """
         e = 0.0
         for fn, rows in self._mono:
             e = e + jnp.sum(jax.vmap(fn)(x[rows]))
         return e
 
-    def reference(self, x):
-        """Stiff reference on one bead: bonded + monomer nonbonded (contraction), or bonded only."""
+    def reference(self, x: jax.Array) -> jax.Array:
+        """Return the stiff reference on one bead [kJ/mol]: bonded + monomer nonbonded (contraction), or bonded."""
         e = self.flex.energy(x)
         if self.Pc is not None:
             e = e + self.monomer_nonbonded(x)
         return e
 
     # ------------------------------------------------------------------ neighbour lists
-    def make_neighbors(self, H):
+    def make_neighbors(self, H: ArrayLike) -> None:
+        """Create the centroid's neighbour-list object for box H [nm], radii enlarged by the bead margin.
+
+        A molecule list with the group radius + bead_margin, or an atom list with the pair cutoff +
+        2 bead_margin (the skin shrunk to fit the box).
+
+        Raises
+        ------
+        ValueError
+            A box too small for the bead margin (atom list skin below 0.02 nm).
+        """
         sim, s = self.sim, self.sim.settings
         self.r_list = float(sim.r_list) + self.bead_margin
         mode = s.neighbors.mode
@@ -672,16 +984,19 @@ class PGMBeads:
             self.nb = AtomNeighbors(sim.sys.n, H, rc, skin)
         self._nb_volume = float(volume(jnp.asarray(H)))
 
-    def _centers(self, qc):
+    def _centers(self, qc: jax.Array) -> jax.Array:
+        """Return the neighbour-list group centres of the centroid qc (N, 3) [nm]."""
         return self.flex.list_centers(qc)
 
-    def force_positions(self, q):
-        """Positions at which the force field is evaluated: all beads, or the contracted beads."""
+    def force_positions(self, q: jax.Array) -> jax.Array:
+        """Return the positions (nf, N, 3) [nm] of the force beads: all beads, or the contracted ones."""
         return q if self.Pc is None else jnp.tensordot(self.T, q, axes=1)
 
-    def extent(self, q):
-        """Largest distance (nm) of a bead atom from what the list is built on: its centroid list
-        group's centre (molecule list) or its centroid (atom list)."""
+    def extent(self, q: jax.Array) -> jax.Array:
+        """Return the largest distance [nm] of a bead atom from what the list is built on.
+
+        Its centroid list group's centre (molecule list) or its centroid (atom list).
+        """
         qc = jnp.mean(q, 0)
         if self.nb.kind == "molecule":
             c = self._centers(qc)[self.flex.group]
@@ -689,10 +1004,16 @@ class PGMBeads:
         return jnp.max(jnp.linalg.norm(q - qc[None], axis=-1))
 
     def limit(self) -> float:
+        """Return the largest allowed `extent` [nm]: r_list (molecule list) or bead_margin (atom list)."""
         return self.r_list if self.nb.kind == "molecule" else self.bead_margin
 
-    def size(self, q, box, factor: float = 1.2, nbr=None):
-        """Static sizes (molecule-list width, row capacities) for the largest of the force beads."""
+    def size(
+        self, q: jax.Array, box: ArrayLike, factor: float = 1.2, nbr: partition.NeighborList | None = None
+    ) -> partition.NeighborList:
+        """Set the static sizes (molecule-list width, row capacities) for the largest force bead (host).
+
+        Returns the centroid's neighbour list (allocated unless `nbr` is given).
+        """
         qc = jnp.mean(q, 0)
         c = self._centers(qc)
         nbr = self.nb.allocate(qc, c, box) if nbr is None else nbr
@@ -715,7 +1036,8 @@ class PGMBeads:
         return nbr
 
     # ------------------------------------------------------------------ forces
-    def init(self, q, box):
+    def init(self, q: jax.Array, box: jax.Array) -> PGMBeadState:
+        """Return the initial engine state: fresh induction for every force bead, the centroid's list."""
         ind0 = self.ff.init_induction()
         ind = jax.tree_util.tree_map(lambda x: jnp.broadcast_to(x, (self.nf,) + jnp.shape(x)), _nocount(ind0))
         ind = ind.set(count=ind0.count)
@@ -735,15 +1057,20 @@ class PGMBeads:
         )
 
     def reset_block(self, e: PGMBeadState) -> PGMBeadState:
+        """Return e with the block maxima (CG iterations, residual, overflow) reset."""
         return e.set(max_iters=jnp.zeros((), jnp.int32), resid=jnp.zeros((), jnp.float64), overflow=jnp.zeros((), bool))
 
-    def _ind_axes(self, ind):
+    def _ind_axes(self, ind: InductionState) -> Any:
+        """Return the vmap axes of a batched induction state (0, the counter unbatched)."""
         return jax.tree_util.tree_map(lambda _: 0, _nocount(ind))
 
-    def _over_beads(self, fn, x, ind, n_out: int, k_ind: int):
-        """fn(x_k, ind_k) -> n_out outputs (output k_ind an InductionState) for every force bead:
-        jax.vmap over all of them, or with `bead_chunk` a lax.map over chunks of vmapped beads (less
-        memory traffic per kernel for many beads).  The predictor step counter stays unbatched."""
+    def _over_beads(self, fn: Callable, x: jax.Array, ind: InductionState, n_out: int, k_ind: int) -> tuple:
+        """Return fn(x_k, ind_k) for every force bead (n_out outputs; output k_ind an InductionState).
+
+        jax.vmap over all of them, or with `bead_chunk` a lax.map over chunks of vmapped beads
+        (less memory traffic per kernel for many beads).  The predictor step counter stays
+        unbatched.
+        """
         ax = self._ind_axes(ind)
         out_ax = tuple(ax if i == k_ind else 0 for i in range(n_out))
         nf = x.shape[0]
@@ -752,35 +1079,43 @@ class PGMBeads:
             return jax.vmap(fn, in_axes=(0, ax), out_axes=out_ax)(x, ind)
         count = ind.count
 
-        def split(a):
+        def split(a: jax.Array) -> jax.Array:  # (nf, ...) -> (chunks, c, ...)
             return a.reshape((nf // c, c) + a.shape[1:])
 
         xs = split(x)
         inds = jax.tree_util.tree_map(split, _nocount(ind))
         vf = jax.vmap(fn, in_axes=(0, ax), out_axes=out_ax)
 
-        def body(args):
+        def body(args: tuple) -> tuple:
+            """Evaluate one chunk; return its outputs (counter removed) and the new counter."""
             xc, ic = args
             out = vf(xc, ic.set(count=count))
             return tuple(o.set(count=None) if i == k_ind else o for i, o in enumerate(out)), out[k_ind].count
 
         out, counts = jax.lax.map(body, (xs, inds))
 
-        def merge(a):
+        def merge(a: jax.Array) -> jax.Array:  # (chunks, c, ...) -> (nf, ...)
             return a.reshape((nf,) + a.shape[2:])
 
         return tuple(
             jax.tree_util.tree_map(merge, o).set(count=counts[0]) if i == k_ind else merge(o) for i, o in enumerate(out)
         )
 
-    def compute(self, q, box, e: PGMBeadState):
+    def compute(self, q: jax.Array, box: jax.Array, e: PGMBeadState) -> tuple[jax.Array, jax.Array, PGMBeadState]:
+        """Return the forces (P, N, 3) [kJ/mol/nm], U [kJ/mol] and the engine state at beads q (P, N, 3).
+
+        The force field on every force bead with its own dipoles (the centroid's list updated),
+        plus the bonded terms on every bead; with contraction U = sum_k ref(q^k) +
+        (P/P') sum_k' [V - V_mono](q'^k'), forces returned through T^T.
+        """
         qc = jnp.mean(q, 0)
         c = self._centers(qc)
         nbr = self.nb.update(e.nbr, qc, c, box)
         x = self.force_positions(q)
         ff, params, nb = self.ff, self.params, self.nb
 
-        def one(xk, ind):
+        def one(xk: jax.Array, ind: InductionState) -> tuple:
+            """Return the force field's energies, forces, induction and statistics on one bead."""
             cand, ovf = nb.candidates(nbr, c, box, xk)
             res = ff.compute(xk, box, cand, ind, params)
             return (
@@ -824,10 +1159,11 @@ class PGMBeads:
     # ------------------------------------------------------------------ barostat
     @property
     def nmol(self) -> int:
+        """Number of molecules."""
         return self.flex.nmol
 
-    def scale(self, q, s):
-        """Every bead of a molecule translated by (s - 1) times the centroid's molecular centre of mass."""
+    def scale(self, q: jax.Array, s: jax.Array) -> jax.Array:
+        """Return beads translated by (s - 1) times the centroid's molecular centre of mass."""
         com = self.flex.centers(jnp.mean(q, 0))
         return q + ((s - 1.0) * com)[self.flex.mol][None]
 
@@ -835,16 +1171,18 @@ class PGMBeads:
         """Keep the overflow flag of a trial evaluation (the block is repeated if it overflowed)."""
         return e.set(overflow=e.overflow | trial.overflow)
 
-    def energy(self, q, box, e: PGMBeadState):
-        """U at (q, box) with the dipoles solved from the last converged ones (no predictor history
-        update, Monte Carlo trials); the neighbour list is rebuilt.  Returns (U, engine state)."""
+    def energy(self, q: jax.Array, box: jax.Array, e: PGMBeadState) -> tuple[jax.Array, PGMBeadState]:
+        """Return U [kJ/mol] at (q, box) and the engine state, the dipoles solved from the last ones.
+
+        No predictor history update (Monte Carlo trials); the neighbour list is rebuilt.
+        """
         qc = jnp.mean(q, 0)
         c = self._centers(qc)
         nbr = self.nb.update(e.nbr, qc, c, box, True)
         x = self.force_positions(q)
         ff, params, nb = self.ff, self.params, self.nb
 
-        def one(xk, ind):
+        def one(xk: jax.Array, ind: InductionState) -> tuple:  # energy on one bead
             cand, ovf = nb.candidates(nbr, c, box, xk)
             E, ind, it, ovf2 = ff.energy(xk, box, cand, ind, params)
             return E, ind, ovf | ovf2
@@ -858,10 +1196,13 @@ class PGMBeads:
         return U, e.set(nbr=nbr, induction=ind, overflow=e.overflow | jnp.any(ovf))
 
     # ------------------------------------------------------------------ pressure
-    def strain_derivative(self, q, box, e: PGMBeadState):
-        """(3, 3) (1/P) dU/d eps, with every bead of a molecule translated with the molecular centre
-        of mass of the centroid (molecular centroid virial; the intramolecular reference does not
-        change under such a strain)."""
+    def strain_derivative(self, q: jax.Array, box: jax.Array, e: PGMBeadState) -> jax.Array:
+        """Return (1/P) dU/d eps (3, 3) [kJ/mol], the molecular centroid virial.
+
+        Every bead of a molecule is translated with the molecular centre of mass of the centroid
+        (the intramolecular reference does not change under such a strain); at fixed dipoles, with
+        the van der Waals tail impulse term; the mean over the force beads.
+        """
         ff, flex = self.ff, self.flex
         qc = jnp.mean(q, 0)
         com = flex.centers(qc)
@@ -870,10 +1211,11 @@ class PGMBeads:
         mu = e.induction.mu
         P = ff._atoms(self.params)
 
-        def W(xk, muk):
+        def W(xk: jax.Array, muk: jax.Array) -> jax.Array:
+            """Return dE/d eps (3, 3) on one force bead at its dipoles muk."""
             cand, _ = self.nb.candidates(e.nbr, c, box, xk)
 
-            def en(eps):
+            def en(eps: jax.Array) -> jax.Array:  # energy at strain eps
                 Fm = jnp.eye(3) + eps
                 return ff.energy_fixed_mu(xk + (com @ eps.T)[flex.mol], box @ Fm.T, muk, cand, P)[0]
 
@@ -892,11 +1234,30 @@ class PIMDSimulation:
         pi.set_mode("trpmd"); pi.run(...)                                  # dynamics from the PIMD ensemble
 
     dt, temperature and settings come from `sim` (its own integrator and thermostat are not used).
+
+    Attributes
+    ----------
+    engine : PGMBeads
+        The bead engine.
+    integ : PIMDIntegrator
+        The integrator.
+    state : PIMDState
+        Current state.
+    P : int
+        Beads.
+    dt : float
+        Time step [ps].
+    T0 : float
+        Temperature [K].
+    ensemble : {"nvt", "npt"}
+        Ensemble.
+    time_ps : float
+        Simulation time [ps].
     """
 
     def __init__(
         self,
-        sim,
+        sim: FlexibleSimulation,
         beads: int = 32,
         mode: str = "pimd",
         thermostat: PILE | str = PILE(),
@@ -908,8 +1269,8 @@ class PIMDSimulation:
         spread: bool = True,
         seed: int = 0,
         dt: float | None = None,
-        log=None,
-    ):
+        log: TextIO | None = None,
+    ) -> None:
         """Set up the ring polymers of `sim`'s current configuration.
 
         Parameters
@@ -1003,7 +1364,10 @@ class PIMDSimulation:
         logger.info(f"thermostat: {self.integ.thermo.describe()}")
 
     # ------------------------------------------------------------------ sizes and blocks
-    def _size(self, q, H, factor=1.2, nbr=None):
+    def _size(
+        self, q: jax.Array, H: ArrayLike, factor: float = 1.2, nbr: partition.NeighborList | None = None
+    ) -> partition.NeighborList:
+        """Size the engine for beads q (host), re-jit the integrator and return the neighbour list."""
         nbr = self.engine.size(q, H, factor, nbr)
         self._w_jit = None
         self.integ.run = jax.jit(self.integ._run)
@@ -1011,8 +1375,10 @@ class PIMDSimulation:
         return nbr
 
     def _wrap(self, st: PIMDState) -> PIMDState:
-        """Whole ring polymers of whole molecules shifted so that the centroid's molecular centres
-        of mass lie in the primary cell."""
+        """Return the state with whole ring polymers shifted so that the molecular centres lie in the cell.
+
+        The centroid's molecular centres of mass define the shift of every bead of a molecule.
+        """
         flex = self.sim.flex
         H = st.box
         qc = jnp.mean(st.q, 0)
@@ -1020,7 +1386,8 @@ class PIMDSimulation:
         shift = jnp.matmul(jnp.floor(fr), H, precision=jax.lax.Precision.HIGHEST)[flex.mol]
         return st.set(q=st.q - shift[None])
 
-    def _rebuild_neighbors(self):
+    def _rebuild_neighbors(self) -> None:
+        """Build new neighbour lists for the current box, re-size and recompute the forces."""
         H = np.asarray(self.state.box)
         logger.info(f"step {int(self.state.step)}: neighbour lists rebuilt for volume {float(volume(H)):.3f} nm^3")
         self.engine.make_neighbors(H)
@@ -1088,8 +1455,10 @@ class PIMDSimulation:
         return redo.set(eng=redo.eng.set(induction=start.eng.induction))
 
     def _advance_block(self, n: int) -> None:
-        """n steps as one compiled block (driver.retry_block), then the ring polymers re-wrapped
-        into the box and the bead spread checked against the list margin.
+        """Advance n steps as one compiled block, re-wrap, and check the bead spread.
+
+        driver.retry_block handles overflows; then the ring polymers are re-wrapped into the box
+        and the bead spread checked against the list margin.
 
         Raises
         ------
@@ -1118,12 +1487,20 @@ class PIMDSimulation:
         self.time_ps += n * self.dt
 
     # ------------------------------------------------------------------ observables
-    def _est(self):
+    def _est(self) -> dict:
+        """Return the estimators of the current state (jitted once)."""
         if getattr(self, "_est_jit", None) is None:
             self._est_jit = jax.jit(self.integ.estimators)
         return self._est_jit(self.state)
 
     def observables(self) -> dict:
+        """Return the observables of the current state (one row of the log table).
+
+        step, time_ps, temperatures [K] (beads / P, centroid), epot = U / P, the primitive and
+        centroid-virial kinetic energies, econs, elec, vdw [kJ/mol], volume [nm^3], density
+        [g/cm^3], barostat acceptance, per-element kinetic energies [meV], molecular dipoles [D]
+        (bead-averaged and per bead) and CG statistics.
+        """
         st, eng = self.state, self.state.eng
         est = {k: np.asarray(v) for k, v in self._est().items()}
         out = {
@@ -1161,7 +1538,7 @@ class PIMDSimulation:
         return out
 
     def pressure(self) -> float:
-        """Molecular centroid-virial pressure (bar): N_mol kT / V - tr((1/P) dU/d eps) / (3 V)."""
+        """Return the molecular centroid-virial pressure [bar]: N_mol kT / V - tr((1/P) dU/d eps) / (3 V)."""
         if getattr(self, "_w_jit", None) is None:
             self._w_jit = jax.jit(self.engine.strain_derivative)
         st = self.state
@@ -1169,16 +1546,20 @@ class PIMDSimulation:
         V = float(volume(st.box))
         return (self.sim.sys.nmol * KB * self.T0 - float(jnp.trace(W)) / 3.0) / V * BAR_PER_KJMOL_NM3
 
-    def molecular_dipoles(self):
-        """(bead-averaged molecular dipoles (nmol, 3), mean over beads and molecules of |mu_mol|), e nm:
-        charges, covalent and induced dipoles of every force bead (the contracted beads with contraction)."""
+    def molecular_dipoles(self) -> tuple[np.ndarray, float]:
+        """Return the bead-averaged molecular dipoles (nmol, 3) and the mean |mu_mol| over beads [e nm].
+
+        Charges, covalent and induced dipoles of every force bead (the contracted beads with
+        contraction).
+        """
         if getattr(self, "_dip_jit", None) is None:
             from .dipoles import CellDipole
 
             cd = CellDipole(self.engine.ff)
             params = self.engine.params
 
-            def f(q, box, mu):
+            def f(q: jax.Array, box: jax.Array, mu: jax.Array) -> tuple[jax.Array, jax.Array]:
+                """Return the bead-averaged molecular dipoles and the mean molecular |dipole|."""
                 x = self.engine.force_positions(q)
                 M = jax.vmap(lambda xk, mk: cd.molecular(xk, box, mk, params))(x, mu)
                 return jnp.mean(M, 0), jnp.mean(jnp.linalg.norm(M, axis=-1))
@@ -1189,15 +1570,15 @@ class PIMDSimulation:
         return np.asarray(M), float(m)
 
     def centroid(self) -> np.ndarray:
-        """Centroid positions (N, 3) [nm] of the current state."""
+        """Return the centroid positions (N, 3) [nm] of the current state."""
         return np.asarray(jnp.mean(self.state.q, 0))
 
     def beads(self) -> np.ndarray:
-        """Bead positions (P, N, 3) [nm] of the current state (ring polymers whole)."""
+        """Return the bead positions (P, N, 3) [nm] of the current state (ring polymers whole)."""
         return np.asarray(self.state.q)
 
     def box(self) -> np.ndarray:
-        """Box (3, 3) [nm] of the current state (lattice vectors as rows)."""
+        """Return the box (3, 3) [nm] of the current state (lattice vectors as rows)."""
         return np.asarray(self.state.box)
 
     # ------------------------------------------------------------------ running
@@ -1268,12 +1649,12 @@ class PIMDSimulation:
 
     # ------------------------------------------------------------------ checkpoints
     def _write_checkpoint_files(self, prefix: str) -> None:
-        """prefix.pimd.chk and the centroid restart prefix.rst7 (the files of run's checkpoints)."""
+        """Write the files of run's checkpoints: prefix.pimd.chk and the centroid restart prefix.rst7."""
         self.save_checkpoint(prefix + ".pimd.chk")
         self.write_restart(prefix + ".rst7")
 
     def write_restart(self, path: str) -> None:
-        """Amber NetCDF restart of the centroid (positions, centroid velocities, box) at `path`."""
+        """Write an Amber NetCDF restart of the centroid (positions, centroid velocities, box) to `path`."""
         st = self.state
         vc = np.asarray(jnp.mean(st.p, 0) / self.integ.mass)
         write_restart(
@@ -1305,8 +1686,10 @@ class PIMDSimulation:
         )
 
     def load_checkpoint(self, path: str) -> None:
-        """Continue from a checkpoint written by `save_checkpoint`, or from a legacy pickle ``.pimd.chk`` of
-        pgm_jax up to commit e72c57c (same system, settings and number of beads).
+        """Continue from a checkpoint written by `save_checkpoint` (or a legacy pickle .pimd.chk).
+
+        Legacy pickle checkpoints are those of pgm_jax up to commit e72c57c; the system, settings
+        and number of beads must be the same.
 
         Parameters
         ----------

@@ -1,5 +1,8 @@
 """Simulation driver: Amber inputs in, Amber-readable outputs out.
 
+Contents: `Simulation`, the rigid-body MD engine (an engine.MDEngine), with
+`Simulation.from_amber`.
+
     sim = Simulation.from_amber("water.prmtop", "water.rst7", settings=MDSettings(...), temperature=298.0,
                                 dt=0.001, thermostat=Bussi(tau=1.0), barostat=MonteCarloBarostat(pressure=1.0))
     sim.run(100000, prefix="md", report_every=1000, traj_every=1000, checkpoint_every=10000)
@@ -9,14 +12,19 @@ list (reallocates and repeats the block on overflow), re-wraps molecules into th
 and writes files.  Molecules are the prmtop residues; identical residues share one template.
 Virtual sites (Amber extra points, Molecule.vsites; md/vsites.py) are massless points of the rigid
 templates, placed from their parents at the start.
-run(dipoles_every=n) also samples the cell dipole every n steps (on the device, inside the blocks)
+Options: run(dipoles_every=n) also samples the cell dipole every n steps (on the device, inside the blocks)
 into prefix.dip, and run(induced_every=n) writes per-atom induced dipoles to prefix.mu.nc
 (md/dipoles.py).
 mts=MTS(...) integrates force groups with their own time steps (md/mts.py; dt is the outer step).
 bias=... adds biases on collective variables (pgm_jax.bias: metadynamics, OPES, static biases);
-run() then writes prefix.colvar, prefix.hills and, with the checkpoints, prefix.bias (bias/io.py)."""
+run() then writes prefix.colvar, prefix.hills and, with the checkpoints, prefix.bias (bias/io.py).
+
+Units: nm, ps, K, bar, kJ/mol; Amber files in Angstrom.
+"""
 
 from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, TextIO
 
 import jax
 import jax.numpy as jnp
@@ -33,45 +41,66 @@ from .rigid import RigidMolecules
 from .thermostats import Thermostat
 from .vsites import VirtualSites
 
+if TYPE_CHECKING:
+    from jax.typing import ArrayLike
+
+    from .alchemy import Alchemy
+    from .efield import ExternalField
+    from .mts import MTS
+    from .restraints import Restraint, Restraints
+
 
 class Simulation(MDEngine):
-    """Molecular dynamics of rigid molecules (JAX-MD rigid bodies; every molecule of `sys` is rigid
-    at its template geometry, virtual sites are points of the templates).  The shared machinery
-    (blocks, observables, run loop, checkpoints) is MDEngine's (md/engine.py)."""
+    """Molecular dynamics of rigid molecules (JAX-MD rigid bodies).
+
+    Every molecule of `sys` is rigid at its template geometry; virtual sites are points of the
+    templates.  The shared machinery (blocks, observables, run loop, checkpoints) is MDEngine's
+    (md/engine.py); the integrator is integrate.Integrator (mts.MTSIntegrator with `mts`).
+
+    Attributes
+    ----------
+    vsites : VirtualSites or None
+        The virtual sites.
+    rigid : RigidMolecules
+        Body frames and the atom-position map.
+
+    Other attributes as MDEngine.
+    """
 
     checkpoint_kind = "md-rigid"
 
     def __init__(
         self,
         system: System,
-        positions,
-        box,
+        positions: ArrayLike,
+        box: ArrayLike,
         settings: MDSettings = MDSettings(),
         *,
         dt: float = 0.001,
         temperature: float = 298.0,
         thermostat: Thermostat | str | None = "langevin",
         barostat: MonteCarloBarostat | None = None,
-        velocities=None,
+        velocities: ArrayLike | None = None,
         seed: int = 0,
-        params=None,
-        restraints=None,
-        alchemy=None,
-        mts=None,
-        bias=None,
-        efield=None,
-        log=None,
-    ):
+        params: dict | None = None,
+        restraints: Restraints | Restraint | list | None = None,
+        alchemy: Alchemy | None = None,
+        mts: MTS | None = None,
+        bias: Any = None,
+        efield: ExternalField | ArrayLike | None = None,
+        log: TextIO | None = None,
+    ) -> None:
         """Set up rigid-body MD of `system` at `positions` in `box`.
 
         Parameters
         ----------
         system : System
             Molecules (every one rigid at its template geometry).
-        positions : array (N, 3)
+        positions : ArrayLike (N, 3)
             Atom positions [nm] (virtual sites are placed from their parents).
-        box : array (3, 3)
-            Box [nm], lattice vectors as rows (reduced to a canonical form).
+        box : ArrayLike (3, 3)
+            Box [nm], lattice vectors as rows, lower triangular (reduced to the canonical form of
+            box.reduce_box).
         settings : MDSettings
             Force-field, cutoff, PME and solver settings.
         dt : float
@@ -84,7 +113,7 @@ class Simulation(MDEngine):
             NVE (thermostats.make_thermostat).
         barostat : MonteCarloBarostat or None
             Isotropic Monte Carlo barostat (None: constant volume); needs a thermostat.
-        velocities : array (N, 3), optional
+        velocities : ArrayLike (N, 3), optional
             Atom velocities [nm/ps] (their rigid-body part is kept); default: drawn at the
             temperature.
         seed : int
@@ -158,7 +187,7 @@ class Simulation(MDEngine):
     def from_amber(
         cls, prmtop: str, coords: str, use_velocities: bool = True, charges: str = "pgm", **kw
     ) -> Simulation:
-        """A simulation of the system of an Amber prmtop at the coordinates of a restart / inpcrd.
+        """Return a simulation of the system of an Amber prmtop at the coordinates of a restart / inpcrd.
 
         Parameters
         ----------
@@ -192,19 +221,19 @@ class Simulation(MDEngine):
 
     # ----------------------------------------------------------------- MDEngine hooks
     def _list_groups(self) -> tuple[np.ndarray, int]:
-        """Molecules are the groups of the molecular neighbour list."""
+        """Return (molecule of every atom, number of molecules): molecules are the list groups."""
         return self.sys.mol, self.sys.nmol
 
-    def _list_centers(self, dynpos):
-        """Centres of mass of the rigid bodies (the list groups)."""
+    def _list_centers(self, dynpos: Any) -> jax.Array:
+        """Return the centres of mass (M, 3) [nm] of the rigid bodies (the list groups)."""
         return dynpos.center
 
     # ----------------------------------------------------------------- coordinates
     def positions(self) -> np.ndarray:
-        """Atom positions (N, 3) [nm] of the current state (virtual sites included)."""
+        """Return the atom positions (N, 3) [nm] of the current state (virtual sites included)."""
         return np.asarray(self.rigid.positions(self.state.dyn.position))
 
     def velocities(self) -> np.ndarray:
-        """Atom velocities (N, 3) [nm/ps] of the rigid-body motion of the current state."""
+        """Return the atom velocities (N, 3) [nm/ps] of the rigid-body motion of the current state."""
         st = self.state
         return np.asarray(self.rigid.atom_velocities(st.dyn.position, st.dyn.momentum))

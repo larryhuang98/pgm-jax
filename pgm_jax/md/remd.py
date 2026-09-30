@@ -1,20 +1,24 @@
 """Temperature replica exchange (parallel tempering) for both MD engines.
 
+Contents: the exchange logic (`geometric_ladder`, `exchange_pairs`, `metropolis`,
+`temperature_reduced_energies`, `ExchangeStatistics`, `read_exchange_log`), helpers for stacked
+(batched) states (`_stack`, `_take`, `_axes`, ...), the replica engine `MDReplicas` (also the
+base of alchemy.LambdaWindows and finite_field.FieldReplicas) and the driver `ReplicaExchange`.
+
 R copies (replicas) of one system run at the temperatures T_0 < T_1 < ... < T_{R-1} of a ladder
 (`geometric_ladder`).  Every `exchange_every` steps neighbouring temperatures try to swap their
 configurations, alternately the even pairs (0,1), (2,3), ... and the odd pairs (1,2), (3,4), ...
-(deterministic even/odd, Okabe et al., CPL 335, 435 (2001); it gives faster round trips than
-random pair choices: Syed et al., JRSSB 84, 321 (2022)).  A swap of the configurations x_i, x_j
-of states i, j is accepted with the Metropolis probability
+(deterministic even/odd [2]_; it gives faster round trips than random pair choices [3]_).  A swap
+of the configurations x_i, x_j of states i, j is accepted with the Metropolis probability
 
     P = min(1, exp(-Delta)),   Delta = u_i(x_j) + u_j(x_i) - u_i(x_i) - u_j(x_j),
 
 with u_k(x) the reduced (dimensionless) energy of configuration x in thermodynamic state k.  For
 temperature exchange u_k(x) = beta_k [U(x) + P V(x)] (P V at constant pressure only), so that
-Delta = (beta_i - beta_j) [U(x_j) - U(x_i) + P (V_j - V_i)] (Sugita & Okamoto, CPL 314, 141
-(1999); Okabe et al. 2001 for NPT).  The momenta of an exchanged configuration are rescaled by
-sqrt(T_new / T_old), which removes the kinetic energies from Delta; the thermostat auxiliaries
-(GLE: mass-scaled momenta with variance kT) are rescaled in the same way.
+Delta = (beta_i - beta_j) [U(x_j) - U(x_i) + P (V_j - V_i)] ([1]_; [2]_ for NPT).  The momenta of
+an exchanged configuration are rescaled by sqrt(T_new / T_old), which removes the kinetic
+energies from Delta; the thermostat auxiliaries (GLE: mass-scaled momenta with variance kT) are
+rescaled in the same way.
 
 Hamiltonian exchange.  Only reduced energies enter the criterion (`metropolis`).  Replicas with
 different parameters, restraints or scaled terms need u_k(x_j) = beta_k U_k(x_j), i.e. the energy
@@ -73,17 +77,28 @@ map, statistics and the exchange random state; `ReplicaExchange.load_checkpoint`
 a step are written after that step's exchange, so the replica of a frame is the one in the
 exchange-log line of that step or the last line before it (`read_exchange_log`).
 
-Units: K, kJ/mol, nm, ps."""
+Units: K, kJ/mol, nm, ps.
+
+References
+----------
+.. [1] Y. Sugita, Y. Okamoto, Chem. Phys. Lett. 314, 141 (1999).
+.. [2] T. Okabe, M. Kawata, Y. Okamoto, M. Mikami, Chem. Phys. Lett. 335, 435 (2001).
+.. [3] S. Syed, A. Bouchard-Cote, G. Deligiannidis, A. Doucet, J. R. Stat. Soc. B 84, 321
+   (2022).
+"""
 
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.typing import ArrayLike
 
 from ..units import KB
 from .driver import (
@@ -99,31 +114,103 @@ from .driver import (
 from .engine import OPTIONAL_STATE
 from .io import NetCDFTrajectory, write_restart
 
+if TYPE_CHECKING:
+    from typing import TextIO
+
+    from .integrate import MDState
+
 LEGACY_FORMAT = "pgm_jax remd 1"  # the "format" entry of legacy pickle checkpoints
 logger = logging.getLogger(__name__)
 
 
 # ----------------------------------------------------------------------------- exchange logic
 def geometric_ladder(t_min: float, t_max: float, n: int) -> np.ndarray:
-    """n temperatures (K) from t_min to t_max in constant ratio, T_k = t_min (t_max/t_min)^(k/(n-1)).
-    When the heat capacity changes little over the range, neighbouring energy distributions then
-    overlap equally, so every pair has about the same acceptance."""
+    """Return n temperatures from t_min to t_max in constant ratio.
+
+    T_k = t_min (t_max / t_min)^(k / (n - 1)).  When the heat capacity changes little over the
+    range, neighbouring energy distributions then overlap equally, so every pair has about the same
+    acceptance.
+
+    Parameters
+    ----------
+    t_min, t_max : float
+        Lowest and highest temperature [K].
+    n : int
+        Number of temperatures (>= 2).
+
+    Returns
+    -------
+    np.ndarray (n,)
+        Temperatures [K], increasing.
+
+    Raises
+    ------
+    ValueError
+        Unless n >= 2 and 0 < t_min < t_max.
+
+    Examples
+    --------
+    >>> geometric_ladder(300.0, 1200.0, 3)
+    array([ 300.,  600., 1200.])
+    """
     if int(n) < 2 or not (0.0 < t_min < t_max):
         raise ValueError("need n >= 2 and 0 < t_min < t_max")
     return float(t_min) * (float(t_max) / float(t_min)) ** (np.arange(int(n)) / (int(n) - 1.0))
 
 
-def exchange_pairs(n: int, parity: int) -> list:
-    """Neighbour pairs tried together: (0,1), (2,3), ... for even parity, (1,2), (3,4), ... for odd."""
+def exchange_pairs(n: int, parity: int) -> list[tuple[int, int]]:
+    """Return the neighbour pairs tried together: (0,1), (2,3), ... for even parity, (1,2), ... for odd.
+
+    Parameters
+    ----------
+    n : int
+        Number of states.
+    parity : int
+        Exchange counter (only its parity is used).
+
+    Returns
+    -------
+    list of tuple of int
+        Disjoint neighbour pairs (i, i + 1).
+
+    Examples
+    --------
+    >>> exchange_pairs(5, 1)
+    [(1, 2), (3, 4)]
+    """
     return [(i, i + 1) for i in range(int(parity) % 2, int(n) - 1, 2)]
 
 
-def metropolis(u, pairs, uniforms):
+def metropolis(u: ArrayLike, pairs: Sequence[tuple[int, int]], uniforms: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
     """Accept or reject configuration swaps between disjoint pairs of states.
 
-    u[i, j] = u_i(x_j): reduced energy, in state i, of the configuration now in state j;
-    uniforms: one U(0, 1) number per pair.  Returns (accepted: bool per pair, src): after the swaps
-    state i holds the configuration previously in state src[i]."""
+    A pair (i, j) is accepted with probability min(1, exp(-Delta)),
+    Delta = u[i, j] + u[j, i] - u[i, i] - u[j, j] (module docstring).
+
+    Parameters
+    ----------
+    u : ArrayLike (K, K)
+        u[i, j] = u_i(x_j): reduced (dimensionless) energy, in state i, of the configuration now in
+        state j.
+    pairs : Sequence[tuple[int, int]]
+        Disjoint pairs of states.
+    uniforms : ArrayLike (len(pairs),)
+        One U(0, 1) number per pair.
+
+    Returns
+    -------
+    accepted : np.ndarray (len(pairs),) bool
+        Outcome per pair.
+    src : np.ndarray (K,) int
+        After the swaps state i holds the configuration previously in state src[i].
+
+    Raises
+    ------
+    ValueError
+        If the pairs are not disjoint.
+    FloatingPointError
+        If a Delta is not finite.
+    """
     u = np.asarray(u, float)
     src = np.arange(len(u))
     acc = np.zeros(len(pairs), bool)
@@ -141,9 +228,27 @@ def metropolis(u, pairs, uniforms):
     return acc, src
 
 
-def temperature_reduced_energies(temperatures, U, V=None, pressure=None) -> np.ndarray:
-    """u[i, j] = beta_i (U_j + P V_j) for a temperature ladder: U (kJ/mol) and V (nm^3) of the
-    configuration in each slot, P in kJ/mol/nm^3 (None at constant volume)."""
+def temperature_reduced_energies(
+    temperatures: ArrayLike, U: ArrayLike, V: ArrayLike | None = None, pressure: float | None = None
+) -> np.ndarray:
+    """Return u[i, j] = beta_i (U_j + P V_j), the reduced energies of a temperature ladder.
+
+    Parameters
+    ----------
+    temperatures : ArrayLike (K,)
+        Temperatures of the slots [K].
+    U : ArrayLike (K,)
+        Potential energy of the configuration in each slot [kJ/mol].
+    V : ArrayLike (K,), optional
+        Volume of each configuration [nm^3] (needed with `pressure`).
+    pressure : float, optional
+        Pressure [kJ/mol/nm^3] (None: constant volume, no P V term).
+
+    Returns
+    -------
+    np.ndarray (K, K)
+        Reduced energies (dimensionless).
+    """
     beta = 1.0 / (KB * np.asarray(temperatures, float))
     H = np.asarray(U, float)
     if pressure is not None:
@@ -152,11 +257,38 @@ def temperature_reduced_energies(temperatures, U, V=None, pressure=None) -> np.n
 
 
 class ExchangeStatistics:
-    """Attempts and acceptances per pair of temperatures, the replica at each temperature, and
-    round trips: a replica completes one when it has gone from the lowest temperature to the
-    highest and back; `transits` counts one-way trips between the two ends."""
+    """Attempts and acceptances per pair of states, the replica at each state, and round trips.
 
-    def __init__(self, n: int):
+    A replica (walker) completes a round trip when it has gone from the lowest temperature to the
+    highest and back; `transits` counts one-way trips between the two ends.  Mutable host object;
+    `to_dict` / `from_dict` serialize it for checkpoints.
+
+    Attributes
+    ----------
+    n : int
+        Number of states (temperature or lambda slots).
+    attempts, accepts : np.ndarray (n, n) int
+        Swap attempts and acceptances per pair (symmetric).
+    replica : np.ndarray (n,) int
+        Replica (walker) at each state.
+    last_end : np.ndarray (n,) int
+        Per replica: last end visited (0 lowest, 1 highest, -1 none).
+    phase : np.ndarray (n,) int
+        Per replica: 1 after the lowest end, 2 after the lowest then the highest.
+    round_trips, transits : np.ndarray (n,) int
+        Per replica: completed round trips and one-way transits.
+    n_exchanges : int
+        Exchange attempts (rounds of pairs) so far.
+    """
+
+    def __init__(self, n: int) -> None:
+        """Set up empty statistics for n states, replica k at state k.
+
+        Parameters
+        ----------
+        n : int
+            Number of states.
+        """
         self.n = int(n)
         self.attempts = np.zeros((n, n), int)
         self.accepts = np.zeros((n, n), int)
@@ -168,7 +300,8 @@ class ExchangeStatistics:
         self.n_exchanges = 0
         self._ends()
 
-    def _ends(self):
+    def _ends(self) -> None:
+        """Update the transit and round-trip counters for the replicas now at the two end states."""
         lo, hi = self.replica[0], self.replica[-1]
         if self.last_end[lo] == 1:
             self.transits[lo] += 1
@@ -181,7 +314,18 @@ class ExchangeStatistics:
             self.phase[hi] = 2
         self.last_end[hi] = 1
 
-    def record(self, pairs, accepted, src):
+    def record(self, pairs: Sequence[tuple[int, int]], accepted: Sequence[bool], src: ArrayLike) -> None:
+        """Record one exchange round.
+
+        Parameters
+        ----------
+        pairs : Sequence[tuple[int, int]]
+            The pairs tried.
+        accepted : Sequence[bool]
+            Outcome per pair.
+        src : ArrayLike (n,) int
+            The permutation of `metropolis`: state i now holds the configuration of state src[i].
+        """
         for (i, j), a in zip(pairs, accepted):
             self.attempts[i, j] += 1
             self.attempts[j, i] += 1
@@ -192,28 +336,45 @@ class ExchangeStatistics:
         self._ends()
 
     def acceptance(self) -> np.ndarray:
-        """(n, n) accepted / attempted swaps (nan where never attempted)."""
+        """Return the (n, n) acceptance ratio accepted / attempted swaps (nan where never attempted)."""
         with np.errstate(invalid="ignore", divide="ignore"):
             return np.where(self.attempts > 0, self.accepts / np.maximum(self.attempts, 1), np.nan)
 
     def neighbour_acceptance(self) -> np.ndarray:
+        """Return the acceptance ratio of the n - 1 neighbour pairs (i, i + 1) (nan where never attempted)."""
         a = self.acceptance()
         return np.array([a[i, i + 1] for i in range(self.n - 1)])
 
     def to_dict(self) -> dict:
+        """Return every attribute (arrays copied), for a checkpoint."""
         return {k: (v.copy() if isinstance(v, np.ndarray) else v) for k, v in vars(self).items()}
 
     @classmethod
-    def from_dict(cls, d: dict) -> ExchangeStatistics:
+    def from_dict(cls, d: dict[str, Any]) -> ExchangeStatistics:
+        """Return statistics rebuilt from `to_dict` output (without calling __init__)."""
         out = cls.__new__(cls)
         for k, v in d.items():
             setattr(out, k, np.array(v) if isinstance(v, np.ndarray) else v)
         return out
 
 
-def read_exchange_log(path: str):
-    """prefix_remd.log -> (steps (E,), replica at each temperature from that step on (E, R),
-    outcome per neighbour pair (E, R-1) chars: '+' accepted, '.' rejected, '-' not tried)."""
+def read_exchange_log(path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Read the exchange log prefix_remd.log of `ReplicaExchange.run`.
+
+    Parameters
+    ----------
+    path : str
+        The log file.
+
+    Returns
+    -------
+    steps : np.ndarray (E,) int
+        Step of every exchange.
+    replicas : np.ndarray (E, R) int
+        Replica at each temperature from that step on.
+    outcomes : np.ndarray (E, R-1) str
+        Outcome per neighbour pair: "+" accepted, "." rejected, "-" not tried.
+    """
     steps, reps, outs = [], [], []
     for ln in open(path):
         if ln.startswith("#") or not ln.strip():
@@ -226,12 +387,29 @@ def read_exchange_log(path: str):
 
 
 # ----------------------------------------------------------------------------- stacked states
-def _nocount(st):
-    """The state without its induction step counter (kept unbatched in stacked states)."""
+def _nocount(st: MDState) -> MDState:
+    """Return the state without its induction step counter (kept unbatched in stacked states)."""
     return st.set(induction=st.induction.set(count=None))
 
 
-def _stack(states):
+def _stack(states: Sequence[MDState]) -> MDState:
+    """Stack states along a new leading axis (every leaf (R, ...)), the induction counter unbatched.
+
+    Parameters
+    ----------
+    states : Sequence[MDState]
+        States of identical structure and static sizes.
+
+    Returns
+    -------
+    MDState
+        The stacked state; `induction.count` is the common scalar counter.
+
+    Raises
+    ------
+    ValueError
+        If the induction step counters differ.
+    """
     counts = {int(s.induction.count) for s in states}
     if len(counts) != 1:
         raise ValueError(f"batched replicas need equal induction step counters, got {sorted(counts)}")
@@ -239,35 +417,96 @@ def _stack(states):
     return S.set(induction=S.induction.set(count=states[0].induction.count))
 
 
-def _take(S, index):
-    """Slot `index` (an int, or an index array for a gather) of a stacked state."""
+def _take(S: MDState, index: int | jax.Array) -> MDState:
+    """Return slot `index` (an int, or an index array for a gather) of a stacked state."""
     T = jax.tree_util.tree_map(lambda x: x[index], _nocount(S))
     return T.set(induction=T.induction.set(count=S.induction.count))
 
 
-def _axes(S):
-    """vmap axes of a stacked state: 0 for every leaf, None (unbatched) for the induction step
-    counter, so the predictor's fused / unfused lax.cond stays a branch under vmap."""
+def _axes(S: MDState) -> MDState:
+    """Return the vmap axes of a stacked state (a pytree of the state's structure).
+
+    0 for every leaf, None (unbatched) for the induction step counter, so the predictor's fused /
+    unfused lax.cond stays a real branch under vmap.
+    """
     return jax.tree_util.tree_map(lambda _: 0, _nocount(S))
 
 
-def _broadcast(tree, n: int):
+def _broadcast(tree: Any, n: int) -> Any:
+    """Return `tree` with every leaf broadcast to a new leading axis of length n."""
     return jax.tree_util.tree_map(lambda x: jnp.broadcast_to(x, (n,) + jnp.shape(x)), tree)
 
 
 # ----------------------------------------------------------------------------- MD replicas
 class MDReplicas:
-    """The replicas of one Simulation or FlexibleSimulation at the temperatures of a ladder: the
-    engine of ReplicaExchange.  `sim` provides the system, force field, integrator and neighbour
-    lists (its `state` is used as scratch space); its thermostat is used at every temperature.
-    The replicas start from the current configuration of `sim` with momenta (and thermostat
+    """The replicas of one Simulation or FlexibleSimulation at the temperatures of a ladder.
+
+    The engine of ReplicaExchange (and the base of alchemy.LambdaWindows and
+    finite_field.FieldReplicas).  `sim` provides the system, force field, integrator and neighbour
+    lists (its `state` is used as scratch space); its thermostat is used at every temperature.  The
+    replicas start from the current configuration of `sim` with momenta (and thermostat
     auxiliaries) drawn at their own temperatures from independent random streams (`seed`).
 
     The interface ReplicaExchange uses (a test engine can provide the same): temperatures, n, dt,
     pressure (kJ/mol/nm^3 or None), time_ps, advance(n), potentials(), volumes(), permute(src),
-    observables(k), frames(), write_restarts(prefix), state_dict(), load_state_dict(d)."""
+    observables(k), frames(), write_restarts(prefix), state_dict(), load_state_dict(d).
 
-    def __init__(self, sim, temperatures, batched: bool = True, seed: int = 0):
+    Batched mode keeps one stacked MDState `S` (every leaf with a leading replica axis, the
+    induction step counter unbatched; `_axes`) and vmapped, jitted entry points built by `_build`
+    for the current static sizes; sequential mode keeps a list `states` and uses the engine's own
+    driver.
+
+    Attributes
+    ----------
+    sim : Simulation or FlexibleSimulation
+        The engine.
+    integ : Integrator
+        Its integrator.
+    batched : bool
+        One vmapped program for all replicas (NVT only).
+    temperatures : np.ndarray (R,)
+        Temperature of each slot [K].
+    n : int
+        Number of replicas R.
+    dt : float
+        Time step [ps].
+    pressure : float or None
+        Barostat pressure [kJ/mol/nm^3] (as Integrator.pressure) under NPT, else None.
+    time_ps : float
+        Simulation time [ps].
+    S : MDState
+        Stacked state (batched mode).
+    states : list of MDState
+        Replica states (sequential mode).
+    """
+
+    def __init__(self, sim: Any, temperatures: ArrayLike, batched: bool = True, seed: int = 0) -> None:
+        """Build the replica states from the current configuration of `sim`.
+
+        Parameters
+        ----------
+        sim : Simulation or FlexibleSimulation
+            The engine, with a thermostat.
+        temperatures : ArrayLike (R,)
+            Temperatures [K], positive and increasing (R >= 2).
+        batched : bool
+            One vmapped program for all replicas (NVT only) or one after the other.
+        seed : int
+            Seed of the replicas' momenta and thermostat streams.
+
+        Raises
+        ------
+        ValueError
+            No thermostat, multiple time stepping, batched NPT, or an invalid ladder.
+        NotImplementedError
+            A time-dependent bias (metadynamics, OPES).
+
+        Notes
+        -----
+        Every state is initialized by the integrator at its own kT (momenta drawn at the engine's
+        temperature, then scaled by sqrt(kB T_k / kT) together with the thermostat auxiliaries), with
+        MDState.kT = kB T_k and the neighbour list of `sim`'s state.
+        """
         integ = sim.integ
         if integ.thermostat is None:
             raise ValueError("replica exchange needs a thermostat (create the simulation with thermostat=...)")
@@ -312,8 +551,13 @@ class MDReplicas:
             self.states = states
 
     # ------------------------------------------------------------------ compiled pieces
-    def _build(self):
-        """vmapped entry points for the current static sizes and neighbour-list layout."""
+    def _build(self) -> None:
+        """Build the vmapped, jitted entry points for the current static sizes and neighbour-list layout.
+
+        `_run` (a block of steps), `_forces` (forces of every slot), `_exchange` (the configuration
+        swap), `_wrap`, `_positions` and, for flexible molecules, `_extent` (largest atom-to-centre
+        distance).  Rebuilt whenever the stacked state's sizes or layout change.
+        """
         integ, sim = self.integ, self.sim
         ax = _axes(self.S)
         self._run = jax.jit(jax.vmap(integ._run, in_axes=(ax, None), out_axes=ax))
@@ -324,9 +568,27 @@ class MDReplicas:
         flex = getattr(sim, "flex", None)
         self._extent = jax.jit(lambda P: jnp.max(jax.vmap(flex.extent)(P))) if flex is not None else None
 
-    def _exchange_one(self, dst, src, s):
-        """dst's slot with src's configuration: momenta and thermostat auxiliaries scaled by
-        s = sqrt(T_dst / T_src); the energy change of the slot is booked as heat."""
+    def _exchange_one(self, dst: MDState, src: MDState, s: float | jax.Array) -> MDState:
+        """Return dst's slot with src's configuration.
+
+        Positions, box, forces, induction state, neighbour list and energies come from `src`; the
+        momenta and thermostat auxiliaries of `src` are scaled by s = sqrt(T_dst / T_src).  The slot's
+        kT, random stream, step and barostat counters stay; the change of its total energy
+        (kinetic + potential + |aux|^2/2) is booked as heat.
+
+        Parameters
+        ----------
+        dst : MDState
+            State of the receiving slot.
+        src : MDState
+            State whose configuration moves in.
+        s : float or jax.Array ()
+            Momentum scale factor (dimensionless).
+
+        Returns
+        -------
+        MDState
+        """
 
         def ke(st):
             return self.integ.kinetic(st)[0]
@@ -348,50 +610,62 @@ class MDReplicas:
         return new.set(heat=dst.heat + (e1 - e0))
 
     # ------------------------------------------------------------------ access
-    def _slot(self, S, k: int):
-        """The MDState of slot k of the stacked state S."""
+    def _slot(self, S: MDState, k: int) -> MDState:
+        """Return the MDState of slot k of the stacked state S."""
         return _take(S, k)
 
-    def state(self, k: int):
-        """MDState of temperature slot k."""
+    def state(self, k: int) -> MDState:
+        """Return the MDState of slot k."""
         return self._slot(self.S, k) if self.batched else self.states[k]
 
-    def state_template(self):
-        """A state with the structure of the replica states in a checkpoint (slot 0 without its
-        neighbour list): the template driver.read_checkpoint rebuilds them on."""
+    def state_template(self) -> MDState:
+        """Return a state with the structure of the checkpointed replica states.
+
+        Slot 0 without its neighbour list: the template driver.read_checkpoint rebuilds the states on.
+        """
         return self.state(0).set(nbr=None)
 
     def potentials(self) -> np.ndarray:
-        """Potential energy (kJ/mol) of the configuration at each temperature."""
+        """Return the potential energy of the configuration in each slot [kJ/mol], shape (R,)."""
         if self.batched:
             return np.asarray(self.S.epot, float)
         return np.array([float(s.epot) for s in self.states])
 
     def volumes(self) -> np.ndarray:
+        """Return the box volume of each slot [nm^3], shape (R,)."""
         boxes = np.asarray(self.S.box) if self.batched else np.array([np.asarray(s.box) for s in self.states])
         return np.abs(np.linalg.det(boxes))
 
-    def _on(self, k: int):
-        """Point the engine's simulation object at slot k (for its observables and file writers)."""
+    def _on(self, k: int) -> Any:
+        """Point the engine's simulation object at slot k (for its observables and writers) and return it."""
         self.sim.state, self.sim.time_ps = self.state(k), self.time_ps
         return self.sim
 
-    def observables(self, k: int) -> dict:
+    def observables(self, k: int) -> dict[str, Any]:
+        """Return the observables of slot k (Simulation.observables of that state)."""
         return self._on(k).observables()
 
     def positions(self, k: int) -> np.ndarray:
-        """Atom positions (N, 3) [nm] of temperature slot k."""
+        """Return the atom positions (N, 3) [nm] of slot k."""
         return self._on(k).positions()
 
-    def frames(self):
-        """Positions (R, N, 3) and boxes (R, 3, 3) of every slot, A."""
+    def frames(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return the positions and boxes of every slot, in Angstrom (for the NetCDF trajectories).
+
+        Returns
+        -------
+        xyz : np.ndarray (R, N, 3)
+            Atom positions [Angstrom].
+        boxes : np.ndarray (R, 3, 3)
+            Boxes, lattice vectors as rows [Angstrom].
+        """
         if self.batched:
             return np.asarray(self._positions(self.S.dyn.position)) * 10.0, np.asarray(self.S.box) * 10.0
         X = [self.positions(k) for k in range(self.n)]
         return np.array(X) * 10.0, np.array([np.asarray(s.box) for s in self.states]) * 10.0
 
-    def write_restarts(self, prefix: str):
-        """Amber NetCDF restart of every slot: prefix_Tkk.rst7."""
+    def write_restarts(self, prefix: str) -> None:
+        """Write an Amber NetCDF restart of every slot: prefix_Tkk.rst7."""
         for k in range(self.n):
             sim = self._on(k)
             write_restart(
@@ -404,21 +678,30 @@ class MDReplicas:
             )
 
     # ------------------------------------------------------------------ dynamics
-    def advance(self, n: int):
-        """Every replica n steps."""
+    def advance(self, n: int) -> None:
+        """Advance every replica by n steps (and the time by n dt)."""
         if self.batched:
             self._advance_batched(int(n))
         else:
             self._advance_sequential(int(n))
         self.time_ps += int(n) * self.dt
 
-    def _sizes(self):
-        """Static sizes shared by the replicas: row capacities (ff.capacity) and molecule-list width."""
+    def _sizes(self) -> tuple[Any, int | None]:
+        """Return the static sizes shared by the replicas: row capacities (ff.capacity), molecule-list cap."""
         return self.sim.ff.capacity, getattr(self.sim.nb, "cap", None)
 
-    def _fit(self, sizes, grow_rows=None, grow_cap=None):
-        """Static sizes that fit every entry of `sizes` (the largest of each part), at least 8 rows /
-        4 molecules above `grow_*` (sizes that overflowed); re-jit if anything changed."""
+    def _fit(self, sizes: Sequence[tuple[Any, int | None]], grow_rows: Any = None, grow_cap: int | None = None) -> None:
+        """Set static sizes that fit every entry of `sizes` (the largest of each part); re-jit if changed.
+
+        Parameters
+        ----------
+        sizes : Sequence of tuple
+            Entries of `_sizes`.
+        grow_rows : optional
+            Row capacities that overflowed: the rows grow beyond them (PGMForceField.grow_rows).
+        grow_cap : int, optional
+            Molecule-list cap that overflowed: the new cap is at least 4 above it.
+        """
         sim, now = self.sim, self._sizes()
         sim.ff.fit_rows([s[0] for s in sizes])
         if grow_rows is not None:
@@ -429,7 +712,12 @@ class MDReplicas:
         if self._sizes() != now:
             self.integ.compile()
 
-    def _advance_sequential(self, n: int):
+    def _advance_sequential(self, n: int) -> None:
+        """Advance the replicas one after the other by n steps through the engine's driver.
+
+        A replica may re-size the shared static sizes from its own configuration; they never drop
+        below what another replica needed (no resize ping-pong).
+        """
         sim = self.sim
         for k in range(self.n):
             before = self._sizes()
@@ -440,19 +728,19 @@ class MDReplicas:
             # below what another replica needed (no resize ping-pong)
             self._fit([before, self._sizes()])
 
-    def _nb_failed(self, S) -> bool:
-        """Any replica's neighbour list failed (the engine's test, on each replica's error code)."""
+    def _nb_failed(self, S: MDState) -> bool:
+        """Return whether any replica's neighbour list failed (the engine's test on each error code)."""
         codes = np.asarray(S.nbr.error.code).reshape(-1)
         return any(self.sim.nb.failed(SimpleNamespace(error=SimpleNamespace(code=c))) for c in codes)
 
-    def _run_block(self, start, n: int):
-        """One compiled block of n steps of every replica from the stacked state `start`."""
+    def _run_block(self, start: MDState, n: int) -> MDState:
+        """Return the stacked state after one compiled block of n steps of every replica (blocks until done)."""
         new = self._run(start, n)
         jax.block_until_ready(new.epot)
         return new
 
     def _advance_batched(self, n: int) -> None:
-        """n steps of every replica as one vmapped block.
+        """Advance every replica by n steps as one vmapped block.
 
         Overflows of any replica's neighbour list or pair rows re-size the shared static sizes for
         all and repeat the block (driver.retry_block); then the molecules are re-wrapped into the
@@ -473,8 +761,8 @@ class MDReplicas:
         """
         sim = self.sim
 
-        def resize(start, nb_bad: bool, row_bad: bool):
-            """_resize and a log line."""
+        def resize(start: MDState, nb_bad: bool, row_bad: bool) -> MDState:
+            """Resize (`_resize`) after an overflow and log a line."""
             step0 = int(np.asarray(start.step)[0])
             start = self._resize(start, nb_bad, row_bad)
             logger.info(
@@ -506,9 +794,27 @@ class MDReplicas:
                     f"radius {sim.r_list:.3f} nm; increase r_margin"
                 )
 
-    def _resize(self, start, nb_bad: bool, row_bad: bool):
-        """Static sizes that fit every replica (the largest of each), one neighbour-list layout for
-        all (the largest list, filled with each replica's neighbours), then forces at the start."""
+    def _resize(self, start: MDState, nb_bad: bool, row_bad: bool) -> MDState:
+        """Set static sizes and one neighbour-list layout that fit every replica; return forces at the start.
+
+        The sizes are the largest of each part over the replicas, never below what overflowed; after a
+        list overflow the largest list becomes the shared layout (`_template`), filled with each
+        replica's neighbours by the force evaluation.
+
+        Parameters
+        ----------
+        start : MDState
+            Stacked state at the start of the failed block.
+        nb_bad : bool
+            A neighbour list overflowed.
+        row_bad : bool
+            The pair rows overflowed.
+
+        Returns
+        -------
+        MDState
+            `start` with forces (and lists) re-evaluated at the new sizes, its induction state kept.
+        """
         sim = self.sim
         old = self._sizes()
         sizes, lists = [], []
@@ -526,8 +832,14 @@ class MDReplicas:
         self._build()
         return self._forces(S).set(induction=start.induction)
 
-    def permute(self, src):
-        """Slot k receives the configuration of slot src[k] (momenta and auxiliaries rescaled)."""
+    def permute(self, src: ArrayLike) -> None:
+        """Move the configuration of slot src[k] to slot k (momenta and auxiliaries rescaled).
+
+        Parameters
+        ----------
+        src : ArrayLike (R,) int
+            Permutation from `metropolis`.
+        """
         src = np.asarray(src, int)
         if np.all(src == np.arange(self.n)):
             return
@@ -542,7 +854,7 @@ class MDReplicas:
 
     # ------------------------------------------------------------------ checkpoints
     def state_dict(self) -> dict:
-        """The replicas' content for a checkpoint.
+        """Return the replicas' content for a checkpoint.
 
         Returns
         -------
@@ -557,9 +869,21 @@ class MDReplicas:
             "states": [host_tree(self.state(k).set(nbr=None)) for k in range(self.n)],
         }
 
-    def load_state_dict(self, d: dict):
-        """Replica states from a checkpoint (either mode); neighbour lists are rebuilt and the static
-        sizes fitted to the loaded configurations."""
+    def load_state_dict(self, d: dict) -> None:
+        """Load the replica states from a checkpoint (written in either mode).
+
+        Neighbour lists are rebuilt and the static sizes fitted to the loaded configurations.
+
+        Parameters
+        ----------
+        d : dict
+            Output of `state_dict` (as read by driver.read_checkpoint).
+
+        Raises
+        ------
+        ValueError
+            If the checkpoint temperatures differ.
+        """
         if len(d["temperatures"]) != self.n or not np.allclose(d["temperatures"], self.temperatures, rtol=1e-12):
             raise ValueError(f"checkpoint temperatures {list(d['temperatures'])} differ from {list(self.temperatures)}")
         sim = self.sim
@@ -583,7 +907,7 @@ class MDReplicas:
 
 # ----------------------------------------------------------------------------- driver
 class ReplicaExchange:
-    """Temperature replica exchange.
+    """Temperature replica exchange driver: advance, exchange, statistics, files and checkpoints.
 
         sim = FlexibleSimulation(..., thermostat="bussi", dt=0.002, constraints="h-bonds", hmr=3.024)
         sim.minimize(300); sim.run(25000)                       # equilibrate at the lowest temperature
@@ -592,11 +916,35 @@ class ReplicaExchange:
 
     `sim`: a Simulation / FlexibleSimulation (replicas built by MDReplicas with `batched` and
     `seed`), or a ready replica engine with the MDReplicas interface (then `temperatures` is not
-    given).  Exchanges are attempted every `exchange_every` steps."""
+    given).  Exchanges are attempted every `exchange_every` steps.
+
+    Attributes
+    ----------
+    replicas : MDReplicas or replica engine
+        The replicas.
+    T : np.ndarray (R,)
+        Temperatures [K].
+    n : int
+        Number of replicas R.
+    every : int
+        Steps between exchange attempts.
+    rng : np.random.Generator
+        Exchange random numbers (PCG64, seeded from `seed`).
+    stats : ExchangeStatistics
+        Exchange statistics.
+    step : int
+        Steps done.
+    """
 
     def __init__(
-        self, sim, temperatures=None, exchange_every: int = 500, batched: bool = True, seed: int = 0, log=None
-    ):
+        self,
+        sim: Any,
+        temperatures: ArrayLike | None = None,
+        exchange_every: int = 500,
+        batched: bool = True,
+        seed: int = 0,
+        log: TextIO | None = None,
+    ) -> None:
         """Set up the replicas and the exchange statistics.
 
         Parameters
@@ -648,15 +996,25 @@ class ReplicaExchange:
 
     # ------------------------------------------------------------------ exchanges
     def reduced_energies(self) -> np.ndarray:
-        """u[i, j] = u_i(x_j) for the configurations now at each temperature (temperature ladder:
-        beta_i (U_j + P V_j)).  Hamiltonian exchange overrides this with energies of each
-        configuration evaluated in the neighbouring states."""
+        """Return u[i, j] = u_i(x_j) (R, R) for the configurations now at each temperature.
+
+        For a temperature ladder beta_i (U_j + P V_j) (dimensionless).  Hamiltonian exchange
+        overrides this with energies of each configuration evaluated in the neighbouring states.
+        """
         rep = self.replicas
         V = rep.volumes() if rep.pressure is not None else None
         return temperature_reduced_energies(self.T, rep.potentials(), V, rep.pressure)
 
-    def exchange(self):
-        """One exchange attempt (even or odd pairs, alternating); returns (pairs, accepted)."""
+    def exchange(self) -> tuple[list[tuple[int, int]], np.ndarray]:
+        """Attempt one exchange round (even or odd pairs, alternating) and apply the accepted swaps.
+
+        Returns
+        -------
+        pairs : list of tuple of int
+            The pairs tried.
+        accepted : np.ndarray bool
+            Outcome per pair.
+        """
         pairs = exchange_pairs(self.n, self.stats.n_exchanges)
         uniforms = self.rng.random(len(pairs))
         acc, src = metropolis(self.reduced_energies(), pairs, uniforms)
@@ -664,7 +1022,8 @@ class ReplicaExchange:
         self.stats.record(pairs, acc, src)
         return pairs, acc
 
-    def _outcome(self, pairs, acc) -> str:
+    def _outcome(self, pairs: Sequence[tuple[int, int]], acc: Sequence[bool]) -> str:
+        """Return the outcome string of one round for the exchange log ("+", "." or "-" per neighbour pair)."""
         out = ["-"] * (self.n - 1)
         for (i, _), a in zip(pairs, acc):
             out[i] = "+" if a else "."
@@ -818,8 +1177,10 @@ class ReplicaExchange:
 
     # ------------------------------------------------------------------ checkpoints
     def _write_checkpoint_files(self, prefix: str) -> None:
-        """The files of run's checkpoints: prefix.remd.chk and, when the replica engine writes
-        them, Amber restarts prefix_Tkk.rst7."""
+        """Write the files of run's checkpoints: prefix.remd.chk and Amber restarts prefix_Tkk.rst7.
+
+        The restarts are written only when the replica engine has `write_restarts`.
+        """
         self.save_checkpoint(prefix + ".remd.chk")
         if hasattr(self.replicas, "write_restarts"):
             self.replicas.write_restarts(prefix)
@@ -849,8 +1210,9 @@ class ReplicaExchange:
         write_checkpoint(path, "remd", content)
 
     def load_checkpoint(self, path: str) -> None:
-        """Continue from a checkpoint written by `save_checkpoint`, or from a legacy pickle ``.remd.chk`` of
-        pgm_jax up to commit e72c57c.
+        """Continue from a checkpoint written by `save_checkpoint` (or a legacy pickle .remd.chk).
+
+        Legacy pickle checkpoints are those of pgm_jax up to commit e72c57c.
 
         Parameters
         ----------

@@ -1,8 +1,16 @@
-"""Import JAX-MD's simulation core (space, partition, simulate, rigid_body, quantity, dataclasses,
-util) without executing `jax_md/__init__.py`, which also imports its machine-learning and
-force-field modules (flax, e3nn, ...).  None of those are needed here, and flax releases can lag
-behind JAX (flax 0.12.9 does not import with JAX 0.11.2).  If `jax_md` was already imported by
-the user, that module is used."""
+"""JAX-MD's simulation core, imported without executing `jax_md/__init__.py`.
+
+Provides the JAX-MD submodules space, partition, simulate, rigid_body, quantity, dataclasses and
+util.  `jax_md/__init__.py` also imports JAX-MD's machine-learning and force-field modules (flax,
+e3nn, ...); none of those are needed here, and flax releases can lag behind JAX (flax 0.12.9 does
+not import with JAX 0.11.2).  So, unless `jax_md` is already in `sys.modules` (imported by the
+user, in which case that module is used), an empty package module named `jax_md` with the real
+package's search path is registered first, and only the submodules listed above are imported.
+
+    from ._jaxmd import rigid_body, space
+
+Raises ImportError at import time if jax-md is not installed.
+"""
 
 from __future__ import annotations
 

@@ -16,11 +16,18 @@ Units: bar, steps.
 from __future__ import annotations
 
 import dataclasses
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .thermostats import Thermostat
 
 
 @dataclasses.dataclass(frozen=True)
 class MonteCarloBarostat:
     """Isotropic Monte Carlo barostat (see the module docstring).
+
+    Immutable (frozen dataclass); not a pytree: the integrators read its fields when they build
+    their compiled step, so a change recompiles.
 
     Parameters
     ----------
@@ -44,21 +51,21 @@ class MonteCarloBarostat:
         object.__setattr__(self, "every", int(self.every))
         if self.every < 1:
             raise ValueError(f"MonteCarloBarostat: every must be >= 1 step ({self.every!r})")
-        if not self.pressure == self.pressure or abs(self.pressure) == float("inf"):
+        if not self.pressure == self.pressure or abs(self.pressure) == float("inf"):  # NaN or +-inf
             raise ValueError(f"MonteCarloBarostat: pressure must be finite ({self.pressure!r} bar)")
 
     def describe(self) -> str:
-        """One line for the log header, e.g. "Monte Carlo barostat 1 bar every 100 steps"."""
+        """Return one line for the log header, e.g. "Monte Carlo barostat 1 bar every 100 steps"."""
         return f"Monte Carlo barostat {self.pressure:g} bar every {self.every} steps"
 
 
-def ensemble_name(thermostat, barostat) -> str:
-    """The ensemble a thermostat / barostat pair samples.
+def ensemble_name(thermostat: Thermostat | None, barostat: MonteCarloBarostat | None) -> str:
+    """Return the ensemble a thermostat / barostat pair samples.
 
     Parameters
     ----------
     thermostat : Thermostat or None
-        The thermostat (None: none).
+        The thermostat (md/thermostats.py; None: none).
     barostat : MonteCarloBarostat or None
         The barostat (None: constant volume).
 

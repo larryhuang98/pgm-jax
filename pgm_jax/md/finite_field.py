@@ -1,5 +1,9 @@
-"""Finite-field static dielectric constant: copies of one system in several uniform fields,
-advanced together (one vmapped program), and the analysis of their cell dipoles.
+"""Finite-field static dielectric constant: replicas of one system in several uniform fields.
+
+Contents: `FieldReplicas` (copies of one system in several uniform fields, advanced together as
+one vmapped program; the cell dipole of every replica written to prefix.ffd) and `read_series`
+(reads those files).  The analysis of the series (`analyse`, `predicted_errors`) is in
+pgm_jax/analysis/finite_field.py.
 
 With tin-foil (conducting) boundary conditions the applied field E is the Maxwell field in the
 sample (md/efield.py), so in the linear regime
@@ -23,19 +27,24 @@ fluctuation formula), so the error of eps from a +-E pair (each replica T long) 
 against sigma_fluct = (eps - eps_inf) sqrt(2 tau_M / (3 T')) from the fluctuations of a zero-field run
 of length T'.  At equal cost (T' = 2T) the ratio of the variances, i.e. the cost ratio at equal
 error, is (<M.e> / sd(M_e))^2 / 3: the induced mean dipole must exceed the thermal fluctuation of M,
-which favours large fields (up to dielectric saturation) and large boxes.  `analyse` reports the
-measured errors, and `predicted_errors` these estimates.
+which favours large fields (up to dielectric saturation) and large boxes.  `analyse`
+(analysis/finite_field.py) reports the measured errors, and `predicted_errors` these estimates.
 
     sim = Simulation(sys, pos, H, settings, thermostat="bussi", efield=(0, 0, 0))
     rep = FieldReplicas(sim, [(0, 0, 0.1), (0, 0, -0.1), (0, 0, 0.2), (0, 0, -0.2), (0, 0, 0)])
     rep.run(nsteps, sample_every=25, prefix="ff")   # prefix.ffd: M of every replica every 25 steps
-    table = analyse(*read_series("ff.ffd"), skip_ps=50)
+    table = analyse(*read_series("ff.ffd"), skip_ps=50)   # pgm_jax.analysis.finite_field
 
-Units: V/nm, e nm, nm^3, K."""
+Units: V/nm, e nm, nm^3, K.
+
+See also docs/dielectric.md and md/efield.py.
+"""
 
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, TextIO
 
 import jax
 import jax.numpy as jnp
@@ -45,22 +54,35 @@ from .driver import LogTable, Stopwatch, read_checkpoint, write_checkpoint
 from .engine import OPTIONAL_STATE
 from .remd import MDReplicas, _stack
 
+if TYPE_CHECKING:
+    from jax.typing import ArrayLike
+
 
 class FieldReplicas(MDReplicas):
-    """Copies of the state of `sim` (a Simulation or FlexibleSimulation created with efield=...,
-    NVE or NVT) in the uniform fields `fields` ((R, 3) V/nm), with independent momenta and
-    thermostat streams (`seed`), advanced together by jax.vmap (MDReplicas' batched engine: shared
-    static sizes, overflow handling, re-wrapping).  No exchanges: the replicas are independent
-    trajectories at the same temperature."""
+    """Copies of one simulation's state in several uniform fields, advanced together by jax.vmap.
 
-    def __init__(self, sim, fields, seed: int = 0, log=None):
+    The replicas of `sim` (a Simulation or FlexibleSimulation created with efield=..., NVE or NVT)
+    in the uniform fields `fields`, with independent momenta and thermostat streams (`seed`),
+    advanced together by MDReplicas' batched engine (shared static sizes, overflow handling,
+    re-wrapping).  Each replica's field amplitude is its MDState.efield.  No exchanges: the replicas
+    are independent trajectories at the same temperature.
+
+    Attributes
+    ----------
+    fields : np.ndarray (R, 3)
+        Field (or D/eps0 for a constant-displacement simulation) of every replica [V/nm].
+
+    Other attributes as MDReplicas (batched mode; `temperatures` all equal to the simulation's).
+    """
+
+    def __init__(self, sim: Any, fields: ArrayLike, seed: int = 0, log: TextIO | None = None) -> None:
         """Replicas of `sim`'s current state in the given fields.
 
         Parameters
         ----------
         sim : Simulation or FlexibleSimulation
             Created with efield=... (any amplitude; each replica sets its own), NVE or NVT.
-        fields : array (R, 3)
+        fields : ArrayLike (R, 3)
             Field of every replica [V/nm].
         seed : int
             Seed of the replicas' momenta and thermostat streams.
@@ -108,10 +130,29 @@ class FieldReplicas(MDReplicas):
         self._build()
 
     def dipoles(self) -> np.ndarray:
-        """(R, 3) e nm: the cell dipole M = sum q r + sum p + sum mu of every replica (last force evaluation)."""
+        """Return the cell dipole M = sum q r + sum p + sum mu (R, 3) [e nm] of every replica.
+
+        The dipole of the last force evaluation (MDState.fdip).
+        """
         return np.asarray(self.S.fdip)
 
-    def header(self, extra: dict | None = None) -> str:
+    def header(self, extra: dict[str, Any] | None = None) -> str:
+        """Return the "# key = value" header of prefix.ffd.
+
+        The lines give the temperature, ensemble, time step, sizes, volume, field kind, the field of
+        every replica (field_k = Ex Ey Ez [V/nm]) and the column names (step, time_ps, then M_x, M_y,
+        M_z [e nm] of every replica).
+
+        Parameters
+        ----------
+        extra : dict, optional
+            Further header entries.
+
+        Returns
+        -------
+        str
+            The header lines, each starting with "# ".
+        """
         sim = self.sim
         V = float(np.abs(np.linalg.det(np.asarray(self.S.box)[0])))
         meta = {
@@ -216,8 +257,9 @@ class FieldReplicas(MDReplicas):
         self.save_checkpoint(prefix + ".ffchk")
 
     def save_checkpoint(self, path: str) -> None:
-        """Write a checkpoint of every replica and the fields (driver.write_checkpoint, kind
-        "field-replicas").
+        """Write a checkpoint of every replica and the fields.
+
+        driver.write_checkpoint with kind "field-replicas".
 
         Parameters
         ----------
@@ -229,8 +271,10 @@ class FieldReplicas(MDReplicas):
         write_checkpoint(path, "field-replicas", d)
 
     def load_checkpoint(self, path: str) -> None:
-        """Continue from a checkpoint written by `save_checkpoint`, or from a legacy pickle ``.ffchk`` of
-        pgm_jax up to commit e72c57c (same system and fields).
+        """Continue from a checkpoint written by `save_checkpoint` (or a legacy pickle .ffchk).
+
+        Legacy pickle checkpoints are those of pgm_jax up to commit e72c57c; the system and the
+        fields must be the same.
 
         Parameters
         ----------
@@ -248,9 +292,30 @@ class FieldReplicas(MDReplicas):
         self.load_state_dict(d)
 
 
-def read_series(paths) -> tuple[dict, dict]:
-    """(meta, data) from one or more .ffd files (continuations in order; records whose step goes
-    back are superseded): data["step"], data["time_ps"], data["M"] (F, R, 3), meta["fields"] (R, 3)."""
+def read_series(paths: str | os.PathLike | Sequence[str | os.PathLike]) -> tuple[dict, dict]:
+    """Read the cell-dipole series of one or more .ffd files.
+
+    Continuations are given in order; records whose step goes back (a restart from an earlier
+    checkpoint) are superseded by the later ones.
+
+    Parameters
+    ----------
+    paths : str, os.PathLike or Sequence of them
+        The .ffd files of FieldReplicas.run.
+
+    Returns
+    -------
+    meta : dict
+        Header entries (numbers as float, others as str) of the first file, and "fields" (R, 3)
+        [V/nm].
+    data : dict
+        "step" (F,) int64, "time_ps" (F,) [ps], "M" (F, R, 3) cell dipoles [e nm].
+
+    Raises
+    ------
+    ValueError
+        If the files have different fields.
+    """
     if isinstance(paths, (str, os.PathLike)):
         paths = [paths]
     meta, rows = None, []
