@@ -1,7 +1,7 @@
 # pGM-JAX paper
 
-`main.tex` + `references.bib` -> `main.pdf` (`latexmk -pdf main.tex`). Authors and affiliations
-are placeholders.
+`main.tex` + `references.bib` -> `main.pdf` (`latexmk -pdf main.tex`). The author list is Zhen Huang only
+(affiliation as in the DEGAUSS manuscript); further authors are to be added.
 
 | Path | Content |
 |---|---|

@@ -28,14 +28,14 @@ Nothing beyond pgm_jax for the engine and the i-PI client. The drivers:
   validation scripts find it through `IPI_ROOT` (a directory holding the `ipi` package and
   `ipi-*.data/scripts/i-pi`, e.g. an unpacked wheel) or an `i-pi` on the PATH.
 - **OpenMM >= 8.4** (for `openmm.PythonForce`): `conda install -c conda-forge openmm` in the same
-  Python as pgm_jax. On rayl8 the pip wheels of OpenMM 8.6 need glibc 2.34 (the compute nodes have
-  2.28); conda-forge's build works. It is kept in its own environment,
-  `~/miniconda3/envs/pgmjax-iface-omm` (OpenMM 8.6.1, python 3.12, made on the head node with
+  Python as pgm_jax. On systems with a glibc older than 2.34 the pip wheels of OpenMM 8.6 do not load; conda-forge's
+  build works. It is kept in its own environment,
+  `<conda>/envs/pgmjax-iface-omm` (OpenMM 8.6.1, python 3.12, made with
   `CONDA_OVERRIDE_GLIBC=2.28 conda create -p ... -c conda-forge python=3.12 openmm=8.6`). The pgmjax
   python imports it through a directory holding only a symlink to its `openmm` package:
   `PYTHONPATH=runs/ommlib` (with `runs/ommlib/openmm -> .../pgmjax-iface-omm/lib/python3.12/site-packages/openmm`),
-  so nothing is installed into `pgmjax`. OpenMM's CUDA platform does not work next to JAX on rayl8's
-  GPUs (Limits); its CPU platform does.
+  so nothing is installed into `pgmjax`. OpenMM's CUDA platform does not work next to JAX on GPUs in
+  exclusive-process mode (Limits); its CPU platform does.
 
 ## Usage
 
@@ -266,7 +266,7 @@ per force evaluation), the others are complete MD steps.
   atoms) and OpenMM (distance constraints: SETTLE for water). i-PI has no rigid-molecule integrator
   that works with path integrals, so the i-PI client needs flexible templates. Rigid molecules of more
   than three atoms (methanol) have no constraint set here; use flexible templates.
-- **OpenMM CUDA platform**: on rayl8's GPUs (exclusive-process compute mode: one context per device)
+- **OpenMM CUDA platform**: on GPUs in exclusive-process compute mode (one context per device)
   OpenMM's own CUDA context and JAX's cannot coexist in one process, and the conda-forge OpenMM 8.6.1
   build also fails to load its kernels with driver 610 (`CUDA_ERROR_UNSUPPORTED_PTX_VERSION`, nvrtc
   13.4). Use OpenMM's CPU platform with JAX on the GPU (its integrator costs ~0.5 ms per step for

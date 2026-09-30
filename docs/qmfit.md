@@ -139,8 +139,8 @@ angular, 37 radial, 175 liquid pairs, 38 trimers, 8 tetramers, 5 pentamers, 212 
 clusters). Test set (348): everything from the base_4096 snapshot (60 liquid pairs, 19 trimers, 4
 tetramers, 3 pentamers, 246 pairs of those and of the WATER27 clusters), the 6 Smith-type
 structures and the 10 WATER27 clusters. Starting point for every fit: pGM3P-25
-(`~/project/epsp/p25_512.prmtop`); baselines pGM3P-25 and the base parameters
-(`~/project/epsp/base/base_512.prmtop`, evaluated with their own rigid geometry on the same
+(`the 512-water box of the dielectric study`); baselines pGM3P-25 and the base parameters
+(`the base-parameter 512-water box`, evaluated with their own rigid geometry on the same
 clusters). Errors in kcal/mol (forces kcal/mol/A). `data/validation/qmfit/{final,combo,probe}.sh`
 reproduce every row (run from the clone root; each fit writes `runs/qmfit/<name>.json` and
 `data/qm/fits/<name>.json`, `fit_water_qm.py summary` prints the table); the reports are kept in

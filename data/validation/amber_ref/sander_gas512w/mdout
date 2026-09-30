@@ -5,8 +5,8 @@
 
 | Run on 09/23/2026 at 16:26:24
 
-|   Executable path: /home8/larry/ambers/pgm-larry/build/AmberTools/src/sander/sander
-| Working directory: /home8/larry/project/evoff/runs/validate/sander_gas512w
+|   Executable path: ~/ambers/pgm-larry/build/AmberTools/src/sander/sander
+| Working directory: .
 |          Hostname: Unknown
   [-O]verwriting output
 
@@ -14,7 +14,7 @@ File Assignments:
 |  MDIN: mdin                                                                  
 | MDOUT: mdout                                                                 
 |INPCRD: inpcrd                                                                
-|  PARM: /home8/larry/pgm-gvdw-data/topology/rayl_512_v2.prmtop                
+|  PARM: ~/pgm-gvdw-data/topology/rayl_512_v2.prmtop                
 |RESTRT: restrt                                                                
 |  REFC: refc                                                                  
 | MDVEL: mdvel                                                                 

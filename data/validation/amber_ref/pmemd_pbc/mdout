@@ -8,16 +8,16 @@
 |  Compiled date/time: Fri Feb 20 23:40:20 2026
 | Run on 09/23/2026 at 16:22:05
 
-|   Executable path: /home8/larry/ambers/pgm-vdw/build/src/pmemd-pgm/src/pmemd-pgm
-| Working directory: /home8/larry/project/evoff/runs/validate/pmemd_pbc
+|   Executable path: ~/ambers/pgm-vdw/build/src/pmemd-pgm/src/pmemd-pgm
+| Working directory: .
 |          Hostname: Unknown
   [-O]verwriting output
 
 File Assignments:
 |   MDIN: mdin                                                                  
 |  MDOUT: mdout                                                                 
-| INPCRD: /home8/larry/pgm-gvdw-data/inputs/lj/inpcrd.restrt                    
-|   PARM: /home8/larry/pgm-gvdw-data/topology/rayl_512_v2.prmtop                
+| INPCRD: ~/pgm-gvdw-data/inputs/lj/inpcrd.restrt                    
+|   PARM: ~/pgm-gvdw-data/topology/rayl_512_v2.prmtop                
 | RESTRT: restrt                                                                
 |   REFC: refc                                                                  
 |  MDVEL: mdvel                                                                 

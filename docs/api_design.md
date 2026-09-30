@@ -99,7 +99,7 @@ Contents: 1 Inventory, 2 Problems, 3 Target design, 4 Migration table, 5 Phased 
 
 35 files, 291 test functions, 356 collected tests (8,644 lines), flat in `tests/`, plus
 `tests/data/` (tleap prmtops: peptide in TIP3P / TIP4P-Ew, small TIP4P-Ew / TIP5P boxes; 424 kB).
-Four tests depend on files outside the repository (`~/pgm-gvdw-data`, pmemd, i-PI, OpenMM) and skip
+Four tests depend on files outside the repository (`PGM_GVDW_DATA`, pmemd, i-PI, OpenMM) and skip
 without them. Test modules import helpers from each other (`from test_grad import water` in 12
 files, `test_md_macro._water_box` in 6, `test_md.small_box/settings` in 8, `test_hmr._cluster` in 3,
 ...). New in this branch: `tests/regression/` (section 7).
@@ -222,8 +222,8 @@ pmemd names; combinations that are refused are checked in several places.
   (`s`), `interfaces/openmm.py:82` (`eng`).
 - The default thermostat is Langevin (`md/simulation.py:57`) although `md/thermostats.py:34` calls it
   "kept for compatibility" and recommends Bussi.
-- A user path in library code: `param.py:205` `PGM_POL_TABLE = ~/amber25/...`; hard-coded
-  `/home8/larry/...` paths in `scripts/qmfit/{build_water_clusters,fit_water_qm}.py`.
+- A user path in library code: `param.py:205` `PGM_POL_TABLE`; hard-coded
+  user paths in `scripts/qmfit/{build_water_clusters,fit_water_qm}.py`.
 - Research-study code shipped in the library: `bonded/bench.py`, `bonded/data.py`,
   `bonded/molecules.py`, `bonded/terms/explore.py` (488 lines of explored families).
 
@@ -604,7 +604,7 @@ bias classes, `PGMForceField.compute/rows_for/strain_derivative/init_induction`.
 | `bonded.{bench, data, molecules}`, `bonded.terms.explore` | `bonded.study.*` (registry keeps the explored families) | 12 | 3 | 1 |
 | `md.neighbors.Neighbors` (alias) | `AtomNeighbors` | 0 | 4 | 0 |
 | `KB` in `md.integrate` / `bias.core` / `fit.estimators` / `ensemble`, `BAR` in `md.integrate` / `md.pimd`, `periodic.KJMOL_NM3_BAR`, `fit.estimators.{BAR_KJ, G_CM3}`, `simulation.AMU_NM3_TO_G_CM3` | `pgm_jax.units.{KB, BAR_PER_KJMOL_NM3, KJMOL_NM3_PER_BAR, AMU_NM3_TO_G_CM3, ...}` (same literal values and expressions) | 7 | 10 | 0 |
-| `param.PGM_POL_TABLE` (`~/amber25/...`) | argument of `read_pol_table(path)`, default from `PGM_POL_TABLE` env var | 2 | 1 | 1 |
+| `param.PGM_POL_TABLE` (`$AMBERHOME/...`) | argument of `read_pol_table(path)`, default from `PGM_POL_TABLE` env var | 2 | 1 | 1 |
 
 ### 4.4 Command-line options (all scripts; `pgm_jax/cli/args.py`)
 
@@ -743,7 +743,7 @@ end: Q3 decides whether intermediate releases need compatibility shims).
 
 - `regression_systems.py`: self-contained builders of the test systems (toy pGM water, methanol,
   the skewed water/methanol box, flexible methanol with class II terms and optional charge flux,
-  flexible water for PIMD, pGM3P-25 water from `~/pgm-gvdw-data`). Copied from the unit tests on
+  flexible water for PIMD, pGM3P-25 water from `examples/water512`). Copied from the unit tests on
   purpose, so that reorganizing the tests cannot change the harness inputs.
 - `regression_cases.py`: 35 cases, each returning a flat dict of arrays. The only code that knows
   the engine API is its "API adapter" section and the case bodies; a phase that changes an API
@@ -757,7 +757,7 @@ end: Q3 decides whether intermediate releases need compatibility shims).
 Run (CPU, float64 except one mixed-precision case, 16 threads):
 
 ```
-~/project/cpu_run.sh <clone> <clone>/runs/rg/check.log 16 60 python tests/regression/regress.py check
+python tests/regression/regress.py check
 # or per group (a..g) in parallel: ... regress.py check --group a
 ```
 
@@ -792,7 +792,7 @@ their unit tests when installed), `LiquidFit` iterations and the bonded fitting 
 - Sensitivity check: changing the last digit of `KB` in `md/integrate.py` (1e-16 relative) left
   `gas_model` bitwise and made `md_rigid_bussi` and `flex_flux` fail (51 and 35 arrays differ, relative
   deviations 1e-16 to 3e-11), i.e. the harness sees any change of the trajectories.
-- GPU baseline (`scripts/dev/gpu_bench.sh`, master `e72c57c`, gpu-2-1, RTX PRO 6000 Blackwell),
+- GPU baseline (`scripts/dev/gpu_bench.sh`, master `e72c57c`, RTX PRO 6000 Blackwell),
   ms/step in two rounds:
 
 | Case | Round 1 | Round 2 |

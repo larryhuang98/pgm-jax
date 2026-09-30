@@ -363,7 +363,7 @@ def set_gvdw(mol: Molecule, by_type: dict[str, tuple[float, float, float]]) -> M
     return replace(mol, gvdw_sqrt_a=sa, gvdw_sqrt_c6=sc, gvdw_b=b)
 
 
-# pmemd-pgm GVDW water models of the GVDW manuscript (O-O only; ~/pgm-gvdw-data/README.md)
+# pmemd-pgm GVDW water models of the GVDW manuscript (O-O only; the GVDW manuscript data)
 PGM3P_GVDW = {
     "slater": {"rep": "slater", "OW": from_pmemd(87500.0, 594.825035, 4.52)},
     "gauss": {"rep": "gauss", "OW": from_pmemd(422.0, 594.825035, 0.9453)},

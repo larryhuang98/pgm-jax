@@ -166,7 +166,7 @@ to 0.02 % of the absorbed energy.
 
 ### Finite-field dielectric constant (512 waters, NVT, 298 K)
 
-Protocol (`scripts/dielectric/finite_field.py run`): the 512-water boxes of the project (`~/project/epsp`),
+Protocol (`scripts/dielectric/finite_field.py run`): the 512-water boxes of the dielectric study,
 scaled to the model's NPT density in pgm_jax (pGM3P-25 1.010, base pGM 0.983, TIP3P 0.986 g/cm^3), 10
 replicas in one vmapped program on one RTX PRO 6000: +-E along z for |E| = 0.02, 0.05, 0.1, 0.2
 V/nm and two zero-field copies; rigid bodies, 2 fs, Bussi 1 ps, 0.9 nm cutoff with the LJ tail, PME

@@ -104,7 +104,7 @@ from Welch periodograms. Sample M every step or two; use physical masses (no HMR
 ## Validation (512 waters, 298 K, 1 bar)
 
 Settings of every run: 512 waters in the truncated octahedron of
-`~/pgm-gvdw-data/inputs/lj/inpcrd.restrt`, NPT 298 K / 1 bar (Bussi, tau 1 ps; Monte Carlo
+`examples/water512/pgm3p25_512.rst7`, NPT 298 K / 1 bar (Bussi, tau 1 ps; Monte Carlo
 barostat every 100 steps), PME 48^3 order 6, beta 4 nm^-1, 0.9 nm cutoff with the LJ tail, dipole
 tol 1e-5, mixed precision, one RTX PRO 6000; M every 25 steps; the first 200 ps (500 ps after the
 geometry change of the pGM3P-25 run) discarded; errors are jackknife over 10 blocks (the block
@@ -177,7 +177,7 @@ written as a pmemd-pgm topology (`scripts/dielectric/pgm3p25_prmtop.py`) and sam
 itself; the cell dipoles of its trajectories were then evaluated with the model's induced dipoles
 re-solved at every frame (`scripts/dielectric/trajectory_dipoles.py`, tol 1e-6, one frame per ps).
 
-Runs: pmemd.pgm.cuda_SPFP (`~/ambers/pgm-larry-install`), 4,096 waters (the 512-water box 2 x 2 x 2;
+Runs: pmemd.pgm.cuda_SPFP (`PGM_PMEMD_BIN`), 4,096 waters (the 512-water box 2 x 2 x 2;
 pmemd.pgm.cuda needs three neighbour-list cells across the box), NPT 298 K / 1 bar, Langevin 1/ps,
 Monte Carlo barostat, SETTLE, 2 fs, 9 A cutoff, PME 96^3 order 6, ew_coeff 0.4, vdwmeth 1,
 dipole_scf_tol 1e-5 (`pgm3p25_prmtop.py --mdin`); four independent runs of 0.1 ns + 3 ns on four GPUs
@@ -193,7 +193,7 @@ Coulomb constant; `Model`, dense pGM) and <EPtot>/N from pmemd.
 | molecular dipole, gas phase (D) | 1.462 (experiment 1.855) | | |
 | eps (M_q + M_perm + M_ind, + eps_inf 1.794) | **34.3 +- 0.6** | **33.9 +- 0.7** | 84.3 |
 
-Cross-check of the dipoles against the pGM CPU codes (`~/ambers/pgm-larry`, `dipole_print=1`), same
+Cross-check of the dipoles against the pGM CPU codes (`PGM_SANDER`, `dipole_print=1`), same
 coordinates (512 waters, published parameters) and PME settings:
 
 - sander (`pGM_compute_dipole`: system moment = sum of q r + permanent dipoles + induced dipoles
@@ -281,7 +281,7 @@ hundred steps, after an accepted volume move.
 Control with the same pipeline: TIP3P (the 512-water box's own TIP3P topology without the pGM
 sections), CPU pmemd (amber25), the paper's mdin without pGM (nfft 50, order 8, vdwmeth 0), 64 runs of
 0.1 + 1 ns, M = sum q r, SI formula: **eps = 97.3 +- 0.8**, density 0.9786 (TIP3P literature about 94-104).
-The standard pmemd.cuda (pgm-larry-install and kamd25 builds) cannot run this topology: NVE from 0 K
+The standard pmemd.cuda (pGM builds) cannot run this topology: NVE from 0 K
 gains 80,000 kcal/mol in 0.75 ps, as if the rigid-water constraints were not applied; CPU pmemd and
 sander are stable on the same files, and pmemd.pgm.cuda keeps the pGM water rigid (checked on the frames).
 

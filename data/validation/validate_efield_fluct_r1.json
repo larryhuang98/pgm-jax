@@ -1,5 +1,5 @@
 {
- "/home8/larry/project/epsp/base/jax/r1.dip": {
+ "base/jax/r1.dip": {
   "eps": 73.52439110974433,
   "err": 0.5527438267827678,
   "eps_inf": 2.0046116491361787,
@@ -17,7 +17,7 @@
    75.86517994362171
   ]
  },
- "/home8/larry/project/epsp/base/jax/r2.dip": {
+ "base/jax/r2.dip": {
   "eps": 73.5511277554049,
   "err": 0.7563514885134275,
   "eps_inf": 2.004523898538706,
@@ -35,7 +35,7 @@
    73.35308268157033
   ]
  },
- "/home8/larry/project/epsp/base/jax/r3.dip": {
+ "base/jax/r3.dip": {
   "eps": 73.10965891754523,
   "err": 0.5512037414369411,
   "eps_inf": 2.003870516402707,
@@ -53,7 +53,7 @@
    74.24623566610012
   ]
  },
- "/home8/larry/project/epsp/base/jax/r4.dip": {
+ "base/jax/r4.dip": {
   "eps": 73.2987140830824,
   "err": 0.5840341518181286,
   "eps_inf": 2.0048046482459805,
@@ -71,7 +71,7 @@
    74.42411210705355
   ]
  },
- "/home8/larry/project/epsp/base/jax/r5.dip": {
+ "base/jax/r5.dip": {
   "eps": 72.65047880084335,
   "err": 0.8520765308526105,
   "eps_inf": 2.003607915399698,

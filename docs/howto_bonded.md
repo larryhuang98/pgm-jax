@@ -6,7 +6,7 @@ the MD engine. The bonded terms only carry what the all-pair pGM electrostatics 
 Lennard-Jones from 1-5 pairs on do not, so they are fitted *on top of* that nonbonded model, to
 DFT energies and forces.
 
-Everything below runs on a GPU node (`ssh gpu-2-x; conda activate pgmjax; cd ~/project/pGM-JAX`),
+Everything below runs on a GPU (or CPU),
 except the DFT and ESP jobs, which are Slurm arrays on the CPU partition.
 
 ## 1. Reference data for a new molecule

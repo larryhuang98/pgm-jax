@@ -133,7 +133,7 @@ For strict NVE at 2 fs use iEL/SCF-2 (-0.001 to -0.006) or omega = 0.5, K = 0 at
 Two 512-water systems, mixed precision, one RTX PRO 6000 (runs made with `scripts/validation/iel_validate.py`):
 
 - **pGM3P-25**: the model of Wu et al. (JCTC 21, 3563 (2025)) with the paper's geometry and
-  Lennard-Jones (`water_dielectric.py --model pgm3p25`, the system of `~/project/epsp/p25_512`);
+  Lennard-Jones (`water_dielectric.py --model pgm3p25`, the system of the 512-water box);
   reference: the 10 ns SCF (tol 1e-5) NPT run of `docs/dielectric.md` (eps 33.9 +- 0.6, liquid
   dipole 2.125 D; pmemd.pgm.cuda gives 34.3 +- 0.6 and 2.124 D). Runs start from its last
   checkpoint (`iel_validate.py --model pgm3p25`).

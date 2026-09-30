@@ -265,7 +265,7 @@ a flexible solute with the same engine if one annihilates its electrostatics). W
 
 ### Hydration free energies
 
-Settings of the water runs: the 512-water truncated octahedron of `~/pgm-gvdw-data/inputs/lj/inpcrd.restrt`
+Settings of the water runs: the 512-water truncated octahedron of `examples/water512/pgm3p25_512.rst7`
 (the box of the README's validation), one water the solute, 298 K; 0.9 nm cutoff with the
 Lennard-Jones long-range correction, PME 48^3 order 6, beta 4 nm^-1, dipole tol 1e-5, mixed
 precision; rigid bodies, 2 fs, Bussi thermostat (tau 1 ps). 100 ps NPT (1 bar, Monte Carlo

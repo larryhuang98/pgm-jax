@@ -1,5 +1,5 @@
 {
- "/home8/larry/project/pGM-JAX-dipoles/runs/eps/tip3p.dip": {
+ "runs/eps/tip3p.dip": {
   "eps": 103.76623084323411,
   "err": 2.9778290721126375,
   "eps_inf": 1.0,

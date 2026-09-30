@@ -3,7 +3,7 @@
 # command lines work end to end (options, file outputs, restarts, analysis of the outputs), not the
 # physics.  Run from anywhere; outputs go to <repo>/runs/smoke/.  Prints "OK <name>" or
 # "FAIL <name>" (with the tail of the log) for each run and the number of failures at the end.
-#   bash scripts/dev/smoke_scripts.sh [REPO]          # e.g. through ~/project/cpu_run.sh on rayl8
+#   bash scripts/dev/smoke_scripts.sh [REPO]        
 # Needs the external data of pgm_jax/paths.py (pGM3P-25 box, the gvdw data set).
 C=${1:-$(cd "$(dirname "$0")/../.." && pwd)}
 cd "$C" || exit 1

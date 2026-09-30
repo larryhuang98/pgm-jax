@@ -5,16 +5,16 @@
 
 | Run on 09/23/2026 at 16:23:58
 
-|   Executable path: /home8/larry/ambers/pgm-larry/build/AmberTools/src/sander/sander
-| Working directory: /home8/larry/project/evoff/runs/validate/sander_4wat
+|   Executable path: ~/ambers/pgm-larry/build/AmberTools/src/sander/sander
+| Working directory: .
 |          Hostname: Unknown
   [-O]verwriting output
 
 File Assignments:
 |  MDIN: mdin                                                                  
 | MDOUT: mdout                                                                 
-|INPCRD: /home8/larry/amber25/test/pgm_4wat/restrt0                            
-|  PARM: /home8/larry/amber25/test/pgm_4wat/w4_pgm.top                         
+|INPCRD: ~/amber25/test/pgm_4wat/restrt0                            
+|  PARM: ~/amber25/test/pgm_4wat/w4_pgm.top                         
 |RESTRT: restrt                                                                
 |  REFC: refc                                                                  
 | MDVEL: mdvel                                                                 

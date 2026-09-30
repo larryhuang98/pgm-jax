@@ -188,8 +188,8 @@ The per-feature limits are in each document and summarised in README, Limits. In
 gas-phase fits of one rigid molecule kind (water); free-energy gradients of solvent parameters are
 unbiased but noisy; liquid fits cover rigid molecules; walkers are single-device NVT without MTS and
 OPES has no adaptive sigma or kernel neighbour list; the interfaces expose neither virtual sites,
-alchemy, MTS, fields, biases nor iEL, and OpenMM's CUDA platform cannot share a GPU with JAX on
-rayl8; path integrals take flexible molecules only (no constraints, virtual sites, MTS, restraints,
+alchemy, MTS, fields, biases nor iEL, and OpenMM's CUDA platform cannot share a GPU with JAX in
+exclusive-process mode; path integrals take flexible molecules only (no constraints, virtual sites, MTS, restraints,
 alchemy, biases, fields or iEL); constraints are distances only; external fields are uniform (no
 NPT with charged molecules, no alchemy); iEL at 2 fs drifts +0.013-0.020 kT/ns/dof and is refused
 with MTS, alchemy, differentiable solves, PIMD and the interfaces; iEL in a field is checked by

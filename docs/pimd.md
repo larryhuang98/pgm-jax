@@ -111,7 +111,7 @@ energy could not absorb the strong intramolecular pGM Coulomb of this water (q_O
 covalent dipoles): 3.9 kJ/mol RMS and a minimum drifting away; the quartic bond fits.
 
 The electrostatics and Lennard-Jones are those of the pGM water of the README
-(`~/pgm-gvdw-data/topology/rayl_512_v2.prmtop`, the 512-water box). The result
+(`examples/water512/pgm3p25_512.prmtop`, the 512-water box). The result
 (`data/validation/pimd/pgm_water_flex.flex`, `python scripts/pimd/pimd_water.py template`):
 
 | | flexible pGM water (gas phase) | q-TIP4P/F intramolecular target |
